@@ -229,8 +229,8 @@ reusable widgets) will be split out if and when they earn their keep.
 | M1 | First pixels             | Minimal GPUI window rendering live status via background executor           | ✅ done |
 | M2 | The tree                 | Section tree with fold/unfold; lazy per-file diffs; virtualized render; evil navigation | ✅ done |
 | M3 | Staging                  | Stage/unstage/discard at file → hunk → region (patch construction + `git apply --cached`) | ✅ done |
-| M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | next |
-| M5 | Breadth                  | Log view; branch transient; stash transient                                 |        |
+| M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | ✅ done |
+| M5 | Breadth                  | Log view; branch transient; stash transient                                 | next |
 | M6 | Robustness               | FS watcher + debounced incremental refresh; cancellation hardening; error surfacing | |
 | M7 | Tier 3                   | Merge, rebase, cherry-pick, revert (interactive rebase as a stretch)        |        |
 
