@@ -31,6 +31,9 @@ mod theme {
     pub fn selection() -> Rgba {
         rgb(0x2f3340)
     }
+    pub fn visual() -> Rgba {
+        rgb(0x2b3650)
+    }
     pub fn section() -> Rgba {
         rgb(0x7aa2f7)
     }
@@ -200,6 +203,9 @@ struct StatusView {
     diffs: HashMap<(DiffSource, String), DiffState>,
     rows: Vec<Row>,
     selected: usize,
+    /// Anchor row of an active visual (region) selection; `None` when off.
+    /// The selection spans `min(anchor, selected)..=max(anchor, selected)`.
+    visual: Option<usize>,
     generation: u64,
     pending_g: bool,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -232,6 +238,7 @@ impl StatusView {
             diffs: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
+            visual: None,
             generation: 0,
             pending_g: false,
             confirm: None,
@@ -600,6 +607,8 @@ impl StatusView {
     }
 
     fn toggle_fold(&mut self, cx: &mut Context<Self>) {
+        // Folding changes row indices, which would invalidate a visual anchor.
+        self.visual = None;
         let Some(key) = self.rows.get(self.selected).and_then(|r| r.fold.clone()) else {
             return;
         };
@@ -688,9 +697,56 @@ impl StatusView {
         }
     }
 
+    /// The inclusive row range of the active visual selection, if any.
+    fn visual_range(&self) -> Option<(usize, usize)> {
+        self.visual
+            .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
+    }
+
+    /// Resolve a region (visual) selection into a line-level action. All
+    /// selected lines must belong to a single hunk; lines from other hunks in
+    /// the range are ignored, and the section must match the verb.
+    fn resolve_region_action(&self, op: Op) -> Option<Action> {
+        let (lo, hi) = self.visual_range()?;
+        let mut target: Option<(FileRef, usize)> = None;
+        let mut indices = Vec::new();
+        for ix in lo..=hi {
+            if let Some(Target::Line { file, hunk, line }) =
+                self.rows.get(ix).and_then(|r| r.target.as_ref())
+            {
+                match &target {
+                    None => {
+                        target = Some((file.clone(), *hunk));
+                        indices.push(*line);
+                    }
+                    Some((f, h)) if f.section == file.section && f.path == file.path && h == hunk => {
+                        indices.push(*line)
+                    }
+                    _ => {} // a different hunk/file — ignore for this apply
+                }
+            }
+        }
+        let (file, hunk) = target?;
+        if indices.is_empty() {
+            return None;
+        }
+        let diff = self.diff_for(&file)?;
+        match (op, file.section) {
+            (Op::Stage, SectionId::Unstaged) => Some(Action::StageLines(diff, hunk, indices)),
+            (Op::Unstage, SectionId::Staged) => Some(Action::UnstageLines(diff, hunk, indices)),
+            (Op::Discard, SectionId::Unstaged) => Some(Action::DiscardLines(diff, hunk, indices)),
+            _ => None,
+        }
+    }
+
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     fn act(&mut self, op: Op, cx: &mut Context<Self>) {
-        let Some(action) = self.resolve_action(op) else {
+        let resolved = if self.visual.is_some() {
+            self.resolve_region_action(op)
+        } else {
+            self.resolve_action(op)
+        };
+        let Some(action) = resolved else {
             return;
         };
         if op == Op::Discard {
@@ -704,6 +760,7 @@ impl StatusView {
     /// Run a git mutation on the background executor, then refresh.
     fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
         self.confirm = None;
+        self.visual = None;
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -767,6 +824,22 @@ impl StatusView {
                 return;
             }
             "tab" => self.toggle_fold(cx),
+            // Visual (region) selection. `v`/`V` toggle; Escape cancels.
+            "v" => {
+                self.visual = if self.visual.is_some() {
+                    None
+                } else {
+                    Some(self.selected)
+                };
+                cx.notify();
+                return;
+            }
+            "escape" => {
+                if self.visual.take().is_some() {
+                    cx.notify();
+                }
+                return;
+            }
             // Staging. Shifted variants act on the whole working tree.
             "s" if shift => return self.run_action(Action::StageAll, cx),
             "s" => return self.act(Op::Stage, cx),
@@ -784,6 +857,9 @@ impl StatusView {
             return div().into_any_element();
         };
         let selected = ix == self.selected && row.selectable;
+        let in_region = self
+            .visual_range()
+            .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
 
         let mut el = div()
             .flex()
@@ -792,6 +868,9 @@ impl StatusView {
             .h(px(18.0))
             .w_full()
             .pl(px(8.0 + row.indent as f32 * 16.0));
+        if in_region {
+            el = el.bg(theme::visual());
+        }
         if selected {
             el = el.bg(theme::selection());
         }
@@ -868,6 +947,18 @@ impl Render for StatusView {
                     .bg(theme::banner())
                     .text_color(theme::modified())
                     .child(SharedString::from(prompt.clone())),
+            );
+        } else if self.visual.is_some() {
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .bg(theme::visual())
+                    .text_color(theme::fg())
+                    .child(SharedString::from(
+                        "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel",
+                    )),
             );
         }
 
