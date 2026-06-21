@@ -760,6 +760,7 @@ impl StatusView {
         }
         self.rebuild_rows();
         self.clamp_selection();
+        cx.notify();
     }
 
     fn clamp_selection(&mut self) {
