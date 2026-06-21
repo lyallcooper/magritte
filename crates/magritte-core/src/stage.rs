@@ -114,6 +114,16 @@ impl Repo {
 
     /// Apply a unidiff patch via `git apply`.
     pub fn apply_patch(&self, patch: &str, target: ApplyTarget, reverse: bool) -> Result<()> {
+        self.run_apply(patch, target, reverse, false)
+    }
+
+    fn run_apply(
+        &self,
+        patch: &str,
+        target: ApplyTarget,
+        reverse: bool,
+        check_only: bool,
+    ) -> Result<()> {
         let mut args: Vec<&str> = vec!["apply"];
         if target == ApplyTarget::Index {
             args.push("--cached");
@@ -121,11 +131,50 @@ impl Repo {
         if reverse {
             args.push("--reverse");
         }
+        if check_only {
+            // --check verifies the patch applies without modifying anything.
+            args.push("--check");
+        }
         // Let git infer hunk line counts from the patch body; our `build_patch`
         // also computes them, but this is a cheap robustness margin.
         args.push("--recount");
         // git apply reads the patch from stdin when given no file arguments.
         self.run_with_input(args, patch.as_bytes())?;
+        Ok(())
+    }
+
+    // --- Discarding staged changes ---------------------------------------
+    //
+    // Discarding a *staged* change reverts both the index and the working tree
+    // to HEAD for the affected content. **Destructive.**
+
+    /// Revert a staged file entirely to its HEAD state (index and worktree).
+    pub fn discard_staged_file(&self, path: &str) -> Result<()> {
+        self.run(["checkout", "HEAD", "--", path])?;
+        Ok(())
+    }
+
+    /// Discard a staged hunk from both the index and the working tree.
+    pub fn discard_staged_hunk(&self, file: &FileDiff, hunk: &Hunk) -> Result<()> {
+        self.discard_staged_lines(file, hunk, &all_change_indices(hunk))
+    }
+
+    /// Discard the selected staged lines from both the index and working tree.
+    ///
+    /// Both reverse-applies are dry-run-checked first, so if either would fail
+    /// (e.g. the worktree has further unstaged edits to these lines) we abort
+    /// without leaving a half-applied, inconsistent state.
+    pub fn discard_staged_lines(
+        &self,
+        file: &FileDiff,
+        hunk: &Hunk,
+        selected: &[usize],
+    ) -> Result<()> {
+        let patch = build_patch(file, hunk, selected, true);
+        self.run_apply(&patch, ApplyTarget::Index, true, true)?;
+        self.run_apply(&patch, ApplyTarget::Worktree, true, true)?;
+        self.run_apply(&patch, ApplyTarget::Index, true, false)?;
+        self.run_apply(&patch, ApplyTarget::Worktree, true, false)?;
         Ok(())
     }
 }

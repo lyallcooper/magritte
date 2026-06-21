@@ -112,6 +112,9 @@ enum Action {
     StageLines(FileDiff, usize, Vec<usize>),
     UnstageLines(FileDiff, usize, Vec<usize>),
     DiscardLines(FileDiff, usize, Vec<usize>),
+    DiscardStagedFile(String),
+    DiscardStagedHunk(FileDiff, usize),
+    DiscardStagedLines(FileDiff, usize, Vec<usize>),
 }
 
 impl Action {
@@ -136,6 +139,9 @@ impl Action {
             Action::StageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.stage_lines(&f, &f.hunks[h], &l))),
             Action::UnstageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.unstage_lines(&f, &f.hunks[h], &l))),
             Action::DiscardLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_lines(&f, &f.hunks[h], &l))),
+            Action::DiscardStagedFile(p) => to_err(repo.discard_staged_file(&p)),
+            Action::DiscardStagedHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_hunk(&f, &f.hunks[h]))),
+            Action::DiscardStagedLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_lines(&f, &f.hunks[h], &l))),
         }
     }
 }
@@ -680,18 +686,23 @@ impl StatusView {
                 Some(Action::UnstageLines(self.diff_for(&file)?, hunk, vec![line]))
             }
 
-            // Discard: untracked removes the file; unstaged reverts to the index.
+            // Discard: untracked removes the file; unstaged reverts to the
+            // index; staged reverts both index and worktree to HEAD.
             (Op::Discard, Target::File(f)) => match f.section {
                 SectionId::Untracked => Some(Action::DiscardUntracked(f.path)),
                 SectionId::Unstaged => Some(Action::DiscardTracked(f.path)),
-                SectionId::Staged => None,
+                SectionId::Staged => Some(Action::DiscardStagedFile(f.path)),
             },
-            (Op::Discard, Target::Hunk { file, hunk }) if file.section == SectionId::Unstaged => {
-                Some(Action::DiscardHunk(self.diff_for(&file)?, hunk))
-            }
-            (Op::Discard, Target::Line { file, hunk, line }) if file.section == SectionId::Unstaged => {
-                Some(Action::DiscardLines(self.diff_for(&file)?, hunk, vec![line]))
-            }
+            (Op::Discard, Target::Hunk { file, hunk }) => match file.section {
+                SectionId::Unstaged => Some(Action::DiscardHunk(self.diff_for(&file)?, hunk)),
+                SectionId::Staged => Some(Action::DiscardStagedHunk(self.diff_for(&file)?, hunk)),
+                SectionId::Untracked => None,
+            },
+            (Op::Discard, Target::Line { file, hunk, line }) => match file.section {
+                SectionId::Unstaged => Some(Action::DiscardLines(self.diff_for(&file)?, hunk, vec![line])),
+                SectionId::Staged => Some(Action::DiscardStagedLines(self.diff_for(&file)?, hunk, vec![line])),
+                SectionId::Untracked => None,
+            },
 
             _ => None,
         }
@@ -735,6 +746,7 @@ impl StatusView {
             (Op::Stage, SectionId::Unstaged) => Some(Action::StageLines(diff, hunk, indices)),
             (Op::Unstage, SectionId::Staged) => Some(Action::UnstageLines(diff, hunk, indices)),
             (Op::Discard, SectionId::Unstaged) => Some(Action::DiscardLines(diff, hunk, indices)),
+            (Op::Discard, SectionId::Staged) => Some(Action::DiscardStagedLines(diff, hunk, indices)),
             _ => None,
         }
     }
@@ -1033,6 +1045,17 @@ fn describe_discard(action: &Action) -> String {
         Action::DiscardLines(f, _, l) => {
             format!("Discard {} line(s) in {}?  (y/n)", l.len(), f.display_path())
         }
+        Action::DiscardStagedFile(p) => {
+            format!("Discard staged {p} (reverts index and worktree to HEAD)?  (y/n)")
+        }
+        Action::DiscardStagedHunk(f, _) => {
+            format!("Discard staged hunk in {} (index + worktree)?  (y/n)", f.display_path())
+        }
+        Action::DiscardStagedLines(f, _, l) => format!(
+            "Discard {} staged line(s) in {} (index + worktree)?  (y/n)",
+            l.len(),
+            f.display_path()
+        ),
         _ => "Discard?  (y/n)".to_string(),
     }
 }
