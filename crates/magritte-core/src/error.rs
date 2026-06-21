@@ -18,6 +18,8 @@ pub enum Error {
     Parse { context: &'static str, line: String },
     /// The given path is not inside a git working tree.
     NotARepository { path: PathBuf },
+    /// A precondition for an operation was not met (e.g. detached HEAD).
+    Message(String),
 }
 
 impl fmt::Display for Error {
@@ -46,6 +48,7 @@ impl fmt::Display for Error {
             Error::NotARepository { path } => {
                 write!(f, "not a git repository: {}", path.display())
             }
+            Error::Message(msg) => write!(f, "{msg}"),
         }
     }
 }
