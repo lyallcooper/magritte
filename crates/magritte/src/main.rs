@@ -11,9 +11,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    div, px, uniform_list, AnyElement, App, AppContext, Application, Context, FocusHandle,
-    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, ParentElement, Render, SharedString,
-    Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    div, px, uniform_list, AnyElement, App, AppContext, Context, FocusHandle, InteractiveElement,
+    IntoElement, KeyDownEvent, Keystroke, ParentElement, Render, SharedString, Styled,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
 use magritte_core::transient::{self, Suffix, Transient};
 use magritte_core::{
@@ -1401,7 +1401,7 @@ impl StatusView {
         let mut col = div()
             .flex()
             .flex_col()
-            .flex_grow()
+            .flex_grow(1.0)
             .w_full()
             .p_3()
             .child(
@@ -1497,7 +1497,7 @@ impl StatusView {
 impl Render for StatusView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused_once {
-            self.focus.focus(window);
+            self.focus.focus(window, cx);
             self.focused_once = true;
         }
 
@@ -1527,9 +1527,9 @@ impl Render for StatusView {
                 let this = view.read(cx);
                 range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
             })
-            .track_scroll(self.scroll.clone())
+            .track_scroll(&self.scroll)
             .w_full()
-            .flex_grow()
+            .flex_grow(1.0)
             .py_2()
             .px_2(),
         );
@@ -1734,18 +1734,29 @@ fn main() {
     }
     let start_dir = arg.map(PathBuf::from);
 
-    Application::new().run(move |cx: &mut App| {
-        cx.open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Magritte")),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |_window, cx| cx.new(|cx| StatusView::new(start_dir.clone(), cx)),
-        )
-        .expect("failed to open window");
+    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    app.run(move |cx: &mut App| {
+        // Required before using any gpui-component widgets/themes.
+        gpui_component::init(cx);
         cx.activate(true);
+
+        let options = WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some(SharedString::from("Magritte")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        cx.spawn(async move |cx| {
+            cx.open_window(options, |window, cx| {
+                let view = cx.new(|cx| StatusView::new(start_dir.clone(), cx));
+                // The window's root must be a gpui-component Root (provides
+                // theming, overlays, and the component context).
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            })
+            .expect("failed to open window");
+        })
+        .detach();
     });
 }
