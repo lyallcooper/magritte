@@ -999,43 +999,32 @@ impl Render for StatusView {
             .text_size(px(13.0))
             .font_family("Menlo")
             .flex()
-            .flex_col();
+            .flex_col()
+            // The list takes the flexible space; the status bar (added below)
+            // sits beneath it, so showing the bar never shifts content down.
+            .child(
+                uniform_list("rows", count, move |range, _window, cx| {
+                    let this = view.read(cx);
+                    range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
+                })
+                .track_scroll(self.scroll.clone())
+                .w_full()
+                .flex_grow()
+                .py_2()
+                .px_2(),
+            );
 
         if let Some((prompt, _)) = &self.confirm {
-            root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .bg(theme::banner())
-                    .text_color(theme::modified())
-                    .child(SharedString::from(prompt.clone())),
-            );
+            root = root.child(status_bar(prompt.clone(), theme::banner(), theme::modified()));
         } else if self.visual.is_some() {
-            root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .bg(theme::visual())
-                    .text_color(theme::fg())
-                    .child(SharedString::from(
-                        "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel",
-                    )),
-            );
+            root = root.child(status_bar(
+                "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel".to_string(),
+                theme::visual(),
+                theme::fg(),
+            ));
         }
 
-        root.child(
-            uniform_list("rows", count, move |range, _window, cx| {
-                let this = view.read(cx);
-                range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
-            })
-            .track_scroll(self.scroll.clone())
-            .w_full()
-            .flex_grow()
-            .py_2()
-            .px_2(),
-        )
+        root
     }
 }
 
@@ -1086,6 +1075,19 @@ fn triangle(expanded: bool) -> &'static str {
     } else {
         "▸"
     }
+}
+
+/// A bottom-pinned status bar row (confirm prompt or mode indicator).
+fn status_bar(text: String, bg: gpui::Rgba, fg: gpui::Rgba) -> gpui::Div {
+    div()
+        .w_full()
+        .px_2()
+        .py_1()
+        .border_t_1()
+        .border_color(theme::bg())
+        .bg(bg)
+        .text_color(fg)
+        .child(SharedString::from(text))
 }
 
 fn describe_discard(action: &Action) -> String {
