@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Editor / local
+*.swp
+.idea/
+.vscode/
+
+# Cargo.lock is intentionally committed: Magritte ships as an application.
