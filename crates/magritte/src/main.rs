@@ -98,6 +98,15 @@ enum Target {
     Line { file: FileRef, hunk: usize, line: usize },
 }
 
+/// How a multi-hunk region selection should be applied.
+#[derive(Debug, Clone, Copy)]
+enum RegionKind {
+    Stage,
+    Unstage,
+    Discard,
+    DiscardStaged,
+}
+
 /// A resolved git mutation, runnable on the background executor.
 enum Action {
     StageFile(String),
@@ -115,6 +124,14 @@ enum Action {
     DiscardStagedFile(String),
     DiscardStagedHunk(FileDiff, usize),
     DiscardStagedLines(FileDiff, usize, Vec<usize>),
+    /// A region selection spanning one file's hunks: hunk index -> line indices.
+    ApplyRegion {
+        kind: RegionKind,
+        file: FileDiff,
+        selections: Vec<(usize, Vec<usize>)>,
+    },
+    /// Several actions applied in sequence (a region spanning multiple files).
+    Batch(Vec<Action>),
 }
 
 impl Action {
@@ -142,6 +159,18 @@ impl Action {
             Action::DiscardStagedFile(p) => to_err(repo.discard_staged_file(&p)),
             Action::DiscardStagedHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_hunk(&f, &f.hunks[h]))),
             Action::DiscardStagedLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_lines(&f, &f.hunks[h], &l))),
+            Action::ApplyRegion { kind, file, selections } => to_err(match kind {
+                RegionKind::Stage => repo.stage_file_lines(&file, &selections),
+                RegionKind::Unstage => repo.unstage_file_lines(&file, &selections),
+                RegionKind::Discard => repo.discard_file_lines(&file, &selections),
+                RegionKind::DiscardStaged => repo.discard_staged_file_lines(&file, &selections),
+            }),
+            Action::Batch(actions) => {
+                for action in actions {
+                    action.run(repo)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -714,40 +743,62 @@ impl StatusView {
             .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
     }
 
-    /// Resolve a region (visual) selection into a line-level action. All
-    /// selected lines must belong to a single hunk; lines from other hunks in
-    /// the range are ignored, and the section must match the verb.
+    /// Resolve a region (visual) selection into actions. Selected lines are
+    /// grouped by file and hunk, so a selection spanning multiple hunks (or
+    /// files) acts on *all* of them. Groups whose section doesn't match the
+    /// verb (e.g. a staged file when staging) are skipped.
     fn resolve_region_action(&self, op: Op) -> Option<Action> {
         let (lo, hi) = self.visual_range()?;
-        let mut target: Option<(FileRef, usize)> = None;
-        let mut indices = Vec::new();
+
+        // Group selected diff lines: file (section+path) -> hunk -> line indices,
+        // preserving encounter order.
+        let mut groups: Vec<(FileRef, Vec<(usize, Vec<usize>)>)> = Vec::new();
         for ix in lo..=hi {
-            if let Some(Target::Line { file, hunk, line }) =
+            let Some(Target::Line { file, hunk, line }) =
                 self.rows.get(ix).and_then(|r| r.target.as_ref())
+            else {
+                continue;
+            };
+            let gi = match groups
+                .iter()
+                .position(|(f, _)| f.section == file.section && f.path == file.path)
             {
-                match &target {
-                    None => {
-                        target = Some((file.clone(), *hunk));
-                        indices.push(*line);
-                    }
-                    Some((f, h)) if f.section == file.section && f.path == file.path && h == hunk => {
-                        indices.push(*line)
-                    }
-                    _ => {} // a different hunk/file — ignore for this apply
+                Some(i) => i,
+                None => {
+                    groups.push((file.clone(), Vec::new()));
+                    groups.len() - 1
                 }
+            };
+            let hunks = &mut groups[gi].1;
+            match hunks.iter_mut().find(|(h, _)| *h == *hunk) {
+                Some((_, lines)) => lines.push(*line),
+                None => hunks.push((*hunk, vec![*line])),
             }
         }
-        let (file, hunk) = target?;
-        if indices.is_empty() {
-            return None;
+
+        let mut actions = Vec::new();
+        for (file, selections) in groups {
+            let kind = match (op, file.section) {
+                (Op::Stage, SectionId::Unstaged) => RegionKind::Stage,
+                (Op::Unstage, SectionId::Staged) => RegionKind::Unstage,
+                (Op::Discard, SectionId::Unstaged) => RegionKind::Discard,
+                (Op::Discard, SectionId::Staged) => RegionKind::DiscardStaged,
+                _ => continue, // section doesn't match the verb
+            };
+            let Some(diff) = self.diff_for(&file) else {
+                continue;
+            };
+            actions.push(Action::ApplyRegion {
+                kind,
+                file: diff,
+                selections,
+            });
         }
-        let diff = self.diff_for(&file)?;
-        match (op, file.section) {
-            (Op::Stage, SectionId::Unstaged) => Some(Action::StageLines(diff, hunk, indices)),
-            (Op::Unstage, SectionId::Staged) => Some(Action::UnstageLines(diff, hunk, indices)),
-            (Op::Discard, SectionId::Unstaged) => Some(Action::DiscardLines(diff, hunk, indices)),
-            (Op::Discard, SectionId::Staged) => Some(Action::DiscardStagedLines(diff, hunk, indices)),
-            _ => None,
+
+        match actions.len() {
+            0 => None,
+            1 => actions.pop(),
+            _ => Some(Action::Batch(actions)),
         }
     }
 
@@ -1056,6 +1107,18 @@ fn describe_discard(action: &Action) -> String {
             l.len(),
             f.display_path()
         ),
+        Action::ApplyRegion { kind, file, selections } => {
+            let n: usize = selections.iter().map(|(_, l)| l.len()).sum();
+            let staged = matches!(kind, RegionKind::DiscardStaged);
+            format!(
+                "Discard {n} line(s) in {}{}?  (y/n)",
+                file.display_path(),
+                if staged { " (index + worktree)" } else { "" }
+            )
+        }
+        Action::Batch(actions) => {
+            format!("Discard selection across {} files?  (y/n)", actions.len())
+        }
         _ => "Discard?  (y/n)".to_string(),
     }
 }

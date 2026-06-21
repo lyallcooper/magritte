@@ -177,6 +177,39 @@ impl Repo {
         self.run_apply(&patch, ApplyTarget::Worktree, true, false)?;
         Ok(())
     }
+
+    // --- Multi-hunk region operations ------------------------------------
+    //
+    // `selections` maps hunk index -> selected line indices, so a region that
+    // spans several hunks of one file is applied as a single patch.
+
+    pub fn stage_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+        let patch = build_file_patch(file, selections, false);
+        self.apply_patch(&patch, ApplyTarget::Index, false)
+    }
+
+    pub fn unstage_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+        let patch = build_file_patch(file, selections, true);
+        self.apply_patch(&patch, ApplyTarget::Index, true)
+    }
+
+    pub fn discard_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+        let patch = build_file_patch(file, selections, true);
+        self.apply_patch(&patch, ApplyTarget::Worktree, true)
+    }
+
+    pub fn discard_staged_file_lines(
+        &self,
+        file: &FileDiff,
+        selections: &[(usize, Vec<usize>)],
+    ) -> Result<()> {
+        let patch = build_file_patch(file, selections, true);
+        self.run_apply(&patch, ApplyTarget::Index, true, true)?;
+        self.run_apply(&patch, ApplyTarget::Worktree, true, true)?;
+        self.run_apply(&patch, ApplyTarget::Index, true, false)?;
+        self.run_apply(&patch, ApplyTarget::Worktree, true, false)?;
+        Ok(())
+    }
 }
 
 /// Indices of all changed (Added/Removed) lines in a hunk.
@@ -194,12 +227,39 @@ fn all_change_indices(hunk: &Hunk) -> Vec<usize> {
 /// See the module docs for the forward/reverse selection rules. When `selected`
 /// contains every changed line this reproduces the original hunk verbatim.
 pub fn build_patch(file: &FileDiff, hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
+    let mut out = file_header(file);
+    out.push_str(&hunk_block(hunk, selected, reverse));
+    out
+}
+
+/// Build a unidiff patch spanning multiple hunks of one file. `selections` maps
+/// hunk index -> selected line indices; hunks not listed are omitted. Used for
+/// region selections that cross hunk boundaries.
+pub fn build_file_patch(
+    file: &FileDiff,
+    selections: &[(usize, Vec<usize>)],
+    reverse: bool,
+) -> String {
+    let mut out = file_header(file);
+    for (hunk_ix, selected) in selections {
+        if let Some(hunk) = file.hunks.get(*hunk_ix) {
+            out.push_str(&hunk_block(hunk, selected, reverse));
+        }
+    }
+    out
+}
+
+fn file_header(file: &FileDiff) -> String {
     let mut out = String::new();
     for header in &file.header_lines {
         out.push_str(header);
         out.push('\n');
     }
+    out
+}
 
+/// Build the `@@ ... @@` header and body for one hunk given the selected lines.
+fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
     let mut body = String::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
@@ -264,10 +324,10 @@ pub fn build_patch(file: &FileDiff, hunk: &Hunk, selected: &[usize], reverse: bo
     } else {
         format!(" {}", hunk.section_heading)
     };
-    out.push_str(&format!(
+    let mut block = format!(
         "@@ -{},{} +{},{} @@{}\n",
         hunk.old_start, old_count, hunk.new_start, new_count, heading
-    ));
-    out.push_str(&body);
-    out
+    );
+    block.push_str(&body);
+    block
 }
