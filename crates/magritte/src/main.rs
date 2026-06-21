@@ -51,6 +51,12 @@ mod theme {
     }
 }
 
+/// After a refresh, warm at most this many file diffs in the background...
+const PREFETCH_FILE_CAP: usize = 16;
+/// ...skipping any whose changed-line count exceeds this, so massive diffs are
+/// only computed when the user actually expands them.
+const PREFETCH_LINE_CAP: u32 = 2000;
+
 /// Which top-level section a row belongs to. Used as a stable fold key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SectionId {
@@ -271,6 +277,8 @@ impl StatusView {
                 // Re-load diffs for any files that were expanded before the
                 // refresh cleared them, so they don't get stuck on "Loading…".
                 this.reload_expanded_diffs(cx);
+                // Warm a bounded set of small diffs so first expand feels instant.
+                this.start_prefetch(cx);
                 cx.notify();
             })
             .ok();
@@ -291,6 +299,56 @@ impl StatusView {
         for (source, path) in files {
             self.ensure_diff(source, path, cx);
         }
+    }
+
+    /// After a refresh, probe changed-line counts (cheap `git diff --numstat`)
+    /// off the UI thread, then warm the diffs for a bounded number of small
+    /// files so expanding them feels instant. Massive diffs are skipped and
+    /// load lazily on explicit expand.
+    fn start_prefetch(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let generation = self.generation;
+
+        cx.spawn(async move |this, cx| {
+            let counts = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut all = Vec::new();
+                    for source in [DiffSource::Unstaged, DiffSource::Staged] {
+                        if let Ok(list) = repo.diff_line_counts(source) {
+                            for (path, lines) in list {
+                                all.push((source, path, lines));
+                            }
+                        }
+                    }
+                    all
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let mut warmed = 0;
+                for (source, path, lines) in counts {
+                    if warmed >= PREFETCH_FILE_CAP {
+                        break;
+                    }
+                    if lines > PREFETCH_LINE_CAP {
+                        continue;
+                    }
+                    if this.diffs.contains_key(&(source, path.clone())) {
+                        continue;
+                    }
+                    this.ensure_diff(source, path, cx);
+                    warmed += 1;
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Kick off a background diff load for a file if not already present.

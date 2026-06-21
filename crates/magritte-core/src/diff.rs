@@ -104,6 +104,36 @@ impl Repo {
             Some(diffs.remove(0))
         })
     }
+
+    /// Cheap per-file changed-line counts via `git diff --numstat` (no content),
+    /// returning `(path, added + removed)`. Used to decide which diffs are small
+    /// enough to prefetch. Binary files and renames are omitted (best-effort).
+    pub fn diff_line_counts(&self, source: DiffSource) -> Result<Vec<(String, u32)>> {
+        let mut args = vec!["diff", "--numstat"];
+        if source == DiffSource::Staged {
+            args.push("--cached");
+        }
+        let out = self.run(args)?;
+        let text = String::from_utf8_lossy(&out.stdout);
+
+        let mut counts = Vec::new();
+        for line in text.lines() {
+            // "<added>\t<removed>\t<path>"; binary files report "-" for counts.
+            let mut parts = line.splitn(3, '\t');
+            let added = parts.next().unwrap_or("");
+            let removed = parts.next().unwrap_or("");
+            let Some(path) = parts.next() else { continue };
+            if added == "-" || removed == "-" {
+                continue; // binary
+            }
+            if path.contains(" => ") {
+                continue; // a rename form; let it load on demand
+            }
+            let total = added.parse::<u32>().unwrap_or(0) + removed.parse::<u32>().unwrap_or(0);
+            counts.push((path.to_string(), total));
+        }
+        Ok(counts)
+    }
 }
 
 /// Parse the (UTF-8 lossy) output of `git diff` into zero or more file diffs.
