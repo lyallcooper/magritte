@@ -161,6 +161,22 @@ index 1234567..89abcde 100644
 }
 
 #[test]
+fn line_counts_report_changed_lines() {
+    let t = TestRepo::new();
+    t.write("a.txt", "1\n2\n3\n");
+    t.write("b.txt", "x\n");
+    t.commit_all("init");
+    // a.txt: change one line (1 add + 1 remove); b.txt: append two lines.
+    t.write("a.txt", "1\nTWO\n3\n");
+    t.write("b.txt", "x\ny\nz\n");
+
+    let counts = open(&t).diff_line_counts(DiffSource::Unstaged).unwrap();
+    let map: std::collections::HashMap<_, _> = counts.into_iter().collect();
+    assert_eq!(map.get("a.txt"), Some(&2));
+    assert_eq!(map.get("b.txt"), Some(&2));
+}
+
+#[test]
 fn parser_detects_binary() {
     let raw = "\
 diff --git a/img.png b/img.png
