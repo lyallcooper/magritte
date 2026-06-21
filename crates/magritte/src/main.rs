@@ -12,16 +12,30 @@ use std::path::PathBuf;
 
 use gpui::{
     div, px, uniform_list, AnyElement, App, AppContext, Application, Context, FocusHandle,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    InteractiveElement, IntoElement, KeyDownEvent, Keystroke, ParentElement, Render, SharedString,
+    Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
 use magritte_core::transient::{self, Suffix, Transient};
-use magritte_core::{Change, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status};
+use magritte_core::{
+    Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
+};
+
+/// State of the in-app commit message editor.
+struct EditorState {
+    mode: CommitMode,
+    /// Active transient switches to pass to `git commit`.
+    args: Vec<String>,
+    text: String,
+    /// Cursor as a byte offset into `text` (kept on a char boundary).
+    cursor: usize,
+}
 
 /// An open transient popup and the switches toggled on within it.
 struct TransientState {
     def: Transient,
     active: std::collections::HashSet<String>,
+    /// True after `-` is pressed, awaiting the switch letter (magit `-f`).
+    pending_dash: bool,
 }
 
 impl TransientState {
@@ -29,6 +43,7 @@ impl TransientState {
         TransientState {
             def,
             active: std::collections::HashSet::new(),
+            pending_dash: false,
         }
     }
 }
@@ -71,6 +86,7 @@ const HELP: &[HelpGroup] = &[
     HelpGroup {
         title: "Commands",
         entries: &[
+            ("c", "commit"),
             ("p", "push"),
             ("F", "pull"),
             ("f", "fetch"),
@@ -313,6 +329,8 @@ struct StatusView {
     pending_g: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
+    /// The commit message editor, when open (takes over the window).
+    editor: Option<EditorState>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -349,6 +367,7 @@ impl StatusView {
             generation: 0,
             pending_g: false,
             popup: None,
+            editor: None,
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
@@ -935,22 +954,25 @@ impl StatusView {
             return;
         };
 
-        // Toggle a switch? Switch keys are magit-style ("-f"); a single
-        // keypress of the letter toggles it.
-        let switch_key = state
-            .def
-            .switches()
-            .find(|s| s.key.trim_start_matches('-') == key)
-            .map(|s| s.key.to_string());
-        if let Some(sw) = switch_key {
-            if !state.active.remove(&sw) {
-                state.active.insert(sw);
+        // Switches are toggled magit-style: `-` then the letter (e.g. -f).
+        if state.pending_dash {
+            state.pending_dash = false;
+            let full = format!("-{key}");
+            if let Some(sw) = state.def.switches().find(|s| s.key == full).map(|s| s.key.to_string()) {
+                if !state.active.remove(&sw) {
+                    state.active.insert(sw);
+                }
             }
             cx.notify();
             return;
         }
+        if key == "-" {
+            state.pending_dash = true;
+            cx.notify();
+            return;
+        }
 
-        // Invoke an action?
+        // Invoke an action.
         let action = state.def.action_for(key).copied();
         let switches: Vec<String> = state
             .def
@@ -960,8 +982,28 @@ impl StatusView {
             .collect();
         if let Some(action) = action {
             self.popup = None;
-            self.run_command(action.command, switches, cx);
+            match action.command {
+                transient::Command::CommitCreate => {
+                    self.open_editor(CommitMode::Create, switches, String::new(), cx)
+                }
+                transient::Command::CommitAmend => {
+                    let initial = self.head_message();
+                    self.open_editor(CommitMode::Amend, switches, initial, cx)
+                }
+                transient::Command::CommitReword => {
+                    let initial = self.head_message();
+                    self.open_editor(CommitMode::Reword, switches, initial, cx)
+                }
+                _ => self.run_command(action.command, switches, cx),
+            }
         }
+    }
+
+    fn head_message(&self) -> String {
+        self.repo
+            .as_ref()
+            .and_then(|r| r.head_message().ok())
+            .unwrap_or_default()
     }
 
     /// Run a transient command on the background executor, showing progress in
@@ -992,7 +1034,138 @@ impl StatusView {
         .detach();
     }
 
+    // --- Commit message editor -------------------------------------------
+
+    fn open_editor(&mut self, mode: CommitMode, args: Vec<String>, initial: String, cx: &mut Context<Self>) {
+        let cursor = initial.len();
+        self.editor = Some(EditorState {
+            mode,
+            args,
+            text: initial,
+            cursor,
+        });
+        cx.notify();
+    }
+
+    fn handle_editor_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        let key = keystroke.key.as_str();
+        let mods = &keystroke.modifiers;
+
+        // Cmd/Ctrl+Enter commits; Esc cancels.
+        if key == "enter" && (mods.platform || mods.control) {
+            return self.submit_editor(cx);
+        }
+        match key {
+            "escape" => {
+                self.editor = None;
+                cx.notify();
+            }
+            "enter" => self.editor_insert("\n", cx),
+            "backspace" => self.editor_backspace(cx),
+            "left" => self.editor_move(false, cx),
+            "right" => self.editor_move(true, cx),
+            _ => {
+                // Insert the typed character, but ignore chord keys (cmd/ctrl).
+                if !mods.platform && !mods.control && !mods.function {
+                    if let Some(ch) = keystroke.key_char.clone() {
+                        self.editor_insert(&ch, cx);
+                    }
+                }
+            }
+        }
+    }
+
+    fn editor_insert(&mut self, s: &str, cx: &mut Context<Self>) {
+        if let Some(ed) = self.editor.as_mut() {
+            ed.text.insert_str(ed.cursor, s);
+            ed.cursor += s.len();
+            cx.notify();
+        }
+    }
+
+    fn editor_backspace(&mut self, cx: &mut Context<Self>) {
+        if let Some(ed) = self.editor.as_mut() {
+            if ed.cursor > 0 {
+                let prev = ed.text[..ed.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                ed.text.replace_range(prev..ed.cursor, "");
+                ed.cursor = prev;
+                cx.notify();
+            }
+        }
+    }
+
+    fn editor_move(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(ed) = self.editor.as_mut() {
+            if forward {
+                if ed.cursor < ed.text.len() {
+                    ed.cursor = ed.text[ed.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| ed.cursor + i)
+                        .unwrap_or(ed.text.len());
+                }
+            } else if ed.cursor > 0 {
+                ed.cursor = ed.text[..ed.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+            }
+            cx.notify();
+        }
+    }
+
+    fn submit_editor(&mut self, cx: &mut Context<Self>) {
+        let empty = self
+            .editor
+            .as_ref()
+            .map(|e| e.text.trim().is_empty())
+            .unwrap_or(true);
+        if empty {
+            self.status_message = Some("Commit message is empty".to_string());
+            cx.notify();
+            return;
+        }
+        let ed = self.editor.take().unwrap();
+        self.run_commit(ed.text, ed.mode, ed.args, cx);
+    }
+
+    fn run_commit(&mut self, message: String, mode: CommitMode, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Committing…".to_string());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.commit(&message, mode, &args) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.status_message = Some(match result {
+                    Ok(msg) => last_line(&msg),
+                    Err(e) => format!("error: {e}"),
+                });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // The commit editor captures all keys while open.
+        if self.editor.is_some() {
+            self.handle_editor_key(&event.keystroke, cx);
+            return;
+        }
+
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
 
@@ -1088,6 +1261,8 @@ impl StatusView {
             "u" if shift => return self.run_action(Action::UnstageAll, cx),
             "u" => return self.act(Op::Unstage, cx),
             "x" => return self.act(Op::Discard, cx),
+            // Commit transient.
+            "c" => return self.open_transient(transient::commit_transient(), cx),
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
             "p" => return self.open_transient(transient::push_transient(), cx),
             "f" if shift => return self.open_transient(transient::pull_transient(), cx),
@@ -1208,6 +1383,52 @@ impl StatusView {
         panel
     }
 
+    /// Render the commit message editor: a header, the editable text with a
+    /// caret, all filling the window.
+    fn render_editor(&self, ed: &EditorState) -> gpui::Div {
+        let title = match ed.mode {
+            CommitMode::Create => "Commit message",
+            CommitMode::Amend => "Amend commit",
+            CommitMode::Reword => "Reword commit",
+        };
+
+        // Caret position as (row, byte column within the row).
+        let before = &ed.text[..ed.cursor];
+        let caret_row = before.matches('\n').count();
+        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let caret_col = ed.cursor - line_start;
+
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .w_full()
+            .p_3()
+            .child(
+                div()
+                    .text_color(theme::section())
+                    .child(SharedString::from(format!(
+                        "{title}    ⌘↵ commit · esc cancel"
+                    ))),
+            )
+            .child(div().h(px(8.0)));
+
+        for (i, line) in ed.text.split('\n').enumerate() {
+            let row = div().h(px(18.0)).flex();
+            let row = if i == caret_row {
+                let split = caret_col.min(line.len());
+                let (before_caret, after_caret) = line.split_at(split);
+                row.child(SharedString::from(before_caret.to_string()))
+                    .child(div().w(px(2.0)).h(px(15.0)).bg(theme::fg()))
+                    .child(SharedString::from(after_caret.to_string()))
+            } else {
+                row.child(SharedString::from(line.to_string()))
+            };
+            col = col.child(row);
+        }
+        col
+    }
+
     fn render_row(&self, ix: usize) -> AnyElement {
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
@@ -1292,20 +1513,26 @@ impl Render for StatusView {
             .text_size(px(13.0))
             .font_family("Menlo")
             .flex()
-            .flex_col()
-            // The list takes the flexible space; the status bar (added below)
-            // sits beneath it, so showing the bar never shifts content down.
-            .child(
-                uniform_list("rows", count, move |range, _window, cx| {
-                    let this = view.read(cx);
-                    range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
-                })
-                .track_scroll(self.scroll.clone())
-                .w_full()
-                .flex_grow()
-                .py_2()
-                .px_2(),
-            );
+            .flex_col();
+
+        // The commit editor takes over the whole window when open.
+        if let Some(ed) = &self.editor {
+            return root.child(self.render_editor(ed));
+        }
+
+        // The list takes the flexible space; the status bar (added below)
+        // sits beneath it, so showing the bar never shifts content down.
+        root = root.child(
+            uniform_list("rows", count, move |range, _window, cx| {
+                let this = view.read(cx);
+                range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
+            })
+            .track_scroll(self.scroll.clone())
+            .w_full()
+            .flex_grow()
+            .py_2()
+            .px_2(),
+        );
 
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
@@ -1383,6 +1610,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         Push | PushSetUpstream => "Pushing",
         Pull => "Pulling",
         Fetch | FetchAll => "Fetching",
+        CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
     }
 }
 
