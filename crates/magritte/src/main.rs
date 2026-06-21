@@ -33,6 +33,52 @@ impl TransientState {
     }
 }
 
+/// A bottom popup overlay: a command transient or the help/dispatch menu.
+enum Popup {
+    Transient(TransientState),
+    Help,
+}
+
+/// A keybinding reference group for the help popup.
+struct HelpGroup {
+    title: &'static str,
+    entries: &'static [(&'static str, &'static str)],
+}
+
+const HELP: &[HelpGroup] = &[
+    HelpGroup {
+        title: "Navigation",
+        entries: &[
+            ("j / k", "move up / down"),
+            ("gj / gk", "next / previous section"),
+            ("gg / G", "top / bottom"),
+            ("TAB", "fold / unfold"),
+            ("gr", "refresh"),
+        ],
+    },
+    HelpGroup {
+        title: "Selecting",
+        entries: &[("v / V", "visual line selection"), ("esc", "cancel selection")],
+    },
+    HelpGroup {
+        title: "Staging",
+        entries: &[
+            ("s / u", "stage / unstage at point"),
+            ("S / U", "stage / unstage all"),
+            ("x", "discard (with confirm)"),
+        ],
+    },
+    HelpGroup {
+        title: "Commands",
+        entries: &[
+            ("P", "push"),
+            ("F", "pull"),
+            ("f", "fetch"),
+            ("?", "this help"),
+        ],
+    },
+];
+
 mod theme {
     use gpui::{rgb, Rgba};
     pub fn bg() -> Rgba {
@@ -265,8 +311,8 @@ struct StatusView {
     visual: Option<usize>,
     generation: u64,
     pending_g: bool,
-    /// An open transient popup (push/pull/fetch/…), or `None`.
-    transient: Option<TransientState>,
+    /// An open bottom popup (command transient or help menu), or `None`.
+    popup: Option<Popup>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -302,7 +348,7 @@ impl StatusView {
             visual: None,
             generation: 0,
             pending_g: false,
-            transient: None,
+            popup: None,
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
@@ -872,20 +918,44 @@ impl StatusView {
         .detach();
     }
 
-    // --- Transients (push/pull/fetch popups) ------------------------------
+    // --- Popups (transients + help) --------------------------------------
 
     fn open_transient(&mut self, def: Transient, cx: &mut Context<Self>) {
-        self.transient = Some(TransientState::new(def));
+        self.popup = Some(Popup::Transient(TransientState::new(def)));
         cx.notify();
+    }
+
+    /// Route a key to whichever popup is open.
+    fn handle_popup_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        if matches!(self.popup, Some(Popup::Help)) {
+            self.handle_help_key(key, cx);
+        } else {
+            self.handle_transient_key(key, cx);
+        }
+    }
+
+    /// In the help/dispatch menu, the sub-transient keys open their popups;
+    /// esc/q/? close it; other keys are ignored.
+    fn handle_help_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        match key {
+            "escape" | "q" | "?" | "/" => {
+                self.popup = None;
+                cx.notify();
+            }
+            "P" => self.open_transient(transient::push_transient(), cx),
+            "F" => self.open_transient(transient::pull_transient(), cx),
+            "f" => self.open_transient(transient::fetch_transient(), cx),
+            _ => {}
+        }
     }
 
     fn handle_transient_key(&mut self, key: &str, cx: &mut Context<Self>) {
         if key == "escape" || key == "q" {
-            self.transient = None;
+            self.popup = None;
             cx.notify();
             return;
         }
-        let Some(state) = self.transient.as_mut() else {
+        let Some(Popup::Transient(state)) = self.popup.as_mut() else {
             return;
         };
 
@@ -913,7 +983,7 @@ impl StatusView {
             .map(|s| s.arg.to_string())
             .collect();
         if let Some(action) = action {
-            self.transient = None;
+            self.popup = None;
             self.run_command(action.command, switches, cx);
         }
     }
@@ -950,12 +1020,12 @@ impl StatusView {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
 
-        // An open transient popup captures all keys.
-        if self.transient.is_some() {
-            // Distinguish F (pull action) from f (fetch); transient keys are
-            // case-sensitive, so reconstruct the cased key.
+        // An open popup captures all keys.
+        if self.popup.is_some() {
+            // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
+            // reconstruct the cased key from the shift modifier.
             let cased = if shift { key.to_uppercase() } else { key.clone() };
-            self.handle_transient_key(&cased, cx);
+            self.handle_popup_key(&cased, cx);
             return;
         }
 
@@ -1024,6 +1094,17 @@ impl StatusView {
             "p" if shift => return self.open_transient(transient::push_transient(), cx),
             "f" if shift => return self.open_transient(transient::pull_transient(), cx),
             "f" => return self.open_transient(transient::fetch_transient(), cx),
+            // Help / dispatch menu. "?" may arrive as "/" + shift.
+            "?" => {
+                self.popup = Some(Popup::Help);
+                cx.notify();
+                return;
+            }
+            "/" if shift => {
+                self.popup = Some(Popup::Help);
+                cx.notify();
+                return;
+            }
             _ => return,
         }
         self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
@@ -1081,6 +1162,49 @@ impl StatusView {
                         .child(SharedString::from(a.description)),
                 };
                 panel = panel.child(row);
+            }
+        }
+        panel
+    }
+
+    /// Render the help / dispatch menu as a bottom panel.
+    fn render_help(&self) -> gpui::Div {
+        let mut panel = div()
+            .w_full()
+            .border_t_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .py_1()
+            .px_2()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_color(theme::section())
+                    .child(SharedString::from("Help   (esc to close)")),
+            );
+
+        for group in HELP {
+            panel = panel.child(
+                div()
+                    .mt_1()
+                    .text_color(theme::dim())
+                    .child(SharedString::from(group.title)),
+            );
+            for (keys, desc) in group.entries {
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .pl_2()
+                        .child(
+                            div()
+                                .min_w(px(72.0))
+                                .text_color(theme::modified())
+                                .child(SharedString::from(*keys)),
+                        )
+                        .child(SharedString::from(*desc)),
+                );
             }
         }
         panel
@@ -1185,8 +1309,11 @@ impl Render for StatusView {
                 .px_2(),
             );
 
-        if let Some(state) = &self.transient {
-            root = root.child(self.render_transient(state));
+        if let Some(popup) = &self.popup {
+            root = root.child(match popup {
+                Popup::Transient(state) => self.render_transient(state),
+                Popup::Help => self.render_help(),
+            });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(status_bar(prompt.clone(), theme::banner(), theme::modified()));
         } else if self.visual.is_some() {
