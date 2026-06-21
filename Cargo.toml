@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/magritte-core"]
+members = ["crates/magritte-core", "crates/magritte"]
 
 [workspace.package]
 edition = "2021"
