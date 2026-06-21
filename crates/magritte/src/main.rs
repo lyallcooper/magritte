@@ -11,23 +11,25 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    div, px, uniform_list, AnyElement, App, AppContext, Context, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, Keystroke, ParentElement, Render, SharedString, Styled,
+    div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
     TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
+use gpui::Subscription;
+use gpui_component::input::{Input, InputEvent, InputState};
 use magritte_core::transient::{self, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
 };
 
-/// State of the in-app commit message editor.
-struct EditorState {
+/// The in-app commit message editor, backed by gpui-component's multi-line
+/// Input. We keep the commit context (mode + switches) alongside it.
+struct CommitEditor {
+    state: Entity<InputState>,
     mode: CommitMode,
-    /// Active transient switches to pass to `git commit`.
     args: Vec<String>,
-    text: String,
-    /// Cursor as a byte offset into `text` (kept on a char boundary).
-    cursor: usize,
+    /// Kept alive so the PressEnter subscription stays active.
+    _sub: Subscription,
 }
 
 /// An open transient popup and the switches toggled on within it.
@@ -330,7 +332,7 @@ struct StatusView {
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The commit message editor, when open (takes over the window).
-    editor: Option<EditorState>,
+    editor: Option<CommitEditor>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -944,7 +946,7 @@ impl StatusView {
         cx.notify();
     }
 
-    fn handle_transient_key(&mut self, key: &str, cx: &mut Context<Self>) {
+    fn handle_transient_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         if key == "escape" || key == "q" {
             self.popup = None;
             cx.notify();
@@ -984,15 +986,15 @@ impl StatusView {
             self.popup = None;
             match action.command {
                 transient::Command::CommitCreate => {
-                    self.open_editor(CommitMode::Create, switches, String::new(), cx)
+                    self.open_editor(CommitMode::Create, switches, String::new(), window, cx)
                 }
                 transient::Command::CommitAmend => {
                     let initial = self.head_message();
-                    self.open_editor(CommitMode::Amend, switches, initial, cx)
+                    self.open_editor(CommitMode::Amend, switches, initial, window, cx)
                 }
                 transient::Command::CommitReword => {
                     let initial = self.head_message();
-                    self.open_editor(CommitMode::Reword, switches, initial, cx)
+                    self.open_editor(CommitMode::Reword, switches, initial, window, cx)
                 }
                 _ => self.run_command(action.command, switches, cx),
             }
@@ -1036,102 +1038,71 @@ impl StatusView {
 
     // --- Commit message editor -------------------------------------------
 
-    fn open_editor(&mut self, mode: CommitMode, args: Vec<String>, initial: String, cx: &mut Context<Self>) {
-        let cursor = initial.len();
-        self.editor = Some(EditorState {
+    fn open_editor(
+        &mut self,
+        mode: CommitMode,
+        args: Vec<String>,
+        initial: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // submit_on_enter: Enter (and Cmd+Enter) submit via PressEnter;
+        // Shift+Enter inserts a newline.
+        let state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .submit_on_enter(true)
+                .default_value(initial)
+        });
+        // Commit when the Input reports Enter (without Shift).
+        let sub = cx.subscribe_in(&state, window, |this, _state, ev: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { shift: false, .. } = ev {
+                this.submit_editor(window, cx);
+            }
+        });
+        // Focus the input so typing goes straight into it.
+        state.read(cx).focus_handle(cx).focus(window, cx);
+        self.editor = Some(CommitEditor {
+            state,
             mode,
             args,
-            text: initial,
-            cursor,
+            _sub: sub,
         });
         cx.notify();
     }
 
-    fn handle_editor_key(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
-        let key = keystroke.key.as_str();
-        let mods = &keystroke.modifiers;
-
-        // Cmd/Ctrl+Enter commits; Esc cancels.
-        if key == "enter" && (mods.platform || mods.control) {
-            return self.submit_editor(cx);
+    /// Capture-phase handler: Escape cancels the editor. (Enter is consumed by
+    /// the Input as a bound action and never reaches here — commit is driven by
+    /// the PressEnter subscription instead.)
+    fn on_capture_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor.is_none() {
+            return;
         }
-        match key {
-            "escape" => {
-                self.editor = None;
-                cx.notify();
-            }
-            "enter" => self.editor_insert("\n", cx),
-            "backspace" => self.editor_backspace(cx),
-            "left" => self.editor_move(false, cx),
-            "right" => self.editor_move(true, cx),
-            _ => {
-                // Insert the typed character, but ignore chord keys (cmd/ctrl).
-                if !mods.platform && !mods.control && !mods.function {
-                    if let Some(ch) = keystroke.key_char.clone() {
-                        self.editor_insert(&ch, cx);
-                    }
-                }
-            }
+        if event.keystroke.key == "escape" {
+            cx.stop_propagation();
+            self.cancel_editor(window, cx);
         }
     }
 
-    fn editor_insert(&mut self, s: &str, cx: &mut Context<Self>) {
-        if let Some(ed) = self.editor.as_mut() {
-            ed.text.insert_str(ed.cursor, s);
-            ed.cursor += s.len();
-            cx.notify();
-        }
+    fn cancel_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor = None;
+        self.focus.focus(window, cx);
+        cx.notify();
     }
 
-    fn editor_backspace(&mut self, cx: &mut Context<Self>) {
-        if let Some(ed) = self.editor.as_mut() {
-            if ed.cursor > 0 {
-                let prev = ed.text[..ed.cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                ed.text.replace_range(prev..ed.cursor, "");
-                ed.cursor = prev;
-                cx.notify();
-            }
-        }
-    }
-
-    fn editor_move(&mut self, forward: bool, cx: &mut Context<Self>) {
-        if let Some(ed) = self.editor.as_mut() {
-            if forward {
-                if ed.cursor < ed.text.len() {
-                    ed.cursor = ed.text[ed.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| ed.cursor + i)
-                        .unwrap_or(ed.text.len());
-                }
-            } else if ed.cursor > 0 {
-                ed.cursor = ed.text[..ed.cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-            }
-            cx.notify();
-        }
-    }
-
-    fn submit_editor(&mut self, cx: &mut Context<Self>) {
-        let empty = self
-            .editor
-            .as_ref()
-            .map(|e| e.text.trim().is_empty())
-            .unwrap_or(true);
-        if empty {
+    fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ed) = self.editor.as_ref() else {
+            return;
+        };
+        let text = ed.state.read(cx).value().to_string();
+        if text.trim().is_empty() {
             self.status_message = Some("Commit message is empty".to_string());
             cx.notify();
             return;
         }
         let ed = self.editor.take().unwrap();
-        self.run_commit(ed.text, ed.mode, ed.args, cx);
+        self.focus.focus(window, cx);
+        self.run_commit(text, ed.mode, ed.args, cx);
     }
 
     fn run_commit(&mut self, message: String, mode: CommitMode, args: Vec<String>, cx: &mut Context<Self>) {
@@ -1159,10 +1130,10 @@ impl StatusView {
         .detach();
     }
 
-    fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // The commit editor captures all keys while open.
+    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // While the editor is open the focused Input handles keys; commit/cancel
+        // are caught in the capture phase (on_capture_key).
         if self.editor.is_some() {
-            self.handle_editor_key(&event.keystroke, cx);
             return;
         }
 
@@ -1175,7 +1146,7 @@ impl StatusView {
 
         // A command transient is modal — it captures every key.
         if matches!(self.popup, Some(Popup::Transient(_))) {
-            self.handle_transient_key(&cased, cx);
+            self.handle_transient_key(&cased, window, cx);
             return;
         }
 
@@ -1385,48 +1356,28 @@ impl StatusView {
 
     /// Render the commit message editor: a header, the editable text with a
     /// caret, all filling the window.
-    fn render_editor(&self, ed: &EditorState) -> gpui::Div {
+    fn render_editor(&self, ed: &CommitEditor) -> gpui::Div {
         let title = match ed.mode {
             CommitMode::Create => "Commit message",
             CommitMode::Amend => "Amend commit",
             CommitMode::Reword => "Reword commit",
         };
 
-        // Caret position as (row, byte column within the row).
-        let before = &ed.text[..ed.cursor];
-        let caret_row = before.matches('\n').count();
-        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let caret_col = ed.cursor - line_start;
-
-        let mut col = div()
+        div()
             .flex()
             .flex_col()
             .flex_grow(1.0)
             .w_full()
             .p_3()
+            .gap_2()
             .child(
                 div()
                     .text_color(theme::section())
                     .child(SharedString::from(format!(
-                        "{title}    ⌘↵ commit · esc cancel"
+                        "{title}    ↵ commit · ⇧↵ newline · esc cancel"
                     ))),
             )
-            .child(div().h(px(8.0)));
-
-        for (i, line) in ed.text.split('\n').enumerate() {
-            let row = div().h(px(18.0)).flex();
-            let row = if i == caret_row {
-                let split = caret_col.min(line.len());
-                let (before_caret, after_caret) = line.split_at(split);
-                row.child(SharedString::from(before_caret.to_string()))
-                    .child(div().w(px(2.0)).h(px(15.0)).bg(theme::fg()))
-                    .child(SharedString::from(after_caret.to_string()))
-            } else {
-                row.child(SharedString::from(line.to_string()))
-            };
-            col = col.child(row);
-        }
-        col
+            .child(Input::new(&ed.state))
     }
 
     fn render_row(&self, ix: usize) -> AnyElement {
@@ -1506,6 +1457,7 @@ impl Render for StatusView {
 
         let mut root = div()
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .bg(theme::bg())
