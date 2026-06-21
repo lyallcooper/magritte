@@ -18,6 +18,14 @@ pub enum Command {
     Pull,
     Fetch,
     FetchAll,
+    /// New commit (needs a message — handled via the editor, not `execute`).
+    CommitCreate,
+    /// Amend HEAD (needs a message).
+    CommitAmend,
+    /// Reword HEAD (needs a message).
+    CommitReword,
+    /// Amend HEAD with staged changes, keeping its message.
+    CommitExtend,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -114,6 +122,67 @@ pub fn push_transient() -> Transient {
     }
 }
 
+pub fn commit_transient() -> Transient {
+    Transient {
+        title: "Commit",
+        groups: vec![
+            Group {
+                title: "Arguments",
+                suffixes: vec![
+                    Suffix::Switch(Switch {
+                        key: "-a",
+                        arg: "--all",
+                        description: "Stage all modified and deleted files",
+                    }),
+                    Suffix::Switch(Switch {
+                        key: "-e",
+                        arg: "--allow-empty",
+                        description: "Allow empty commit",
+                    }),
+                    Suffix::Switch(Switch {
+                        key: "-n",
+                        arg: "--no-verify",
+                        description: "Disable hooks",
+                    }),
+                    Suffix::Switch(Switch {
+                        key: "-s",
+                        arg: "--signoff",
+                        description: "Add Signed-off-by line",
+                    }),
+                ],
+            },
+            Group {
+                title: "Create",
+                suffixes: vec![Suffix::Action(Action {
+                    key: "c",
+                    description: "Commit",
+                    command: Command::CommitCreate,
+                })],
+            },
+            Group {
+                title: "Edit HEAD",
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "e",
+                        description: "Extend (keep message)",
+                        command: Command::CommitExtend,
+                    }),
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "Amend",
+                        command: Command::CommitAmend,
+                    }),
+                    Suffix::Action(Action {
+                        key: "w",
+                        description: "Reword (message only)",
+                        command: Command::CommitReword,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
 pub fn pull_transient() -> Transient {
     Transient {
         title: "Pull",
@@ -191,6 +260,14 @@ impl Repo {
             Command::Pull => vec!["pull".into()],
             Command::Fetch => vec!["fetch".into()],
             Command::FetchAll => vec!["fetch".into(), "--all".into()],
+            Command::CommitExtend => {
+                vec!["commit".into(), "--amend".into(), "--no-edit".into()]
+            }
+            Command::CommitCreate | Command::CommitAmend | Command::CommitReword => {
+                return Err(Error::Message(
+                    "commit requires a message (use the editor)".into(),
+                ));
+            }
         };
         args.extend(switches.iter().cloned());
 
