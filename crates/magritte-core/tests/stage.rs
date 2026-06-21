@@ -239,6 +239,46 @@ fn discard_staged_lines_subset() {
 }
 
 #[test]
+fn stage_lines_across_two_hunks() {
+    let t = TestRepo::new();
+    let original: String = (1..=20).map(|n| format!("{n}\n")).collect();
+    t.write("file.txt", &original);
+    t.commit_all("init");
+    // Change line 2 and line 18 -> far apart -> two separate hunks.
+    let mut lines: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
+    lines[1] = "TWO".to_string();
+    lines[17] = "EIGHTEEN".to_string();
+    t.write("file.txt", &format!("{}\n", lines.join("\n")));
+
+    let repo = open(&t);
+    let diff = find(&repo, DiffSource::Unstaged, "file.txt").unwrap();
+    assert_eq!(diff.hunks.len(), 2, "expected two separate hunks");
+
+    // Select the change in each hunk and stage both in one region apply.
+    let sel0 = vec![
+        line_index(&diff.hunks[0], LineKind::Removed, "2"),
+        line_index(&diff.hunks[0], LineKind::Added, "TWO"),
+    ];
+    let sel1 = vec![
+        line_index(&diff.hunks[1], LineKind::Removed, "18"),
+        line_index(&diff.hunks[1], LineKind::Added, "EIGHTEEN"),
+    ];
+    repo.stage_file_lines(&diff, &[(0, sel0), (1, sel1)]).unwrap();
+
+    // Both changes are now staged, and nothing remains unstaged.
+    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt")
+        .unwrap()
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.content.clone())
+        .collect();
+    assert_eq!(staged_adds, vec!["TWO", "EIGHTEEN"]);
+    assert!(find(&repo, DiffSource::Unstaged, "file.txt").is_none());
+}
+
+#[test]
 fn discard_untracked_file_removes_it() {
     let t = TestRepo::new();
     t.write("README.md", "x\n");
