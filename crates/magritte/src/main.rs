@@ -935,17 +935,16 @@ impl StatusView {
     }
 
     /// In the help/dispatch menu, the sub-transient keys open their popups;
-    /// esc/q/? close it; other keys are ignored.
+    /// any other key just dismisses it.
     fn handle_help_key(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
-            "escape" | "q" | "?" | "/" => {
-                self.popup = None;
-                cx.notify();
-            }
             "P" => self.open_transient(transient::push_transient(), cx),
             "F" => self.open_transient(transient::pull_transient(), cx),
             "f" => self.open_transient(transient::fetch_transient(), cx),
-            _ => {}
+            _ => {
+                self.popup = None;
+                cx.notify();
+            }
         }
     }
 
