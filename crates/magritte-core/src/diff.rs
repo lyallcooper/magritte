@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::repo::Repo;
 
 /// Which view of the changes to diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiffSource {
     /// Working tree vs. index (`git diff`).
     Unstaged,
