@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::error::{Error, Result};
 
@@ -84,6 +85,56 @@ impl Repo {
             .output()
             .map_err(|source| Error::Spawn { source })?;
 
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        if !output.status.success() {
+            return Err(Error::Git {
+                args: arg_vec,
+                status: output.status.code(),
+                stderr,
+            });
+        }
+
+        Ok(GitOutput {
+            stdout: output.stdout,
+            stderr,
+        })
+    }
+
+    /// Like [`run`](Self::run) but feeds `input` to git's stdin. Used to pipe
+    /// patches to `git apply`.
+    pub fn run_with_input<I, S>(&self, args: I, input: &[u8]) -> Result<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let arg_vec: Vec<String> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect();
+
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.workdir)
+            .args(["-c", "core.quotepath=false"])
+            .args(&arg_vec)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| Error::Spawn { source })?;
+
+        // Write the whole input, then drop the handle to signal EOF.
+        {
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            stdin
+                .write_all(input)
+                .map_err(|source| Error::Spawn { source })?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|source| Error::Spawn { source })?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         if !output.status.success() {

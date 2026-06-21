@@ -8,9 +8,11 @@
 pub mod diff;
 pub mod error;
 pub mod repo;
+pub mod stage;
 pub mod status;
 
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use repo::{GitOutput, Repo};
+pub use stage::ApplyTarget;
 pub use status::{Change, EntryKind, FileEntry, HeadInfo, Status};

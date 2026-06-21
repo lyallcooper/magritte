@@ -1,0 +1,212 @@
+//! Staging operations: file-, hunk-, and line-level stage / unstage / discard.
+//!
+//! File-level operations use plain git commands. Hunk- and line-level
+//! operations synthesize a patch from the [`FileDiff`] model and feed it to
+//! `git apply`, which is how magit implements partial staging.
+//!
+//! The delicate part is building a patch for a *subset* of a hunk's changed
+//! lines. The rule depends on the direction the patch will be applied:
+//!
+//! * **Forward** (staging: `git apply --cached`) — the patch transforms the
+//!   index toward the working tree. Unselected `+` lines are *dropped* (we are
+//!   not adding them); unselected `-` lines become *context* (they must remain
+//!   in the index).
+//! * **Reverse** (unstaging or discarding: `git apply --reverse`) — the patch
+//!   is read backwards. Unselected `+` lines become *context* (they must be
+//!   preserved); unselected `-` lines are *dropped* (we are not restoring them).
+//!
+//! Context lines are always kept; the `\ No newline at end of file` marker is
+//! emitted only when the line it annotates was emitted.
+
+use crate::diff::{FileDiff, Hunk, LineKind};
+use crate::error::Result;
+use crate::repo::Repo;
+
+/// Where a patch is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyTarget {
+    /// The index (`git apply --cached`).
+    Index,
+    /// The working tree (`git apply`).
+    Worktree,
+}
+
+impl Repo {
+    // --- File-level -------------------------------------------------------
+
+    /// Stage all changes to `path` (including additions and deletions).
+    pub fn stage_file(&self, path: &str) -> Result<()> {
+        self.run(["add", "-A", "--", path])?;
+        Ok(())
+    }
+
+    /// Unstage `path`, resetting its index entry to HEAD.
+    pub fn unstage_file(&self, path: &str) -> Result<()> {
+        self.run(["reset", "-q", "--", path])?;
+        Ok(())
+    }
+
+    /// Discard unstaged changes to a tracked `path`, restoring it from the
+    /// index. **Destructive.**
+    pub fn discard_tracked_file(&self, path: &str) -> Result<()> {
+        self.run(["checkout", "--", path])?;
+        Ok(())
+    }
+
+    /// Remove an untracked `path` from the working tree. **Destructive.**
+    pub fn discard_untracked_file(&self, path: &str) -> Result<()> {
+        self.run(["clean", "-f", "-d", "-q", "--", path])?;
+        Ok(())
+    }
+
+    // --- Hunk-level -------------------------------------------------------
+
+    /// Stage an entire hunk into the index.
+    pub fn stage_hunk(&self, file: &FileDiff, hunk: &Hunk) -> Result<()> {
+        self.stage_lines(file, hunk, &all_change_indices(hunk))
+    }
+
+    /// Unstage an entire hunk from the index.
+    pub fn unstage_hunk(&self, file: &FileDiff, hunk: &Hunk) -> Result<()> {
+        self.unstage_lines(file, hunk, &all_change_indices(hunk))
+    }
+
+    /// Discard an entire hunk's changes from the working tree. **Destructive.**
+    pub fn discard_hunk(&self, file: &FileDiff, hunk: &Hunk) -> Result<()> {
+        self.discard_lines(file, hunk, &all_change_indices(hunk))
+    }
+
+    // --- Line-level -------------------------------------------------------
+    //
+    // `selected` holds indices into `hunk.lines` (Added/Removed lines) that the
+    // operation should act on.
+
+    /// Stage the selected changed lines of a hunk into the index.
+    pub fn stage_lines(&self, file: &FileDiff, hunk: &Hunk, selected: &[usize]) -> Result<()> {
+        let patch = build_patch(file, hunk, selected, false);
+        self.apply_patch(&patch, ApplyTarget::Index, false)
+    }
+
+    /// Unstage the selected changed lines of a hunk from the index.
+    pub fn unstage_lines(&self, file: &FileDiff, hunk: &Hunk, selected: &[usize]) -> Result<()> {
+        let patch = build_patch(file, hunk, selected, true);
+        self.apply_patch(&patch, ApplyTarget::Index, true)
+    }
+
+    /// Discard the selected changed lines of a hunk from the working tree.
+    /// **Destructive.**
+    pub fn discard_lines(&self, file: &FileDiff, hunk: &Hunk, selected: &[usize]) -> Result<()> {
+        let patch = build_patch(file, hunk, selected, true);
+        self.apply_patch(&patch, ApplyTarget::Worktree, true)
+    }
+
+    /// Apply a unidiff patch via `git apply`.
+    pub fn apply_patch(&self, patch: &str, target: ApplyTarget, reverse: bool) -> Result<()> {
+        let mut args: Vec<&str> = vec!["apply"];
+        if target == ApplyTarget::Index {
+            args.push("--cached");
+        }
+        if reverse {
+            args.push("--reverse");
+        }
+        // Let git infer hunk line counts from the patch body; our `build_patch`
+        // also computes them, but this is a cheap robustness margin.
+        args.push("--recount");
+        // git apply reads the patch from stdin when given no file arguments.
+        self.run_with_input(args, patch.as_bytes())?;
+        Ok(())
+    }
+}
+
+/// Indices of all changed (Added/Removed) lines in a hunk.
+fn all_change_indices(hunk: &Hunk) -> Vec<usize> {
+    hunk.lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| matches!(l.kind, LineKind::Added | LineKind::Removed))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Build a unidiff patch for the selected lines of a single hunk.
+///
+/// See the module docs for the forward/reverse selection rules. When `selected`
+/// contains every changed line this reproduces the original hunk verbatim.
+pub fn build_patch(file: &FileDiff, hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
+    let mut out = String::new();
+    for header in &file.header_lines {
+        out.push_str(header);
+        out.push('\n');
+    }
+
+    let mut body = String::new();
+    let mut old_count: u32 = 0;
+    let mut new_count: u32 = 0;
+    let mut prev_emitted = false;
+
+    let emit = |body: &mut String, sign: char, content: &str| {
+        body.push(sign);
+        body.push_str(content);
+        body.push('\n');
+    };
+
+    for (i, line) in hunk.lines.iter().enumerate() {
+        let is_selected = selected.contains(&i);
+        match line.kind {
+            LineKind::Context => {
+                emit(&mut body, ' ', &line.content);
+                old_count += 1;
+                new_count += 1;
+                prev_emitted = true;
+            }
+            LineKind::Added => {
+                if is_selected {
+                    emit(&mut body, '+', &line.content);
+                    new_count += 1;
+                    prev_emitted = true;
+                } else if reverse {
+                    // Preserve the line on both sides so the apply leaves it.
+                    emit(&mut body, ' ', &line.content);
+                    old_count += 1;
+                    new_count += 1;
+                    prev_emitted = true;
+                } else {
+                    prev_emitted = false; // forward: drop
+                }
+            }
+            LineKind::Removed => {
+                if is_selected {
+                    emit(&mut body, '-', &line.content);
+                    old_count += 1;
+                    prev_emitted = true;
+                } else if reverse {
+                    prev_emitted = false; // drop
+                } else {
+                    // forward: keep as context so the line stays in the index.
+                    emit(&mut body, ' ', &line.content);
+                    old_count += 1;
+                    new_count += 1;
+                    prev_emitted = true;
+                }
+            }
+            LineKind::NoNewline => {
+                if prev_emitted {
+                    body.push_str(&line.content);
+                    body.push('\n');
+                }
+            }
+        }
+    }
+
+    let heading = if hunk.section_heading.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", hunk.section_heading)
+    };
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@{}\n",
+        hunk.old_start, old_count, hunk.new_start, new_count, heading
+    ));
+    out.push_str(&body);
+    out
+}
