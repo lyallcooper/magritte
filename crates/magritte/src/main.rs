@@ -925,29 +925,6 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Route a key to whichever popup is open.
-    fn handle_popup_key(&mut self, key: &str, cx: &mut Context<Self>) {
-        if matches!(self.popup, Some(Popup::Help)) {
-            self.handle_help_key(key, cx);
-        } else {
-            self.handle_transient_key(key, cx);
-        }
-    }
-
-    /// In the help/dispatch menu, the sub-transient keys open their popups;
-    /// any other key just dismisses it.
-    fn handle_help_key(&mut self, key: &str, cx: &mut Context<Self>) {
-        match key {
-            "P" => self.open_transient(transient::push_transient(), cx),
-            "F" => self.open_transient(transient::pull_transient(), cx),
-            "f" => self.open_transient(transient::fetch_transient(), cx),
-            _ => {
-                self.popup = None;
-                cx.notify();
-            }
-        }
-    }
-
     fn handle_transient_key(&mut self, key: &str, cx: &mut Context<Self>) {
         if key == "escape" || key == "q" {
             self.popup = None;
@@ -1019,13 +996,35 @@ impl StatusView {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
 
-        // An open popup captures all keys.
-        if self.popup.is_some() {
-            // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
-            // reconstruct the cased key from the shift modifier.
-            let cased = if shift { key.to_uppercase() } else { key.clone() };
-            self.handle_popup_key(&cased, cx);
+        // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
+        // reconstruct the cased key from the shift modifier.
+        let cased = if shift { key.to_uppercase() } else { key.clone() };
+
+        // A command transient is modal — it captures every key.
+        if matches!(self.popup, Some(Popup::Transient(_))) {
+            self.handle_transient_key(&cased, cx);
             return;
+        }
+
+        // The help/dispatch popup is a transparent cheatsheet: the sub-transient
+        // keys open their popups, esc/q/? close it, and any other key dismisses
+        // it and then performs its normal action (falls through below).
+        if matches!(self.popup, Some(Popup::Help)) {
+            match cased.as_str() {
+                "P" => return self.open_transient(transient::push_transient(), cx),
+                "F" => return self.open_transient(transient::pull_transient(), cx),
+                "f" => return self.open_transient(transient::fetch_transient(), cx),
+                "escape" | "q" | "?" | "/" => {
+                    self.popup = None;
+                    cx.notify();
+                    return;
+                }
+                _ => {
+                    self.popup = None;
+                    cx.notify();
+                    // fall through to normal handling of this key
+                }
+            }
         }
 
         // A pending discard confirmation captures the next key.
