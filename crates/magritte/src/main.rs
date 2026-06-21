@@ -46,6 +46,9 @@ mod theme {
     pub fn modified() -> Rgba {
         rgb(0xe0af68)
     }
+    pub fn banner() -> Rgba {
+        rgb(0x3a2f1a)
+    }
 }
 
 /// Which top-level section a row belongs to. Used as a stable fold key.
@@ -63,6 +66,79 @@ enum FoldKey {
     File(DiffSource, String),
 }
 
+/// The staging verb a keypress requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+/// A file identified by its path and which section it appears in.
+#[derive(Debug, Clone)]
+struct FileRef {
+    section: SectionId,
+    path: String,
+}
+
+/// What the row at point represents, for "act on point" staging.
+#[derive(Debug, Clone)]
+enum Target {
+    File(FileRef),
+    Hunk { file: FileRef, hunk: usize },
+    Line { file: FileRef, hunk: usize, line: usize },
+}
+
+/// A resolved git mutation, runnable on the background executor.
+enum Action {
+    StageFile(String),
+    UnstageFile(String),
+    DiscardTracked(String),
+    DiscardUntracked(String),
+    StageAll,
+    UnstageAll,
+    StageHunk(FileDiff, usize),
+    UnstageHunk(FileDiff, usize),
+    DiscardHunk(FileDiff, usize),
+    StageLines(FileDiff, usize, Vec<usize>),
+    UnstageLines(FileDiff, usize, Vec<usize>),
+    DiscardLines(FileDiff, usize, Vec<usize>),
+}
+
+impl Action {
+    fn run(self, repo: &Repo) -> Result<(), String> {
+        let hunk = |file: &FileDiff, ix: usize| -> Result<(), String> {
+            file.hunks
+                .get(ix)
+                .ok_or_else(|| "hunk no longer present".to_string())
+                .map(|_| ())
+        };
+        let to_err = |r: magritte_core::Result<()>| r.map_err(|e| e.to_string());
+        match self {
+            Action::StageFile(p) => to_err(repo.stage_file(&p)),
+            Action::UnstageFile(p) => to_err(repo.unstage_file(&p)),
+            Action::DiscardTracked(p) => to_err(repo.discard_tracked_file(&p)),
+            Action::DiscardUntracked(p) => to_err(repo.discard_untracked_file(&p)),
+            Action::StageAll => to_err(repo.stage_all()),
+            Action::UnstageAll => to_err(repo.unstage_all()),
+            Action::StageHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.stage_hunk(&f, &f.hunks[h]))),
+            Action::UnstageHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.unstage_hunk(&f, &f.hunks[h]))),
+            Action::DiscardHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.discard_hunk(&f, &f.hunks[h]))),
+            Action::StageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.stage_lines(&f, &f.hunks[h], &l))),
+            Action::UnstageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.unstage_lines(&f, &f.hunks[h], &l))),
+            Action::DiscardLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_lines(&f, &f.hunks[h], &l))),
+        }
+    }
+}
+
+fn section_source(section: SectionId) -> Option<DiffSource> {
+    match section {
+        SectionId::Untracked => None,
+        SectionId::Unstaged => Some(DiffSource::Unstaged),
+        SectionId::Staged => Some(DiffSource::Staged),
+    }
+}
+
 /// Async state of a single file's diff.
 enum DiffState {
     Loading,
@@ -78,6 +154,8 @@ struct Row {
     selectable: bool,
     /// Present on foldable rows (sections, files); `TAB` toggles this key.
     fold: Option<FoldKey>,
+    /// What this row represents for staging "at point" (s/u/x).
+    target: Option<Target>,
     kind: RowKind,
 }
 
@@ -118,6 +196,8 @@ struct StatusView {
     selected: usize,
     generation: u64,
     pending_g: bool,
+    /// A pending destructive confirmation: (prompt, action awaiting `y`).
+    confirm: Option<(String, Action)>,
     focus: FocusHandle,
     focused_once: bool,
     scroll: UniformListScrollHandle,
@@ -148,6 +228,7 @@ impl StatusView {
             selected: 0,
             generation: 0,
             pending_g: false,
+            confirm: None,
             focus: cx.focus_handle(),
             focused_once: false,
             scroll: UniformListScrollHandle::new(),
@@ -323,6 +404,7 @@ impl StatusView {
             indent: 0,
             selectable: true,
             fold: Some(FoldKey::Section(id)),
+            target: None,
             kind: RowKind::Section {
                 title: title.to_string(),
                 count: entries.len(),
@@ -339,11 +421,16 @@ impl StatusView {
                 Some(orig) => format!("{orig} → {}", entry.path),
                 None => entry.path.clone(),
             };
+            let file_ref = FileRef {
+                section: id,
+                path: path.clone(),
+            };
             let file_expanded = source.map(|s| self.expanded.contains(&FoldKey::File(s, path.clone())));
             rows.push(Row {
                 indent: 1,
                 selectable: true,
                 fold: source.map(|s| FoldKey::File(s, path.clone())),
+                target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
                     code: status_code(entry),
                     code_color: code_color(entry),
@@ -353,29 +440,33 @@ impl StatusView {
             });
 
             if let (Some(src), Some(true)) = (source, file_expanded) {
-                self.push_file_body(rows, src, &path);
+                self.push_file_body(rows, src, &file_ref);
             }
         }
     }
 
-    fn push_file_body(&self, rows: &mut Vec<Row>, source: DiffSource, path: &str) {
-        match self.diffs.get(&(source, path.to_string())) {
+    fn push_file_body(&self, rows: &mut Vec<Row>, source: DiffSource, file: &FileRef) {
+        match self.diffs.get(&(source, file.path.clone())) {
             Some(DiffState::Loaded(diff)) => {
                 if diff.is_binary {
                     rows.push(message("Binary file"));
                 } else if diff.hunks.is_empty() {
                     rows.push(message("(no textual changes)"));
                 }
-                for hunk in &diff.hunks {
+                for (hunk_ix, hunk) in diff.hunks.iter().enumerate() {
                     rows.push(Row {
                         indent: 2,
                         selectable: true,
                         fold: None,
+                        target: Some(Target::Hunk {
+                            file: file.clone(),
+                            hunk: hunk_ix,
+                        }),
                         kind: RowKind::HunkHeader {
                             text: hunk_header_text(hunk),
                         },
                     });
-                    for line in &hunk.lines {
+                    for (line_ix, line) in hunk.lines.iter().enumerate() {
                         let (sign, color) = match line.kind {
                             LineKind::Added => ('+', theme::added()),
                             LineKind::Removed => ('-', theme::removed()),
@@ -391,6 +482,11 @@ impl StatusView {
                             indent: 2,
                             selectable: true,
                             fold: None,
+                            target: Some(Target::Line {
+                                file: file.clone(),
+                                hunk: hunk_ix,
+                                line: line_ix,
+                            }),
                             kind: RowKind::Diff { text, color },
                         });
                     }
@@ -478,9 +574,113 @@ impl StatusView {
         }
     }
 
+    // --- Staging ----------------------------------------------------------
+
+    /// The loaded diff for a file in a given section, if available.
+    fn diff_for(&self, file: &FileRef) -> Option<FileDiff> {
+        let source = section_source(file.section)?;
+        match self.diffs.get(&(source, file.path.clone()))? {
+            DiffState::Loaded(diff) => Some(diff.clone()),
+            _ => None,
+        }
+    }
+
+    /// Resolve the row at point + verb into a concrete git action, if the verb
+    /// is meaningful there (e.g. you cannot stage something already staged).
+    fn resolve_action(&self, op: Op) -> Option<Action> {
+        let target = self.rows.get(self.selected)?.target.clone()?;
+        match (op, target) {
+            // Stage: from the untracked or unstaged side.
+            (Op::Stage, Target::File(f)) => match f.section {
+                SectionId::Untracked | SectionId::Unstaged => Some(Action::StageFile(f.path)),
+                SectionId::Staged => None,
+            },
+            (Op::Stage, Target::Hunk { file, hunk }) if file.section == SectionId::Unstaged => {
+                Some(Action::StageHunk(self.diff_for(&file)?, hunk))
+            }
+            (Op::Stage, Target::Line { file, hunk, line }) if file.section == SectionId::Unstaged => {
+                Some(Action::StageLines(self.diff_for(&file)?, hunk, vec![line]))
+            }
+
+            // Unstage: from the staged side.
+            (Op::Unstage, Target::File(f)) if f.section == SectionId::Staged => {
+                Some(Action::UnstageFile(f.path))
+            }
+            (Op::Unstage, Target::Hunk { file, hunk }) if file.section == SectionId::Staged => {
+                Some(Action::UnstageHunk(self.diff_for(&file)?, hunk))
+            }
+            (Op::Unstage, Target::Line { file, hunk, line }) if file.section == SectionId::Staged => {
+                Some(Action::UnstageLines(self.diff_for(&file)?, hunk, vec![line]))
+            }
+
+            // Discard: untracked removes the file; unstaged reverts to the index.
+            (Op::Discard, Target::File(f)) => match f.section {
+                SectionId::Untracked => Some(Action::DiscardUntracked(f.path)),
+                SectionId::Unstaged => Some(Action::DiscardTracked(f.path)),
+                SectionId::Staged => None,
+            },
+            (Op::Discard, Target::Hunk { file, hunk }) if file.section == SectionId::Unstaged => {
+                Some(Action::DiscardHunk(self.diff_for(&file)?, hunk))
+            }
+            (Op::Discard, Target::Line { file, hunk, line }) if file.section == SectionId::Unstaged => {
+                Some(Action::DiscardLines(self.diff_for(&file)?, hunk, vec![line]))
+            }
+
+            _ => None,
+        }
+    }
+
+    /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
+    fn act(&mut self, op: Op, cx: &mut Context<Self>) {
+        let Some(action) = self.resolve_action(op) else {
+            return;
+        };
+        if op == Op::Discard {
+            self.confirm = Some((describe_discard(&action), action));
+        } else {
+            self.run_action(action, cx);
+        }
+        cx.notify();
+    }
+
+    /// Run a git mutation on the background executor, then refresh.
+    fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
+        self.confirm = None;
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { action.run(&repo) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    this.error = Some(e);
+                }
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
+
+        // A pending discard confirmation captures the next key.
+        if self.confirm.is_some() {
+            if key == "y" {
+                let action = self.confirm.take().unwrap().1;
+                self.run_action(action, cx);
+            } else {
+                self.confirm = None;
+            }
+            cx.notify();
+            return;
+        }
 
         if self.pending_g {
             self.pending_g = false;
@@ -509,6 +709,12 @@ impl StatusView {
                 return;
             }
             "tab" => self.toggle_fold(cx),
+            // Staging. Shifted variants act on the whole working tree.
+            "s" if shift => return self.run_action(Action::StageAll, cx),
+            "s" => return self.act(Op::Stage, cx),
+            "u" if shift => return self.run_action(Action::UnstageAll, cx),
+            "u" => return self.act(Op::Unstage, cx),
+            "x" => return self.act(Op::Discard, cx),
             _ => return,
         }
         self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
@@ -584,7 +790,7 @@ impl Render for StatusView {
         let view = cx.entity();
         let count = self.rows.len();
 
-        div()
+        let mut root = div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
@@ -592,16 +798,32 @@ impl Render for StatusView {
             .text_color(theme::fg())
             .text_size(px(13.0))
             .font_family("Menlo")
-            .child(
-                uniform_list("rows", count, move |range, _window, cx| {
-                    let this = view.read(cx);
-                    range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
-                })
-                .track_scroll(self.scroll.clone())
-                .size_full()
-                .py_2()
-                .px_2(),
-            )
+            .flex()
+            .flex_col();
+
+        if let Some((prompt, _)) = &self.confirm {
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .bg(theme::banner())
+                    .text_color(theme::modified())
+                    .child(SharedString::from(prompt.clone())),
+            );
+        }
+
+        root.child(
+            uniform_list("rows", count, move |range, _window, cx| {
+                let this = view.read(cx);
+                range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
+            })
+            .track_scroll(self.scroll.clone())
+            .w_full()
+            .flex_grow()
+            .py_2()
+            .px_2(),
+        )
     }
 }
 
@@ -612,6 +834,7 @@ fn plain(text: impl Into<String>, color: gpui::Rgba) -> Row {
         indent: 0,
         selectable: true,
         fold: None,
+        target: None,
         kind: RowKind::Plain {
             text: text.into(),
             color,
@@ -624,6 +847,7 @@ fn message(text: &str) -> Row {
         indent: 2,
         selectable: false,
         fold: None,
+        target: None,
         kind: RowKind::Plain {
             text: text.to_string(),
             color: theme::dim(),
@@ -636,6 +860,7 @@ fn spacer() -> Row {
         indent: 0,
         selectable: false,
         fold: None,
+        target: None,
         kind: RowKind::Plain {
             text: String::new(),
             color: theme::fg(),
@@ -648,6 +873,18 @@ fn triangle(expanded: bool) -> &'static str {
         "▾"
     } else {
         "▸"
+    }
+}
+
+fn describe_discard(action: &Action) -> String {
+    match action {
+        Action::DiscardUntracked(p) => format!("Delete untracked {p}?  (y/n)"),
+        Action::DiscardTracked(p) => format!("Discard unstaged changes to {p}?  (y/n)"),
+        Action::DiscardHunk(f, _) => format!("Discard hunk in {}?  (y/n)", f.display_path()),
+        Action::DiscardLines(f, _, l) => {
+            format!("Discard {} line(s) in {}?  (y/n)", l.len(), f.display_path())
+        }
+        _ => "Discard?  (y/n)".to_string(),
     }
 }
 
