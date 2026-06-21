@@ -8,6 +8,7 @@
 //! on the background executor; a generation counter drops stale results.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use gpui::{
     div, px, uniform_list, AnyElement, App, AppContext, Application, Context, FocusHandle,
@@ -106,6 +107,8 @@ enum RowKind {
 }
 
 struct StatusView {
+    /// The directory we tried to open (for error messages).
+    root: PathBuf,
     repo: Option<Repo>,
     status: Option<Status>,
     error: Option<String>,
@@ -121,10 +124,11 @@ struct StatusView {
 }
 
 impl StatusView {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let repo = std::env::current_dir()
-            .ok()
-            .and_then(|cwd| Repo::discover(cwd).ok());
+    fn new(start_dir: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let root = start_dir
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let repo = Repo::discover(&root).ok();
 
         // Sections are expanded by default; individual files start collapsed,
         // so opening a large repo loads no diffs until a file is expanded.
@@ -134,6 +138,7 @@ impl StatusView {
         expanded.insert(FoldKey::Section(SectionId::Staged));
 
         let mut view = StatusView {
+            root,
             repo,
             status: None,
             error: None,
@@ -159,7 +164,7 @@ impl StatusView {
         self.error = None;
 
         let Some(repo) = self.repo.clone() else {
-            self.error = Some("Not a git repository".to_string());
+            self.error = Some(format!("Not a git repository: {}", self.root.display()));
             self.rebuild_rows();
             return;
         };
@@ -692,7 +697,15 @@ fn code_color(entry: &FileEntry) -> gpui::Rgba {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    // Optional positional arg: a path inside the repo to open (defaults to cwd).
+    let arg = std::env::args().nth(1);
+    if matches!(arg.as_deref(), Some("-h") | Some("--help")) {
+        println!("Usage: magritte [PATH]\n\nOpen the git repository containing PATH (default: current directory).");
+        return;
+    }
+    let start_dir = arg.map(PathBuf::from);
+
+    Application::new().run(move |cx: &mut App| {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
@@ -701,7 +714,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_window, cx| cx.new(StatusView::new),
+            |_window, cx| cx.new(|cx| StatusView::new(start_dir.clone(), cx)),
         )
         .expect("failed to open window");
         cx.activate(true);
