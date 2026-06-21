@@ -171,6 +171,74 @@ fn unstage_subset_of_lines() {
 }
 
 #[test]
+fn discard_staged_file_reverts_to_head() {
+    let t = TestRepo::new();
+    t.write("file.txt", "original\n");
+    t.commit_all("init");
+    t.write("file.txt", "changed\n");
+    let repo = open(&t);
+    repo.stage_file("file.txt").unwrap();
+
+    repo.discard_staged_file("file.txt").unwrap();
+
+    let s = repo.status().unwrap();
+    assert!(entry(&s, "file.txt").is_none(), "file should be clean");
+    let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
+    assert_eq!(contents, "original\n");
+}
+
+#[test]
+fn discard_staged_hunk_reverts_index_and_worktree() {
+    let t = TestRepo::new();
+    t.write("file.txt", "a\nb\nc\n");
+    t.commit_all("init");
+    t.write("file.txt", "a\nB\nc\n");
+    let repo = open(&t);
+    repo.stage_file("file.txt").unwrap();
+
+    let staged = find(&repo, DiffSource::Staged, "file.txt").unwrap();
+    repo.discard_staged_hunk(&staged, &staged.hunks[0]).unwrap();
+
+    let s = repo.status().unwrap();
+    assert!(entry(&s, "file.txt").is_none(), "expected clean tree");
+    let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
+    assert_eq!(contents, "a\nb\nc\n");
+}
+
+#[test]
+fn discard_staged_lines_subset() {
+    let t = TestRepo::new();
+    t.write("file.txt", "1\n2\n3\n4\n5\n");
+    t.commit_all("init");
+    t.write("file.txt", "1\nTWO\n3\nFOUR\n5\n");
+    let repo = open(&t);
+    repo.stage_file("file.txt").unwrap();
+
+    // Discard only the first staged change (remove "2", add "TWO").
+    let staged = find(&repo, DiffSource::Staged, "file.txt").unwrap();
+    let hunk = &staged.hunks[0];
+    let selected = vec![
+        line_index(hunk, LineKind::Removed, "2"),
+        line_index(hunk, LineKind::Added, "TWO"),
+    ];
+    repo.discard_staged_lines(&staged, hunk, &selected).unwrap();
+
+    // First change gone from both sides; second change still staged.
+    let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
+    assert_eq!(contents, "1\n2\n3\nFOUR\n5\n");
+    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt")
+        .unwrap()
+        .hunks[0]
+        .lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.content.clone())
+        .collect();
+    assert_eq!(staged_adds, vec!["FOUR"]);
+    assert!(find(&repo, DiffSource::Unstaged, "file.txt").is_none());
+}
+
+#[test]
 fn discard_untracked_file_removes_it() {
     let t = TestRepo::new();
     t.write("README.md", "x\n");
