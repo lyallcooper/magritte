@@ -1055,17 +1055,16 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // submit_on_enter: Enter (and Cmd+Enter) submit via PressEnter;
-        // Shift+Enter inserts a newline.
+        // Return inserts a newline; Cmd/Ctrl+Return submits (reported as a
+        // PressEnter with secondary=true).
         let state = cx.new(|cx| {
             InputState::new(window, cx)
                 .multi_line(true)
-                .submit_on_enter(true)
+                .submit_on_enter(false)
                 .default_value(initial)
         });
-        // Commit when the Input reports Enter (without Shift).
         let sub = cx.subscribe_in(&state, window, |this, _state, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { shift: false, .. } = ev {
+            if let InputEvent::PressEnter { secondary: true, .. } = ev {
                 this.submit_editor(window, cx);
             }
         });
@@ -1111,7 +1110,8 @@ impl StatusView {
         }
         let ed = self.editor.take().unwrap();
         self.focus.focus(window, cx);
-        self.run_commit(text, ed.mode, ed.args, cx);
+        // Drop the trailing newline the submit keystroke inserted.
+        self.run_commit(text.trim_end().to_string(), ed.mode, ed.args, cx);
     }
 
     fn run_commit(&mut self, message: String, mode: CommitMode, args: Vec<String>, cx: &mut Context<Self>) {
@@ -1385,10 +1385,10 @@ impl StatusView {
                 div()
                     .text_color(theme::section())
                     .child(SharedString::from(format!(
-                        "{title}    ↵ commit · ⇧↵ newline · esc cancel"
+                        "{title}    ⌘↵ commit · ↵ newline · esc cancel"
                     ))),
             )
-            .child(Input::new(&ed.state))
+            .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
 
     fn render_row(&self, ix: usize) -> AnyElement {
