@@ -15,7 +15,23 @@ use gpui::{
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
     TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
+use magritte_core::transient::{self, Suffix, Transient};
 use magritte_core::{Change, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status};
+
+/// An open transient popup and the switches toggled on within it.
+struct TransientState {
+    def: Transient,
+    active: std::collections::HashSet<String>,
+}
+
+impl TransientState {
+    fn new(def: Transient) -> Self {
+        TransientState {
+            def,
+            active: std::collections::HashSet::new(),
+        }
+    }
+}
 
 mod theme {
     use gpui::{rgb, Rgba};
@@ -51,6 +67,12 @@ mod theme {
     }
     pub fn banner() -> Rgba {
         rgb(0x3a2f1a)
+    }
+    pub fn panel() -> Rgba {
+        rgb(0x252830)
+    }
+    pub fn border() -> Rgba {
+        rgb(0x3a3f4b)
     }
 }
 
@@ -243,6 +265,10 @@ struct StatusView {
     visual: Option<usize>,
     generation: u64,
     pending_g: bool,
+    /// An open transient popup (push/pull/fetch/…), or `None`.
+    transient: Option<TransientState>,
+    /// Last operation result / progress, shown in the bottom bar.
+    status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
     confirm: Option<(String, Action)>,
     focus: FocusHandle,
@@ -276,6 +302,8 @@ impl StatusView {
             visual: None,
             generation: 0,
             pending_g: false,
+            transient: None,
+            status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
             focused_once: false,
@@ -844,9 +872,92 @@ impl StatusView {
         .detach();
     }
 
+    // --- Transients (push/pull/fetch popups) ------------------------------
+
+    fn open_transient(&mut self, def: Transient, cx: &mut Context<Self>) {
+        self.transient = Some(TransientState::new(def));
+        cx.notify();
+    }
+
+    fn handle_transient_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        if key == "escape" || key == "q" {
+            self.transient = None;
+            cx.notify();
+            return;
+        }
+        let Some(state) = self.transient.as_mut() else {
+            return;
+        };
+
+        // Toggle a switch? Switch keys are magit-style ("-f"); a single
+        // keypress of the letter toggles it.
+        let switch_key = state
+            .def
+            .switches()
+            .find(|s| s.key.trim_start_matches('-') == key)
+            .map(|s| s.key.to_string());
+        if let Some(sw) = switch_key {
+            if !state.active.remove(&sw) {
+                state.active.insert(sw);
+            }
+            cx.notify();
+            return;
+        }
+
+        // Invoke an action?
+        let action = state.def.action_for(key).copied();
+        let switches: Vec<String> = state
+            .def
+            .switches()
+            .filter(|s| state.active.contains(s.key))
+            .map(|s| s.arg.to_string())
+            .collect();
+        if let Some(action) = action {
+            self.transient = None;
+            self.run_command(action.command, switches, cx);
+        }
+    }
+
+    /// Run a transient command on the background executor, showing progress in
+    /// the bottom bar, then refresh.
+    fn run_command(&mut self, command: transient::Command, switches: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some(format!("{}…", describe_command(command)));
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.execute(command, &switches) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.status_message = Some(match result {
+                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
+                    Ok(msg) => last_line(&msg),
+                    Err(e) => format!("error: {e}"),
+                });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
+
+        // An open transient popup captures all keys.
+        if self.transient.is_some() {
+            // Distinguish F (pull action) from f (fetch); transient keys are
+            // case-sensitive, so reconstruct the cased key.
+            let cased = if shift { key.to_uppercase() } else { key.clone() };
+            self.handle_transient_key(&cased, cx);
+            return;
+        }
 
         // A pending discard confirmation captures the next key.
         if self.confirm.is_some() {
@@ -909,10 +1020,70 @@ impl StatusView {
             "u" if shift => return self.run_action(Action::UnstageAll, cx),
             "u" => return self.act(Op::Unstage, cx),
             "x" => return self.act(Op::Discard, cx),
+            // Sync transients: P push, F pull, f fetch.
+            "p" if shift => return self.open_transient(transient::push_transient(), cx),
+            "f" if shift => return self.open_transient(transient::pull_transient(), cx),
+            "f" => return self.open_transient(transient::fetch_transient(), cx),
             _ => return,
         }
         self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
         cx.notify();
+    }
+
+    /// Render the open transient popup as a bottom panel.
+    fn render_transient(&self, state: &TransientState) -> gpui::Div {
+        let mut panel = div()
+            .w_full()
+            .border_t_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .py_1()
+            .px_2()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_color(theme::section())
+                    .child(SharedString::from(state.def.title)),
+            );
+
+        for group in &state.def.groups {
+            panel = panel.child(
+                div()
+                    .mt_1()
+                    .text_color(theme::dim())
+                    .child(SharedString::from(group.title)),
+            );
+            for suffix in &group.suffixes {
+                let row = match suffix {
+                    Suffix::Switch(sw) => {
+                        let on = state.active.contains(sw.key);
+                        let color = if on { theme::added() } else { theme::dim() };
+                        div()
+                            .flex()
+                            .gap_2()
+                            .pl_2()
+                            .child(key_chip(sw.key))
+                            .child(
+                                div()
+                                    .text_color(color)
+                                    .child(SharedString::from(format!(
+                                        "{}  {}",
+                                        sw.arg, sw.description
+                                    ))),
+                            )
+                    }
+                    Suffix::Action(a) => div()
+                        .flex()
+                        .gap_2()
+                        .pl_2()
+                        .child(key_chip(a.key))
+                        .child(SharedString::from(a.description)),
+                };
+                panel = panel.child(row);
+            }
+        }
+        panel
     }
 
     fn render_row(&self, ix: usize) -> AnyElement {
@@ -1014,7 +1185,9 @@ impl Render for StatusView {
                 .px_2(),
             );
 
-        if let Some((prompt, _)) = &self.confirm {
+        if let Some(state) = &self.transient {
+            root = root.child(self.render_transient(state));
+        } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(status_bar(prompt.clone(), theme::banner(), theme::modified()));
         } else if self.visual.is_some() {
             root = root.child(status_bar(
@@ -1022,6 +1195,8 @@ impl Render for StatusView {
                 theme::visual(),
                 theme::fg(),
             ));
+        } else if let Some(msg) = &self.status_message {
+            root = root.child(status_bar(msg.clone(), theme::panel(), theme::fg()));
         }
 
         root
@@ -1075,6 +1250,33 @@ fn triangle(expanded: bool) -> &'static str {
     } else {
         "▸"
     }
+}
+
+fn describe_command(command: transient::Command) -> &'static str {
+    use transient::Command::*;
+    match command {
+        Push | PushSetUpstream => "Pushing",
+        Pull => "Pulling",
+        Fetch | FetchAll => "Fetching",
+    }
+}
+
+/// The last non-empty line of git output, for a concise status summary.
+fn last_line(text: &str) -> String {
+    text.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// A small colored key label for transient rows.
+fn key_chip(key: &str) -> gpui::Div {
+    div()
+        .min_w(px(20.0))
+        .text_color(theme::modified())
+        .child(SharedString::from(key.to_string()))
 }
 
 /// A bottom-pinned status bar row (confirm prompt or mode indicator).
