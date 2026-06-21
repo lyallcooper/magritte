@@ -71,7 +71,7 @@ const HELP: &[HelpGroup] = &[
     HelpGroup {
         title: "Commands",
         entries: &[
-            ("P", "push"),
+            ("p", "push"),
             ("F", "pull"),
             ("f", "fetch"),
             ("?", "this help"),
@@ -1011,7 +1011,7 @@ impl StatusView {
         // it and then performs its normal action (falls through below).
         if matches!(self.popup, Some(Popup::Help)) {
             match cased.as_str() {
-                "P" => return self.open_transient(transient::push_transient(), cx),
+                "p" => return self.open_transient(transient::push_transient(), cx),
                 "F" => return self.open_transient(transient::pull_transient(), cx),
                 "f" => return self.open_transient(transient::fetch_transient(), cx),
                 "escape" | "q" | "?" | "/" => {
@@ -1088,8 +1088,8 @@ impl StatusView {
             "u" if shift => return self.run_action(Action::UnstageAll, cx),
             "u" => return self.act(Op::Unstage, cx),
             "x" => return self.act(Op::Discard, cx),
-            // Sync transients: P push, F pull, f fetch.
-            "p" if shift => return self.open_transient(transient::push_transient(), cx),
+            // Sync transients (evil-collection magit): p push, F pull, f fetch.
+            "p" => return self.open_transient(transient::push_transient(), cx),
             "f" if shift => return self.open_transient(transient::pull_transient(), cx),
             "f" => return self.open_transient(transient::fetch_transient(), cx),
             // Help / dispatch menu. "?" may arrive as "/" + shift.
