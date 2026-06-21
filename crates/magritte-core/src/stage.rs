@@ -46,6 +46,18 @@ impl Repo {
         Ok(())
     }
 
+    /// Stage every change in the working tree (`git add -A`).
+    pub fn stage_all(&self) -> Result<()> {
+        self.run(["add", "-A"])?;
+        Ok(())
+    }
+
+    /// Unstage everything, resetting the whole index to HEAD.
+    pub fn unstage_all(&self) -> Result<()> {
+        self.run(["reset", "-q"])?;
+        Ok(())
+    }
+
     /// Discard unstaged changes to a tracked `path`, restoring it from the
     /// index. **Destructive.**
     pub fn discard_tracked_file(&self, path: &str) -> Result<()> {
