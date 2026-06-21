@@ -11,10 +11,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    actions, div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render,
+    SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
+
+/// Key context for our status view, used so our `tab` binding takes precedence
+/// over gpui-component Root's focus-navigation `tab`.
+const STATUS_CONTEXT: &str = "MagritteStatus";
+
+// Tab is bound by gpui-component's Root (focus nav) and so never reaches an
+// on_key_down listener; we override it with an action in our key context.
+actions!(magritte, [ToggleFold]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use magritte_core::transient::{self, Suffix, Transient};
@@ -1209,6 +1217,8 @@ impl StatusView {
                 self.pending_g = true;
                 return;
             }
+            // Tab is delivered via the ToggleFold action (Root binds tab), but
+            // keep this as a fallback for any path that reaches on_key.
             "tab" => self.toggle_fold(cx),
             // Visual (region) selection. `v`/`V` toggle; Escape cancels.
             "v" => {
@@ -1457,6 +1467,12 @@ impl Render for StatusView {
 
         let mut root = div()
             .track_focus(&self.focus)
+            .key_context(STATUS_CONTEXT)
+            .on_action(cx.listener(|this, _: &ToggleFold, _window, cx| {
+                if this.popup.is_none() && this.editor.is_none() {
+                    this.toggle_fold(cx);
+                }
+            }))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
@@ -1691,6 +1707,8 @@ fn main() {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+        // Our tab binding, in our context, outranks Root's focus-nav tab.
+        cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
 
         let options = WindowOptions {
