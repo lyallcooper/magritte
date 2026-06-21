@@ -1690,6 +1690,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
+        gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
         cx.activate(true);
 
         let options = WindowOptions {
