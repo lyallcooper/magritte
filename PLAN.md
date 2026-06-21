@@ -226,8 +226,8 @@ reusable widgets) will be split out if and when they earn their keep.
 | #  | Theme                    | Deliverable                                                                 | Status |
 |----|--------------------------|-----------------------------------------------------------------------------|--------|
 | M0 | Core foundation          | `magritte-core` scaffold; porcelain-v2 status parser; tests                 | ✅ done |
-| M1 | First pixels             | Minimal GPUI window rendering live status via background executor           | next   |
-| M2 | The tree                 | Section tree with fold/unfold; lazy per-file diffs; virtualized render; evil navigation | |
+| M1 | First pixels             | Minimal GPUI window rendering live status via background executor           | ✅ done |
+| M2 | The tree                 | Section tree with fold/unfold; lazy per-file diffs; virtualized render; evil navigation | next |
 | M3 | Staging                  | Stage/unstage/discard at file → hunk → region (patch construction + `git apply --cached`) | |
 | M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          |        |
 | M5 | Breadth                  | Log view; branch transient; stash transient                                 |        |
