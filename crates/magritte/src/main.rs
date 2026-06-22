@@ -112,6 +112,7 @@ fn dispatch_help() -> Transient {
                     info("p", "push"),
                     info("F", "pull"),
                     info("f", "fetch"),
+                    info(",", "settings"),
                     info("?", "this help"),
                 ],
             },
@@ -377,6 +378,50 @@ enum RowKind {
     },
 }
 
+/// Which list the settings screen currently has focused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsField {
+    Theme,
+    Font,
+}
+
+/// State for the live settings screen: two navigable lists (theme + font) that
+/// apply immediately as the selection moves — no save/restart step.
+struct SettingsState {
+    field: SettingsField,
+    themes: Vec<SharedString>,
+    theme_ix: usize,
+    theme_scroll: UniformListScrollHandle,
+    fonts: Vec<SharedString>,
+    font_ix: usize,
+    font_scroll: UniformListScrollHandle,
+}
+
+/// Move a list index up/down by one, clamping at the ends.
+fn step(ix: usize, down: bool, len: usize) -> usize {
+    if down {
+        (ix + 1).min(len.saturating_sub(1))
+    } else {
+        ix.saturating_sub(1)
+    }
+}
+
+/// Apply a registry theme by name, choosing the light/dark slot from the
+/// theme's own mode and switching the active mode to match.
+fn apply_theme_by_name(name: &str, cx: &mut App) {
+    let Some(cfg) = gpui_component::ThemeRegistry::global(cx).themes().get(name).cloned() else {
+        return;
+    };
+    let mode = cfg.mode;
+    let theme = gpui_component::Theme::global_mut(cx);
+    if mode.is_dark() {
+        theme.dark_theme = cfg;
+    } else {
+        theme.light_theme = cfg;
+    }
+    gpui_component::Theme::change(mode, None, cx);
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -398,6 +443,10 @@ struct StatusView {
     popup: Option<Popup>,
     /// The commit message editor, when open (takes over the window).
     editor: Option<CommitEditor>,
+    /// The live settings screen, when open (takes over the window).
+    settings: Option<SettingsState>,
+    /// The monospace font family used for all chrome, set via settings.
+    font: SharedString,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -438,6 +487,8 @@ impl StatusView {
             pending_g: false,
             popup: None,
             editor: None,
+            settings: None,
+            font: SharedString::from("Menlo"),
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
@@ -1183,6 +1234,84 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Open the live settings screen, seeded with the current theme and font.
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        let themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
+            .sorted_themes()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let current_theme = cx.theme().theme_name().clone();
+        let theme_ix = themes.iter().position(|n| *n == current_theme).unwrap_or(0);
+
+        let mut fonts: Vec<SharedString> = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .map(SharedString::from)
+            .collect();
+        fonts.sort_by_key(|f| f.to_lowercase());
+        fonts.dedup();
+        let font_ix = fonts.iter().position(|f| *f == self.font).unwrap_or(0);
+
+        self.settings = Some(SettingsState {
+            field: SettingsField::Theme,
+            themes,
+            theme_ix,
+            theme_scroll: UniformListScrollHandle::new(),
+            fonts,
+            font_ix,
+            font_scroll: UniformListScrollHandle::new(),
+        });
+        cx.notify();
+    }
+
+    /// Handle a keystroke while the settings screen is open. Returns true if it
+    /// was consumed. Navigation applies the highlighted theme/font live.
+    fn handle_settings_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let Some(s) = self.settings.as_mut() else {
+            return false;
+        };
+        match key {
+            "escape" | "q" | "," => {
+                self.settings = None;
+            }
+            "tab" => {
+                s.field = match s.field {
+                    SettingsField::Theme => SettingsField::Font,
+                    SettingsField::Font => SettingsField::Theme,
+                };
+            }
+            "j" | "k" => {
+                let down = key == "j";
+                match s.field {
+                    SettingsField::Theme => {
+                        let n = s.themes.len();
+                        if n > 0 {
+                            s.theme_ix = step(s.theme_ix, down, n);
+                            s.theme_scroll
+                                .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
+                            let name = s.themes[s.theme_ix].clone();
+                            apply_theme_by_name(&name, cx);
+                        }
+                    }
+                    SettingsField::Font => {
+                        let n = s.fonts.len();
+                        if n > 0 {
+                            s.font_ix = step(s.font_ix, down, n);
+                            s.font_scroll
+                                .scroll_to_item(s.font_ix, gpui::ScrollStrategy::Center);
+                            self.font = s.fonts[s.font_ix].clone();
+                        }
+                    }
+                }
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editor.as_ref() else {
             return;
@@ -1233,6 +1362,13 @@ impl StatusView {
 
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
+
+        // The settings screen is modal: it consumes every key (Tab arrives via
+        // the ToggleFold action instead).
+        if self.settings.is_some() {
+            self.handle_settings_key(&key, cx);
+            return;
+        }
 
         // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
         // reconstruct the cased key from the shift modifier.
@@ -1334,6 +1470,11 @@ impl StatusView {
             "p" => return self.open_transient(transient::push_transient(), cx),
             "f" if shift => return self.open_transient(transient::pull_transient(), cx),
             "f" => return self.open_transient(transient::fetch_transient(), cx),
+            // Settings (theme + font), applied live.
+            "," => {
+                self.open_settings(cx);
+                return;
+            }
             // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
                 self.popup = Some(Popup::Help(dispatch_help()));
@@ -1496,6 +1637,123 @@ impl StatusView {
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
 
+    /// Render the live settings screen: a Theme list and a Font list, side by
+    /// side. Selecting in either applies immediately (no save).
+    fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
+        let hint = |k: &str, label: &str| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(key_chip(k, self.palette.dim))
+                .child(div().text_color(self.palette.dim).child(SharedString::from(label.to_string())))
+        };
+
+        let column = |title: &str, focused: bool, list: AnyElement| {
+            let title_color = if focused {
+                self.palette.section
+            } else {
+                self.palette.dim
+            };
+            div()
+                .flex()
+                .flex_col()
+                .flex_grow(1.0)
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .gap_1()
+                .child(div().text_color(title_color).child(SharedString::from(title.to_string())))
+                .child(
+                    div()
+                        .relative()
+                        .flex_grow(1.0)
+                        .min_h(px(0.0))
+                        .border_1()
+                        .border_color(if focused { self.palette.section } else { self.palette.border })
+                        .child(list),
+                )
+        };
+
+        // Theme list.
+        let theme_focused = s.field == SettingsField::Theme;
+        let theme_count = s.themes.len();
+        let theme_view = view.clone();
+        let theme_list = uniform_list("settings-themes", theme_count, move |range, _w, cx| {
+            let this = theme_view.read(cx);
+            let Some(s) = this.settings.as_ref() else {
+                return Vec::new();
+            };
+            range
+                .map(|ix| this.settings_row(&s.themes[ix], ix == s.theme_ix, theme_focused))
+                .collect()
+        })
+        .track_scroll(&s.theme_scroll)
+        .size_full()
+        .p_1();
+
+        // Font list.
+        let font_focused = s.field == SettingsField::Font;
+        let font_count = s.fonts.len();
+        let font_view = view.clone();
+        let font_list = uniform_list("settings-fonts", font_count, move |range, _w, cx| {
+            let this = font_view.read(cx);
+            let Some(s) = this.settings.as_ref() else {
+                return Vec::new();
+            };
+            range
+                .map(|ix| this.settings_row(&s.fonts[ix], ix == s.font_ix, font_focused))
+                .collect()
+        })
+        .track_scroll(&s.font_scroll)
+        .size_full()
+        .p_1();
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow(1.0)
+            .w_full()
+            .min_h(px(0.0))
+            .p_3()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().text_color(self.palette.section).child(SharedString::from("Settings")))
+                    .child(hint("tab", "switch"))
+                    .child(hint("j", "/"))
+                    .child(hint("k", "move"))
+                    .child(hint("esc", "close")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_6()
+                    .flex_grow(1.0)
+                    .min_h(px(0.0))
+                    .child(column("Theme", theme_focused, theme_list.into_any_element()))
+                    .child(column("Font", font_focused, font_list.into_any_element())),
+            )
+    }
+
+    /// One row in a settings list: name, highlighted when it's the selection.
+    fn settings_row(&self, name: &str, selected: bool, focused: bool) -> AnyElement {
+        let mut row = div()
+            .h(px(20.0))
+            .w_full()
+            .px_1()
+            .flex()
+            .items_center()
+            .child(SharedString::from(name.to_string()));
+        if selected {
+            row = row.bg(if focused { self.palette.visual } else { self.palette.selection });
+        }
+        row.into_any_element()
+    }
+
     fn render_row(&self, ix: usize) -> AnyElement {
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
@@ -1595,7 +1853,9 @@ impl Render for StatusView {
             .track_focus(&self.focus)
             .key_context(STATUS_CONTEXT)
             .on_action(cx.listener(|this, _: &ToggleFold, _window, cx| {
-                if this.popup.is_none() && this.editor.is_none() {
+                if this.settings.is_some() {
+                    this.handle_settings_key("tab", cx);
+                } else if this.popup.is_none() && this.editor.is_none() {
                     this.toggle_fold(cx);
                 }
             }))
@@ -1605,11 +1865,14 @@ impl Render for StatusView {
             .bg(self.palette.bg)
             .text_color(self.palette.fg)
             .text_size(px(13.0))
-            .font_family("Menlo")
+            .font_family(self.font.clone())
             .flex()
             .flex_col();
 
-        // The commit editor takes over the whole window when open.
+        // The settings screen and commit editor each take over the window.
+        if let Some(s) = &self.settings {
+            return root.child(self.render_settings(s, &view));
+        }
         if let Some(ed) = &self.editor {
             return root.child(self.render_editor(ed));
         }
