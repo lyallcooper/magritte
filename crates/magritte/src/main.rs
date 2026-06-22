@@ -1364,7 +1364,7 @@ impl StatusView {
                         // flag in parens. Only the flag itself dims (off) or
                         // highlights in cyan + bold (on) — the parens stay a
                         // constant neutral color.
-                        let flag_color = if on { self.palette.hunk } else { self.palette.dim };
+                        let flag_color = if on { self.palette.modified } else { self.palette.dim };
                         let flag = if on {
                             div().text_color(flag_color).font_weight(FontWeight::BOLD)
                         } else {
