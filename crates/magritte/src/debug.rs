@@ -21,7 +21,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::{fs, process::Command};
 
-use gpui::{AnyWindowHandle, AppContext, AsyncApp, Keystroke, Modifiers};
+use gpui::{
+    point, px, AnyWindowHandle, AppContext, AsyncApp, Keystroke, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+};
 
 /// The control directory, if debug mode is enabled.
 pub fn control_dir() -> Option<PathBuf> {
@@ -98,6 +101,43 @@ async fn run_command(
             for ch in rest.chars() {
                 dispatch(handle, char_keystroke(ch), cx)?;
             }
+            Ok(None)
+        }
+        "click" => {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts.next().and_then(|s| s.parse().ok()).ok_or("click needs: x y")?;
+            let y: f32 = parts.next().and_then(|s| s.parse().ok()).ok_or("click needs: x y")?;
+            let pos = point(px(x), px(y));
+            cx.update_window(handle, |_, window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: pos,
+                        pressed_button: None,
+                        modifiers: Modifiers::default(),
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: pos,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: pos,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            })
+            .map_err(|e| e.to_string())?;
             Ok(None)
         }
         "sleep" => {
