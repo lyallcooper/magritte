@@ -2164,7 +2164,7 @@ fn section_change(entry: &FileEntry, section: SectionId) -> Change {
 /// section header already says "Untracked files".
 fn status_label(entry: &FileEntry, section: SectionId) -> String {
     if entry.kind == EntryKind::Untracked {
-        return String::new();
+        return "new file".to_string();
     }
     match section_change(entry, section) {
         Change::Unmodified => "",
@@ -2181,7 +2181,7 @@ fn status_label(entry: &FileEntry, section: SectionId) -> String {
 
 fn code_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
     if entry.kind == EntryKind::Untracked {
-        return p.dim;
+        return p.added;
     }
     match section_change(entry, section) {
         Change::Added | Change::Copied => p.added,
