@@ -149,6 +149,16 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
 impl Palette {
     fn from_theme(cx: &App) -> Self {
         let t = cx.theme();
+        // Diff/status colors come from the highlight theme's git status colors
+        // (created/deleted/modified → success/error/warning), not the base
+        // semantic tokens: many themes (e.g. Solarized) leave the base tokens
+        // muted and put the vivid git colors in the highlight block. These
+        // accessors fall back to the base tokens when a theme omits them.
+        let status = &t.highlight_theme.style.status;
+        let added = status.success(cx);
+        let removed = status.error(cx);
+        let modified = status.warning(cx);
+        let hunk = status.info(cx);
         Palette {
             bg: t.background,
             fg: t.foreground,
@@ -157,14 +167,14 @@ impl Palette {
             selection: t.accent,
             visual: with_alpha(t.selection, 0.32),
             section: t.primary,
-            hunk: t.info,
+            hunk,
             panel: t.popover,
-            modified: t.warning,
-            added: t.success,
-            removed: t.danger,
-            added_bg: with_alpha(t.success, 0.12),
-            removed_bg: with_alpha(t.danger, 0.12),
-            banner: with_alpha(t.warning, 0.18),
+            modified,
+            added,
+            removed,
+            added_bg: with_alpha(added, 0.12),
+            removed_bg: with_alpha(removed, 0.12),
+            banner: with_alpha(modified, 0.18),
         }
     }
 }
