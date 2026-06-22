@@ -17,6 +17,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
+mod debug;
 mod highlight;
 use highlight::{FileHighlights, Span};
 
@@ -2276,13 +2277,16 @@ fn main() {
         };
 
         cx.spawn(async move |cx| {
-            cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| StatusView::new(start_dir.clone(), cx));
-                // The window's root must be a gpui-component Root (provides
-                // theming, overlays, and the component context).
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
-            })
-            .expect("failed to open window");
+            let window = cx
+                .open_window(options, |window, cx| {
+                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), cx));
+                    // The window's root must be a gpui-component Root (provides
+                    // theming, overlays, and the component context).
+                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                })
+                .expect("failed to open window");
+            // Start the debug control channel (no-op unless MAGRITTE_DEBUG_DIR is set).
+            let _ = cx.update(|cx| debug::init(window.into(), cx));
         })
         .detach();
     });

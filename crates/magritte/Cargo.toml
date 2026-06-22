@@ -20,3 +20,8 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 ] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
 magritte-core = { path = "../magritte-core" }
+
+# Debug mode (--debug): find our own window id to drive screenshots. macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["link"] }
