@@ -26,11 +26,14 @@ pub type FileHighlights = HashMap<(usize, usize), Vec<Span>>;
 /// highlight it. Names must match a language enabled in gpui-component's
 /// `tree-sitter-languages` feature (and accepted by `Language::from_name`).
 pub fn language_for_path(path: &str) -> Option<&'static str> {
+    // NOTE: gpui-component ships grammars for ~35 languages but registers some
+    // (swift, csharp, graphql, proto, cmake) with EMPTY highlight queries at
+    // this rev — those parse but produce no colors, so we don't map them here
+    // (they'd just render as plain text either way).
     let name = path.rsplit('/').next().unwrap_or(path);
     // Special filenames that carry no useful extension.
     match name {
         "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
-        "CMakeLists.txt" => return Some("cmake"),
         "Gemfile" | "Rakefile" | "Guardfile" | "Podfile" => return Some("ruby"),
         _ => {}
     }
@@ -54,22 +57,17 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
         "java" => "java",
         "json" | "jsonc" => "json",
         "astro" => "astro",
-        "cmake" => "cmake",
-        "cs" => "csharp",
         "diff" | "patch" => "diff",
         "ejs" => "ejs",
         "ex" | "exs" => "elixir",
         "erb" => "erb",
-        "graphql" | "gql" => "graphql",
         "kt" | "kts" | "ktm" => "kotlin",
         "lua" => "lua",
         "mk" => "make",
         "php" | "php3" | "php4" | "php5" | "phtml" => "php",
-        "proto" => "proto",
         "scala" | "sc" | "sbt" => "scala",
         "sql" => "sql",
         "svelte" => "svelte",
-        "swift" => "swift",
         "zig" => "zig",
         _ => return None,
     })
