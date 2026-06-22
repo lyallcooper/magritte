@@ -1459,21 +1459,22 @@ impl StatusView {
                 title,
                 count,
                 expanded,
-            } => el.text_color(theme::section()).child(SharedString::from(format!(
-                "{} {title} ({count})",
-                triangle(*expanded)
-            ))),
+            } => el.child(chevron(*expanded)).child(
+                div()
+                    .text_color(theme::section())
+                    .child(SharedString::from(format!("{title} ({count})"))),
+            ),
             RowKind::File {
                 code,
                 code_color,
                 label,
                 expanded,
             } => {
-                let tri = match expanded {
-                    Some(e) => triangle(*e),
-                    None => " ",
+                let lead = match expanded {
+                    Some(e) => chevron(*e).into_any_element(),
+                    None => div().w(px(14.0)).into_any_element(),
                 };
-                el.child(SharedString::from(tri))
+                el.child(lead)
                     .child(
                         div()
                             .w(px(20.0))
@@ -1620,12 +1621,15 @@ fn spacer() -> Row {
     }
 }
 
-fn triangle(expanded: bool) -> &'static str {
-    if expanded {
-        "▾"
+fn chevron(expanded: bool) -> gpui_component::Icon {
+    let name = if expanded {
+        gpui_component::IconName::ChevronDown
     } else {
-        "▸"
-    }
+        gpui_component::IconName::ChevronRight
+    };
+    gpui_component::Icon::new(name)
+        .size(px(14.0))
+        .text_color(theme::dim())
 }
 
 fn describe_command(command: transient::Command) -> &'static str {
