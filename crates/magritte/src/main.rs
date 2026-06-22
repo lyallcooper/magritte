@@ -1790,22 +1790,13 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
 }
 
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
-/// switch letter), only the dash *inside* the keycap is highlighted — an
-/// accent-filled badge around the `-` — while the keycap itself stays neutral
-/// (magit's prefix feedback).
+/// switch letter), only the dash *inside* the keycap changes color to the
+/// accent, while the keycap itself stays neutral (magit's prefix feedback).
 fn switch_chip(key: &str, color: Hsla, accent: Hsla, pending: bool) -> AnyElement {
     let rest = key.strip_prefix('-').unwrap_or(key);
-    let dash = if pending {
-        div()
-            .rounded(px(2.0))
-            .bg(with_alpha(accent, 0.4))
-            .text_color(accent)
-            .child(SharedString::from("-"))
-    } else {
-        div().text_color(color).child(SharedString::from("-"))
-    };
+    let dash_color = if pending { accent } else { color };
     chip_box(color)
-        .child(dash)
+        .child(div().text_color(dash_color).child(SharedString::from("-")))
         .child(div().text_color(color).child(SharedString::from(rest.to_string())))
         .into_any_element()
 }
