@@ -486,7 +486,6 @@ struct StatusView {
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
     confirm: Option<(String, Action)>,
     focus: FocusHandle,
-    focused_once: bool,
     scroll: UniformListScrollHandle,
     /// Colors for the current theme, refreshed at the top of each render.
     palette: Palette,
@@ -527,7 +526,6 @@ impl StatusView {
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
-            focused_once: false,
             scroll: UniformListScrollHandle::new(),
             palette: Palette::default(),
         };
@@ -1922,9 +1920,11 @@ impl StatusView {
 
 impl Render for StatusView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.focused_once {
+        // Keep keyboard focus on the status view whenever the commit editor
+        // (which owns its own input focus) isn't open, so keys always land —
+        // including debug-channel keystrokes while the window isn't frontmost.
+        if self.editor.is_none() && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
-            self.focused_once = true;
         }
         self.palette = Palette::from_theme(cx);
 
