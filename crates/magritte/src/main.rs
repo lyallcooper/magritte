@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
-    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
+    FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
     ParentElement, Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions,
 };
@@ -1361,9 +1361,16 @@ impl StatusView {
                     Suffix::Switch(sw) => {
                         let on = state.is_some_and(|s| s.active.contains(sw.key));
                         // magit layout: key, description, then the literal git
-                        // flag in parens — subtle when off, highlighted (cyan)
-                        // when the switch is active.
+                        // flag in parens. Only the flag itself dims (off) or
+                        // highlights in cyan + bold (on) — the parens stay a
+                        // constant neutral color.
                         let flag_color = if on { self.palette.hunk } else { self.palette.dim };
+                        let flag = if on {
+                            div().text_color(flag_color).font_weight(FontWeight::BOLD)
+                        } else {
+                            div().text_color(flag_color)
+                        };
+                        let paren = || div().text_color(self.palette.fg);
                         div()
                             .flex()
                             .items_center()
@@ -1381,8 +1388,11 @@ impl StatusView {
                             )
                             .child(
                                 div()
-                                    .text_color(flag_color)
-                                    .child(SharedString::from(format!("({})", sw.arg))),
+                                    .flex()
+                                    .items_center()
+                                    .child(paren().child(SharedString::from("(")))
+                                    .child(flag.child(SharedString::from(sw.arg)))
+                                    .child(paren().child(SharedString::from(")"))),
                             )
                     }
                     Suffix::Action(a) => div()
