@@ -4,6 +4,7 @@
 //! font; written when the settings screen closes, loaded at startup.
 
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,13 @@ pub fn path() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("magritte").join("config.toml"))
+}
+
+/// Last-modified time of the config file, for change detection. `None` if the
+/// file (or config home) doesn't exist.
+pub fn mtime() -> Option<SystemTime> {
+    let path = path()?;
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Load the config, returning defaults if it's missing or unreadable.

@@ -499,7 +499,49 @@ impl StatusView {
             palette: Palette::default(),
         };
         view.refresh(cx);
+        view.watch_config(cx);
         view
+    }
+
+    /// Poll the config file and apply external edits live. Cheap (a stat once a
+    /// second) and dependency-free; the in-app settings screen is the other,
+    /// event-driven path.
+    fn watch_config(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let mut last = config::mtime();
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let now = config::mtime();
+                if now == last {
+                    continue;
+                }
+                last = now;
+                let cfg = config::load();
+                if this.update(cx, |view, cx| view.apply_config(&cfg, cx)).is_err() {
+                    break; // window closed
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a loaded config: switch theme and font, falling back to defaults
+    /// for empty fields.
+    fn apply_config(&mut self, cfg: &config::Config, cx: &mut Context<Self>) {
+        let theme = if cfg.theme.is_empty() {
+            "Solarized Light"
+        } else {
+            &cfg.theme
+        };
+        apply_theme_by_name(theme, cx);
+        self.font = if cfg.font.is_empty() {
+            SharedString::from("Menlo")
+        } else {
+            SharedString::from(cfg.font.clone())
+        };
+        cx.notify();
     }
 
     /// Reload status from scratch, invalidating any in-flight work.
