@@ -145,14 +145,6 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
-/// Override a color's lightness. The theme's colored tokens (info, danger, …)
-/// are `*.background` fills tuned to sit behind light text, so they read
-/// low-contrast when used directly as text on a light surface. Deepening the
-/// lightness keeps the hue on-brand while making it legible as text.
-fn at_lightness(mut color: Hsla, lightness: f32) -> Hsla {
-    color.l = lightness;
-    color
-}
 
 impl Palette {
     fn from_theme(cx: &App) -> Self {
@@ -1376,7 +1368,7 @@ impl StatusView {
                             .child(switch_chip(
                                 sw.key,
                                 self.palette.dim,
-                                at_lightness(self.palette.hunk, 0.34),
+                                self.palette.removed,
                                 pending_dash,
                             ))
                             .child(
