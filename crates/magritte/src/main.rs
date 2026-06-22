@@ -14,7 +14,7 @@ use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
     FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
     Menu, MenuItem, ParentElement, Render, SharedString, Styled, TitlebarOptions,
-    UniformListScrollHandle, Window, WindowBounds, WindowOptions,
+    UniformListScrollHandle, Window, WindowAppearance, WindowBounds, WindowOptions,
 };
 
 mod config;
@@ -380,17 +380,23 @@ enum RowKind {
     },
 }
 
-/// Which list the settings screen currently has focused.
+/// Which column the settings screen currently has focused.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsField {
+    Appearance,
     Theme,
     Font,
 }
 
-/// State for the live settings screen: two navigable lists (theme + font) that
-/// apply immediately as the selection moves — no save/restart step.
+/// The appearance options, in display order. Index maps to the config string.
+const APPEARANCE_OPTIONS: [(&str, &str); 3] =
+    [("Auto (system)", "auto"), ("Light", "light"), ("Dark", "dark")];
+
+/// State for the live settings screen: appearance + theme + font, applied
+/// immediately as the selection moves — no save/restart step.
 struct SettingsState {
     field: SettingsField,
+    appearance_ix: usize,
     themes: Vec<SharedString>,
     theme_ix: usize,
     theme_scroll: UniformListScrollHandle,
@@ -438,20 +444,41 @@ fn monospace_font_names(window: &Window, cx: &App) -> Vec<SharedString> {
     names
 }
 
-/// Apply a registry theme by name, choosing the light/dark slot from the
-/// theme's own mode and switching the active mode to match.
-fn apply_theme_by_name(name: &str, cx: &mut App) {
-    let Some(cfg) = gpui_component::ThemeRegistry::global(cx).themes().get(name).cloned() else {
-        return;
-    };
-    let mode = cfg.mode;
-    let theme = gpui_component::Theme::global_mut(cx);
-    if mode.is_dark() {
-        theme.dark_theme = cfg;
-    } else {
-        theme.light_theme = cfg;
+/// Whether the system appearance is currently dark.
+fn system_is_dark(cx: &App) -> bool {
+    matches!(
+        cx.window_appearance(),
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+
+/// The effective theme mode for a config: forced light/dark, or the system's
+/// appearance when set to "auto".
+fn effective_mode(cfg: &config::Config, cx: &App) -> gpui_component::ThemeMode {
+    match cfg.appearance.as_str() {
+        "light" => gpui_component::ThemeMode::Light,
+        "dark" => gpui_component::ThemeMode::Dark,
+        _ if system_is_dark(cx) => gpui_component::ThemeMode::Dark,
+        _ => gpui_component::ThemeMode::Light,
     }
-    gpui_component::Theme::change(mode, None, cx);
+}
+
+/// Point the theme's light/dark slots at the config's chosen themes and switch
+/// to the effective mode (following the system when appearance is "auto").
+fn apply_appearance(cfg: &config::Config, cx: &mut App) {
+    let registry = gpui_component::ThemeRegistry::global(cx);
+    let light = registry.themes().get(cfg.light_theme()).cloned();
+    let dark = registry.themes().get(cfg.dark_theme()).cloned();
+    {
+        let theme = gpui_component::Theme::global_mut(cx);
+        if let Some(t) = light {
+            theme.light_theme = t;
+        }
+        if let Some(t) = dark {
+            theme.dark_theme = t;
+        }
+    }
+    gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
 }
 
 struct StatusView {
@@ -479,6 +506,9 @@ struct StatusView {
     settings: Option<SettingsState>,
     /// The monospace font family used for all chrome, set via settings.
     font: SharedString,
+    /// The loaded user config (theme/appearance/font), kept so we can re-apply
+    /// on config-file edits or system appearance changes.
+    config: config::Config,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Last operation result / progress, shown in the bottom bar.
@@ -492,11 +522,12 @@ struct StatusView {
 }
 
 impl StatusView {
-    fn new(start_dir: Option<PathBuf>, font: SharedString, cx: &mut Context<Self>) -> Self {
+    fn new(start_dir: Option<PathBuf>, config: config::Config, cx: &mut Context<Self>) -> Self {
         let root = start_dir
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
+        let font = SharedString::from(config.font().to_string());
 
         // Sections are expanded by default; individual files start collapsed,
         // so opening a large repo loads no diffs until a file is expanded.
@@ -522,6 +553,7 @@ impl StatusView {
             editor: None,
             settings: None,
             font,
+            config,
             mono_fonts: Vec::new(),
             status_message: None,
             confirm: None,
@@ -534,23 +566,39 @@ impl StatusView {
         view
     }
 
-    /// Poll the config file and apply external edits live. Cheap (a stat once a
-    /// second) and dependency-free; the in-app settings screen is the other,
-    /// event-driven path.
+    /// Poll for external config-file edits and system light/dark changes, and
+    /// re-apply live. Cheap (a stat + an appearance read once a second) and
+    /// dependency-free; the in-app settings screen is the other path.
     fn watch_config(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let mut last = config::mtime();
+            let mut last_mtime = config::mtime();
+            let mut last_dark = cx.update(|cx| system_is_dark(cx));
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
-                let now = config::mtime();
-                if now == last {
+                let now_mtime = config::mtime();
+                let config_changed = now_mtime != last_mtime;
+                if config_changed {
+                    last_mtime = now_mtime;
+                }
+                let now_dark = cx.update(|cx| system_is_dark(cx));
+                let appearance_changed = now_dark != last_dark;
+                last_dark = now_dark;
+                if !config_changed && !appearance_changed {
                     continue;
                 }
-                last = now;
-                let cfg = config::load();
-                if this.update(cx, |view, cx| view.apply_config(&cfg, cx)).is_err() {
+                let cfg = config_changed.then(config::load);
+                let updated = this.update(cx, |view, cx| {
+                    if let Some(cfg) = cfg {
+                        view.apply_config(cfg, cx);
+                    } else {
+                        // System appearance flipped; re-apply with the same config.
+                        apply_appearance(&view.config, cx);
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
                     break; // window closed
                 }
             }
@@ -558,20 +606,12 @@ impl StatusView {
         .detach();
     }
 
-    /// Apply a loaded config: switch theme and font, falling back to defaults
-    /// for empty fields.
-    fn apply_config(&mut self, cfg: &config::Config, cx: &mut Context<Self>) {
-        let theme = if cfg.theme.is_empty() {
-            "Solarized Light"
-        } else {
-            &cfg.theme
-        };
-        apply_theme_by_name(theme, cx);
-        self.font = if cfg.font.is_empty() {
-            SharedString::from("Menlo")
-        } else {
-            SharedString::from(cfg.font.clone())
-        };
+    /// Adopt a freshly-loaded config: store it, re-apply theme/appearance, and
+    /// update the font.
+    fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
+        self.config = cfg;
+        self.font = SharedString::from(self.config.font().to_string());
+        apply_appearance(&self.config, cx);
         cx.notify();
     }
 
@@ -1310,23 +1350,41 @@ impl StatusView {
     }
 
     /// Open the live settings screen, seeded with the current theme and font.
+    /// The theme name for the slot the current effective mode uses.
+    fn effective_slot_theme(&self, cx: &App) -> String {
+        if effective_mode(&self.config, cx).is_dark() {
+            self.config.dark_theme().to_string()
+        } else {
+            self.config.light_theme().to_string()
+        }
+    }
+
     fn open_settings(&mut self, window: &Window, cx: &mut Context<Self>) {
         let themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
             .map(|t| t.name.clone())
             .collect();
-        let current_theme = cx.theme().theme_name().clone();
-        let theme_ix = themes.iter().position(|n| *n == current_theme).unwrap_or(0);
+        let slot_theme = self.effective_slot_theme(cx);
+        let theme_ix = themes.iter().position(|n| n.as_ref() == slot_theme).unwrap_or(0);
+
+        let appearance_ix = APPEARANCE_OPTIONS
+            .iter()
+            .position(|(_, v)| *v == self.config.appearance)
+            .unwrap_or(0);
 
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(window, cx);
         }
         let fonts = self.mono_fonts.clone();
-        let font_ix = fonts.iter().position(|f| *f == self.font).unwrap_or(0);
+        let font_ix = fonts
+            .iter()
+            .position(|f| f.as_ref() == self.config.font())
+            .unwrap_or(0);
 
         self.settings = Some(SettingsState {
             field: SettingsField::Theme,
+            appearance_ix,
             themes,
             theme_ix,
             theme_scroll: UniformListScrollHandle::new(),
@@ -1340,44 +1398,66 @@ impl StatusView {
     /// Handle a keystroke while the settings screen is open. Returns true if it
     /// was consumed. Navigation applies the highlighted theme/font live.
     fn handle_settings_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        let Some(s) = self.settings.as_mut() else {
+        if self.settings.is_none() {
             return false;
-        };
+        }
         match key {
             "escape" | "q" | "," => {
                 self.settings = None;
-                // Persist the chosen theme + font so they survive a restart.
-                config::save(&config::Config {
-                    theme: cx.theme().theme_name().to_string(),
-                    font: self.font.to_string(),
-                });
+                // Persist the chosen appearance/themes/font for next launch.
+                config::save(&self.config);
             }
             "tab" => {
+                let s = self.settings.as_mut().unwrap();
                 s.field = match s.field {
+                    SettingsField::Appearance => SettingsField::Theme,
                     SettingsField::Theme => SettingsField::Font,
-                    SettingsField::Font => SettingsField::Theme,
+                    SettingsField::Font => SettingsField::Appearance,
                 };
             }
             "j" | "k" => {
                 let down = key == "j";
-                match s.field {
+                match self.settings.as_ref().unwrap().field {
+                    SettingsField::Appearance => {
+                        let s = self.settings.as_mut().unwrap();
+                        s.appearance_ix = step(s.appearance_ix, down, APPEARANCE_OPTIONS.len());
+                        let value = APPEARANCE_OPTIONS[s.appearance_ix].1;
+                        self.config.appearance = value.to_string();
+                        apply_appearance(&self.config, cx);
+                        // The effective slot may have changed; re-point the theme list.
+                        let slot = self.effective_slot_theme(cx);
+                        let s = self.settings.as_mut().unwrap();
+                        s.theme_ix = s.themes.iter().position(|n| n.as_ref() == slot).unwrap_or(0);
+                        s.theme_scroll
+                            .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
+                    }
                     SettingsField::Theme => {
+                        let s = self.settings.as_mut().unwrap();
                         let n = s.themes.len();
                         if n > 0 {
                             s.theme_ix = step(s.theme_ix, down, n);
                             s.theme_scroll
                                 .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
-                            let name = s.themes[s.theme_ix].clone();
-                            apply_theme_by_name(&name, cx);
+                            let name = s.themes[s.theme_ix].to_string();
+                            // Set whichever slot the effective mode is showing.
+                            if effective_mode(&self.config, cx).is_dark() {
+                                self.config.dark_theme = name;
+                            } else {
+                                self.config.light_theme = name;
+                            }
+                            apply_appearance(&self.config, cx);
                         }
                     }
                     SettingsField::Font => {
+                        let s = self.settings.as_mut().unwrap();
                         let n = s.fonts.len();
                         if n > 0 {
                             s.font_ix = step(s.font_ix, down, n);
                             s.font_scroll
                                 .scroll_to_item(s.font_ix, gpui::ScrollStrategy::Center);
-                            self.font = s.fonts[s.font_ix].clone();
+                            let name = s.fonts[s.font_ix].clone();
+                            self.config.font = name.to_string();
+                            self.font = name;
                         }
                     }
                 }
@@ -1713,8 +1793,8 @@ impl StatusView {
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
 
-    /// Render the live settings screen: a Theme list and a Font list, side by
-    /// side. Selecting in either applies immediately (no save).
+    /// Render the live settings screen: Appearance, Theme, and Font columns,
+    /// side by side. Selecting in any applies immediately (no save).
     fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
         let hint = |k: &str, label: &str| {
             div()
@@ -1749,6 +1829,17 @@ impl StatusView {
                         .child(list),
                 )
         };
+
+        // Appearance: three fixed options, rendered as plain rows.
+        let appearance_focused = s.field == SettingsField::Appearance;
+        let mut appearance_list = div().flex().flex_col().size_full().p_1();
+        for (ix, (label, _)) in APPEARANCE_OPTIONS.iter().enumerate() {
+            appearance_list = appearance_list.child(self.settings_row(
+                label,
+                ix == s.appearance_ix,
+                appearance_focused,
+            ));
+        }
 
         // Theme list.
         let theme_focused = s.field == SettingsField::Theme;
@@ -1810,6 +1901,11 @@ impl StatusView {
                     .gap_6()
                     .flex_grow(1.0)
                     .min_h(px(0.0))
+                    .child(column(
+                        "Appearance",
+                        appearance_focused,
+                        appearance_list.into_any_element(),
+                    ))
                     .child(column("Theme", theme_focused, theme_list.into_any_element()))
                     .child(column("Font", font_focused, font_list.into_any_element())),
             )
@@ -2334,21 +2430,11 @@ fn main() {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         register_bundled_themes(cx);
-        // Apply the saved theme (default Solarized Light). Theme::change first
-        // ensures the Theme global exists so apply_theme_by_name can set it.
+        // Apply the saved appearance/themes. Theme::change first ensures the
+        // Theme global exists so apply_appearance can set its slots.
         let cfg = config::load();
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
-        let theme_name = if cfg.theme.is_empty() {
-            "Solarized Light"
-        } else {
-            &cfg.theme
-        };
-        apply_theme_by_name(theme_name, cx);
-        let font = if cfg.font.is_empty() {
-            SharedString::from("Menlo")
-        } else {
-            SharedString::from(cfg.font.clone())
-        };
+        apply_appearance(&cfg, cx);
         // Standard macOS app shortcuts. Quit is global; Close Window runs on
         // the focused view (so it has a Window to remove).
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
@@ -2379,7 +2465,7 @@ fn main() {
         cx.spawn(async move |cx| {
             let window = cx
                 .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), font.clone(), cx));
+                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), cfg.clone(), cx));
                     // The window's root must be a gpui-component Root (provides
                     // theming, overlays, and the component context).
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
