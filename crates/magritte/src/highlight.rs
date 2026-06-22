@@ -34,7 +34,11 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
     // Special filenames that carry no useful extension.
     match name {
         "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
-        "Gemfile" | "Rakefile" | "Guardfile" | "Podfile" => return Some("ruby"),
+        "Gemfile" | "Rakefile" | "Guardfile" | "Podfile" | "Vagrantfile" | "Brewfile"
+        | "Capfile" | "Berksfile" | "Fastfile" | "Appfile" => return Some("ruby"),
+        ".bashrc" | ".bash_profile" | ".bash_aliases" | ".bash_logout" | ".profile" | ".zshrc"
+        | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" => return Some("bash"),
+        ".eslintrc" | ".babelrc" | ".prettierrc" | ".swcrc" => return Some("json"),
         _ => {}
     }
     let ext = name.rsplit('.').next().unwrap_or("");
@@ -69,6 +73,31 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
         "sql" => "sql",
         "svelte" => "svelte",
         "zig" => "zig",
+        _ => return None,
+    })
+}
+
+/// Detect a language from a shebang line (e.g. `#!/usr/bin/env python3`),
+/// for files with no recognizable extension. Returns `None` for interpreters
+/// we don't have a highlighter for.
+pub fn language_from_shebang(line: &str) -> Option<&'static str> {
+    let rest = line.strip_prefix("#!")?;
+    let mut parts = rest.split_whitespace();
+    let first = parts.next()?;
+    // `#!/usr/bin/env python3` → take the next word; else the binary name.
+    let interp = if first.rsplit('/').next() == Some("env") {
+        parts.next()?
+    } else {
+        first.rsplit('/').next().unwrap_or(first)
+    };
+    // Strip a trailing version suffix only at the path level (python3 stays).
+    Some(match interp {
+        "python" | "python3" | "python2" => "python",
+        "bash" | "sh" | "zsh" | "dash" | "ksh" => "bash",
+        "ruby" => "ruby",
+        "node" | "nodejs" | "deno" | "bun" => "javascript",
+        "lua" | "luajit" => "lua",
+        "php" => "php",
         _ => return None,
     })
 }
