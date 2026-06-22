@@ -32,6 +32,7 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 // on_key_down listener; we override it with an action in our key context.
 actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 use gpui::Subscription;
+use gpui_component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select, SearchableVec, SelectEvent, SelectState};
@@ -2242,6 +2243,31 @@ impl Render for StatusView {
                 self.palette.fg,
                 self.palette.border,
             ));
+        }
+
+        // A floating "?" button (bottom-right) opens the dispatch menu — a
+        // mouse affordance for discovering commands. Hidden while a popup is up.
+        if self.popup.is_none() {
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom_3()
+                    .right_4()
+                    .child(track_target("dispatch-help"))
+                    .child(
+                        Button::new("dispatch-help")
+                            .label("?")
+                            .ghost()
+                            .rounded(ButtonRounded::Size(px(14.0)))
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .tooltip("Dispatch (?)")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.popup = Some(Popup::Dispatch(dispatch_menu()));
+                                cx.notify();
+                            })),
+                    ),
+            );
         }
 
         root
