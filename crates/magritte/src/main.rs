@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
     FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
-    ParentElement, Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window,
-    WindowBounds, WindowOptions,
+    Menu, MenuItem, ParentElement, Render, SharedString, Styled, TitlebarOptions,
+    UniformListScrollHandle, Window, WindowBounds, WindowOptions,
 };
 
 mod config;
@@ -28,7 +28,7 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 
 // Tab is bound by gpui-component's Root (focus nav) and so never reaches an
 // on_key_down listener; we override it with an action in our key context.
-actions!(magritte, [ToggleFold]);
+actions!(magritte, [ToggleFold, Quit, CloseWindow]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
@@ -1912,6 +1912,7 @@ impl Render for StatusView {
                     this.toggle_fold(cx);
                 }
             }))
+            .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
@@ -2312,8 +2313,19 @@ fn main() {
         } else {
             SharedString::from(cfg.font.clone())
         };
-        // Our tab binding, in our context, outranks Root's focus-nav tab.
-        cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
+        // Standard macOS app shortcuts. Quit is global; Close Window runs on
+        // the focused view (so it has a Window to remove).
+        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        cx.bind_keys([
+            // Our tab binding, in our context, outranks Root's focus-nav tab.
+            KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT)),
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
+        ]);
+        cx.set_menus(vec![
+            Menu::new("Magritte").items([MenuItem::action("Quit Magritte", Quit)]),
+            Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
+        ]);
         cx.activate(true);
 
         // A reasonable default window instead of filling the whole screen;
