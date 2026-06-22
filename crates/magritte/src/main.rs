@@ -1360,7 +1360,10 @@ impl StatusView {
                 let row = match suffix {
                     Suffix::Switch(sw) => {
                         let on = state.is_some_and(|s| s.active.contains(sw.key));
-                        let color = if on { self.palette.added } else { self.palette.dim };
+                        // magit layout: key, description, then the literal git
+                        // flag in parens — subtle when off, highlighted (cyan)
+                        // when the switch is active.
+                        let flag_color = if on { self.palette.hunk } else { self.palette.dim };
                         div()
                             .flex()
                             .items_center()
@@ -1373,11 +1376,13 @@ impl StatusView {
                             ))
                             .child(
                                 div()
-                                    .text_color(color)
-                                    .child(SharedString::from(format!(
-                                        "{}  {}",
-                                        sw.arg, sw.description
-                                    ))),
+                                    .text_color(self.palette.fg)
+                                    .child(SharedString::from(sw.description)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(flag_color)
+                                    .child(SharedString::from(format!("({})", sw.arg))),
                             )
                     }
                     Suffix::Action(a) => div()
