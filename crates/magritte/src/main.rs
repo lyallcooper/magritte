@@ -31,7 +31,7 @@ use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::ActiveTheme;
-use magritte_core::transient::{self, Suffix, Transient};
+use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
 };
@@ -64,52 +64,60 @@ impl TransientState {
     }
 }
 
-/// A bottom popup overlay: a command transient or the help/dispatch menu.
+/// A bottom popup overlay. Both the command transients and the `?` help menu
+/// are [`Transient`]s — the help just carries informational rows and dismisses
+/// on any key (its keys fall through to normal handling) rather than being
+/// modal. Sharing the type means they share `render_transient`.
 enum Popup {
     Transient(TransientState),
-    Help,
+    Help(Transient),
 }
 
-/// A keybinding reference group for the help popup.
-struct HelpGroup {
-    title: &'static str,
-    entries: &'static [(&'static str, &'static str)],
+/// The `?` dispatch/help menu, built as a [`Transient`] of informational rows
+/// so it renders through the same multi-column path as the command popups.
+fn dispatch_help() -> Transient {
+    let info = |keys, description| Suffix::Info(transient::Info { keys, description });
+    Transient {
+        title: "Help",
+        groups: vec![
+            Group {
+                title: "Navigation",
+                suffixes: vec![
+                    info("j / k", "move up / down"),
+                    info("gj / gk", "next / previous section"),
+                    info("gg / G", "top / bottom"),
+                    info("TAB", "fold / unfold"),
+                    info("gr", "refresh"),
+                ],
+            },
+            Group {
+                title: "Selecting",
+                suffixes: vec![
+                    info("v / V", "visual line selection"),
+                    info("esc", "cancel selection"),
+                ],
+            },
+            Group {
+                title: "Staging",
+                suffixes: vec![
+                    info("s / u", "stage / unstage at point"),
+                    info("S / U", "stage / unstage all"),
+                    info("x", "discard (with confirm)"),
+                ],
+            },
+            Group {
+                title: "Commands",
+                suffixes: vec![
+                    info("c", "commit"),
+                    info("p", "push"),
+                    info("F", "pull"),
+                    info("f", "fetch"),
+                    info("?", "this help"),
+                ],
+            },
+        ],
+    }
 }
-
-const HELP: &[HelpGroup] = &[
-    HelpGroup {
-        title: "Navigation",
-        entries: &[
-            ("j / k", "move up / down"),
-            ("gj / gk", "next / previous section"),
-            ("gg / G", "top / bottom"),
-            ("TAB", "fold / unfold"),
-            ("gr", "refresh"),
-        ],
-    },
-    HelpGroup {
-        title: "Selecting",
-        entries: &[("v / V", "visual line selection"), ("esc", "cancel selection")],
-    },
-    HelpGroup {
-        title: "Staging",
-        entries: &[
-            ("s / u", "stage / unstage at point"),
-            ("S / U", "stage / unstage all"),
-            ("x", "discard (with confirm)"),
-        ],
-    },
-    HelpGroup {
-        title: "Commands",
-        entries: &[
-            ("c", "commit"),
-            ("p", "push"),
-            ("F", "pull"),
-            ("f", "fetch"),
-            ("?", "this help"),
-        ],
-    },
-];
 
 /// Resolved colors for one render, derived from gpui-component's active theme
 /// so the chrome matches the Input/Kbd/Icon widgets (light or dark).
@@ -1228,7 +1236,7 @@ impl StatusView {
         // The help/dispatch popup is a transparent cheatsheet: the sub-transient
         // keys open their popups, esc/q/? close it, and any other key dismisses
         // it and then performs its normal action (falls through below).
-        if matches!(self.popup, Some(Popup::Help)) {
+        if matches!(self.popup, Some(Popup::Help(_))) {
             match cased.as_str() {
                 "p" => return self.open_transient(transient::push_transient(), cx),
                 "F" => return self.open_transient(transient::pull_transient(), cx),
@@ -1317,12 +1325,12 @@ impl StatusView {
             "f" => return self.open_transient(transient::fetch_transient(), cx),
             // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
-                self.popup = Some(Popup::Help);
+                self.popup = Some(Popup::Help(dispatch_help()));
                 cx.notify();
                 return;
             }
             "/" if shift => {
-                self.popup = Some(Popup::Help);
+                self.popup = Some(Popup::Help(dispatch_help()));
                 cx.notify();
                 return;
             }
@@ -1332,20 +1340,16 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Render the open transient popup as a bottom panel.
-    fn render_transient(&self, state: &TransientState) -> gpui::Div {
-        // When `-` has been pressed, highlight the dash on switch keys to
-        // signal we're waiting for the switch letter (magit's prefix feedback).
-        let dash_color = if state.pending_dash {
-            self.palette.section
-        } else {
-            self.palette.dim
-        };
+    /// Render a popup (command transient or the `?` help menu) as a bottom
+    /// panel. `state` is `None` for the help menu, which has no toggled
+    /// switches and no pending-dash prefix.
+    fn render_transient(&self, def: &Transient, state: Option<&TransientState>) -> gpui::Div {
+        let pending_dash = state.is_some_and(|s| s.pending_dash);
 
         // Lay the groups out as columns so we spread across horizontal space
         // instead of growing tall; columns wrap if the window is narrow.
         let mut columns = div().flex().flex_row().flex_wrap().gap_x_8().gap_y_2();
-        for group in &state.def.groups {
+        for group in &def.groups {
             let mut col = div().flex().flex_col().gap_1().child(
                 div()
                     .text_color(self.palette.dim)
@@ -1354,13 +1358,18 @@ impl StatusView {
             for suffix in &group.suffixes {
                 let row = match suffix {
                     Suffix::Switch(sw) => {
-                        let on = state.active.contains(sw.key);
+                        let on = state.is_some_and(|s| s.active.contains(sw.key));
                         let color = if on { self.palette.added } else { self.palette.dim };
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(switch_chip(sw.key, self.palette.dim, dash_color))
+                            .child(switch_chip(
+                                sw.key,
+                                self.palette.dim,
+                                self.palette.section,
+                                pending_dash,
+                            ))
                             .child(
                                 div()
                                     .text_color(color)
@@ -1376,6 +1385,17 @@ impl StatusView {
                         .gap_2()
                         .child(key_chip(a.key, self.palette.dim))
                         .child(SharedString::from(a.description)),
+                    // A reference row: one or more keycaps then a description.
+                    Suffix::Info(i) => div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(self.key_tokens(i.keys))
+                        .child(
+                            div()
+                                .text_color(self.palette.fg)
+                                .child(SharedString::from(i.description)),
+                        ),
                 };
                 col = col.child(row);
             }
@@ -1395,59 +1415,23 @@ impl StatusView {
             .child(
                 div()
                     .text_color(self.palette.section)
-                    .child(SharedString::from(state.def.title)),
+                    .child(SharedString::from(def.title)),
             )
             .child(columns)
     }
 
-    /// Render the help / dispatch menu as a bottom panel.
-    fn render_help(&self) -> gpui::Div {
-        let mut panel = div()
-            .w_full()
-            .border_t_1()
-            .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .py_1()
-            .px_2()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from("Help   (esc to close)")),
-            );
-
-        for group in HELP {
-            panel = panel.child(
-                div()
-                    .mt_1()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(group.title)),
-            );
-            for (keys, desc) in group.entries {
-                let mut key_col = div().flex().gap_1().items_center().min_w(px(110.0));
-                for token in keys.split_whitespace() {
-                    key_col = if token == "/" {
-                        key_col.child(div().text_color(self.palette.dim).child(SharedString::from("/")))
-                    } else {
-                        key_col.child(key_chip(token, self.palette.dim))
-                    };
-                }
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .pl_2()
-                        .child(key_col)
-                        .child(
-                            div()
-                                .text_color(self.palette.fg)
-                                .child(SharedString::from(*desc)),
-                        ),
-                );
-            }
+    /// Render a whitespace-separated key spec (e.g. `gg / G`) as keycaps with
+    /// any `/` separators kept as plain text between them.
+    fn key_tokens(&self, keys: &str) -> gpui::Div {
+        let mut row = div().flex().items_center().gap_1();
+        for token in keys.split_whitespace() {
+            row = if token == "/" {
+                row.child(div().text_color(self.palette.dim).child(SharedString::from("/")))
+            } else {
+                row.child(key_chip(token, self.palette.dim))
+            };
         }
-        panel
+        row
     }
 
     /// Render the commit message editor: a header, the editable text with a
@@ -1626,8 +1610,8 @@ impl Render for StatusView {
 
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
-                Popup::Transient(state) => self.render_transient(state),
-                Popup::Help => self.render_help(),
+                Popup::Transient(state) => self.render_transient(&state.def, Some(state)),
+                Popup::Help(def) => self.render_transient(def, None),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(status_bar(
@@ -1805,13 +1789,19 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
     chip_box(color).child(SharedString::from(label)).into_any_element()
 }
 
-/// A switch keycap (`-a`), with the leading dash highlighted when a `-` prefix
-/// has been pressed and we're awaiting the switch letter (magit's behavior).
-fn switch_chip(key: &str, color: Hsla, dash_color: Hsla) -> AnyElement {
+/// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
+/// switch letter), the whole keycap lights up in `accent` — border, fill, and
+/// dash — so it's clearly the live input target (magit's prefix feedback).
+fn switch_chip(key: &str, color: Hsla, accent: Hsla, pending: bool) -> AnyElement {
     let rest = key.strip_prefix('-').unwrap_or(key);
-    chip_box(color)
-        .child(div().text_color(dash_color).child(SharedString::from("-")))
-        .child(SharedString::from(rest.to_string()))
+    let chip = if pending {
+        chip_box(accent).bg(with_alpha(accent, 0.28))
+    } else {
+        chip_box(color)
+    };
+    let dash_color = if pending { accent } else { color };
+    chip.child(div().text_color(dash_color).child(SharedString::from("-")))
+        .child(div().text_color(color).child(SharedString::from(rest.to_string())))
         .into_any_element()
 }
 
