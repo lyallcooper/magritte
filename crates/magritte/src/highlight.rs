@@ -23,27 +23,54 @@ pub type Span = (String, Hsla);
 pub type FileHighlights = HashMap<(usize, usize), Vec<Span>>;
 
 /// Map a file path to a tree-sitter language name, or `None` if we don't
-/// highlight it. Names must match gpui-component's enabled language features.
+/// highlight it. Names must match a language enabled in gpui-component's
+/// `tree-sitter-languages` feature (and accepted by `Language::from_name`).
 pub fn language_for_path(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit('.').next().unwrap_or("");
+    let name = path.rsplit('/').next().unwrap_or(path);
+    // Special filenames that carry no useful extension.
+    match name {
+        "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
+        "CMakeLists.txt" => return Some("cmake"),
+        "Gemfile" | "Rakefile" | "Guardfile" | "Podfile" => return Some("ruby"),
+        _ => {}
+    }
+    let ext = name.rsplit('.').next().unwrap_or("");
     Some(match ext {
         "rs" => "rust",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
-        "ts" => "typescript",
+        "ts" | "mts" | "cts" => "typescript",
         "tsx" => "tsx",
         "py" | "pyi" => "python",
         "go" => "go",
         "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => "cpp",
+        "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" | "c++" => "cpp",
         "css" | "scss" => "css",
         "html" | "htm" => "html",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "sh" | "bash" | "zsh" => "bash",
         "rb" => "ruby",
-        "md" | "markdown" => "markdown",
+        "md" | "markdown" | "mdx" => "markdown",
         "java" => "java",
         "json" | "jsonc" => "json",
+        "astro" => "astro",
+        "cmake" => "cmake",
+        "cs" => "csharp",
+        "diff" | "patch" => "diff",
+        "ejs" => "ejs",
+        "ex" | "exs" => "elixir",
+        "erb" => "erb",
+        "graphql" | "gql" => "graphql",
+        "kt" | "kts" | "ktm" => "kotlin",
+        "lua" => "lua",
+        "mk" => "make",
+        "php" | "php3" | "php4" | "php5" | "phtml" => "php",
+        "proto" => "proto",
+        "scala" | "sc" | "sbt" => "scala",
+        "sql" => "sql",
+        "svelte" => "svelte",
+        "swift" => "swift",
+        "zig" => "zig",
         _ => return None,
     })
 }

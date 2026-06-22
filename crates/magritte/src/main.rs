@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use gpui::{
     actions, div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement,
-    Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render,
+    SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
 
 mod highlight;
