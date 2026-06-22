@@ -12,9 +12,12 @@ use std::path::PathBuf;
 
 use gpui::{
     actions, div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render,
-    SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement,
+    Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
+
+mod highlight;
+use highlight::{FileHighlights, Span};
 
 /// Key context for our status view, used so our `tab` binding takes precedence
 /// over gpui-component Root's focus-navigation `tab`.
@@ -133,6 +136,12 @@ mod theme {
     }
     pub fn removed() -> Rgba {
         rgb(0xf7768e)
+    }
+    pub fn added_bg() -> Rgba {
+        rgb(0x16251c)
+    }
+    pub fn removed_bg() -> Rgba {
+        rgb(0x2a1a1f)
     }
     pub fn modified() -> Rgba {
         rgb(0xe0af68)
@@ -317,8 +326,9 @@ enum RowKind {
         text: String,
     },
     Diff {
-        text: String,
-        color: gpui::Rgba,
+        kind: LineKind,
+        /// Syntax-highlighted (or fallback) content runs.
+        spans: Vec<Span>,
     },
 }
 
@@ -330,6 +340,8 @@ struct StatusView {
     error: Option<String>,
     expanded: HashSet<FoldKey>,
     diffs: HashMap<(DiffSource, String), DiffState>,
+    /// Cached syntax highlighting per file diff, keyed like `diffs`.
+    highlights: HashMap<(DiffSource, String), FileHighlights>,
     rows: Vec<Row>,
     selected: usize,
     /// Anchor row of an active visual (region) selection; `None` when off.
@@ -371,6 +383,7 @@ impl StatusView {
             error: None,
             expanded,
             diffs: HashMap::new(),
+            highlights: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
             visual: None,
@@ -393,6 +406,7 @@ impl StatusView {
         self.generation += 1;
         let generation = self.generation;
         self.diffs.clear();
+        self.highlights.clear();
         self.error = None;
 
         let Some(repo) = self.repo.clone() else {
@@ -522,6 +536,16 @@ impl StatusView {
                     Ok(None) => DiffState::Empty,
                     Err(e) => DiffState::Failed(e.to_string()),
                 };
+                // Precompute syntax highlighting for the loaded diff.
+                if let DiffState::Loaded(diff) = &state {
+                    if !diff.is_binary {
+                        if let Some(lang) = highlight::language_for_path(&key.1) {
+                            let hl =
+                                highlight::highlight_diff(diff, lang, cx, theme::fg().into());
+                            this.highlights.insert(key.clone(), hl);
+                        }
+                    }
+                }
                 this.diffs.insert(key, state);
                 this.rebuild_rows();
                 cx.notify();
@@ -669,18 +693,21 @@ impl StatusView {
                             text: hunk_header_text(hunk),
                         },
                     });
+                    let file_hl = self.highlights.get(&(source, file.path.clone()));
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
-                        let (sign, color) = match line.kind {
-                            LineKind::Added => ('+', theme::added()),
-                            LineKind::Removed => ('-', theme::removed()),
-                            LineKind::Context => (' ', theme::fg()),
-                            LineKind::NoNewline => (' ', theme::dim()),
-                        };
-                        let text = if line.kind == LineKind::NoNewline {
-                            line.content.clone()
-                        } else {
-                            format!("{sign}{}", line.content)
-                        };
+                        // Use cached highlight spans if present, else a single
+                        // fallback span in the default color.
+                        let spans: Vec<Span> = file_hl
+                            .and_then(|h| h.get(&(hunk_ix, line_ix)))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                let color = if line.kind == LineKind::NoNewline {
+                                    theme::dim().into()
+                                } else {
+                                    theme::fg().into()
+                                };
+                                vec![(line.content.clone(), color)]
+                            });
                         rows.push(Row {
                             indent: 2,
                             selectable: true,
@@ -690,7 +717,10 @@ impl StatusView {
                                 hunk: hunk_ix,
                                 line: line_ix,
                             }),
-                            kind: RowKind::Diff { text, color },
+                            kind: RowKind::Diff {
+                                kind: line.kind,
+                                spans,
+                            },
                         });
                     }
                 }
@@ -1448,8 +1478,26 @@ impl StatusView {
             RowKind::HunkHeader { text } => {
                 el.text_color(theme::hunk()).child(SharedString::from(text.clone()))
             }
-            RowKind::Diff { text, color } => {
-                el.text_color(*color).child(SharedString::from(text.clone()))
+            RowKind::Diff { kind, spans } => {
+                let (sign, sign_color, tint) = match kind {
+                    LineKind::Added => ('+', theme::added(), Some(theme::added_bg())),
+                    LineKind::Removed => ('-', theme::removed(), Some(theme::removed_bg())),
+                    _ => (' ', theme::dim(), None),
+                };
+                // Add/remove background tint, unless the row is selected/in-region.
+                if let Some(t) = tint {
+                    if !selected && !in_region {
+                        el = el.bg(t);
+                    }
+                }
+                // Sign + syntax-highlighted content as adjacent runs (no gap).
+                let mut line = div()
+                    .flex()
+                    .child(div().text_color(sign_color).child(SharedString::from(sign.to_string())));
+                for (text, color) in spans {
+                    line = line.child(div().text_color(*color).child(SharedString::from(text.clone())));
+                }
+                el.child(line)
             }
         }
         .into_any_element()
