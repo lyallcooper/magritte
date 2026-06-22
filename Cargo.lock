@@ -3538,6 +3538,8 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "magritte-core",
+ "serde",
+ "toml 0.8.23",
 ]
 
 [[package]]

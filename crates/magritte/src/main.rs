@@ -17,6 +17,7 @@ use gpui::{
     WindowBounds, WindowOptions,
 };
 
+mod config;
 mod debug;
 mod highlight;
 use highlight::{FileHighlights, Span};
@@ -460,7 +461,7 @@ struct StatusView {
 }
 
 impl StatusView {
-    fn new(start_dir: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    fn new(start_dir: Option<PathBuf>, font: SharedString, cx: &mut Context<Self>) -> Self {
         let root = start_dir
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
@@ -489,7 +490,7 @@ impl StatusView {
             popup: None,
             editor: None,
             settings: None,
-            font: SharedString::from("Menlo"),
+            font,
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
@@ -1276,6 +1277,11 @@ impl StatusView {
         match key {
             "escape" | "q" | "," => {
                 self.settings = None;
+                // Persist the chosen theme + font so they survive a restart.
+                config::save(&config::Config {
+                    theme: cx.theme().theme_name().to_string(),
+                    font: self.font.to_string(),
+                });
             }
             "tab" => {
                 s.field = match s.field {
@@ -2249,17 +2255,21 @@ fn main() {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         register_bundled_themes(cx);
-        // Ensure the Theme global exists, then point its light variant at the
-        // bundled Solarized Light theme and apply it.
+        // Apply the saved theme (default Solarized Light). Theme::change first
+        // ensures the Theme global exists so apply_theme_by_name can set it.
+        let cfg = config::load();
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
-        if let Some(theme) = gpui_component::ThemeRegistry::global(cx)
-            .themes()
-            .get("Solarized Light")
-            .cloned()
-        {
-            gpui_component::Theme::global_mut(cx).light_theme = theme;
-            gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
-        }
+        let theme_name = if cfg.theme.is_empty() {
+            "Solarized Light"
+        } else {
+            &cfg.theme
+        };
+        apply_theme_by_name(theme_name, cx);
+        let font = if cfg.font.is_empty() {
+            SharedString::from("Menlo")
+        } else {
+            SharedString::from(cfg.font.clone())
+        };
         // Our tab binding, in our context, outranks Root's focus-nav tab.
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
@@ -2279,7 +2289,7 @@ fn main() {
         cx.spawn(async move |cx| {
             let window = cx
                 .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), cx));
+                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), font.clone(), cx));
                     // The window's root must be a gpui-component Root (provides
                     // theming, overlays, and the component context).
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
