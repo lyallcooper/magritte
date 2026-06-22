@@ -714,8 +714,8 @@ impl StatusView {
                 fold: source.map(|s| FoldKey::File(s, path.clone())),
                 target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
-                    code: status_code(entry),
-                    code_color: code_color(entry, &self.palette),
+                    code: status_label(entry, id),
+                    code_color: code_color(entry, id, &self.palette),
                     label,
                     expanded: file_expanded,
                 },
@@ -1545,7 +1545,7 @@ impl StatusView {
                 el.child(lead)
                     .child(
                         div()
-                            .w(px(20.0))
+                            .w(px(84.0))
                             .text_color(*code_color)
                             .child(SharedString::from(code.clone())),
                     )
@@ -1887,33 +1887,40 @@ fn hunk_header_text(hunk: &magritte_core::Hunk) -> String {
     text
 }
 
-fn status_code(entry: &FileEntry) -> String {
-    if entry.kind == EntryKind::Untracked {
-        return "??".to_string();
+/// The change relevant to a file within a given section: a staged row reflects
+/// the index status, everything else the worktree status.
+fn section_change(entry: &FileEntry, section: SectionId) -> Change {
+    match section {
+        SectionId::Staged => entry.index,
+        _ => entry.worktree,
     }
-    let glyph = |c: Change| match c {
-        Change::Unmodified => ' ',
-        Change::Modified => 'M',
-        Change::TypeChanged => 'T',
-        Change::Added => 'A',
-        Change::Deleted => 'D',
-        Change::Renamed => 'R',
-        Change::Copied => 'C',
-        Change::Unmerged => 'U',
-    };
-    format!("{}{}", glyph(entry.index), glyph(entry.worktree))
 }
 
-fn code_color(entry: &FileEntry, p: &Palette) -> Hsla {
+/// A human-readable status word (magit-style) for a file in a section, e.g.
+/// "modified", "new file", "deleted". Untracked files carry no word — the
+/// section header already says "Untracked files".
+fn status_label(entry: &FileEntry, section: SectionId) -> String {
+    if entry.kind == EntryKind::Untracked {
+        return String::new();
+    }
+    match section_change(entry, section) {
+        Change::Unmodified => "",
+        Change::Modified => "modified",
+        Change::TypeChanged => "typechange",
+        Change::Added => "new file",
+        Change::Deleted => "deleted",
+        Change::Renamed => "renamed",
+        Change::Copied => "copied",
+        Change::Unmerged => "conflicted",
+    }
+    .to_string()
+}
+
+fn code_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
     if entry.kind == EntryKind::Untracked {
         return p.dim;
     }
-    let dominant = if entry.index != Change::Unmodified {
-        entry.index
-    } else {
-        entry.worktree
-    };
-    match dominant {
+    match section_change(entry, section) {
         Change::Added | Change::Copied => p.added,
         Change::Deleted => p.removed,
         _ => p.modified,
