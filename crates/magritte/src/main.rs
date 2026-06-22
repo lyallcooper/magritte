@@ -1411,18 +1411,25 @@ impl StatusView {
                     .child(SharedString::from(group.title)),
             );
             for (keys, desc) in group.entries {
+                let mut key_col = div().flex().gap_1().items_center().min_w(px(110.0));
+                for token in keys.split_whitespace() {
+                    key_col = if token == "/" {
+                        key_col.child(div().text_color(self.palette.dim).child(SharedString::from("/")))
+                    } else {
+                        key_col.child(key_chip(token, self.palette.modified))
+                    };
+                }
                 panel = panel.child(
                     div()
                         .flex()
                         .gap_2()
                         .pl_2()
+                        .child(key_col)
                         .child(
                             div()
-                                .min_w(px(72.0))
-                                .text_color(self.palette.modified)
-                                .child(SharedString::from(*keys)),
-                        )
-                        .child(SharedString::from(*desc)),
+                                .text_color(self.palette.fg)
+                                .child(SharedString::from(*desc)),
+                        ),
                 );
             }
         }
@@ -1447,10 +1454,20 @@ impl StatusView {
             .gap_2()
             .child(
                 div()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(format!(
-                        "{title}    ⌘↵ commit · ↵ newline · esc cancel"
-                    ))),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(SharedString::from(title)),
+                    )
+                    .child(key_chip("cmd-enter", self.palette.modified))
+                    .child(div().text_color(self.palette.dim).child(SharedString::from("commit")))
+                    .child(key_chip("enter", self.palette.modified))
+                    .child(div().text_color(self.palette.dim).child(SharedString::from("newline")))
+                    .child(key_chip("esc", self.palette.modified))
+                    .child(div().text_color(self.palette.dim).child(SharedString::from("cancel"))),
             )
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
@@ -1716,11 +1733,14 @@ fn file_head_tail(path: &std::path::Path) -> (String, String) {
 /// A keyboard key badge. Uses gpui-component's `Kbd` for real single
 /// keystrokes; falls back to plain text for multi-key hints like `-f`.
 fn key_chip(key: &str, fallback: Hsla) -> AnyElement {
-    // Uppercase single letters are shifted keystrokes (e.g. F = shift-f).
-    let spec = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_uppercase()) {
-        format!("shift-{}", key.to_lowercase())
-    } else {
-        key.to_string()
+    let spec = match key {
+        "TAB" | "tab" => "tab".to_string(),
+        "esc" | "ESC" => "escape".to_string(),
+        // Uppercase single letters are shifted keystrokes (e.g. F = shift-f).
+        _ if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_uppercase()) => {
+            format!("shift-{}", key.to_lowercase())
+        }
+        _ => key.to_string(),
     };
     match gpui::Keystroke::parse(&spec) {
         Ok(stroke) => gpui_component::kbd::Kbd::new(stroke).into_any_element(),
