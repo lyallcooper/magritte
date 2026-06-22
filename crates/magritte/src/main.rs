@@ -1362,11 +1362,12 @@ impl StatusView {
     }
 
     fn open_settings(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
+        let mut themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
             .map(|t| t.name.clone())
             .collect();
+        themes.sort_by_key(|n| n.to_lowercase());
         let slot_theme = self.effective_slot_theme(cx);
         let theme_ix = themes.iter().position(|n| n.as_ref() == slot_theme).unwrap_or(0);
 
@@ -1808,8 +1809,6 @@ impl StatusView {
                     )
                     .child(key_chip("cmd-enter", self.palette.dim))
                     .child(div().text_color(self.palette.dim).child(SharedString::from("commit")))
-                    .child(key_chip("enter", self.palette.dim))
-                    .child(div().text_color(self.palette.dim).child(SharedString::from("newline")))
                     .child(key_chip("esc", self.palette.dim))
                     .child(div().text_color(self.palette.dim).child(SharedString::from("cancel"))),
             )
