@@ -70,56 +70,55 @@ impl TransientState {
     }
 }
 
-/// A bottom popup overlay. Both the command transients and the `?` help menu
-/// are [`Transient`]s — the help just carries informational rows and dismisses
-/// on any key (its keys fall through to normal handling) rather than being
-/// modal. Sharing the type means they share `render_transient`.
+/// A bottom popup overlay. Both the command transients (push/commit/…) and the
+/// `?` dispatch menu are [`Transient`]s rendered by `render_transient`. The
+/// difference is dispatch (`Dispatch`) has no toggleable switches and its rows
+/// invoke view-level commands via [`StatusView::run_dispatch`] rather than
+/// `Repo::execute`, so it's a separate variant.
 enum Popup {
     Transient(TransientState),
-    Help(Transient),
+    Dispatch(Transient),
 }
 
-/// The `?` dispatch/help menu, built as a [`Transient`] of informational rows
-/// so it renders through the same multi-column path as the command popups.
-fn dispatch_help() -> Transient {
+/// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
+/// row is a command invoked by its key or a click; navigation keys aren't
+/// listed (they're always available, not dispatched).
+fn dispatch_menu() -> Transient {
     let info = |keys, description| Suffix::Info(transient::Info { keys, description });
     Transient {
-        title: "Help",
+        title: "Dispatch",
         groups: vec![
             Group {
-                title: "Navigation",
+                title: "Commands",
                 suffixes: vec![
-                    info("j / k", "move up / down"),
-                    info("gj / gk", "next / previous section"),
-                    info("gg / G", "top / bottom"),
-                    info("TAB", "fold / unfold"),
-                    info("gr", "refresh"),
+                    info("c", "Commit"),
+                    info("p", "Push"),
+                    info("F", "Pull"),
+                    info("f", "Fetch"),
+                    info(",", "Settings"),
+                ],
+            },
+            Group {
+                title: "Applying changes",
+                suffixes: vec![
+                    info("s", "Stage"),
+                    info("u", "Unstage"),
+                    info("S", "Stage all"),
+                    info("U", "Unstage all"),
+                    info("x", "Discard"),
                 ],
             },
             Group {
                 title: "Selecting",
-                suffixes: vec![
-                    info("v / V", "visual line selection"),
-                    info("esc", "cancel selection"),
-                ],
+                suffixes: vec![info("v", "Visual selection")],
             },
             Group {
-                title: "Staging",
+                title: "Essential",
                 suffixes: vec![
-                    info("s / u", "stage / unstage at point"),
-                    info("S / U", "stage / unstage all"),
-                    info("x", "discard (with confirm)"),
-                ],
-            },
-            Group {
-                title: "Commands",
-                suffixes: vec![
-                    info("c", "commit"),
-                    info("p", "push"),
-                    info("F", "pull"),
-                    info("f", "fetch"),
-                    info(",", "settings"),
-                    info("?", "this help"),
+                    info("j", "Move down"),
+                    info("k", "Move up"),
+                    info("tab", "Fold / unfold"),
+                    info("gr", "Refresh"),
                 ],
             },
         ],
@@ -1540,25 +1539,26 @@ impl StatusView {
             return;
         }
 
-        // The help/dispatch popup is a transparent cheatsheet: the sub-transient
-        // keys open their popups, esc/q/? close it, and any other key dismisses
-        // it and then performs its normal action (falls through below).
-        if matches!(self.popup, Some(Popup::Help(_))) {
+        // The `?` dispatch popup is modal (like magit's dispatch): a command
+        // key runs that command, esc/q/? close it, other keys are ignored.
+        if matches!(self.popup, Some(Popup::Dispatch(_))) {
+            if self.pending_g {
+                self.pending_g = false;
+                if key == "r" {
+                    self.run_dispatch("gr", window, cx);
+                }
+                return;
+            }
             match cased.as_str() {
-                "p" => return self.open_transient(transient::push_transient(), cx),
-                "F" => return self.open_transient(transient::pull_transient(), cx),
-                "f" => return self.open_transient(transient::fetch_transient(), cx),
                 "escape" | "q" | "?" | "/" => {
                     self.popup = None;
                     cx.notify();
-                    return;
                 }
-                _ => {
-                    self.popup = None;
-                    cx.notify();
-                    // fall through to normal handling of this key
-                }
+                "g" => self.pending_g = true,
+                k if Self::is_dispatch_key(k) => self.run_dispatch(&cased, window, cx),
+                _ => {}
             }
+            return;
         }
 
         // A pending discard confirmation captures the next key.
@@ -1637,12 +1637,12 @@ impl StatusView {
             }
             // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
-                self.popup = Some(Popup::Help(dispatch_help()));
+                self.popup = Some(Popup::Dispatch(dispatch_menu()));
                 cx.notify();
                 return;
             }
             "/" if shift => {
-                self.popup = Some(Popup::Help(dispatch_help()));
+                self.popup = Some(Popup::Dispatch(dispatch_menu()));
                 cx.notify();
                 return;
             }
@@ -1671,6 +1671,57 @@ impl StatusView {
         } else {
             self.handle_transient_key(&key, window, cx);
         }
+    }
+
+    /// Invoke a `?`-dispatch command (by key press or row click): close the
+    /// dispatch menu and run the command, like magit's dispatch transient.
+    fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = None;
+        match key {
+            "c" => self.open_transient(transient::commit_transient(), cx),
+            "p" => self.open_transient(transient::push_transient(), cx),
+            "F" => self.open_transient(transient::pull_transient(), cx),
+            "f" => self.open_transient(transient::fetch_transient(), cx),
+            "," => self.open_settings(window, cx),
+            "s" => self.act(Op::Stage, cx),
+            "S" => self.run_action(Action::StageAll, cx),
+            "u" => self.act(Op::Unstage, cx),
+            "U" => self.run_action(Action::UnstageAll, cx),
+            "x" => self.act(Op::Discard, cx),
+            "v" => {
+                self.visual = if self.visual.is_some() {
+                    None
+                } else {
+                    Some(self.selected)
+                };
+                cx.notify();
+            }
+            "j" => {
+                self.move_selection(1);
+                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+            "k" => {
+                self.move_selection(-1);
+                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+            "tab" => self.toggle_fold(cx),
+            "gr" => {
+                self.refresh(cx);
+                cx.notify();
+            }
+            _ => cx.notify(),
+        }
+    }
+
+    /// Whether `key` is a single-key `?`-dispatch command (Tab arrives via the
+    /// ToggleFold action; `gr` via the g-prefix).
+    fn is_dispatch_key(key: &str) -> bool {
+        matches!(
+            key,
+            "c" | "p" | "F" | "f" | "," | "s" | "S" | "u" | "U" | "x" | "v" | "j" | "k"
+        )
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -1773,18 +1824,32 @@ impl StatusView {
                             })
                             .into_any_element()
                     }
-                    // A reference row: one or more keycaps then a description.
-                    Suffix::Info(i) => div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(self.key_tokens(i.keys))
-                        .child(
-                            div()
-                                .text_color(self.palette.fg)
-                                .child(SharedString::from(i.description)),
-                        )
-                        .into_any_element(),
+                    // A dispatch command row: keycap + label, clickable to run.
+                    Suffix::Info(i) => {
+                        let view = view.clone();
+                        let key = SharedString::from(i.keys);
+                        div()
+                            .id(i.keys)
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(self.palette.visual))
+                            .child(track_target(i.keys))
+                            .child(self.key_tokens(i.keys))
+                            .child(
+                                div()
+                                    .text_color(self.palette.fg)
+                                    .child(SharedString::from(i.description)),
+                            )
+                            .on_click(move |_, window, cx: &mut App| {
+                                view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
+                            })
+                            .into_any_element()
+                    }
                 };
                 col = col.child(row);
             }
@@ -2078,6 +2143,8 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
                 if this.settings.is_some() {
                     this.cycle_settings_focus(window, cx);
+                } else if matches!(this.popup, Some(Popup::Dispatch(_))) {
+                    this.run_dispatch("tab", window, cx);
                 } else if this.popup.is_none() && this.editor.is_none() {
                     this.toggle_fold(cx);
                 }
@@ -2139,7 +2206,7 @@ impl Render for StatusView {
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
                 Popup::Transient(state) => self.render_transient(&state.def, Some(state), &view),
-                Popup::Help(def) => self.render_transient(def, None, &view),
+                Popup::Dispatch(def) => self.render_transient(def, None, &view),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(status_bar(
