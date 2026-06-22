@@ -1800,14 +1800,18 @@ impl StatusView {
                     Some(e) => chevron(*e, self.palette.dim).into_any_element(),
                     None => div().w(px(14.0)).into_any_element(),
                 };
-                el.child(lead)
-                    .child(
+                let mut el = el.child(lead);
+                // Only files with a status word get the fixed-width status
+                // column; untracked files (no word) sit flush after the lead.
+                if !code.is_empty() {
+                    el = el.child(
                         div()
                             .w(px(84.0))
                             .text_color(*code_color)
                             .child(SharedString::from(code.clone())),
-                    )
-                    .child(SharedString::from(label.clone()))
+                    );
+                }
+                el.child(SharedString::from(label.clone()))
             }
             RowKind::HunkHeader { text } => {
                 el.text_color(self.palette.hunk).child(SharedString::from(text.clone()))
@@ -2164,7 +2168,9 @@ fn section_change(entry: &FileEntry, section: SectionId) -> Change {
 /// section header already says "Untracked files".
 fn status_label(entry: &FileEntry, section: SectionId) -> String {
     if entry.kind == EntryKind::Untracked {
-        return "new file".to_string();
+        // No status word — the "Untracked files" header already says it, and
+        // the filename sits flush rather than tabbed past an empty column.
+        return String::new();
     }
     match section_change(entry, section) {
         Change::Unmodified => "",
