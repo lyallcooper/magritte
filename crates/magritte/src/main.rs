@@ -28,6 +28,7 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 actions!(magritte, [ToggleFold]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::ActiveTheme;
 use magritte_core::transient::{self, Suffix, Transient};
 use magritte_core::{
@@ -1593,15 +1594,21 @@ impl Render for StatusView {
         // The list takes the flexible space; the status bar (added below)
         // sits beneath it, so showing the bar never shifts content down.
         root = root.child(
-            uniform_list("rows", count, move |range, _window, cx| {
-                let this = view.read(cx);
-                range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
-            })
-            .track_scroll(&self.scroll)
-            .w_full()
-            .flex_grow(1.0)
-            .py_2()
-            .px_2(),
+            div()
+                .relative()
+                .w_full()
+                .flex_grow(1.0)
+                .child(
+                    uniform_list("rows", count, move |range, _window, cx| {
+                        let this = view.read(cx);
+                        range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
+                    })
+                    .track_scroll(&self.scroll)
+                    .size_full()
+                    .py_2()
+                    .px_2(),
+                )
+                .vertical_scrollbar(&self.scroll),
         );
 
         if let Some(popup) = &self.popup {
@@ -1859,6 +1866,11 @@ fn main() {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
+        // Theme::change resets this to the macOS auto-hide default (only visible
+        // while actively scrolling). Keep the bar persistently visible instead —
+        // a desktop app wants a durable scroll affordance.
+        gpui_component::Theme::global_mut(cx).scrollbar_show =
+            gpui_component::scroll::ScrollbarShow::Always;
         // Our tab binding, in our context, outranks Root's focus-nav tab.
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
