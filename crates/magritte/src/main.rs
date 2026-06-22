@@ -109,16 +109,22 @@ fn dispatch_menu() -> Transient {
                 ],
             },
             Group {
-                title: "Selecting",
-                suffixes: vec![info("v", "Visual selection")],
+                title: "Navigation",
+                suffixes: vec![
+                    info("j", "Move down"),
+                    info("k", "Move up"),
+                    info("gg", "Top"),
+                    info("G", "Bottom"),
+                    info("gj", "Next section"),
+                    info("gk", "Previous section"),
+                ],
             },
             Group {
                 title: "Essential",
                 suffixes: vec![
-                    info("j", "Move down"),
-                    info("k", "Move up"),
                     info("tab", "Fold / unfold"),
                     info("gr", "Refresh"),
+                    info("v", "Visual selection"),
                 ],
             },
         ],
@@ -1544,8 +1550,12 @@ impl StatusView {
         if matches!(self.popup, Some(Popup::Dispatch(_))) {
             if self.pending_g {
                 self.pending_g = false;
-                if key == "r" {
-                    self.run_dispatch("gr", window, cx);
+                match key.as_str() {
+                    "r" => self.run_dispatch("gr", window, cx),
+                    "g" => self.run_dispatch("gg", window, cx),
+                    "j" => self.run_dispatch("gj", window, cx),
+                    "k" => self.run_dispatch("gk", window, cx),
+                    _ => {}
                 }
                 return;
             }
@@ -1696,31 +1706,34 @@ impl StatusView {
                 };
                 cx.notify();
             }
-            "j" => {
-                self.move_selection(1);
-                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
-            }
-            "k" => {
-                self.move_selection(-1);
-                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
-            }
             "tab" => self.toggle_fold(cx),
             "gr" => {
                 self.refresh(cx);
                 cx.notify();
             }
-            _ => cx.notify(),
+            // Motions: move the selection, then settle the scroll.
+            motion => {
+                match motion {
+                    "j" => self.move_selection(1),
+                    "k" => self.move_selection(-1),
+                    "gg" => self.select_edge(false),
+                    "G" => self.select_edge(true),
+                    "gj" => self.select_section(true),
+                    "gk" => self.select_section(false),
+                    _ => {}
+                }
+                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
         }
     }
 
     /// Whether `key` is a single-key `?`-dispatch command (Tab arrives via the
-    /// ToggleFold action; `gr` via the g-prefix).
+    /// ToggleFold action; `gr`/`gg`/`gj`/`gk` via the g-prefix).
     fn is_dispatch_key(key: &str) -> bool {
         matches!(
             key,
-            "c" | "p" | "F" | "f" | "," | "s" | "S" | "u" | "U" | "x" | "v" | "j" | "k"
+            "c" | "p" | "F" | "f" | "," | "s" | "S" | "u" | "U" | "x" | "v" | "j" | "k" | "G"
         )
     }
 
