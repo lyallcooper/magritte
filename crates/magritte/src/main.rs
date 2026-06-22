@@ -1364,7 +1364,7 @@ impl StatusView {
                             .flex()
                             .gap_2()
                             .pl_2()
-                            .child(key_chip(sw.key, self.palette.modified))
+                            .child(key_chip(sw.key, self.palette.dim))
                             .child(
                                 div()
                                     .text_color(color)
@@ -1378,7 +1378,7 @@ impl StatusView {
                         .flex()
                         .gap_2()
                         .pl_2()
-                        .child(key_chip(a.key, self.palette.modified))
+                        .child(key_chip(a.key, self.palette.dim))
                         .child(SharedString::from(a.description)),
                 };
                 panel = panel.child(row);
@@ -1417,7 +1417,7 @@ impl StatusView {
                     key_col = if token == "/" {
                         key_col.child(div().text_color(self.palette.dim).child(SharedString::from("/")))
                     } else {
-                        key_col.child(key_chip(token, self.palette.modified))
+                        key_col.child(key_chip(token, self.palette.dim))
                     };
                 }
                 panel = panel.child(
@@ -1463,11 +1463,11 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(SharedString::from(title)),
                     )
-                    .child(key_chip("cmd-enter", self.palette.modified))
+                    .child(key_chip("cmd-enter", self.palette.dim))
                     .child(div().text_color(self.palette.dim).child(SharedString::from("commit")))
-                    .child(key_chip("enter", self.palette.modified))
+                    .child(key_chip("enter", self.palette.dim))
                     .child(div().text_color(self.palette.dim).child(SharedString::from("newline")))
-                    .child(key_chip("esc", self.palette.modified))
+                    .child(key_chip("esc", self.palette.dim))
                     .child(div().text_color(self.palette.dim).child(SharedString::from("cancel"))),
             )
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
@@ -1736,27 +1736,51 @@ fn file_head_tail(path: &std::path::Path) -> (String, String) {
     )
 }
 
-/// A small colored key label for transient rows.
-/// A keyboard key badge. Uses gpui-component's `Kbd` for real single
-/// keystrokes; falls back to plain text for multi-key hints like `-f`.
-fn key_chip(key: &str, fallback: Hsla) -> AnyElement {
-    let spec = match key {
-        "TAB" | "tab" => "tab".to_string(),
-        "esc" | "ESC" => "escape".to_string(),
-        // Uppercase single letters are shifted keystrokes (e.g. F = shift-f).
-        _ if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_uppercase()) => {
-            format!("shift-{}", key.to_lowercase())
-        }
-        _ => key.to_string(),
-    };
-    match gpui::Keystroke::parse(&spec) {
-        Ok(stroke) => gpui_component::kbd::Kbd::new(stroke).into_any_element(),
-        Err(_) => div()
-            .min_w(px(20.0))
-            .text_color(fallback)
-            .child(SharedString::from(key.to_string()))
-            .into_any_element(),
+/// Spell out one keystroke token as a word label. Modifier and named keys
+/// become words (`Cmd`, `Enter`, `Esc`, `Tab`) rather than the macOS glyphs,
+/// which render poorly in our monospace chrome. Plain letters keep their case
+/// (`F` vs `f`) so case alone distinguishes the shifted key — no `Shift` shown.
+fn key_word(token: &str) -> String {
+    match token {
+        "cmd" | "super" | "meta" => "Cmd".into(),
+        "ctrl" | "control" => "Ctrl".into(),
+        "alt" | "opt" | "option" => "Alt".into(),
+        "shift" => "Shift".into(),
+        "enter" | "return" => "Enter".into(),
+        "esc" | "ESC" | "escape" => "Esc".into(),
+        "tab" | "TAB" => "Tab".into(),
+        "space" => "Space".into(),
+        _ => token.to_string(),
     }
+}
+
+fn is_modifier(token: &str) -> bool {
+    matches!(
+        token,
+        "cmd" | "super" | "meta" | "ctrl" | "control" | "alt" | "opt" | "option" | "shift"
+    )
+}
+
+/// A keyboard key badge: a subtle rounded chip with a word-style label.
+/// Chords like `cmd-enter` render as `Cmd+Enter`. A leading `-` (transient
+/// switch keys such as `-a`) is kept verbatim, not treated as a chord.
+fn key_chip(key: &str, color: Hsla) -> AnyElement {
+    let parts: Vec<&str> = key.split('-').collect();
+    let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
+    let label = if is_chord {
+        parts.iter().map(|p| key_word(p)).collect::<Vec<_>>().join("+")
+    } else {
+        key_word(key)
+    };
+    div()
+        .px(px(5.0))
+        .min_w(px(18.0))
+        .text_center()
+        .rounded(px(3.0))
+        .text_color(color)
+        .bg(with_alpha(color, 0.14))
+        .child(SharedString::from(label))
+        .into_any_element()
 }
 
 /// A bottom-pinned status bar row (confirm prompt or mode indicator).
@@ -1866,11 +1890,6 @@ fn main() {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
-        // Theme::change resets this to the macOS auto-hide default (only visible
-        // while actively scrolling). Keep the bar persistently visible instead —
-        // a desktop app wants a durable scroll affordance.
-        gpui_component::Theme::global_mut(cx).scrollbar_show =
-            gpui_component::scroll::ScrollbarShow::Always;
         // Our tab binding, in our context, outranks Root's focus-nav tab.
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
