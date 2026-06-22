@@ -8,13 +8,42 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+/// Default theme names for the light and dark slots.
+pub const DEFAULT_LIGHT_THEME: &str = "Solarized Light";
+pub const DEFAULT_DARK_THEME: &str = "Solarized Dark";
+pub const DEFAULT_FONT: &str = "Menlo";
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Active theme name (registry name, e.g. "Solarized Light"). Empty = default.
-    pub theme: String,
+    /// "auto" (follow the system), "light", or "dark". Empty = "auto".
+    pub appearance: String,
+    /// Theme used in light mode (registry name). Empty = default.
+    pub light_theme: String,
+    /// Theme used in dark mode (registry name). Empty = default.
+    pub dark_theme: String,
     /// Monospace font family. Empty = platform default.
     pub font: String,
+}
+
+impl Config {
+    pub fn light_theme(&self) -> &str {
+        non_empty(&self.light_theme, DEFAULT_LIGHT_THEME)
+    }
+    pub fn dark_theme(&self) -> &str {
+        non_empty(&self.dark_theme, DEFAULT_DARK_THEME)
+    }
+    pub fn font(&self) -> &str {
+        non_empty(&self.font, DEFAULT_FONT)
+    }
+}
+
+fn non_empty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() {
+        fallback
+    } else {
+        value
+    }
 }
 
 /// Path to the config file, if we can determine a config home.
