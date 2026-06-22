@@ -15,6 +15,23 @@ path = "src/main.rs"
 # unify. These revs are pinned to match gpui-component 0.5.2.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c", features = [
+    "tree-sitter-rust",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-tsx",
+    "tree-sitter-python",
+    "tree-sitter-go",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-html",
+    "tree-sitter-yaml",
+    "tree-sitter-toml",
+    "tree-sitter-bash",
+    "tree-sitter-ruby",
+    "tree-sitter-markdown",
+    "tree-sitter-java",
+] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
 magritte-core = { path = "../magritte-core" }
