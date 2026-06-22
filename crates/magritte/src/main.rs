@@ -35,7 +35,8 @@ use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select, SearchableVec, SelectEvent, SelectState};
-use gpui_component::{ActiveTheme, IndexPath};
+use gpui_component::tag::Tag;
+use gpui_component::{ActiveTheme, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
@@ -1651,17 +1652,46 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Mouse click on a transient suffix: toggle a switch, or invoke an action.
+    fn click_suffix(
+        &mut self,
+        key: SharedString,
+        is_switch: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_switch {
+            if let Some(Popup::Transient(state)) = self.popup.as_mut() {
+                let k = key.to_string();
+                if !state.active.remove(&k) {
+                    state.active.insert(k);
+                }
+                cx.notify();
+            }
+        } else {
+            self.handle_transient_key(&key, window, cx);
+        }
+    }
+
     /// Render a popup (command transient or the `?` help menu) as a bottom
     /// panel. `state` is `None` for the help menu, which has no toggled
     /// switches and no pending-dash prefix.
-    fn render_transient(&self, def: &Transient, state: Option<&TransientState>) -> gpui::Div {
+    fn render_transient(
+        &self,
+        def: &Transient,
+        state: Option<&TransientState>,
+        view: &Entity<Self>,
+    ) -> gpui::Div {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
 
         // Lay the groups out as columns so we spread across horizontal space
         // instead of growing tall; columns wrap if the window is narrow.
         let mut columns = div().flex().flex_row().flex_wrap().gap_x_8().gap_y_2();
         for group in &def.groups {
-            let mut col = div().flex().flex_col().gap_1().child(
+            // items_start so each row's clickable hitbox hugs its content width
+            // rather than stretching across the column (which makes clicks land
+            // on the wrong row).
+            let mut col = div().flex().flex_col().items_start().gap_1().child(
                 div()
                     .text_color(self.palette.dim)
                     .child(SharedString::from(group.title)),
@@ -1681,10 +1711,19 @@ impl StatusView {
                             div().text_color(flag_color)
                         };
                         let paren = || div().text_color(self.palette.fg);
+                        let view = view.clone();
+                        let key = SharedString::from(sw.key);
                         div()
+                            .id(sw.key)
+                            .relative()
                             .flex()
                             .items_center()
                             .gap_2()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(self.palette.visual))
+                            .child(track_target(sw.key))
                             .child(switch_chip(
                                 sw.key,
                                 self.palette.dim,
@@ -1704,13 +1743,36 @@ impl StatusView {
                                     .child(flag.child(SharedString::from(sw.arg)))
                                     .child(paren().child(SharedString::from(")"))),
                             )
+                            .on_click(move |_, window, cx: &mut App| {
+                                view.update(cx, |v, vcx| {
+                                    v.click_suffix(key.clone(), true, window, vcx)
+                                });
+                            })
+                            .into_any_element()
                     }
-                    Suffix::Action(a) => div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(key_chip(a.key, self.palette.dim))
-                        .child(SharedString::from(a.description)),
+                    Suffix::Action(a) => {
+                        let view = view.clone();
+                        let key = SharedString::from(a.key);
+                        div()
+                            .id(a.key)
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(self.palette.visual))
+                            .child(track_target(a.key))
+                            .child(key_chip(a.key, self.palette.dim))
+                            .child(SharedString::from(a.description))
+                            .on_click(move |_, window, cx: &mut App| {
+                                view.update(cx, |v, vcx| {
+                                    v.click_suffix(key.clone(), false, window, vcx)
+                                });
+                            })
+                            .into_any_element()
+                    }
                     // A reference row: one or more keycaps then a description.
                     Suffix::Info(i) => div()
                         .flex()
@@ -1721,7 +1783,8 @@ impl StatusView {
                             div()
                                 .text_color(self.palette.fg)
                                 .child(SharedString::from(i.description)),
-                        ),
+                        )
+                        .into_any_element(),
                 };
                 col = col.child(row);
             }
@@ -1806,7 +1869,7 @@ impl StatusView {
                 .child(key_chip(k, self.palette.dim))
                 .child(div().text_color(self.palette.dim).child(SharedString::from(label.to_string())))
         };
-        let field = |label: &str, control: AnyElement| {
+        let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
                 .flex()
                 .items_center()
@@ -1817,7 +1880,13 @@ impl StatusView {
                         .text_color(self.palette.dim)
                         .child(SharedString::from(label.to_string())),
                 )
-                .child(div().w(px(320.0)).child(control))
+                .child(
+                    div()
+                        .relative()
+                        .w(px(320.0))
+                        .child(track_target(id))
+                        .child(control),
+                )
         };
 
         div()
@@ -1836,20 +1905,27 @@ impl StatusView {
                     .child(hint("tab", "switch"))
                     .child(hint("esc", "close")),
             )
-            .child(field("Appearance", Select::new(&s.appearance).into_any_element()))
             .child(field(
+                "appearance",
+                "Appearance",
+                Select::new(&s.appearance).into_any_element(),
+            ))
+            .child(field(
+                "light-theme",
                 "Light theme",
                 Select::new(&s.light_theme)
                     .search_placeholder("Search themes")
                     .into_any_element(),
             ))
             .child(field(
+                "dark-theme",
                 "Dark theme",
                 Select::new(&s.dark_theme)
                     .search_placeholder("Search themes")
                     .into_any_element(),
             ))
             .child(field(
+                "font",
                 "Font",
                 Select::new(&s.font)
                     .search_placeholder("Search fonts")
@@ -1891,11 +1967,19 @@ impl StatusView {
                 title,
                 count,
                 expanded,
-            } => el.child(chevron(*expanded, self.palette.dim)).child(
-                div()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(format!("{title} ({count})"))),
-            ),
+            } => el
+                .child(chevron(*expanded, self.palette.dim))
+                .child(
+                    div()
+                        .text_color(self.palette.section)
+                        .child(SharedString::from(title.clone())),
+                )
+                .child(
+                    Tag::secondary()
+                        .xsmall()
+                        .rounded_full()
+                        .child(SharedString::from(count.to_string())),
+                ),
             RowKind::File {
                 code,
                 code_color,
@@ -1947,6 +2031,8 @@ impl StatusView {
         if clickable {
             let view = view.clone();
             content
+                .relative()
+                .child(track_target(format!("status-row-{ix}")))
                 .on_click(move |_, _window, cx: &mut App| {
                     view.update(cx, |v, cx| v.click_row(ix, cx));
                 })
@@ -2035,9 +2121,12 @@ impl Render for StatusView {
                 .w_full()
                 .flex_grow(1.0)
                 .child(
-                    uniform_list("rows", count, move |range, _window, cx| {
-                        let this = view.read(cx);
-                        range.map(|ix| this.render_row(ix, &view)).collect::<Vec<_>>()
+                    uniform_list("rows", count, {
+                        let view = view.clone();
+                        move |range, _window, cx| {
+                            let this = view.read(cx);
+                            range.map(|ix| this.render_row(ix, &view)).collect::<Vec<_>>()
+                        }
                     })
                     .track_scroll(&self.scroll)
                     .size_full()
@@ -2049,8 +2138,8 @@ impl Render for StatusView {
 
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
-                Popup::Transient(state) => self.render_transient(&state.def, Some(state)),
-                Popup::Help(def) => self.render_transient(def, None),
+                Popup::Transient(state) => self.render_transient(&state.def, Some(state), &view),
+                Popup::Help(def) => self.render_transient(def, None, &view),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(status_bar(
@@ -2195,6 +2284,25 @@ fn is_modifier(token: &str) -> bool {
         token,
         "cmd" | "super" | "meta" | "ctrl" | "control" | "alt" | "opt" | "option" | "shift"
     )
+}
+
+/// A transparent overlay that records its element's on-screen center for the
+/// debug `click-id` command (no-op unless debug mode is on). Add as a child of
+/// a `.relative()` clickable element so synthetic tests can click it by id.
+fn track_target(id: impl Into<SharedString>) -> impl IntoElement {
+    let id = id.into();
+    gpui::canvas(
+        move |bounds, _, _| {
+            debug::record_target(
+                &id,
+                bounds.origin.x.as_f32() + bounds.size.width.as_f32() / 2.0,
+                bounds.origin.y.as_f32() + bounds.size.height.as_f32() / 2.0,
+            );
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
 }
 
 /// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
