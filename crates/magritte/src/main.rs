@@ -11,9 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    actions, div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement,
-    Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
+    ParentElement, Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window,
+    WindowBounds, WindowOptions,
 };
 
 mod highlight;
@@ -1333,25 +1334,20 @@ impl StatusView {
 
     /// Render the open transient popup as a bottom panel.
     fn render_transient(&self, state: &TransientState) -> gpui::Div {
-        let mut panel = div()
-            .w_full()
-            .border_t_1()
-            .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .py_1()
-            .px_2()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(state.def.title)),
-            );
+        // When `-` has been pressed, highlight the dash on switch keys to
+        // signal we're waiting for the switch letter (magit's prefix feedback).
+        let dash_color = if state.pending_dash {
+            self.palette.section
+        } else {
+            self.palette.dim
+        };
 
+        // Lay the groups out as columns so we spread across horizontal space
+        // instead of growing tall; columns wrap if the window is narrow.
+        let mut columns = div().flex().flex_row().flex_wrap().gap_x_8().gap_y_2();
         for group in &state.def.groups {
-            panel = panel.child(
+            let mut col = div().flex().flex_col().gap_1().child(
                 div()
-                    .mt_1()
                     .text_color(self.palette.dim)
                     .child(SharedString::from(group.title)),
             );
@@ -1362,9 +1358,9 @@ impl StatusView {
                         let color = if on { self.palette.added } else { self.palette.dim };
                         div()
                             .flex()
+                            .items_center()
                             .gap_2()
-                            .pl_2()
-                            .child(key_chip(sw.key, self.palette.dim))
+                            .child(switch_chip(sw.key, self.palette.dim, dash_color))
                             .child(
                                 div()
                                     .text_color(color)
@@ -1376,15 +1372,32 @@ impl StatusView {
                     }
                     Suffix::Action(a) => div()
                         .flex()
+                        .items_center()
                         .gap_2()
-                        .pl_2()
                         .child(key_chip(a.key, self.palette.dim))
                         .child(SharedString::from(a.description)),
                 };
-                panel = panel.child(row);
+                col = col.child(row);
             }
+            columns = columns.child(col);
         }
-        panel
+
+        div()
+            .w_full()
+            .border_t_1()
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
+            .py_2()
+            .px_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_color(self.palette.section)
+                    .child(SharedString::from(state.def.title)),
+            )
+            .child(columns)
     }
 
     /// Render the help / dispatch menu as a bottom panel.
@@ -1744,7 +1757,7 @@ fn key_word(token: &str) -> String {
     match token {
         "cmd" | "super" | "meta" => "Cmd".into(),
         "ctrl" | "control" => "Ctrl".into(),
-        "alt" | "opt" | "option" => "Alt".into(),
+        "alt" | "opt" | "option" => "Opt".into(),
         "shift" => "Shift".into(),
         "enter" | "return" => "Enter".into(),
         "esc" | "ESC" | "escape" => "Esc".into(),
@@ -1761,9 +1774,26 @@ fn is_modifier(token: &str) -> bool {
     )
 }
 
-/// A keyboard key badge: a subtle rounded chip with a word-style label.
-/// Chords like `cmd-enter` render as `Cmd+Enter`. A leading `-` (transient
-/// switch keys such as `-a`) is kept verbatim, not treated as a chord.
+/// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
+/// label (or, for switches, a multi-span label). The border makes adjacent
+/// chips read as distinct keys rather than blending together.
+fn chip_box(color: Hsla) -> gpui::Div {
+    div()
+        .px(px(5.0))
+        .min_w(px(18.0))
+        .flex()
+        .justify_center()
+        .text_center()
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(with_alpha(color, 0.45))
+        .text_color(color)
+        .bg(with_alpha(color, 0.12))
+}
+
+/// A keyboard key badge: a keycap chip with a word-style label. Chords like
+/// `cmd-enter` render as `Cmd+Enter`. A leading `-` (transient switch keys
+/// such as `-a`) is kept verbatim, not treated as a chord.
 fn key_chip(key: &str, color: Hsla) -> AnyElement {
     let parts: Vec<&str> = key.split('-').collect();
     let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
@@ -1772,14 +1802,16 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
     } else {
         key_word(key)
     };
-    div()
-        .px(px(5.0))
-        .min_w(px(18.0))
-        .text_center()
-        .rounded(px(3.0))
-        .text_color(color)
-        .bg(with_alpha(color, 0.14))
-        .child(SharedString::from(label))
+    chip_box(color).child(SharedString::from(label)).into_any_element()
+}
+
+/// A switch keycap (`-a`), with the leading dash highlighted when a `-` prefix
+/// has been pressed and we're awaiting the switch letter (magit's behavior).
+fn switch_chip(key: &str, color: Hsla, dash_color: Hsla) -> AnyElement {
+    let rest = key.strip_prefix('-').unwrap_or(key);
+    chip_box(color)
+        .child(div().text_color(dash_color).child(SharedString::from("-")))
+        .child(SharedString::from(rest.to_string()))
         .into_any_element()
 }
 
@@ -1894,7 +1926,11 @@ fn main() {
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
 
+        // A reasonable default window instead of filling the whole screen;
+        // centered on the active display. The user can resize freely.
+        let bounds = Bounds::centered(None, size(px(1000.0), px(720.0)), cx);
         let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
                 title: Some(SharedString::from("Magritte")),
                 ..Default::default()
