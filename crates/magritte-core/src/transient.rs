@@ -44,10 +44,19 @@ pub struct Action {
     pub command: Command,
 }
 
+/// A non-invokable reference row (e.g. the `?` dispatch/help cheatsheet:
+/// `j / k  move up / down`). `keys` may list several keystrokes.
+#[derive(Debug, Clone, Copy)]
+pub struct Info {
+    pub keys: &'static str,
+    pub description: &'static str,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Suffix {
     Switch(Switch),
     Action(Action),
+    Info(Info),
 }
 
 pub struct Group {
@@ -68,7 +77,7 @@ impl Transient {
             .flat_map(|g| g.suffixes.iter())
             .filter_map(|s| match s {
                 Suffix::Switch(sw) => Some(sw),
-                Suffix::Action(_) => None,
+                Suffix::Action(_) | Suffix::Info(_) => None,
             })
     }
 
