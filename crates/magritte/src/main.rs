@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use gpui::{
     actions, div, px, uniform_list, AnyElement, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render,
-    SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
+    Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement,
+    Render, SharedString, Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowOptions,
 };
 
 mod highlight;
@@ -28,6 +28,7 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 actions!(magritte, [ToggleFold]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::ActiveTheme;
 use magritte_core::transient::{self, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
@@ -108,52 +109,75 @@ const HELP: &[HelpGroup] = &[
     },
 ];
 
-mod theme {
-    use gpui::{rgb, Rgba};
-    pub fn bg() -> Rgba {
-        rgb(0x1e2025)
+/// Resolved colors for one render, derived from gpui-component's active theme
+/// so the chrome matches the Input/Kbd/Icon widgets (light or dark).
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: Hsla,
+    fg: Hsla,
+    dim: Hsla,
+    border: Hsla,
+    selection: Hsla,
+    visual: Hsla,
+    section: Hsla,
+    hunk: Hsla,
+    panel: Hsla,
+    modified: Hsla,
+    added: Hsla,
+    removed: Hsla,
+    added_bg: Hsla,
+    removed_bg: Hsla,
+    banner: Hsla,
+}
+
+fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
+    color.a = alpha;
+    color
+}
+
+impl Palette {
+    fn from_theme(cx: &App) -> Self {
+        let t = cx.theme();
+        Palette {
+            bg: t.background,
+            fg: t.foreground,
+            dim: t.muted_foreground,
+            border: t.border,
+            selection: t.accent,
+            visual: with_alpha(t.selection, 0.32),
+            section: t.primary,
+            hunk: t.info,
+            panel: t.popover,
+            modified: t.warning,
+            added: t.success,
+            removed: t.danger,
+            added_bg: with_alpha(t.success, 0.12),
+            removed_bg: with_alpha(t.danger, 0.12),
+            banner: with_alpha(t.warning, 0.18),
+        }
     }
-    pub fn fg() -> Rgba {
-        rgb(0xced2da)
-    }
-    pub fn dim() -> Rgba {
-        rgb(0x7f8694)
-    }
-    pub fn selection() -> Rgba {
-        rgb(0x2f3340)
-    }
-    pub fn visual() -> Rgba {
-        rgb(0x2b3650)
-    }
-    pub fn section() -> Rgba {
-        rgb(0x7aa2f7)
-    }
-    pub fn hunk() -> Rgba {
-        rgb(0xbb9af7)
-    }
-    pub fn added() -> Rgba {
-        rgb(0x9ece6a)
-    }
-    pub fn removed() -> Rgba {
-        rgb(0xf7768e)
-    }
-    pub fn added_bg() -> Rgba {
-        rgb(0x16251c)
-    }
-    pub fn removed_bg() -> Rgba {
-        rgb(0x2a1a1f)
-    }
-    pub fn modified() -> Rgba {
-        rgb(0xe0af68)
-    }
-    pub fn banner() -> Rgba {
-        rgb(0x3a2f1a)
-    }
-    pub fn panel() -> Rgba {
-        rgb(0x252830)
-    }
-    pub fn border() -> Rgba {
-        rgb(0x3a3f4b)
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        let g = |v: u32| gpui::rgb(v).into();
+        Palette {
+            bg: g(0xffffff),
+            fg: g(0x1a1a1a),
+            dim: g(0x8a8a8a),
+            border: g(0xe2e2e2),
+            selection: g(0xeaeaea),
+            visual: g(0xdbe7ff),
+            section: g(0x2f6feb),
+            hunk: g(0x6f42c1),
+            panel: g(0xf6f6f6),
+            modified: g(0xb08800),
+            added: g(0x1a7f37),
+            removed: g(0xcf222e),
+            added_bg: with_alpha(g(0x1a7f37), 0.12),
+            removed_bg: with_alpha(g(0xcf222e), 0.12),
+            banner: with_alpha(g(0xb08800), 0.18),
+        }
     }
 }
 
@@ -309,7 +333,7 @@ struct Row {
 enum RowKind {
     Plain {
         text: String,
-        color: gpui::Rgba,
+        color: Hsla,
     },
     Section {
         title: String,
@@ -318,7 +342,7 @@ enum RowKind {
     },
     File {
         code: String,
-        code_color: gpui::Rgba,
+        code_color: Hsla,
         label: String,
         expanded: Option<bool>,
     },
@@ -360,6 +384,8 @@ struct StatusView {
     focus: FocusHandle,
     focused_once: bool,
     scroll: UniformListScrollHandle,
+    /// Colors for the current theme, refreshed at the top of each render.
+    palette: Palette,
 }
 
 impl StatusView {
@@ -396,6 +422,7 @@ impl StatusView {
             focus: cx.focus_handle(),
             focused_once: false,
             scroll: UniformListScrollHandle::new(),
+            palette: Palette::default(),
         };
         view.refresh(cx);
         view
@@ -547,8 +574,8 @@ impl StatusView {
                 if let DiffState::Loaded(diff) = &state {
                     if !diff.is_binary {
                         if let Some(lang) = lang {
-                            let hl =
-                                highlight::highlight_diff(diff, lang, cx, theme::fg().into());
+                            let default = cx.theme().foreground;
+                            let hl = highlight::highlight_diff(diff, lang, cx, default);
                             this.highlights.insert(key.clone(), hl);
                         }
                     }
@@ -568,12 +595,12 @@ impl StatusView {
         let mut rows = Vec::new();
 
         if let Some(error) = &self.error {
-            rows.push(plain(format!("Error: {error}"), theme::removed()));
+            rows.push(plain(format!("Error: {error}"), self.palette.removed));
             self.rows = rows;
             return;
         }
         let Some(status) = &self.status else {
-            rows.push(plain("Loading…", theme::dim()));
+            rows.push(plain("Loading…", self.palette.dim));
             self.rows = rows;
             return;
         };
@@ -583,11 +610,11 @@ impl StatusView {
             .branch
             .clone()
             .unwrap_or_else(|| "HEAD (detached)".to_string());
-        rows.push(plain(format!("Head:    {branch}"), theme::fg()));
+        rows.push(plain(format!("Head:    {branch}"), self.palette.fg));
         if let Some(upstream) = &head.upstream {
             rows.push(plain(
                 format!("Push:    {upstream}  (+{} -{})", head.ahead, head.behind),
-                theme::dim(),
+                self.palette.dim,
             ));
         }
 
@@ -615,7 +642,7 @@ impl StatusView {
 
         if rows.len() <= 2 {
             rows.push(spacer());
-            rows.push(plain("Nothing to commit, working tree clean", theme::dim()));
+            rows.push(plain("Nothing to commit, working tree clean", self.palette.dim));
         }
 
         self.rows = rows;
@@ -667,7 +694,7 @@ impl StatusView {
                 target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
                     code: status_code(entry),
-                    code_color: code_color(entry),
+                    code_color: code_color(entry, &self.palette),
                     label,
                     expanded: file_expanded,
                 },
@@ -683,9 +710,9 @@ impl StatusView {
         match self.diffs.get(&(source, file.path.clone())) {
             Some(DiffState::Loaded(diff)) => {
                 if diff.is_binary {
-                    rows.push(message("Binary file"));
+                    rows.push(message("Binary file", self.palette.dim));
                 } else if diff.hunks.is_empty() {
-                    rows.push(message("(no textual changes)"));
+                    rows.push(message("(no textual changes)", self.palette.dim));
                 }
                 for (hunk_ix, hunk) in diff.hunks.iter().enumerate() {
                     rows.push(Row {
@@ -709,9 +736,9 @@ impl StatusView {
                             .cloned()
                             .unwrap_or_else(|| {
                                 let color = if line.kind == LineKind::NoNewline {
-                                    theme::dim().into()
+                                    self.palette.dim.into()
                                 } else {
-                                    theme::fg().into()
+                                    self.palette.fg.into()
                                 };
                                 vec![(line.content.clone(), color)]
                             });
@@ -732,9 +759,9 @@ impl StatusView {
                     }
                 }
             }
-            Some(DiffState::Loading) | None => rows.push(message("Loading diff…")),
-            Some(DiffState::Empty) => rows.push(message("(no changes)")),
-            Some(DiffState::Failed(e)) => rows.push(message(&format!("diff failed: {e}"))),
+            Some(DiffState::Loading) | None => rows.push(message("Loading diff…", self.palette.dim)),
+            Some(DiffState::Empty) => rows.push(message("(no changes)", self.palette.dim)),
+            Some(DiffState::Failed(e)) => rows.push(message(&format!("diff failed: {e}"), self.palette.dim)),
         }
     }
 
@@ -1308,15 +1335,15 @@ impl StatusView {
         let mut panel = div()
             .w_full()
             .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
             .py_1()
             .px_2()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .text_color(theme::section())
+                    .text_color(self.palette.section)
                     .child(SharedString::from(state.def.title)),
             );
 
@@ -1324,19 +1351,19 @@ impl StatusView {
             panel = panel.child(
                 div()
                     .mt_1()
-                    .text_color(theme::dim())
+                    .text_color(self.palette.dim)
                     .child(SharedString::from(group.title)),
             );
             for suffix in &group.suffixes {
                 let row = match suffix {
                     Suffix::Switch(sw) => {
                         let on = state.active.contains(sw.key);
-                        let color = if on { theme::added() } else { theme::dim() };
+                        let color = if on { self.palette.added } else { self.palette.dim };
                         div()
                             .flex()
                             .gap_2()
                             .pl_2()
-                            .child(key_chip(sw.key))
+                            .child(key_chip(sw.key, self.palette.modified))
                             .child(
                                 div()
                                     .text_color(color)
@@ -1350,7 +1377,7 @@ impl StatusView {
                         .flex()
                         .gap_2()
                         .pl_2()
-                        .child(key_chip(a.key))
+                        .child(key_chip(a.key, self.palette.modified))
                         .child(SharedString::from(a.description)),
                 };
                 panel = panel.child(row);
@@ -1364,15 +1391,15 @@ impl StatusView {
         let mut panel = div()
             .w_full()
             .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
             .py_1()
             .px_2()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .text_color(theme::section())
+                    .text_color(self.palette.section)
                     .child(SharedString::from("Help   (esc to close)")),
             );
 
@@ -1380,7 +1407,7 @@ impl StatusView {
             panel = panel.child(
                 div()
                     .mt_1()
-                    .text_color(theme::dim())
+                    .text_color(self.palette.dim)
                     .child(SharedString::from(group.title)),
             );
             for (keys, desc) in group.entries {
@@ -1392,7 +1419,7 @@ impl StatusView {
                         .child(
                             div()
                                 .min_w(px(72.0))
-                                .text_color(theme::modified())
+                                .text_color(self.palette.modified)
                                 .child(SharedString::from(*keys)),
                         )
                         .child(SharedString::from(*desc)),
@@ -1420,7 +1447,7 @@ impl StatusView {
             .gap_2()
             .child(
                 div()
-                    .text_color(theme::section())
+                    .text_color(self.palette.section)
                     .child(SharedString::from(format!(
                         "{title}    ⌘↵ commit · ↵ newline · esc cancel"
                     ))),
@@ -1445,10 +1472,10 @@ impl StatusView {
             .w_full()
             .pl(px(8.0 + row.indent as f32 * 16.0));
         if in_region {
-            el = el.bg(theme::visual());
+            el = el.bg(self.palette.visual);
         }
         if selected {
-            el = el.bg(theme::selection());
+            el = el.bg(self.palette.selection);
         }
 
         match &row.kind {
@@ -1459,9 +1486,9 @@ impl StatusView {
                 title,
                 count,
                 expanded,
-            } => el.child(chevron(*expanded)).child(
+            } => el.child(chevron(*expanded, self.palette.dim)).child(
                 div()
-                    .text_color(theme::section())
+                    .text_color(self.palette.section)
                     .child(SharedString::from(format!("{title} ({count})"))),
             ),
             RowKind::File {
@@ -1471,7 +1498,7 @@ impl StatusView {
                 expanded,
             } => {
                 let lead = match expanded {
-                    Some(e) => chevron(*e).into_any_element(),
+                    Some(e) => chevron(*e, self.palette.dim).into_any_element(),
                     None => div().w(px(14.0)).into_any_element(),
                 };
                 el.child(lead)
@@ -1484,13 +1511,13 @@ impl StatusView {
                     .child(SharedString::from(label.clone()))
             }
             RowKind::HunkHeader { text } => {
-                el.text_color(theme::hunk()).child(SharedString::from(text.clone()))
+                el.text_color(self.palette.hunk).child(SharedString::from(text.clone()))
             }
             RowKind::Diff { kind, spans } => {
                 let (sign, sign_color, tint) = match kind {
-                    LineKind::Added => ('+', theme::added(), Some(theme::added_bg())),
-                    LineKind::Removed => ('-', theme::removed(), Some(theme::removed_bg())),
-                    _ => (' ', theme::dim(), None),
+                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
+                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
+                    _ => (' ', self.palette.dim, None),
                 };
                 // Add/remove background tint, unless the row is selected/in-region.
                 if let Some(t) = tint {
@@ -1518,6 +1545,7 @@ impl Render for StatusView {
             self.focus.focus(window, cx);
             self.focused_once = true;
         }
+        self.palette = Palette::from_theme(cx);
 
         let view = cx.entity();
         let count = self.rows.len();
@@ -1533,8 +1561,8 @@ impl Render for StatusView {
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
-            .bg(theme::bg())
-            .text_color(theme::fg())
+            .bg(self.palette.bg)
+            .text_color(self.palette.fg)
             .text_size(px(13.0))
             .font_family("Menlo")
             .flex()
@@ -1565,15 +1593,26 @@ impl Render for StatusView {
                 Popup::Help => self.render_help(),
             });
         } else if let Some((prompt, _)) = &self.confirm {
-            root = root.child(status_bar(prompt.clone(), theme::banner(), theme::modified()));
+            root = root.child(status_bar(
+                prompt.clone(),
+                self.palette.banner,
+                self.palette.fg,
+                self.palette.border,
+            ));
         } else if self.visual.is_some() {
             root = root.child(status_bar(
                 "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel".to_string(),
-                theme::visual(),
-                theme::fg(),
+                self.palette.visual,
+                self.palette.fg,
+                self.palette.border,
             ));
         } else if let Some(msg) = &self.status_message {
-            root = root.child(status_bar(msg.clone(), theme::panel(), theme::fg()));
+            root = root.child(status_bar(
+                msg.clone(),
+                self.palette.panel,
+                self.palette.fg,
+                self.palette.border,
+            ));
         }
 
         root
@@ -1582,7 +1621,7 @@ impl Render for StatusView {
 
 // --- Small row/value helpers ---------------------------------------------
 
-fn plain(text: impl Into<String>, color: gpui::Rgba) -> Row {
+fn plain(text: impl Into<String>, color: Hsla) -> Row {
     Row {
         indent: 0,
         selectable: true,
@@ -1595,7 +1634,7 @@ fn plain(text: impl Into<String>, color: gpui::Rgba) -> Row {
     }
 }
 
-fn message(text: &str) -> Row {
+fn message(text: &str, color: Hsla) -> Row {
     Row {
         indent: 2,
         selectable: false,
@@ -1603,7 +1642,7 @@ fn message(text: &str) -> Row {
         target: None,
         kind: RowKind::Plain {
             text: text.to_string(),
-            color: theme::dim(),
+            color,
         },
     }
 }
@@ -1616,12 +1655,12 @@ fn spacer() -> Row {
         target: None,
         kind: RowKind::Plain {
             text: String::new(),
-            color: theme::fg(),
+            color: gpui::black(),
         },
     }
 }
 
-fn chevron(expanded: bool) -> gpui_component::Icon {
+fn chevron(expanded: bool, color: Hsla) -> gpui_component::Icon {
     let name = if expanded {
         gpui_component::IconName::ChevronDown
     } else {
@@ -1629,7 +1668,7 @@ fn chevron(expanded: bool) -> gpui_component::Icon {
     };
     gpui_component::Icon::new(name)
         .size(px(14.0))
-        .text_color(theme::dim())
+        .text_color(color)
 }
 
 fn describe_command(command: transient::Command) -> &'static str {
@@ -1676,7 +1715,7 @@ fn file_head_tail(path: &std::path::Path) -> (String, String) {
 /// A small colored key label for transient rows.
 /// A keyboard key badge. Uses gpui-component's `Kbd` for real single
 /// keystrokes; falls back to plain text for multi-key hints like `-f`.
-fn key_chip(key: &str) -> AnyElement {
+fn key_chip(key: &str, fallback: Hsla) -> AnyElement {
     // Uppercase single letters are shifted keystrokes (e.g. F = shift-f).
     let spec = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_uppercase()) {
         format!("shift-{}", key.to_lowercase())
@@ -1687,20 +1726,20 @@ fn key_chip(key: &str) -> AnyElement {
         Ok(stroke) => gpui_component::kbd::Kbd::new(stroke).into_any_element(),
         Err(_) => div()
             .min_w(px(20.0))
-            .text_color(theme::modified())
+            .text_color(fallback)
             .child(SharedString::from(key.to_string()))
             .into_any_element(),
     }
 }
 
 /// A bottom-pinned status bar row (confirm prompt or mode indicator).
-fn status_bar(text: String, bg: gpui::Rgba, fg: gpui::Rgba) -> gpui::Div {
+fn status_bar(text: String, bg: Hsla, fg: Hsla, border: Hsla) -> gpui::Div {
     div()
         .w_full()
         .px_2()
         .py_1()
         .border_t_1()
-        .border_color(theme::bg())
+        .border_color(border)
         .bg(bg)
         .text_color(fg)
         .child(SharedString::from(text))
@@ -1770,9 +1809,9 @@ fn status_code(entry: &FileEntry) -> String {
     format!("{}{}", glyph(entry.index), glyph(entry.worktree))
 }
 
-fn code_color(entry: &FileEntry) -> gpui::Rgba {
+fn code_color(entry: &FileEntry, p: &Palette) -> Hsla {
     if entry.kind == EntryKind::Untracked {
-        return theme::dim();
+        return p.dim;
     }
     let dominant = if entry.index != Change::Unmodified {
         entry.index
@@ -1780,9 +1819,9 @@ fn code_color(entry: &FileEntry) -> gpui::Rgba {
         entry.worktree
     };
     match dominant {
-        Change::Added | Change::Copied => theme::added(),
-        Change::Deleted => theme::removed(),
-        _ => theme::modified(),
+        Change::Added | Change::Copied => p.added,
+        Change::Deleted => p.removed,
+        _ => p.modified,
     }
 }
 
@@ -1799,7 +1838,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
-        gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+        gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
         // Our tab binding, in our context, outranks Root's focus-nav tab.
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
