@@ -11,3 +11,6 @@
 .vscode/
 
 # Cargo.lock is intentionally committed: Magritte ships as an application.
+
+# Local reference copies of upstream sources (not vendored)
+/.reference
