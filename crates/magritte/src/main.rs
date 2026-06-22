@@ -30,7 +30,7 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 
 // Tab is bound by gpui-component's Root (focus nav) and so never reaches an
 // on_key_down listener; we override it with an action in our key context.
-actions!(magritte, [ToggleFold, Quit, CloseWindow]);
+actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
@@ -2004,6 +2004,11 @@ impl Render for StatusView {
                     cx.quit();
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if this.editor.is_none() && this.popup.is_none() && this.settings.is_none() {
+                    this.open_settings(window, cx);
+                }
+            }))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
@@ -2402,9 +2407,14 @@ fn main() {
             KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
+            KeyBinding::new("cmd-,", OpenSettings, Some(STATUS_CONTEXT)),
         ]);
         cx.set_menus(vec![
-            Menu::new("Magritte").items([MenuItem::action("Quit Magritte", Quit)]),
+            Menu::new("Magritte").items([
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit Magritte", Quit),
+            ]),
             Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
         ]);
         // Closing the last window (red traffic light included) quits the app.
