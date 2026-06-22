@@ -1910,6 +1910,44 @@ fn code_color(entry: &FileEntry, p: &Palette) -> Hsla {
     }
 }
 
+/// gpui-component's bundled theme sets, embedded at compile time. Each file is
+/// a `ThemeSet` containing one or more light/dark `ThemeConfig`s; loading them
+/// makes every theme selectable from the registry by name.
+const BUNDLED_THEMES: &[&str] = &[
+    include_str!("../themes/adventure.json"),
+    include_str!("../themes/alduin.json"),
+    include_str!("../themes/asciinema.json"),
+    include_str!("../themes/aurora.json"),
+    include_str!("../themes/ayu.json"),
+    include_str!("../themes/catppuccin.json"),
+    include_str!("../themes/everforest.json"),
+    include_str!("../themes/fahrenheit.json"),
+    include_str!("../themes/flexoki.json"),
+    include_str!("../themes/gruvbox.json"),
+    include_str!("../themes/harper.json"),
+    include_str!("../themes/hybrid.json"),
+    include_str!("../themes/jellybeans.json"),
+    include_str!("../themes/kibble.json"),
+    include_str!("../themes/macos-classic.json"),
+    include_str!("../themes/matrix.json"),
+    include_str!("../themes/mellifluous.json"),
+    include_str!("../themes/molokai.json"),
+    include_str!("../themes/solarized.json"),
+    include_str!("../themes/spaceduck.json"),
+    include_str!("../themes/tokyonight.json"),
+    include_str!("../themes/twilight.json"),
+];
+
+/// Load every bundled theme set into the registry so all themes are available.
+fn register_bundled_themes(cx: &mut App) {
+    let registry = gpui_component::ThemeRegistry::global_mut(cx);
+    for set in BUNDLED_THEMES {
+        if let Err(e) = registry.load_themes_from_str(set) {
+            eprintln!("magritte: failed to load a bundled theme set: {e}");
+        }
+    }
+}
+
 fn main() {
     // Optional positional arg: a path inside the repo to open (defaults to cwd).
     let arg = std::env::args().nth(1);
@@ -1923,7 +1961,18 @@ fn main() {
     app.run(move |cx: &mut App| {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
+        register_bundled_themes(cx);
+        // Ensure the Theme global exists, then point its light variant at the
+        // bundled Solarized Light theme and apply it.
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
+        if let Some(theme) = gpui_component::ThemeRegistry::global(cx)
+            .themes()
+            .get("Solarized Light")
+            .cloned()
+        {
+            gpui_component::Theme::global_mut(cx).light_theme = theme;
+            gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
+        }
         // Our tab binding, in our context, outranks Root's focus-nav tab.
         cx.bind_keys([KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT))]);
         cx.activate(true);
