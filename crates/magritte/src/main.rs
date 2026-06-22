@@ -13,9 +13,11 @@ use std::path::PathBuf;
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
     FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
-    Menu, MenuItem, ParentElement, Render, SharedString, Styled, TitlebarOptions,
-    UniformListScrollHandle, Window, WindowAppearance, WindowBounds, WindowOptions,
+    Menu, MenuItem, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowAppearance, WindowBounds, WindowOptions,
 };
+
+use gpui::prelude::FluentBuilder;
 
 mod config;
 mod debug;
@@ -1417,55 +1419,76 @@ impl StatusView {
             }
             "j" | "k" => {
                 let down = key == "j";
-                match self.settings.as_ref().unwrap().field {
+                let s = self.settings.as_ref().unwrap();
+                let (field, cur, len) = match s.field {
                     SettingsField::Appearance => {
-                        let s = self.settings.as_mut().unwrap();
-                        s.appearance_ix = step(s.appearance_ix, down, APPEARANCE_OPTIONS.len());
-                        let value = APPEARANCE_OPTIONS[s.appearance_ix].1;
-                        self.config.appearance = value.to_string();
-                        apply_appearance(&self.config, cx);
-                        // The effective slot may have changed; re-point the theme list.
-                        let slot = self.effective_slot_theme(cx);
-                        let s = self.settings.as_mut().unwrap();
-                        s.theme_ix = s.themes.iter().position(|n| n.as_ref() == slot).unwrap_or(0);
-                        s.theme_scroll
-                            .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
+                        (SettingsField::Appearance, s.appearance_ix, APPEARANCE_OPTIONS.len())
                     }
-                    SettingsField::Theme => {
-                        let s = self.settings.as_mut().unwrap();
-                        let n = s.themes.len();
-                        if n > 0 {
-                            s.theme_ix = step(s.theme_ix, down, n);
-                            s.theme_scroll
-                                .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
-                            let name = s.themes[s.theme_ix].to_string();
-                            // Set whichever slot the effective mode is showing.
-                            if effective_mode(&self.config, cx).is_dark() {
-                                self.config.dark_theme = name;
-                            } else {
-                                self.config.light_theme = name;
-                            }
-                            apply_appearance(&self.config, cx);
-                        }
-                    }
-                    SettingsField::Font => {
-                        let s = self.settings.as_mut().unwrap();
-                        let n = s.fonts.len();
-                        if n > 0 {
-                            s.font_ix = step(s.font_ix, down, n);
-                            s.font_scroll
-                                .scroll_to_item(s.font_ix, gpui::ScrollStrategy::Center);
-                            let name = s.fonts[s.font_ix].clone();
-                            self.config.font = name.to_string();
-                            self.font = name;
-                        }
-                    }
+                    SettingsField::Theme => (SettingsField::Theme, s.theme_ix, s.themes.len()),
+                    SettingsField::Font => (SettingsField::Font, s.font_ix, s.fonts.len()),
+                };
+                if len > 0 {
+                    self.set_setting_index(field, step(cur, down, len), cx);
                 }
             }
             _ => return false,
         }
         cx.notify();
         true
+    }
+
+    /// Select an item in a settings column (by keyboard or mouse click), focus
+    /// that column, and apply the change live.
+    fn set_setting_index(&mut self, field: SettingsField, ix: usize, cx: &mut Context<Self>) {
+        if self.settings.is_none() {
+            return;
+        }
+        self.settings.as_mut().unwrap().field = field;
+        match field {
+            SettingsField::Appearance => {
+                let ix = ix.min(APPEARANCE_OPTIONS.len() - 1);
+                self.settings.as_mut().unwrap().appearance_ix = ix;
+                self.config.appearance = APPEARANCE_OPTIONS[ix].1.to_string();
+                apply_appearance(&self.config, cx);
+                // The effective slot may have changed; re-point the theme list.
+                let slot = self.effective_slot_theme(cx);
+                let s = self.settings.as_mut().unwrap();
+                s.theme_ix = s.themes.iter().position(|n| n.as_ref() == slot).unwrap_or(0);
+                s.theme_scroll
+                    .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
+            }
+            SettingsField::Theme => {
+                let name = {
+                    let s = self.settings.as_mut().unwrap();
+                    if ix >= s.themes.len() {
+                        return;
+                    }
+                    s.theme_ix = ix;
+                    s.theme_scroll.scroll_to_item(ix, gpui::ScrollStrategy::Center);
+                    s.themes[ix].to_string()
+                };
+                if effective_mode(&self.config, cx).is_dark() {
+                    self.config.dark_theme = name;
+                } else {
+                    self.config.light_theme = name;
+                }
+                apply_appearance(&self.config, cx);
+            }
+            SettingsField::Font => {
+                let name = {
+                    let s = self.settings.as_mut().unwrap();
+                    if ix >= s.fonts.len() {
+                        return;
+                    }
+                    s.font_ix = ix;
+                    s.font_scroll.scroll_to_item(ix, gpui::ScrollStrategy::Center);
+                    s.fonts[ix].clone()
+                };
+                self.config.font = name.to_string();
+                self.font = name;
+            }
+        }
+        cx.notify();
     }
 
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1835,6 +1858,9 @@ impl StatusView {
         let mut appearance_list = div().flex().flex_col().size_full().p_1();
         for (ix, (label, _)) in APPEARANCE_OPTIONS.iter().enumerate() {
             appearance_list = appearance_list.child(self.settings_row(
+                view,
+                SettingsField::Appearance,
+                ix,
                 label,
                 ix == s.appearance_ix,
                 appearance_focused,
@@ -1851,7 +1877,16 @@ impl StatusView {
                 return Vec::new();
             };
             range
-                .map(|ix| this.settings_row(&s.themes[ix], ix == s.theme_ix, theme_focused))
+                .map(|ix| {
+                    this.settings_row(
+                        &theme_view,
+                        SettingsField::Theme,
+                        ix,
+                        &s.themes[ix],
+                        ix == s.theme_ix,
+                        theme_focused,
+                    )
+                })
                 .collect()
         })
         .track_scroll(&s.theme_scroll)
@@ -1868,7 +1903,16 @@ impl StatusView {
                 return Vec::new();
             };
             range
-                .map(|ix| this.settings_row(&s.fonts[ix], ix == s.font_ix, font_focused))
+                .map(|ix| {
+                    this.settings_row(
+                        &font_view,
+                        SettingsField::Font,
+                        ix,
+                        &s.fonts[ix],
+                        ix == s.font_ix,
+                        font_focused,
+                    )
+                })
                 .collect()
         })
         .track_scroll(&s.font_scroll)
@@ -1911,36 +1955,55 @@ impl StatusView {
             )
     }
 
-    /// One row in a settings list: name, highlighted when it's the selection.
-    fn settings_row(&self, name: &str, selected: bool, focused: bool) -> AnyElement {
+    /// One row in a settings column: highlighted when selected, and clickable
+    /// (mouse) to select+apply that item via [`Self::set_setting_index`].
+    fn settings_row(
+        &self,
+        view: &Entity<Self>,
+        field: SettingsField,
+        ix: usize,
+        name: &str,
+        selected: bool,
+        focused: bool,
+    ) -> AnyElement {
+        let id = SharedString::from(format!("setting-{}-{ix}", field as usize));
+        let view = view.clone();
         let mut row = div()
+            .id(id)
             .h(px(20.0))
             .w_full()
             .px_1()
             .flex()
             .items_center()
+            .cursor_pointer()
             .child(SharedString::from(name.to_string()));
         if selected {
             row = row.bg(if focused { self.palette.visual } else { self.palette.selection });
         }
-        row.into_any_element()
+        row.on_click(move |_, _window, cx: &mut App| {
+            view.update(cx, |v, cx| v.set_setting_index(field, ix, cx));
+        })
+        .into_any_element()
     }
 
-    fn render_row(&self, ix: usize) -> AnyElement {
+    fn render_row(&self, ix: usize, view: &Entity<Self>) -> AnyElement {
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
         };
         let selected = ix == self.selected && row.selectable;
+        let clickable = row.selectable || row.fold.is_some();
         let in_region = self
             .visual_range()
             .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
 
         let mut el = div()
+            .id(SharedString::from(format!("status-row-{ix}")))
             .flex()
             .items_center()
             .gap_2()
             .h(px(18.0))
             .w_full()
+            .when(clickable, |el| el.cursor_pointer())
             .pl(px(8.0 + row.indent as f32 * 16.0));
         if in_region {
             el = el.bg(self.palette.visual);
@@ -1949,7 +2012,7 @@ impl StatusView {
             el = el.bg(self.palette.selection);
         }
 
-        match &row.kind {
+        let content = match &row.kind {
             RowKind::Plain { text, color } => {
                 el.text_color(*color).child(SharedString::from(text.clone()))
             }
@@ -2009,8 +2072,33 @@ impl StatusView {
                 }
                 el.child(line)
             }
+        };
+        if clickable {
+            let view = view.clone();
+            content
+                .on_click(move |_, _window, cx: &mut App| {
+                    view.update(cx, |v, cx| v.click_row(ix, cx));
+                })
+                .into_any_element()
+        } else {
+            content.into_any_element()
         }
-        .into_any_element()
+    }
+
+    /// Mouse click on a status row: select it, and toggle its fold if foldable.
+    fn click_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        let foldable = row.fold.is_some();
+        if row.selectable {
+            self.selected = ix;
+        }
+        if foldable {
+            self.toggle_fold(cx);
+        } else {
+            cx.notify();
+        }
     }
 }
 
@@ -2073,7 +2161,7 @@ impl Render for StatusView {
                 .child(
                     uniform_list("rows", count, move |range, _window, cx| {
                         let this = view.read(cx);
-                        range.map(|ix| this.render_row(ix)).collect::<Vec<_>>()
+                        range.map(|ix| this.render_row(ix, &view)).collect::<Vec<_>>()
                     })
                     .track_scroll(&self.scroll)
                     .size_full()
