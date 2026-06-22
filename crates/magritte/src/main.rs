@@ -2057,6 +2057,7 @@ impl StatusView {
                     Tag::secondary()
                         .xsmall()
                         .rounded_full()
+                        .py_0()
                         .child(SharedString::from(count.to_string())),
                 ),
             RowKind::File {
