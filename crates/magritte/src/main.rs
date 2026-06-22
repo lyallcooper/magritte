@@ -408,6 +408,36 @@ fn step(ix: usize, down: bool, len: usize) -> usize {
     }
 }
 
+/// All monospace font families available to the text system, sorted. A font is
+/// considered monospace when a run of narrow glyphs ('i') and a run of wide
+/// glyphs ('M') lay out to the same width.
+fn monospace_font_names(window: &Window, cx: &App) -> Vec<SharedString> {
+    let ts = window.text_system();
+    let size = px(16.0);
+    let run = |name: &SharedString, text: &str| gpui::TextRun {
+        len: text.len(),
+        font: gpui::font(name.clone()),
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut names: Vec<SharedString> = cx
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .map(SharedString::from)
+        .filter(|name| {
+            let narrow = ts.layout_line("iiiii", size, &[run(name, "iiiii")], None).width;
+            let wide = ts.layout_line("MMMMM", size, &[run(name, "MMMMM")], None).width;
+            narrow.as_f32() > 0.0 && (narrow - wide).abs().as_f32() < 0.5
+        })
+        .collect();
+    names.sort_by_key(|f| f.to_lowercase());
+    names.dedup();
+    names
+}
+
 /// Apply a registry theme by name, choosing the light/dark slot from the
 /// theme's own mode and switching the active mode to match.
 fn apply_theme_by_name(name: &str, cx: &mut App) {
@@ -449,6 +479,8 @@ struct StatusView {
     settings: Option<SettingsState>,
     /// The monospace font family used for all chrome, set via settings.
     font: SharedString,
+    /// Cached list of monospace font families (computed on first settings open).
+    mono_fonts: Vec<SharedString>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending destructive confirmation: (prompt, action awaiting `y`).
@@ -491,6 +523,7 @@ impl StatusView {
             editor: None,
             settings: None,
             font,
+            mono_fonts: Vec::new(),
             status_message: None,
             confirm: None,
             focus: cx.focus_handle(),
@@ -1279,7 +1312,7 @@ impl StatusView {
     }
 
     /// Open the live settings screen, seeded with the current theme and font.
-    fn open_settings(&mut self, cx: &mut Context<Self>) {
+    fn open_settings(&mut self, window: &Window, cx: &mut Context<Self>) {
         let themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
@@ -1288,14 +1321,10 @@ impl StatusView {
         let current_theme = cx.theme().theme_name().clone();
         let theme_ix = themes.iter().position(|n| *n == current_theme).unwrap_or(0);
 
-        let mut fonts: Vec<SharedString> = cx
-            .text_system()
-            .all_font_names()
-            .into_iter()
-            .map(SharedString::from)
-            .collect();
-        fonts.sort_by_key(|f| f.to_lowercase());
-        fonts.dedup();
+        if self.mono_fonts.is_empty() {
+            self.mono_fonts = monospace_font_names(window, cx);
+        }
+        let fonts = self.mono_fonts.clone();
         let font_ix = fonts.iter().position(|f| *f == self.font).unwrap_or(0);
 
         self.settings = Some(SettingsState {
@@ -1521,7 +1550,7 @@ impl StatusView {
             "f" => return self.open_transient(transient::fetch_transient(), cx),
             // Settings (theme + font), applied live.
             "," => {
-                self.open_settings(cx);
+                self.open_settings(window, cx);
                 return;
             }
             // Help / dispatch menu. "?" may arrive as "/" + shift.
@@ -1912,7 +1941,14 @@ impl Render for StatusView {
                     this.toggle_fold(cx);
                 }
             }))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _cx| window.remove_window()))
+            .on_action(cx.listener(|_, _: &CloseWindow, window, cx| {
+                // Quit when closing the last window (no windowless lingering).
+                let last = cx.windows().len() <= 1;
+                window.remove_window();
+                if last {
+                    cx.quit();
+                }
+            }))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
