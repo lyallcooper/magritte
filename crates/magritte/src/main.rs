@@ -34,7 +34,8 @@ actions!(magritte, [ToggleFold, Quit, CloseWindow]);
 use gpui::Subscription;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::ActiveTheme;
+use gpui_component::select::{Select, SearchableVec, SelectEvent, SelectState};
+use gpui_component::{ActiveTheme, IndexPath};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
@@ -382,38 +383,22 @@ enum RowKind {
     },
 }
 
-/// Which column the settings screen currently has focused.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsField {
-    Appearance,
-    Theme,
-    Font,
-}
-
-/// The appearance options, in display order. Index maps to the config string.
+/// The appearance options, in display order. Label paired with config value.
 const APPEARANCE_OPTIONS: [(&str, &str); 3] =
     [("Auto (system)", "auto"), ("Light", "light"), ("Dark", "dark")];
 
-/// State for the live settings screen: appearance + theme + font, applied
-/// immediately as the selection moves — no save/restart step.
+/// The live settings screen, built from gpui-component `Select` dropdowns (each
+/// with built-in mouse + keyboard handling). Tab cycles focus between them;
+/// confirming a selection applies it live.
 struct SettingsState {
-    field: SettingsField,
-    appearance_ix: usize,
-    themes: Vec<SharedString>,
-    theme_ix: usize,
-    theme_scroll: UniformListScrollHandle,
-    fonts: Vec<SharedString>,
-    font_ix: usize,
-    font_scroll: UniformListScrollHandle,
-}
-
-/// Move a list index up/down by one, clamping at the ends.
-fn step(ix: usize, down: bool, len: usize) -> usize {
-    if down {
-        (ix + 1).min(len.saturating_sub(1))
-    } else {
-        ix.saturating_sub(1)
-    }
+    appearance: Entity<SelectState<Vec<SharedString>>>,
+    light_theme: Entity<SelectState<SearchableVec<SharedString>>>,
+    dark_theme: Entity<SelectState<SearchableVec<SharedString>>>,
+    font: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font).
+    focus_ix: usize,
+    /// Kept alive so the Confirm subscriptions stay active.
+    _subs: Vec<Subscription>,
 }
 
 /// All monospace font families available to the text system, sorted. A font is
@@ -1351,144 +1336,135 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Open the live settings screen, seeded with the current theme and font.
-    /// The theme name for the slot the current effective mode uses.
-    fn effective_slot_theme(&self, cx: &App) -> String {
-        if effective_mode(&self.config, cx).is_dark() {
-            self.config.dark_theme().to_string()
-        } else {
-            self.config.light_theme().to_string()
-        }
-    }
-
-    fn open_settings(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let mut themes: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
+    /// Open the live settings screen: four `Select` dropdowns (appearance,
+    /// light theme, dark theme, font), each applying its selection immediately.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut theme_names: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
             .map(|t| t.name.clone())
             .collect();
-        themes.sort_by_key(|n| n.to_lowercase());
-        let slot_theme = self.effective_slot_theme(cx);
-        let theme_ix = themes.iter().position(|n| n.as_ref() == slot_theme).unwrap_or(0);
+        theme_names.sort_by_key(|n| n.to_lowercase());
 
+        let row = |ix: usize| Some(IndexPath::default().row(ix));
         let appearance_ix = APPEARANCE_OPTIONS
             .iter()
             .position(|(_, v)| *v == self.config.appearance)
             .unwrap_or(0);
+        let pos = |list: &[SharedString], want: &str| {
+            list.iter().position(|n| n.as_ref() == want).unwrap_or(0)
+        };
+        let light_ix = pos(&theme_names, self.config.light_theme());
+        let dark_ix = pos(&theme_names, self.config.dark_theme());
 
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(window, cx);
         }
-        let fonts = self.mono_fonts.clone();
-        let font_ix = fonts
-            .iter()
-            .position(|f| f.as_ref() == self.config.font())
-            .unwrap_or(0);
+        let font_ix = pos(&self.mono_fonts, self.config.font());
 
+        let appearance_items: Vec<SharedString> = APPEARANCE_OPTIONS
+            .iter()
+            .map(|(label, _)| SharedString::from(*label))
+            .collect();
+
+        let appearance = cx.new(|cx| {
+            SelectState::new(appearance_items, row(appearance_ix), &mut *window, cx)
+        });
+        let light_theme = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(theme_names.clone()), row(light_ix), &mut *window, cx)
+                .searchable(true)
+        });
+        let dark_theme = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(theme_names), row(dark_ix), &mut *window, cx)
+                .searchable(true)
+        });
+        let font = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(self.mono_fonts.clone()), row(font_ix), &mut *window, cx)
+                .searchable(true)
+        });
+
+        let subs = vec![
+            cx.subscribe_in(&appearance, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
+                if let SelectEvent::Confirm(Some(label)) = ev {
+                    let value = APPEARANCE_OPTIONS
+                        .iter()
+                        .find(|(l, _)| *l == label.as_ref())
+                        .map_or("auto", |(_, v)| v);
+                    this.config.appearance = value.to_string();
+                    this.apply_and_save(cx);
+                }
+            }),
+            cx.subscribe_in(&light_theme, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                if let SelectEvent::Confirm(Some(name)) = ev {
+                    this.config.light_theme = name.to_string();
+                    this.apply_and_save(cx);
+                }
+            }),
+            cx.subscribe_in(&dark_theme, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                if let SelectEvent::Confirm(Some(name)) = ev {
+                    this.config.dark_theme = name.to_string();
+                    this.apply_and_save(cx);
+                }
+            }),
+            cx.subscribe_in(&font, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                if let SelectEvent::Confirm(Some(name)) = ev {
+                    this.config.font = name.to_string();
+                    this.font = SharedString::from(name.to_string());
+                    this.apply_and_save(cx);
+                }
+            }),
+        ];
+
+        appearance.update(cx, |st, cx| st.focus(window, cx));
         self.settings = Some(SettingsState {
-            field: SettingsField::Theme,
-            appearance_ix,
-            themes,
-            theme_ix,
-            theme_scroll: UniformListScrollHandle::new(),
-            fonts,
-            font_ix,
-            font_scroll: UniformListScrollHandle::new(),
+            appearance,
+            light_theme,
+            dark_theme,
+            font,
+            focus_ix: 0,
+            _subs: subs,
         });
         cx.notify();
     }
 
-    /// Handle a keystroke while the settings screen is open. Returns true if it
-    /// was consumed. Navigation applies the highlighted theme/font live.
-    fn handle_settings_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
-        if self.settings.is_none() {
-            return false;
-        }
-        match key {
-            "escape" | "q" | "," => {
-                self.settings = None;
-                // Persist the chosen appearance/themes/font for next launch.
-                config::save(&self.config);
-            }
-            "tab" => {
-                let s = self.settings.as_mut().unwrap();
-                s.field = match s.field {
-                    SettingsField::Appearance => SettingsField::Theme,
-                    SettingsField::Theme => SettingsField::Font,
-                    SettingsField::Font => SettingsField::Appearance,
-                };
-            }
-            "j" | "k" => {
-                let down = key == "j";
-                let s = self.settings.as_ref().unwrap();
-                let (field, cur, len) = match s.field {
-                    SettingsField::Appearance => {
-                        (SettingsField::Appearance, s.appearance_ix, APPEARANCE_OPTIONS.len())
-                    }
-                    SettingsField::Theme => (SettingsField::Theme, s.theme_ix, s.themes.len()),
-                    SettingsField::Font => (SettingsField::Font, s.font_ix, s.fonts.len()),
-                };
-                if len > 0 {
-                    self.set_setting_index(field, step(cur, down, len), cx);
-                }
-            }
-            _ => return false,
-        }
+    /// Re-apply the theme for the current config and persist it.
+    fn apply_and_save(&mut self, cx: &mut Context<Self>) {
+        apply_appearance(&self.config, cx);
+        config::save(&self.config);
         cx.notify();
-        true
     }
 
-    /// Select an item in a settings column (by keyboard or mouse click), focus
-    /// that column, and apply the change live.
-    fn set_setting_index(&mut self, field: SettingsField, ix: usize, cx: &mut Context<Self>) {
-        if self.settings.is_none() {
+    /// Tab moves focus to the next settings dropdown.
+    fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.settings.as_mut() else {
             return;
-        }
-        self.settings.as_mut().unwrap().field = field;
-        match field {
-            SettingsField::Appearance => {
-                let ix = ix.min(APPEARANCE_OPTIONS.len() - 1);
-                self.settings.as_mut().unwrap().appearance_ix = ix;
-                self.config.appearance = APPEARANCE_OPTIONS[ix].1.to_string();
-                apply_appearance(&self.config, cx);
-                // The effective slot may have changed; re-point the theme list.
-                let slot = self.effective_slot_theme(cx);
-                let s = self.settings.as_mut().unwrap();
-                s.theme_ix = s.themes.iter().position(|n| n.as_ref() == slot).unwrap_or(0);
-                s.theme_scroll
-                    .scroll_to_item(s.theme_ix, gpui::ScrollStrategy::Center);
+        };
+        s.focus_ix = (s.focus_ix + 1) % 4;
+        match s.focus_ix {
+            0 => {
+                let e = self.settings.as_ref().unwrap().appearance.clone();
+                e.update(cx, |st, cx| st.focus(window, cx));
             }
-            SettingsField::Theme => {
-                let name = {
-                    let s = self.settings.as_mut().unwrap();
-                    if ix >= s.themes.len() {
-                        return;
-                    }
-                    s.theme_ix = ix;
-                    s.theme_scroll.scroll_to_item(ix, gpui::ScrollStrategy::Center);
-                    s.themes[ix].to_string()
-                };
-                if effective_mode(&self.config, cx).is_dark() {
-                    self.config.dark_theme = name;
-                } else {
-                    self.config.light_theme = name;
-                }
-                apply_appearance(&self.config, cx);
+            1 => {
+                let e = self.settings.as_ref().unwrap().light_theme.clone();
+                e.update(cx, |st, cx| st.focus(window, cx));
             }
-            SettingsField::Font => {
-                let name = {
-                    let s = self.settings.as_mut().unwrap();
-                    if ix >= s.fonts.len() {
-                        return;
-                    }
-                    s.font_ix = ix;
-                    s.font_scroll.scroll_to_item(ix, gpui::ScrollStrategy::Center);
-                    s.fonts[ix].clone()
-                };
-                self.config.font = name.to_string();
-                self.font = name;
+            2 => {
+                let e = self.settings.as_ref().unwrap().dark_theme.clone();
+                e.update(cx, |st, cx| st.focus(window, cx));
+            }
+            _ => {
+                let e = self.settings.as_ref().unwrap().font.clone();
+                e.update(cx, |st, cx| st.focus(window, cx));
             }
         }
+    }
+
+    /// Close the settings screen, persisting and returning focus to the list.
+    fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings = None;
+        config::save(&self.config);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1543,10 +1519,13 @@ impl StatusView {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
 
-        // The settings screen is modal: it consumes every key (Tab arrives via
-        // the ToggleFold action instead).
+        // While settings is open the focused Select handles keys; we only watch
+        // for Esc (when no dropdown menu is open) to close the screen. Tab is
+        // delivered via the ToggleFold action.
         if self.settings.is_some() {
-            self.handle_settings_key(&key, cx);
+            if key == "escape" {
+                self.close_settings(window, cx);
+            }
             return;
         }
 
@@ -1815,9 +1794,10 @@ impl StatusView {
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
 
-    /// Render the live settings screen: Appearance, Theme, and Font columns,
-    /// side by side. Selecting in any applies immediately (no save).
-    fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
+    /// Render the live settings screen as a form of dropdowns. The `Select`
+    /// components carry their own mouse + keyboard handling; Tab moves between
+    /// them, Esc closes.
+    fn render_settings(&self, s: &SettingsState) -> gpui::Div {
         let hint = |k: &str, label: &str| {
             div()
                 .flex()
@@ -1826,106 +1806,27 @@ impl StatusView {
                 .child(key_chip(k, self.palette.dim))
                 .child(div().text_color(self.palette.dim).child(SharedString::from(label.to_string())))
         };
-
-        let column = |title: &str, focused: bool, list: AnyElement| {
-            let title_color = if focused {
-                self.palette.section
-            } else {
-                self.palette.dim
-            };
+        let field = |label: &str, control: AnyElement| {
             div()
                 .flex()
-                .flex_col()
-                .flex_grow(1.0)
-                .min_w(px(0.0))
-                .min_h(px(0.0))
-                .gap_1()
-                .child(div().text_color(title_color).child(SharedString::from(title.to_string())))
+                .items_center()
+                .gap_3()
                 .child(
                     div()
-                        .relative()
-                        .flex_grow(1.0)
-                        .min_h(px(0.0))
-                        .border_1()
-                        .border_color(if focused { self.palette.section } else { self.palette.border })
-                        .child(list),
+                        .w(px(110.0))
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(label.to_string())),
                 )
+                .child(div().w(px(320.0)).child(control))
         };
-
-        // Appearance: three fixed options, rendered as plain rows.
-        let appearance_focused = s.field == SettingsField::Appearance;
-        let mut appearance_list = div().flex().flex_col().size_full().p_1();
-        for (ix, (label, _)) in APPEARANCE_OPTIONS.iter().enumerate() {
-            appearance_list = appearance_list.child(self.settings_row(
-                view,
-                SettingsField::Appearance,
-                ix,
-                label,
-                ix == s.appearance_ix,
-                appearance_focused,
-            ));
-        }
-
-        // Theme list.
-        let theme_focused = s.field == SettingsField::Theme;
-        let theme_count = s.themes.len();
-        let theme_view = view.clone();
-        let theme_list = uniform_list("settings-themes", theme_count, move |range, _w, cx| {
-            let this = theme_view.read(cx);
-            let Some(s) = this.settings.as_ref() else {
-                return Vec::new();
-            };
-            range
-                .map(|ix| {
-                    this.settings_row(
-                        &theme_view,
-                        SettingsField::Theme,
-                        ix,
-                        &s.themes[ix],
-                        ix == s.theme_ix,
-                        theme_focused,
-                    )
-                })
-                .collect()
-        })
-        .track_scroll(&s.theme_scroll)
-        .size_full()
-        .p_1();
-
-        // Font list.
-        let font_focused = s.field == SettingsField::Font;
-        let font_count = s.fonts.len();
-        let font_view = view.clone();
-        let font_list = uniform_list("settings-fonts", font_count, move |range, _w, cx| {
-            let this = font_view.read(cx);
-            let Some(s) = this.settings.as_ref() else {
-                return Vec::new();
-            };
-            range
-                .map(|ix| {
-                    this.settings_row(
-                        &font_view,
-                        SettingsField::Font,
-                        ix,
-                        &s.fonts[ix],
-                        ix == s.font_ix,
-                        font_focused,
-                    )
-                })
-                .collect()
-        })
-        .track_scroll(&s.font_scroll)
-        .size_full()
-        .p_1();
 
         div()
             .flex()
             .flex_col()
             .flex_grow(1.0)
             .w_full()
-            .min_h(px(0.0))
-            .p_3()
-            .gap_2()
+            .p_4()
+            .gap_4()
             .child(
                 div()
                     .flex()
@@ -1933,56 +1834,27 @@ impl StatusView {
                     .gap_3()
                     .child(div().text_color(self.palette.section).child(SharedString::from("Settings")))
                     .child(hint("tab", "switch"))
-                    .child(hint("j", "/"))
-                    .child(hint("k", "move"))
                     .child(hint("esc", "close")),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_6()
-                    .flex_grow(1.0)
-                    .min_h(px(0.0))
-                    .child(column(
-                        "Appearance",
-                        appearance_focused,
-                        appearance_list.into_any_element(),
-                    ))
-                    .child(column("Theme", theme_focused, theme_list.into_any_element()))
-                    .child(column("Font", font_focused, font_list.into_any_element())),
-            )
-    }
-
-    /// One row in a settings column: highlighted when selected, and clickable
-    /// (mouse) to select+apply that item via [`Self::set_setting_index`].
-    fn settings_row(
-        &self,
-        view: &Entity<Self>,
-        field: SettingsField,
-        ix: usize,
-        name: &str,
-        selected: bool,
-        focused: bool,
-    ) -> AnyElement {
-        let id = SharedString::from(format!("setting-{}-{ix}", field as usize));
-        let view = view.clone();
-        let mut row = div()
-            .id(id)
-            .h(px(20.0))
-            .w_full()
-            .px_1()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .child(SharedString::from(name.to_string()));
-        if selected {
-            row = row.bg(if focused { self.palette.visual } else { self.palette.selection });
-        }
-        row.on_click(move |_, _window, cx: &mut App| {
-            view.update(cx, |v, cx| v.set_setting_index(field, ix, cx));
-        })
-        .into_any_element()
+            .child(field("Appearance", Select::new(&s.appearance).into_any_element()))
+            .child(field(
+                "Light theme",
+                Select::new(&s.light_theme)
+                    .search_placeholder("Search themes")
+                    .into_any_element(),
+            ))
+            .child(field(
+                "Dark theme",
+                Select::new(&s.dark_theme)
+                    .search_placeholder("Search themes")
+                    .into_any_element(),
+            ))
+            .child(field(
+                "Font",
+                Select::new(&s.font)
+                    .search_placeholder("Search fonts")
+                    .into_any_element(),
+            ))
     }
 
     fn render_row(&self, ix: usize, view: &Entity<Self>) -> AnyElement {
@@ -2106,7 +1978,7 @@ impl Render for StatusView {
         // Keep keyboard focus on the status view whenever the commit editor
         // (which owns its own input focus) isn't open, so keys always land —
         // including debug-channel keystrokes while the window isn't frontmost.
-        if self.editor.is_none() && !self.focus.is_focused(window) {
+        if self.editor.is_none() && self.settings.is_none() && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
         self.palette = Palette::from_theme(cx);
@@ -2117,9 +1989,9 @@ impl Render for StatusView {
         let mut root = div()
             .track_focus(&self.focus)
             .key_context(STATUS_CONTEXT)
-            .on_action(cx.listener(|this, _: &ToggleFold, _window, cx| {
+            .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
                 if this.settings.is_some() {
-                    this.handle_settings_key("tab", cx);
+                    this.cycle_settings_focus(window, cx);
                 } else if this.popup.is_none() && this.editor.is_none() {
                     this.toggle_fold(cx);
                 }
@@ -2144,7 +2016,7 @@ impl Render for StatusView {
 
         // The settings screen and commit editor each take over the window.
         if let Some(s) = &self.settings {
-            return root.child(self.render_settings(s, &view));
+            return root.child(self.render_settings(s));
         }
         if let Some(ed) = &self.editor {
             return root.child(self.render_editor(ed));
@@ -2535,6 +2407,13 @@ fn main() {
             Menu::new("Magritte").items([MenuItem::action("Quit Magritte", Quit)]),
             Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
         ]);
+        // Closing the last window (red traffic light included) quits the app.
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
 
         // A reasonable default window instead of filling the whole screen;
