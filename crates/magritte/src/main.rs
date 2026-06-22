@@ -523,9 +523,19 @@ impl StatusView {
         let generation = self.generation;
 
         cx.spawn(async move |this, cx| {
-            let loaded = cx
+            // Off the UI thread: load the diff and resolve the language
+            // (extension/filename, falling back to a shebang sniff of the file).
+            let (loaded, lang) = cx
                 .background_executor()
-                .spawn(async move { repo.diff_path(source, &path) })
+                .spawn(async move {
+                    let diff = repo.diff_path(source, &path);
+                    let lang = highlight::language_for_path(&path).or_else(|| {
+                        first_line_of(&repo.workdir().join(&path))
+                            .as_deref()
+                            .and_then(highlight::language_from_shebang)
+                    });
+                    (diff, lang)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 if this.generation != generation {
@@ -539,7 +549,7 @@ impl StatusView {
                 // Precompute syntax highlighting for the loaded diff.
                 if let DiffState::Loaded(diff) = &state {
                     if !diff.is_binary {
-                        if let Some(lang) = highlight::language_for_path(&key.1) {
+                        if let Some(lang) = lang {
                             let hl =
                                 highlight::highlight_diff(diff, lang, cx, theme::fg().into());
                             this.highlights.insert(key.clone(), hl);
@@ -1639,6 +1649,16 @@ fn last_line(text: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+/// Read the first line (up to 256 bytes) of a file, for shebang detection.
+fn first_line_of(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 256];
+    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    let bytes = &buf[..n];
+    let end = bytes.iter().position(|&b| b == b'\n').unwrap_or(bytes.len());
+    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 
 /// A small colored key label for transient rows.
