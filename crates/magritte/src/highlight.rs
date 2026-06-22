@@ -77,6 +77,107 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
     })
 }
 
+/// Resolve a file's language, in priority order: an explicit modeline
+/// (vim/emacs, head then tail) overrides everything; then extension/filename;
+/// then a shebang sniff of the first line. `head`/`tail` are the first and
+/// last chunk of the file's bytes (lossy UTF-8).
+pub fn detect_language(path: &str, head: &str, tail: &str) -> Option<&'static str> {
+    if let Some(lang) = detect_modeline(head).or_else(|| detect_modeline(tail)) {
+        return Some(lang);
+    }
+    if let Some(lang) = language_for_path(path) {
+        return Some(lang);
+    }
+    head.lines().next().and_then(language_from_shebang)
+}
+
+/// Find a vim or emacs modeline in `text`. Emacs takes precedence over vim.
+fn detect_modeline(text: &str) -> Option<&'static str> {
+    for line in text.lines() {
+        if let Some(mode) = emacs_mode(line) {
+            if let Some(lang) = lang_from_mode(mode) {
+                return Some(lang);
+            }
+        }
+    }
+    for line in text.lines() {
+        if let Some(ft) = vim_filetype(line) {
+            if let Some(lang) = lang_from_mode(ft) {
+                return Some(lang);
+            }
+        }
+    }
+    None
+}
+
+/// Extract `mode:` (or a bare mode) from an emacs `-*- ... -*-` modeline.
+fn emacs_mode(line: &str) -> Option<&str> {
+    let after = &line[line.find("-*-")? + 3..];
+    let content = after[..after.find("-*-")?].trim();
+    for part in content.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("mode:") {
+            return Some(v.trim());
+        }
+    }
+    // Bare form: `-*- python -*-`.
+    if !content.is_empty() && !content.contains([':', ';']) {
+        return Some(content);
+    }
+    None
+}
+
+/// Extract `ft=`/`filetype=` from a vim modeline (`vi:`/`vim:`/`ex:`), handling
+/// both the bare and `set ...:` forms.
+fn vim_filetype(line: &str) -> Option<&str> {
+    let start = ["vim:", "vi:", "ex:"]
+        .iter()
+        .filter_map(|m| line.find(m).map(|i| i + m.len()))
+        .min()?;
+    let mut rest = line[start..].trim_start();
+    rest = rest
+        .strip_prefix("set ")
+        .or_else(|| rest.strip_prefix("se "))
+        .unwrap_or(rest);
+    rest.split([' ', '\t', ':'])
+        .find_map(|opt| opt.strip_prefix("filetype=").or_else(|| opt.strip_prefix("ft=")))
+        .map(str::trim)
+}
+
+/// Map a vim filetype or emacs mode name to one of our highlighter languages.
+fn lang_from_mode(name: &str) -> Option<&'static str> {
+    let lower = name.trim().to_ascii_lowercase();
+    let n = lower.strip_suffix("-mode").unwrap_or(lower.as_str());
+    Some(match n {
+        "python" | "python3" => "python",
+        "ruby" | "enh-ruby" => "ruby",
+        "rust" | "rustic" => "rust",
+        "go" => "go",
+        "c" => "c",
+        "c++" | "cpp" => "cpp",
+        "javascript" | "js" | "js2" | "node" => "javascript",
+        "typescript" | "ts" => "typescript",
+        "tsx" => "tsx",
+        "sh" | "bash" | "shell-script" | "shell" => "bash",
+        "css" | "scss" => "css",
+        "html" | "web" | "mhtml" => "html",
+        "yaml" => "yaml",
+        "toml" | "conf-toml" => "toml",
+        "json" | "js-json" => "json",
+        "markdown" | "gfm" => "markdown",
+        "java" => "java",
+        "lua" => "lua",
+        "php" => "php",
+        "scala" => "scala",
+        "sql" => "sql",
+        "kotlin" => "kotlin",
+        "elixir" => "elixir",
+        "zig" => "zig",
+        "makefile" | "make" | "gnumakefile" => "make",
+        _ => return None,
+    })
+}
+
 /// Detect a language from a shebang line (e.g. `#!/usr/bin/env python3`),
 /// for files with no recognizable extension. Returns `None` for interpreters
 /// we don't have a highlighter for.
@@ -100,6 +201,59 @@ pub fn language_from_shebang(line: &str) -> Option<&'static str> {
         "php" => "php",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shebangs() {
+        assert_eq!(language_from_shebang("#!/usr/bin/env python3"), Some("python"));
+        assert_eq!(language_from_shebang("#!/bin/bash"), Some("bash"));
+        assert_eq!(language_from_shebang("#! /usr/bin/ruby"), Some("ruby"));
+        assert_eq!(language_from_shebang("#!/usr/bin/env node"), Some("javascript"));
+        assert_eq!(language_from_shebang("not a shebang"), None);
+        assert_eq!(language_from_shebang("#!/usr/bin/perl"), None); // unsupported
+    }
+
+    #[test]
+    fn vim_modelines() {
+        assert_eq!(vim_filetype("# vim: set ft=python ts=4 et:"), Some("python"));
+        assert_eq!(vim_filetype("// vim: ft=rust"), Some("rust"));
+        assert_eq!(vim_filetype("/* vi: set filetype=cpp: */"), Some("cpp"));
+        assert_eq!(vim_filetype("no modeline here"), None);
+    }
+
+    #[test]
+    fn emacs_modelines() {
+        assert_eq!(emacs_mode("# -*- mode: python; tab-width: 4 -*-"), Some("python"));
+        assert_eq!(emacs_mode("/* -*- c++ -*- */"), Some("c++"));
+        assert_eq!(emacs_mode("plain line"), None);
+    }
+
+    #[test]
+    fn modeline_overrides_extension() {
+        // A .txt file declaring python via emacs/vim modeline.
+        assert_eq!(detect_language("notes.txt", "-*- mode: python -*-\n", ""), Some("python"));
+        assert_eq!(detect_language("notes.txt", "x = 1\n# vim: ft=ruby\n", ""), Some("ruby"));
+        // No modeline: fall back to extension.
+        assert_eq!(detect_language("a.rs", "fn main() {}", ""), Some("rust"));
+        // Emacs wins over vim when both present.
+        assert_eq!(
+            detect_language("x", "-*- mode: go -*-\n# vim: ft=ruby\n", ""),
+            Some("go")
+        );
+    }
+
+    #[test]
+    fn special_filenames_and_shebang_fallback() {
+        assert_eq!(language_for_path("Makefile"), Some("make"));
+        assert_eq!(language_for_path("config/.bashrc"), Some("bash"));
+        assert_eq!(language_for_path("Vagrantfile"), Some("ruby"));
+        // Extensionless, no modeline → shebang.
+        assert_eq!(detect_language("bin/runme", "#!/bin/sh\necho hi\n", ""), Some("bash"));
+    }
 }
 
 /// Highlight every line of a file diff. `default` is the fallback text color

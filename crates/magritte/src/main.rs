@@ -529,11 +529,8 @@ impl StatusView {
                 .background_executor()
                 .spawn(async move {
                     let diff = repo.diff_path(source, &path);
-                    let lang = highlight::language_for_path(&path).or_else(|| {
-                        first_line_of(&repo.workdir().join(&path))
-                            .as_deref()
-                            .and_then(highlight::language_from_shebang)
-                    });
+                    let (head, tail) = file_head_tail(&repo.workdir().join(&path));
+                    let lang = highlight::detect_language(&path, &head, &tail);
                     (diff, lang)
                 })
                 .await;
@@ -1651,14 +1648,25 @@ fn last_line(text: &str) -> String {
         .to_string()
 }
 
-/// Read the first line (up to 256 bytes) of a file, for shebang detection.
-fn first_line_of(path: &std::path::Path) -> Option<String> {
-    use std::io::Read;
-    let mut buf = [0u8; 256];
-    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    let bytes = &buf[..n];
-    let end = bytes.iter().position(|&b| b == b'\n').unwrap_or(bytes.len());
-    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+/// Read the first and last ~1 KB of a file (lossy UTF-8) for modeline/shebang
+/// detection. Returns empty strings on error.
+fn file_head_tail(path: &std::path::Path) -> (String, String) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (String::new(), String::new());
+    };
+    let mut head = [0u8; 1024];
+    let hn = file.read(&mut head).unwrap_or(0);
+    // Tail: only when the file is larger than the head we already read.
+    let mut tail = [0u8; 1024];
+    let tn = match file.seek(SeekFrom::End(-1024)) {
+        Ok(_) => file.read(&mut tail).unwrap_or(0),
+        Err(_) => 0,
+    };
+    (
+        String::from_utf8_lossy(&head[..hn]).into_owned(),
+        String::from_utf8_lossy(&tail[..tn]).into_owned(),
+    )
 }
 
 /// A small colored key label for transient rows.
