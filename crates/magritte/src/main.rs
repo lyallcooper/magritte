@@ -1674,11 +1674,23 @@ fn file_head_tail(path: &std::path::Path) -> (String, String) {
 }
 
 /// A small colored key label for transient rows.
-fn key_chip(key: &str) -> gpui::Div {
-    div()
-        .min_w(px(20.0))
-        .text_color(theme::modified())
-        .child(SharedString::from(key.to_string()))
+/// A keyboard key badge. Uses gpui-component's `Kbd` for real single
+/// keystrokes; falls back to plain text for multi-key hints like `-f`.
+fn key_chip(key: &str) -> AnyElement {
+    // Uppercase single letters are shifted keystrokes (e.g. F = shift-f).
+    let spec = if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_uppercase()) {
+        format!("shift-{}", key.to_lowercase())
+    } else {
+        key.to_string()
+    };
+    match gpui::Keystroke::parse(&spec) {
+        Ok(stroke) => gpui_component::kbd::Kbd::new(stroke).into_any_element(),
+        Err(_) => div()
+            .min_w(px(20.0))
+            .text_color(theme::modified())
+            .child(SharedString::from(key.to_string()))
+            .into_any_element(),
+    }
 }
 
 /// A bottom-pinned status bar row (confirm prompt or mode indicator).
