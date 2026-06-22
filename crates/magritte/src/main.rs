@@ -1367,7 +1367,7 @@ impl StatusView {
                             .child(switch_chip(
                                 sw.key,
                                 self.palette.dim,
-                                self.palette.section,
+                                self.palette.hunk,
                                 pending_dash,
                             ))
                             .child(
