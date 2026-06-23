@@ -14,6 +14,10 @@
 //! Commands (one per line):
 //!   key <keystroke>      e.g. `key j`, `key shift-g`, `key tab`, `key escape`
 //!   type <text...>       type the literal text into the focused input
+//!   click <x> <y>        click at a window-relative point (logical points)
+//!   click-id <id>        click a registered element by id (preferred — no
+//!                        coordinate guessing; see `record_target`)
+//!   targets              list registered clickable ids and their centers
 //!   shot <path>          capture the window to a PNG at <path>
 //!   sleep <millis>       pause (e.g. to let a frame paint)
 
@@ -130,12 +134,22 @@ async fn run_command(
             Ok(None)
         }
         "click-id" => {
+            // Force a paint first: when the window is occluded the OS display
+            // link is paused, so the target registry would otherwise be stale.
+            force_draw(handle, cx);
             let target = TARGETS.lock().ok().and_then(|t| t.get(rest).copied());
             let (x, y) = target.ok_or_else(|| format!("no clickable target with id {rest:?}"))?;
             dispatch_click(handle, x, y, cx)?;
             Ok(Some(format!("clicked {rest} @ {x:.0},{y:.0}")))
         }
+        "draw" => {
+            // Synchronous layout+paint, no present. Refreshes the target
+            // registry even while the window is occluded (paused display link).
+            force_draw(handle, cx);
+            Ok(Some("drew".into()))
+        }
         "targets" => {
+            force_draw(handle, cx);
             let targets = TARGETS.lock().map_err(|_| "targets lock poisoned")?;
             let mut lines: Vec<String> =
                 targets.iter().map(|(k, (x, y))| format!("{k}  {x:.0},{y:.0}")).collect();
@@ -151,19 +165,49 @@ async fn run_command(
             if rest.is_empty() {
                 return Err("shot needs a path".into());
             }
-            // Let the latest state paint before capturing.
-            let _ = cx.update_window(handle, |_, window, _| window.refresh());
-            cx.background_executor().timer(Duration::from_millis(80)).await;
-            // The window's logical size, so we can downscale the Retina capture
-            // to point-space — then image pixels == click coordinates 1:1.
-            let size = cx
-                .update_window(handle, |_, window, _| {
-                    let b = window.bounds();
-                    (b.size.width.as_f32(), b.size.height.as_f32())
-                })
-                .ok();
-            screenshot(rest, size)?;
-            Ok(Some(format!("shot {rest}")))
+            // With `debug-capture`: render the window's scene to an offscreen
+            // image (via gpui's `render_to_image`). A forced `draw` first makes
+            // the rendered frame current even when the OS display link is paused
+            // (occluded/minimized), so this captures fresh pixels in the
+            // background without foregrounding the window.
+            #[cfg(feature = "debug-capture")]
+            {
+                force_draw(handle, cx);
+                let img = cx
+                    .update_window(handle, |_, window, _| window.render_to_image())
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                let (lw, lh) = cx
+                    .update_window(handle, |_, window, _| {
+                        let b = window.bounds();
+                        (
+                            b.size.width.as_f32().round() as u32,
+                            b.size.height.as_f32().round() as u32,
+                        )
+                    })
+                    .map_err(|e| e.to_string())?;
+                let (dw, dh) = (img.width(), img.height());
+                encode_png_downscaled(img.into_raw(), dw, dh, lw, lh, rest)?;
+                Ok(Some(format!("shot {rest}")))
+            }
+            // Without the feature: capture via `screencapture`. Reads the
+            // window-server surface, which only refreshes for a foregrounded
+            // (non-occluded) window — see the module note on background paint.
+            #[cfg(not(feature = "debug-capture"))]
+            {
+                let _ = cx.update_window(handle, |_, window, _| window.refresh());
+                cx.background_executor().timer(Duration::from_millis(80)).await;
+                // The window's logical size, so we can downscale the Retina
+                // capture to point-space — then image px == click coords 1:1.
+                let size = cx
+                    .update_window(handle, |_, window, _| {
+                        let b = window.bounds();
+                        (b.size.width.as_f32(), b.size.height.as_f32())
+                    })
+                    .ok();
+                screenshot(rest, size)?;
+                Ok(Some(format!("shot {rest}")))
+            }
         }
         other => Err(format!("unknown command: {other}")),
     }
@@ -202,6 +246,42 @@ fn dispatch_click(handle: AnyWindowHandle, x: f32, y: f32, cx: &mut AsyncApp) ->
         );
     })
     .map_err(|e| e.to_string())
+}
+
+/// Force a synchronous layout+paint pass. This repopulates the `track_target`
+/// registry (written during paint) even when the window is occluded and macOS
+/// has paused its display link — which is why `targets`/`click-id` would
+/// otherwise read stale coordinates in the background. Note this does NOT
+/// present pixels to the window surface (that path is driven only by the paused
+/// display link), so it does not unfreeze `shot`; screenshots still need the
+/// window foregrounded.
+fn force_draw(handle: AnyWindowHandle, cx: &mut AsyncApp) {
+    let _ = cx.update_window(handle, |_, window, cx| {
+        let _ = window.draw(cx);
+    });
+}
+
+/// Encode an offscreen-rendered RGBA frame to a PNG at `path`, downscaling from
+/// device pixels (`dw`×`dh`, Retina) to logical points (`lw`×`lh`) so image
+/// pixels map 1:1 to `click`/`click-id` coordinates — matching the contract of
+/// the `screencapture` path.
+#[cfg(feature = "debug-capture")]
+fn encode_png_downscaled(
+    raw: Vec<u8>,
+    dw: u32,
+    dh: u32,
+    lw: u32,
+    lh: u32,
+    path: &str,
+) -> Result<(), String> {
+    let src = image::RgbaImage::from_raw(dw, dh, raw)
+        .ok_or("render_to_image: raw buffer size mismatch")?;
+    let out = if lw > 0 && lh > 0 && (lw, lh) != (dw, dh) {
+        image::imageops::resize(&src, lw, lh, image::imageops::FilterType::Triangle)
+    } else {
+        src
+    };
+    out.save(path).map_err(|e| e.to_string())
 }
 
 fn dispatch(handle: AnyWindowHandle, ks: Keystroke, cx: &mut AsyncApp) -> Result<(), String> {
