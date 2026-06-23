@@ -2132,7 +2132,7 @@ impl StatusView {
                     set_upstream: false,
                     save_push_remote: false,
                 };
-                self.resolve_remote(t, None, switches, window, cx);
+                self.prompt_remote(t, switches, window, cx);
             }
             PullPushRemote => self.resolve_remote(
                 Transfer::Pull { branch },
@@ -2152,9 +2152,7 @@ impl StatusView {
                 ),
                 None => self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx),
             },
-            PullElsewhere => {
-                self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx)
-            }
+            PullElsewhere => self.prompt_remote(Transfer::Pull { branch }, switches, window, cx),
             FetchPushRemote => self.resolve_remote(
                 Transfer::Fetch,
                 targets.push_remote.clone(),
@@ -2167,7 +2165,7 @@ impl StatusView {
                 self.resolve_remote(Transfer::Fetch, remote, switches, window, cx);
             }
             FetchAll => self.run_fetch_all(switches, cx),
-            FetchElsewhere => self.resolve_remote(Transfer::Fetch, None, switches, window, cx),
+            FetchElsewhere => self.prompt_remote(Transfer::Fetch, switches, window, cx),
             _ => {}
         }
     }
@@ -2201,7 +2199,29 @@ impl StatusView {
         }
     }
 
-    /// Open the remote-picker dropdown for a pending transfer (>1 remote).
+    /// Always show the remote picker for a pending transfer (the "elsewhere"
+    /// actions, where the point is to choose) — even with a single remote.
+    fn prompt_remote(
+        &mut self,
+        transfer: Transfer,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let remotes = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.remotes().ok())
+            .unwrap_or_default();
+        if remotes.is_empty() {
+            self.status_message = Some("No remotes configured".to_string());
+            cx.notify();
+            return;
+        }
+        self.open_remote_picker(transfer, remotes, switches, window, cx);
+    }
+
+    /// Open the remote-picker dropdown for a pending transfer.
     fn open_remote_picker(
         &mut self,
         transfer: Transfer,
