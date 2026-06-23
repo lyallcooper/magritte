@@ -16,11 +16,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
-    FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TitlebarOptions, UniformListScrollHandle, Window,
-    WindowAppearance, WindowBounds, WindowOptions,
+    actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, ClipboardItem,
+    Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, TitlebarOptions, UniformListScrollHandle,
+    Window, WindowAppearance, WindowBounds, WindowOptions,
 };
 
 use gpui::prelude::FluentBuilder;
@@ -44,8 +44,15 @@ actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 // the status view, which applies them to the row at point (selected on
 // right-click) or the active visual selection.
 actions!(magritte, [CtxStage, CtxUnstage, CtxDiscard]);
+// Settings "Open config file" dropdown actions: copy the path, or open the
+// config with a specific editor (carries the editor's app path). `no_json`
+// avoids the serde/schemars requirement of keymap-loadable actions.
+actions!(magritte, [CopyConfigPath]);
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = magritte, no_json)]
+struct OpenConfigWith(SharedString);
 use gpui::Subscription;
-use gpui_component::button::{Button, ButtonRounded, ButtonVariants};
+use gpui_component::button::{Button, ButtonRounded, ButtonVariants, DropdownButton};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt;
@@ -604,6 +611,48 @@ fn is_monospace_font(_name: &str) -> bool {
     true
 }
 
+/// Installed GUI editors as (display name, `.app` path), for the settings
+/// "Open in" menu. A curated list of common editors checked against the
+/// standard application directories; TextEdit (always present) is the fallback.
+#[cfg(target_os = "macos")]
+fn installed_editors() -> Vec<(SharedString, SharedString)> {
+    const APPS: &[&str] = &[
+        "Visual Studio Code",
+        "Cursor",
+        "Zed",
+        "Sublime Text",
+        "Nova",
+        "BBEdit",
+        "VSCodium",
+        "TextEdit",
+    ];
+    let mut dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join("Applications"));
+    }
+    APPS.iter()
+        .filter_map(|name| {
+            dirs.iter()
+                .map(|dir| dir.join(format!("{name}.app")))
+                .find(|p| p.exists())
+                .map(|p| {
+                    (
+                        SharedString::from(name.to_string()),
+                        SharedString::from(p.to_string_lossy().into_owned()),
+                    )
+                })
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn installed_editors() -> Vec<(SharedString, SharedString)> {
+    Vec::new()
+}
+
 /// Whether the system appearance is currently dark.
 fn system_is_dark(cx: &App) -> bool {
     matches!(
@@ -718,6 +767,9 @@ struct StatusView {
     config: config::Config,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
+    /// Installed GUI editors, as (display name, .app path), for the settings
+    /// "Open config file" dropdown. Refreshed each time settings opens.
+    editors: Vec<(SharedString, SharedString)>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
     /// A pending confirmation: (prompt, what to do on `y`).
@@ -771,6 +823,7 @@ impl StatusView {
             font,
             config,
             mono_fonts: Vec::new(),
+            editors: Vec::new(),
             status_message: startup_warning,
             confirm: None,
             focus: cx.focus_handle(),
@@ -2212,6 +2265,7 @@ impl StatusView {
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(cx);
         }
+        self.editors = installed_editors();
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
         let mut font_items: Vec<SharedString> = vec![SharedString::from(SYSTEM_FONT_LABEL)];
@@ -3143,18 +3197,40 @@ impl StatusView {
             ))
     }
 
-    /// A mouse-friendly button that opens the on-disk config file in the OS
-    /// default app for it — an escape hatch for settings the UI doesn't expose,
-    /// and a way to see where the file lives.
+    /// The settings "Open config file" control: a split button whose main half
+    /// opens the config in the OS default app, and whose dropdown offers "Copy
+    /// path" plus an "Open in" list of the installed editors. It's an escape
+    /// hatch for settings the UI doesn't expose, and a way to see where the file
+    /// lives. Menu items dispatch actions routed to the status view's focus.
     fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
-        let view = view.clone();
-        Button::new("open-config")
+        let editors = self.editors.clone();
+        let focus = self.focus.clone();
+        let main = Button::new("open-config-main")
             .label("Open config file")
             .ghost()
             .small()
             .icon(IconName::ExternalLink)
-            .on_click(move |_, _window, cx| {
-                view.update(cx, |this, _| this.open_config_file());
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    view.update(cx, |this, _| this.open_config_file());
+                }
+            });
+        DropdownButton::new("open-config")
+            .ghost()
+            .small()
+            .button(main)
+            .dropdown_menu(move |menu, _window, _cx| {
+                let mut menu = menu
+                    .action_context(focus.clone())
+                    .menu("Copy path", Box::new(CopyConfigPath));
+                if !editors.is_empty() {
+                    menu = menu.separator().label("Open in");
+                    for (name, path) in &editors {
+                        menu = menu.menu(name.clone(), Box::new(OpenConfigWith(path.clone())));
+                    }
+                }
+                menu
             })
     }
 
@@ -3162,14 +3238,44 @@ impl StatusView {
     /// it with the OS default app for the file — honoring whatever editor you've
     /// associated with it, rather than forcing the plain-text editor.
     fn open_config_file(&self) {
-        config::save(&self.config);
-        let Some(path) = config::path() else {
+        let Some(path) = self.saved_config_path() else {
             return;
         };
         #[cfg(target_os = "macos")]
         let _ = std::process::Command::new("open").arg(&path).spawn();
         #[cfg(not(target_os = "macos"))]
         let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+    }
+
+    /// Open the config file with a specific editor app (a `.app` path on macOS).
+    fn open_config_with(&self, app: &str) {
+        let Some(path) = self.saved_config_path() else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open")
+            .arg("-a")
+            .arg(app)
+            .arg(&path)
+            .spawn();
+        #[cfg(not(target_os = "macos"))]
+        let _ = std::process::Command::new(app).arg(&path).spawn();
+    }
+
+    /// Copy the config file's path to the clipboard.
+    fn copy_config_path(&self, cx: &mut Context<Self>) {
+        if let Some(path) = config::path() {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+
+    /// Persist the current config (so the file exists even if never edited) and
+    /// return its path.
+    fn saved_config_path(&self) -> Option<PathBuf> {
+        config::save(&self.config);
+        config::path()
     }
 
     /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
@@ -3511,6 +3617,13 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxStage, _window, cx| this.act(Op::Stage, cx)))
             .on_action(cx.listener(|this, _: &CtxUnstage, _window, cx| this.act(Op::Unstage, cx)))
             .on_action(cx.listener(|this, _: &CtxDiscard, _window, cx| this.act(Op::Discard, cx)))
+            // Settings "Open config file" dropdown actions.
+            .on_action(
+                cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),
+            )
+            .on_action(cx.listener(|this, action: &OpenConfigWith, _window, _cx| {
+                this.open_config_with(&action.0)
+            }))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
