@@ -79,7 +79,10 @@ pub fn load_reporting() -> (Config, Option<String>) {
         Ok(config) => (config, None),
         Err(e) => (
             Config::default(),
-            Some(format!("Ignoring invalid config at {}: {e}", path.display())),
+            Some(format!(
+                "Ignoring invalid config at {}: {e}",
+                path.display()
+            )),
         ),
     }
 }

@@ -81,10 +81,8 @@ impl FileEntry {
 
     /// Whether this entry has changes not yet staged.
     pub fn is_unstaged(&self) -> bool {
-        matches!(
-            self.kind,
-            EntryKind::Untracked | EntryKind::Unmerged
-        ) || self.worktree.is_modified()
+        matches!(self.kind, EntryKind::Untracked | EntryKind::Unmerged)
+            || self.worktree.is_modified()
     }
 }
 
@@ -126,9 +124,7 @@ impl Status {
     }
 
     pub fn is_clean(&self) -> bool {
-        self.entries
-            .iter()
-            .all(|e| e.kind == EntryKind::Ignored)
+        self.entries.iter().all(|e| e.kind == EntryKind::Ignored)
     }
 }
 
@@ -285,12 +281,13 @@ fn split_fields(record: &[u8], n: usize) -> Result<(Vec<&[u8]>, &[u8])> {
         while rest.first() == Some(&b' ') {
             rest = &rest[1..];
         }
-        let end = rest.iter().position(|&b| b == b' ').ok_or_else(|| {
-            Error::Parse {
+        let end = rest
+            .iter()
+            .position(|&b| b == b' ')
+            .ok_or_else(|| Error::Parse {
                 context: "truncated porcelain record",
                 line: lossy(record),
-            }
-        })?;
+            })?;
         fields.push(&rest[..end]);
         rest = &rest[end + 1..];
     }

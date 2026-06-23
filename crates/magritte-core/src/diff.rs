@@ -245,8 +245,7 @@ where
     I: Iterator<Item = &'a str>,
 {
     let header = lines.next().expect("caller verified @@ line");
-    let (old_start, old_count, new_start, new_count, section_heading) =
-        parse_hunk_header(header)?;
+    let (old_start, old_count, new_start, new_count, section_heading) = parse_hunk_header(header)?;
 
     let mut hunk = Hunk {
         old_start,

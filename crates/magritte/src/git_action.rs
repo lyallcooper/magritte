@@ -69,16 +69,36 @@ impl Action {
             Action::DiscardUntracked(p) => to_err(repo.discard_untracked_file(&p)),
             Action::StageAll => to_err(repo.stage_all()),
             Action::UnstageAll => to_err(repo.unstage_all()),
-            Action::StageHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.stage_hunk(&f, &f.hunks[h]))),
-            Action::UnstageHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.unstage_hunk(&f, &f.hunks[h]))),
-            Action::DiscardHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.discard_hunk(&f, &f.hunks[h]))),
-            Action::StageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.stage_lines(&f, &f.hunks[h], &l))),
-            Action::UnstageLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.unstage_lines(&f, &f.hunks[h], &l))),
-            Action::DiscardLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_lines(&f, &f.hunks[h], &l))),
+            Action::StageHunk(f, h) => {
+                hunk(&f, h).and_then(|_| to_err(repo.stage_hunk(&f, &f.hunks[h])))
+            }
+            Action::UnstageHunk(f, h) => {
+                hunk(&f, h).and_then(|_| to_err(repo.unstage_hunk(&f, &f.hunks[h])))
+            }
+            Action::DiscardHunk(f, h) => {
+                hunk(&f, h).and_then(|_| to_err(repo.discard_hunk(&f, &f.hunks[h])))
+            }
+            Action::StageLines(f, h, l) => {
+                hunk(&f, h).and_then(|_| to_err(repo.stage_lines(&f, &f.hunks[h], &l)))
+            }
+            Action::UnstageLines(f, h, l) => {
+                hunk(&f, h).and_then(|_| to_err(repo.unstage_lines(&f, &f.hunks[h], &l)))
+            }
+            Action::DiscardLines(f, h, l) => {
+                hunk(&f, h).and_then(|_| to_err(repo.discard_lines(&f, &f.hunks[h], &l)))
+            }
             Action::DiscardStagedFile(p) => to_err(repo.discard_staged_file(&p)),
-            Action::DiscardStagedHunk(f, h) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_hunk(&f, &f.hunks[h]))),
-            Action::DiscardStagedLines(f, h, l) => hunk(&f, h).and_then(|_| to_err(repo.discard_staged_lines(&f, &f.hunks[h], &l))),
-            Action::ApplyRegion { kind, file, selections } => to_err(match kind {
+            Action::DiscardStagedHunk(f, h) => {
+                hunk(&f, h).and_then(|_| to_err(repo.discard_staged_hunk(&f, &f.hunks[h])))
+            }
+            Action::DiscardStagedLines(f, h, l) => {
+                hunk(&f, h).and_then(|_| to_err(repo.discard_staged_lines(&f, &f.hunks[h], &l)))
+            }
+            Action::ApplyRegion {
+                kind,
+                file,
+                selections,
+            } => to_err(match kind {
                 RegionKind::Stage => repo.stage_file_lines(&file, &selections),
                 RegionKind::Unstage => repo.unstage_file_lines(&file, &selections),
                 RegionKind::Discard => repo.discard_file_lines(&file, &selections),
@@ -103,7 +123,11 @@ impl Action {
     /// only ever issued singly, not batched).
     pub fn check(&self, repo: &Repo) -> Result<(), String> {
         match self {
-            Action::ApplyRegion { kind, file, selections } => {
+            Action::ApplyRegion {
+                kind,
+                file,
+                selections,
+            } => {
                 let (reverse, target) = match kind {
                     RegionKind::Stage => (false, ApplyTarget::Index),
                     RegionKind::Unstage => (true, ApplyTarget::Index),
@@ -113,7 +137,8 @@ impl Action {
                     RegionKind::DiscardStaged => (true, ApplyTarget::Index),
                 };
                 let patch = magritte_core::stage::build_file_patch(file, selections, reverse);
-                repo.check_patch(&patch, target, reverse).map_err(|e| e.to_string())
+                repo.check_patch(&patch, target, reverse)
+                    .map_err(|e| e.to_string())
             }
             Action::Batch(actions) => actions.iter().try_for_each(|a| a.check(repo)),
             _ => Ok(()),
@@ -134,14 +159,21 @@ pub fn describe_discard(action: &Action) -> String {
             format!("Discard staged {p} (reverts index and worktree to HEAD)?")
         }
         Action::DiscardStagedHunk(f, _) => {
-            format!("Discard staged hunk in {} (index + worktree)?", f.display_path())
+            format!(
+                "Discard staged hunk in {} (index + worktree)?",
+                f.display_path()
+            )
         }
         Action::DiscardStagedLines(f, _, l) => format!(
             "Discard {} staged line(s) in {} (index + worktree)?",
             l.len(),
             f.display_path()
         ),
-        Action::ApplyRegion { kind, file, selections } => {
+        Action::ApplyRegion {
+            kind,
+            file,
+            selections,
+        } => {
             let n: usize = selections.iter().map(|(_, l)| l.len()).sum();
             let staged = matches!(kind, RegionKind::DiscardStaged);
             format!(

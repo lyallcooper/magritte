@@ -17,7 +17,11 @@ fn clean_repo_reports_branch_and_no_entries() {
     let status = open(&t).status().unwrap();
     assert_eq!(status.head.branch.as_deref(), Some("main"));
     assert!(!status.head.detached);
-    assert!(status.is_clean(), "expected clean, got {:?}", status.entries);
+    assert!(
+        status.is_clean(),
+        "expected clean, got {:?}",
+        status.entries
+    );
 }
 
 #[test]
