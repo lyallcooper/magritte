@@ -32,3 +32,4 @@
 - [x] Trying to start a regular commit should prompt to stage files like magit does
 - [x] Shift-click on the status page should also start visual mode selection, with the selection going from the previous cursor position to where the shift click targeted
 - [x] The commit editor should highlight chars in the commit title line that go past 50 chars, and we should auto-hard wrap the text after 72 chars in the body. Both of these should be toggleable in the settings. I'd also like some way of being able to reflow the text when editing after the auto-wrap, but not sure how to best expose that
+- [ ] Confirm canceling a commit if there's an in progress commit message, or if the message has been modified in the case of a reword

@@ -52,7 +52,7 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::tag::Tag;
-use gpui_component::{ActiveTheme, IndexPath, Sizable};
+use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
@@ -383,27 +383,39 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     pieces
 }
 
-/// Auto-fill the commit *body* to `width`: any over-long body line is broken at
-/// word boundaries. The summary (line 0) is never wrapped, and existing line
-/// breaks are preserved (lines are only split, never joined) — so this is safe
-/// to run on every keystroke. Because it only ever turns a space into a
-/// newline, total length and character offsets are preserved.
-fn auto_fill_body(text: &str, width: usize) -> String {
-    let mut out = Vec::new();
+/// Auto-wrap the commit body *only when the cursor is at the end of an
+/// over-long line* — i.e. while typing at the end of a line — so that editing
+/// in the middle of the message never reflows text under the user. The summary
+/// (line 0) is never wrapped. Returns the rewrapped text when a wrap happened.
+/// `cursor` is a byte offset (as the input reports it); because wrapping only
+/// turns a space into a newline, that offset stays valid in the result.
+fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<String> {
+    let mut line_start = 0; // byte offset of the current line's first char
     for (i, line) in text.split('\n').enumerate() {
-        if i == 0 || line.chars().count() <= width {
-            out.push(line.to_string());
-        } else {
-            out.extend(wrap_line(line, width));
+        let line_end = line_start + line.len(); // byte offset before the '\n'
+        if cursor <= line_end {
+            // The cursor is on this line. Wrap only when it's at the very end of
+            // the line, the line isn't the summary, and it overruns the width.
+            if cursor != line_end || i == 0 || line.chars().count() <= width {
+                return None;
+            }
+            let pieces = wrap_line(line, width);
+            if pieces.len() <= 1 {
+                return None; // unbreakable (e.g. a single long word)
+            }
+            let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+            lines.splice(i..=i, pieces);
+            return Some(lines.join("\n"));
         }
+        line_start = line_end + 1; // + the '\n' byte
     }
-    out.join("\n")
+    None
 }
 
 /// Reflow the commit *body* to `width`: each blank-line-separated paragraph is
 /// joined into one line then re-wrapped, collapsing runs of whitespace. The
 /// summary (line 0) and blank separator lines are left untouched. Unlike
-/// [`auto_fill_body`], this *re-joins* manually-broken lines, so it's an
+/// [`wrap_at_cursor`], this *re-joins* manually-broken lines, so it's an
 /// explicit action rather than something to run while typing.
 fn reflow_body(text: &str, width: usize) -> String {
     let mut iter = text.split('\n');
@@ -427,36 +439,35 @@ fn reflow_body(text: &str, width: usize) -> String {
     out.join("\n")
 }
 
-/// The UTF-16 column range of the part of the summary (line 0) that overruns
-/// `limit` columns, as `(start, end)` for a diagnostic `Position`. `None` when
-/// the summary fits. Columns are counted in characters; the start is the
-/// UTF-16 offset of the `limit`-th character.
+/// The character-column range of the part of the summary (line 0) that overruns
+/// `limit` columns, as `(start, end)` for a diagnostic `Position` (whose
+/// `character` field is a 0-based character count). `None` when the summary
+/// fits.
 fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
     let title = text.split('\n').next().unwrap_or("");
-    if title.chars().count() <= limit {
+    let chars = title.chars().count();
+    if chars <= limit {
         return None;
     }
-    let start: usize = title.chars().take(limit).map(char::len_utf16).sum();
-    let end: usize = title.chars().map(char::len_utf16).sum();
-    Some((start as u32, end as u32))
+    Some((limit as u32, chars as u32))
 }
 
-/// Convert a UTF-16 offset into `text` to a 0-based line/column [`Position`],
-/// for restoring the cursor after a programmatic edit.
-fn utf16_offset_to_position(text: &str, offset: usize) -> Position {
-    let (mut line, mut col, mut seen) = (0u32, 0u32, 0usize);
+/// Convert a byte offset into `text` (as the input reports the cursor) to a
+/// 0-based line / character-column [`Position`], for restoring the cursor after
+/// a programmatic edit.
+fn byte_offset_to_position(text: &str, offset: usize) -> Position {
+    let (mut line, mut col, mut bytes) = (0u32, 0u32, 0usize);
     for ch in text.chars() {
-        if seen >= offset {
+        if bytes >= offset {
             break;
         }
-        let w = ch.len_utf16();
         if ch == '\n' {
             line += 1;
             col = 0;
         } else {
-            col += w as u32;
+            col += 1; // character column
         }
-        seen += w;
+        bytes += ch.len_utf8();
     }
     Position::new(line, col)
 }
@@ -1920,14 +1931,13 @@ impl StatusView {
         state.update(cx, |s, cx| {
             if wrap {
                 let value = s.value().to_string();
-                let wrapped = auto_fill_body(&value, COMMIT_BODY_WIDTH);
-                if wrapped != value {
-                    // Auto-fill only turns spaces into newlines, so the cursor's
-                    // UTF-16 offset is unchanged — recompute its line/column in
-                    // the rewrapped text and restore it.
-                    let offset = s.cursor();
+                let offset = s.cursor();
+                if let Some(wrapped) = wrap_at_cursor(&value, offset, COMMIT_BODY_WIDTH) {
+                    // Wrapping only turns a space into a newline, so the cursor's
+                    // byte offset is unchanged — recompute its line/column in the
+                    // rewrapped text and restore it.
                     s.set_value(wrapped.clone(), window, cx);
-                    s.set_cursor_position(utf16_offset_to_position(&wrapped, offset), window, cx);
+                    s.set_cursor_position(byte_offset_to_position(&wrapped, offset), window, cx);
                 }
             }
             // Diagnostics carry their own copy of the text for position math;
@@ -1964,9 +1974,9 @@ impl StatusView {
             let value = s.value().to_string();
             let reflowed = reflow_body(&value, COMMIT_BODY_WIDTH);
             if reflowed != value {
-                let end = reflowed.encode_utf16().count();
+                let end = reflowed.len(); // byte offset of the end
                 s.set_value(reflowed.clone(), window, cx);
-                s.set_cursor_position(utf16_offset_to_position(&reflowed, end), window, cx);
+                s.set_cursor_position(byte_offset_to_position(&reflowed, end), window, cx);
             }
         });
         // Refresh the summary warning against the reflowed text.
@@ -2995,7 +3005,8 @@ impl StatusView {
                 .gap_3()
                 .child(
                     div()
-                        .w(px(110.0))
+                        .w(px(130.0))
+                        .flex_shrink_0()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(label.to_string())),
                 )
@@ -3068,38 +3079,46 @@ impl StatusView {
             ))
             .child(field(
                 "commit-title-ruler",
-                "Commit summary ruler",
-                self.config_switch(
+                "Summary ruler",
+                self.toggle_control(
                     "commit-title-ruler",
                     self.config.commit_title_ruler,
+                    "Underlines characters past column 50 on the commit summary \
+                     (first) line — the conventional limit so summaries stay \
+                     readable in logs and UIs.",
                     view,
                     |cfg, on| cfg.commit_title_ruler = on,
                 ),
             ))
             .child(field(
                 "commit-body-wrap",
-                "Commit body auto-wrap",
-                self.config_switch(
+                "Body auto-wrap",
+                self.toggle_control(
                     "commit-body-wrap",
                     self.config.commit_body_wrap,
+                    "Hard-wraps the commit body at 72 columns as you type at the \
+                     end of a line (the summary line is never wrapped). Use \
+                     alt-q in the editor to reflow a paragraph you've edited.",
                     view,
                     |cfg, on| cfg.commit_body_wrap = on,
                 ),
             ))
     }
 
-    /// A settings toggle bound to a `bool` field of the config: flips the field
-    /// and persists on click. (Mouse-driven, like the rest of the settings
-    /// screen; not part of the Tab focus ring, which cycles the dropdowns.)
-    fn config_switch(
+    /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
+    /// an info icon whose tooltip explains the setting. The switch flips the
+    /// field and persists on click; both are mouse-driven, like the rest of the
+    /// settings screen (not part of the Tab focus ring, which cycles dropdowns).
+    fn toggle_control(
         &self,
         id: &'static str,
         checked: bool,
+        explanation: &'static str,
         view: &Entity<Self>,
         set: fn(&mut config::Config, bool),
     ) -> AnyElement {
         let view = view.clone();
-        Switch::new(id)
+        let switch = Switch::new(id)
             .checked(checked)
             .on_click(move |on, _window, cx| {
                 let on = *on;
@@ -3108,7 +3127,19 @@ impl StatusView {
                     config::save(&this.config);
                     cx.notify();
                 });
-            })
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(switch)
+            .child(
+                Button::new(format!("{id}-info"))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Info)
+                    .tooltip(explanation),
+            )
             .into_any_element()
     }
 
@@ -3986,38 +4017,39 @@ mod tests {
     }
 
     #[test]
-    fn auto_fill_wraps_body_but_not_the_summary() {
-        // A summary well past the width is left intact.
-        let long_title = "w ".repeat(60); // 120 chars, all on line 0
-        let filled = auto_fill_body(long_title.trim_end(), 72);
-        assert_eq!(filled.lines().count(), 1, "summary must not wrap");
-
-        // A long body line wraps at a space, each piece within the width.
-        let text = format!("summary\n\n{}", "word ".repeat(30).trim_end());
-        let filled = auto_fill_body(&text, 72);
-        let body_lines: Vec<&str> = filled.lines().skip(2).collect();
+    fn wrap_at_cursor_only_wraps_at_end_of_an_overlong_body_line() {
+        // A wrappable body line (~114 chars of short words) with the cursor at
+        // its end.
+        let body = "alpha beta gamma delta ".repeat(5);
+        let body = body.trim_end();
+        let text = format!("summary\n\n{body}");
+        let cursor = text.len(); // at the very end
+        let wrapped = wrap_at_cursor(&text, cursor, 72).expect("should wrap");
+        let body_lines: Vec<&str> = wrapped.lines().skip(2).collect();
         assert!(body_lines.len() > 1, "long body line should wrap");
         assert!(body_lines.iter().all(|l| l.chars().count() <= 72));
-        // Wrapping only splits — joining the pieces with spaces restores it.
-        assert_eq!(body_lines.join(" "), "word ".repeat(30).trim_end());
+        // Only a space turned into a newline: total byte length is unchanged.
+        assert_eq!(wrapped.len(), text.len());
     }
 
     #[test]
-    fn auto_fill_preserves_offsets_and_is_idempotent() {
-        let text = format!("summary\n\n{}", "word ".repeat(30).trim_end());
-        let once = auto_fill_body(&text, 72);
-        // Space->newline keeps total length identical (offset-preserving).
-        assert_eq!(once.chars().count(), text.chars().count());
-        // Running it again changes nothing (already wrapped).
-        assert_eq!(auto_fill_body(&once, 72), once);
+    fn wrap_at_cursor_ignores_mid_line_edits_and_the_summary() {
+        let body = "alpha beta gamma delta ".repeat(5);
+        let text = format!("summary\n\n{}", body.trim_end());
+        // Cursor in the middle of the long body line: no wrap (don't reflow
+        // under the user as they edit earlier in the line).
+        let mid = "summary\n\n".len() + 10;
+        assert_eq!(wrap_at_cursor(&text, mid, 72), None);
+        // An over-long *summary* with the cursor at its end is never wrapped.
+        let long_summary = "x".repeat(90);
+        assert_eq!(wrap_at_cursor(&long_summary, long_summary.len(), 72), None);
     }
 
     #[test]
-    fn auto_fill_leaves_unbreakable_long_words() {
+    fn wrap_at_cursor_leaves_unbreakable_long_words() {
         let word = "x".repeat(100);
         let text = format!("summary\n\n{word}");
-        let filled = auto_fill_body(&text, 72);
-        assert_eq!(filled.lines().nth(2), Some(word.as_str()));
+        assert_eq!(wrap_at_cursor(&text, text.len(), 72), None);
     }
 
     #[test]
@@ -4034,11 +4066,13 @@ mod tests {
     }
 
     #[test]
-    fn utf16_offset_to_position_tracks_lines() {
-        assert_eq!(utf16_offset_to_position("abc", 2), Position::new(0, 2));
+    fn byte_offset_to_position_tracks_lines() {
+        assert_eq!(byte_offset_to_position("abc", 2), Position::new(0, 2));
         // Offset just past the first newline -> start of line 1.
-        assert_eq!(utf16_offset_to_position("ab\ncd", 3), Position::new(1, 0));
-        assert_eq!(utf16_offset_to_position("ab\ncd", 5), Position::new(1, 2));
+        assert_eq!(byte_offset_to_position("ab\ncd", 3), Position::new(1, 0));
+        assert_eq!(byte_offset_to_position("ab\ncd", 5), Position::new(1, 2));
+        // Multi-byte char: column counts characters, offset counts bytes.
+        assert_eq!(byte_offset_to_position("é x", 3), Position::new(0, 2));
     }
 
     #[test]
