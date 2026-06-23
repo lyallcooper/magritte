@@ -429,34 +429,39 @@ struct SettingsState {
     _subs: Vec<Subscription>,
 }
 
-/// All monospace font families available to the text system, sorted. A font is
-/// considered monospace when a run of narrow glyphs ('i') and a run of wide
-/// glyphs ('M') lay out to the same width.
-fn monospace_font_names(window: &Window, cx: &App) -> Vec<SharedString> {
-    let ts = window.text_system();
-    let size = px(16.0);
-    let run = |name: &SharedString, text: &str| gpui::TextRun {
-        len: text.len(),
-        font: gpui::font(name.clone()),
-        color: gpui::black(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
+/// All monospace font families available to the text system, sorted.
+/// Membership is decided by the font's own monospace trait as reported by the
+/// OS (CoreText's `kCTFontMonoSpaceTrait`) rather than by measuring glyph
+/// widths — the trait reliably excludes symbol fonts (e.g. Webdings) and
+/// proportional CJK fonts whose Latin glyphs happen to be equal-width, both of
+/// which fooled the old width heuristic.
+fn monospace_font_names(cx: &App) -> Vec<SharedString> {
     let mut names: Vec<SharedString> = cx
         .text_system()
         .all_font_names()
         .into_iter()
+        .filter(|name| is_monospace_font(name))
         .map(SharedString::from)
-        .filter(|name| {
-            let narrow = ts.layout_line("iiiii", size, &[run(name, "iiiii")], None).width;
-            let wide = ts.layout_line("MMMMM", size, &[run(name, "MMMMM")], None).width;
-            narrow.as_f32() > 0.0 && (narrow - wide).abs().as_f32() < 0.5
-        })
         .collect();
     names.sort_by_key(|f| f.to_lowercase());
     names.dedup();
     names
+}
+
+/// Whether a font family declares the monospace trait to the OS font system.
+#[cfg(target_os = "macos")]
+fn is_monospace_font(name: &str) -> bool {
+    use core_text::font::new_from_name;
+    use core_text::font_descriptor::SymbolicTraitAccessors;
+    new_from_name(name, 12.0)
+        .map(|font| font.symbolic_traits().is_monospace())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_monospace_font(_name: &str) -> bool {
+    // No OS trait query wired up off macOS (not a current target).
+    true
 }
 
 /// Whether the system appearance is currently dark.
@@ -1456,7 +1461,7 @@ impl StatusView {
         let dark_ix = pos(&theme_names, self.config.dark_theme());
 
         if self.mono_fonts.is_empty() {
-            self.mono_fonts = monospace_font_names(window, cx);
+            self.mono_fonts = monospace_font_names(cx);
         }
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
