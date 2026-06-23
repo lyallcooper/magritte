@@ -50,7 +50,8 @@ use gpui_component::tag::Tag;
 use gpui_component::{ActiveTheme, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
-    Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
+    ApplyTarget, Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo,
+    Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -404,11 +405,38 @@ impl Action {
                 RegionKind::DiscardStaged => repo.discard_staged_file_lines(&file, &selections),
             }),
             Action::Batch(actions) => {
+                // Verify every part applies before mutating anything, so a
+                // multi-file region (one confirmation) can't half-apply.
+                for action in &actions {
+                    action.check(repo)?;
+                }
                 for action in actions {
                     action.run(repo)?;
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Dry-run an action without mutating the repo. Only region applies (the
+    /// members of a `Batch`) are checkable; other actions report `Ok` (they're
+    /// only ever issued singly, not batched).
+    fn check(&self, repo: &Repo) -> Result<(), String> {
+        match self {
+            Action::ApplyRegion { kind, file, selections } => {
+                let (reverse, target) = match kind {
+                    RegionKind::Stage => (false, ApplyTarget::Index),
+                    RegionKind::Unstage => (true, ApplyTarget::Index),
+                    RegionKind::Discard => (true, ApplyTarget::Worktree),
+                    // The staged-discard worktree step is best-effort (--reject);
+                    // the meaningful precondition is the index reverse-apply.
+                    RegionKind::DiscardStaged => (true, ApplyTarget::Index),
+                };
+                let patch = magritte_core::stage::build_file_patch(file, selections, reverse);
+                repo.check_patch(&patch, target, reverse).map_err(|e| e.to_string())
+            }
+            Action::Batch(actions) => actions.iter().try_for_each(|a| a.check(repo)),
+            _ => Ok(()),
         }
     }
 }
@@ -418,6 +446,14 @@ fn section_source(section: SectionId) -> Option<DiffSource> {
         SectionId::Untracked => None,
         SectionId::Unstaged => Some(DiffSource::Unstaged),
         SectionId::Staged => Some(DiffSource::Staged),
+    }
+}
+
+/// The repo-relative path of the file a target belongs to.
+fn target_path(target: &Target) -> &str {
+    match target {
+        Target::File(f) => &f.path,
+        Target::Hunk { file, .. } | Target::Line { file, .. } => &file.path,
     }
 }
 
@@ -1360,10 +1396,25 @@ impl StatusView {
         }
     }
 
+    /// Whether `path` is an unmerged (conflicted) entry. Conflict resolution
+    /// isn't supported in-app yet, so ordinary stage/unstage/discard is refused
+    /// on these — `git add` would silently mark a conflict resolved (markers and
+    /// all), and a discard could lose work.
+    fn is_conflicted(&self, path: &str) -> bool {
+        self.status.as_ref().is_some_and(|s| {
+            s.entries
+                .iter()
+                .any(|e| e.path == path && e.kind == EntryKind::Unmerged)
+        })
+    }
+
     /// Resolve the row at point + verb into a concrete git action, if the verb
     /// is meaningful there (e.g. you cannot stage something already staged).
     fn resolve_action(&self, op: Op) -> Option<Action> {
         let target = self.rows.get(self.selected)?.target.clone()?;
+        if self.is_conflicted(target_path(&target)) {
+            return None;
+        }
         match (op, target) {
             // Stage: from the untracked or unstaged side.
             (Op::Stage, Target::File(f)) => match f.section {
@@ -1451,6 +1502,9 @@ impl StatusView {
 
         let mut actions = Vec::new();
         for (file, selections) in groups {
+            if self.is_conflicted(&file.path) {
+                continue; // conflicts aren't acted on (see is_conflicted)
+            }
             let kind = match (op, file.section) {
                 (Op::Stage, SectionId::Unstaged) => RegionKind::Stage,
                 (Op::Unstage, SectionId::Staged) => RegionKind::Unstage,
@@ -1477,6 +1531,22 @@ impl StatusView {
 
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     fn act(&mut self, op: Op, cx: &mut Context<Self>) {
+        // Explain rather than silently no-op when acting on a conflicted file.
+        if self.visual.is_none() {
+            if let Some(path) = self
+                .rows
+                .get(self.selected)
+                .and_then(|r| r.target.as_ref())
+                .map(target_path)
+            {
+                if self.is_conflicted(path) {
+                    self.status_message =
+                        Some(format!("{path} is conflicted — resolve it before staging"));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         let resolved = if self.visual.is_some() {
             self.resolve_region_action(op)
         } else {

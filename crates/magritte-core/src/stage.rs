@@ -132,6 +132,13 @@ impl Repo {
         self.run_apply(patch, target, reverse, false)
     }
 
+    /// Dry-run a patch apply (`git apply --check`) without modifying anything.
+    /// Used to verify every action in a multi-file batch applies before any of
+    /// them mutates the repo.
+    pub fn check_patch(&self, patch: &str, target: ApplyTarget, reverse: bool) -> Result<()> {
+        self.run_apply(patch, target, reverse, true)
+    }
+
     fn run_apply(
         &self,
         patch: &str,
