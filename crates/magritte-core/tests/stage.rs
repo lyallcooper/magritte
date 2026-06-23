@@ -64,7 +64,8 @@ fn stage_then_unstage_whole_hunk() {
 
     // Unstage the hunk again -> back to unstaged only.
     let staged_again = find(&repo, DiffSource::Staged, "file.txt").unwrap();
-    repo.unstage_hunk(&staged_again, &staged_again.hunks[0]).unwrap();
+    repo.unstage_hunk(&staged_again, &staged_again.hunks[0])
+        .unwrap();
     assert!(find(&repo, DiffSource::Staged, "file.txt").is_none());
     assert!(find(&repo, DiffSource::Unstaged, "file.txt").is_some());
 }
@@ -149,9 +150,7 @@ fn unstage_subset_of_lines() {
     repo.unstage_lines(&staged, hunk, &selected).unwrap();
 
     // Index keeps the first change; the second is unstaged again.
-    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt")
-        .unwrap()
-        .hunks[0]
+    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt").unwrap().hunks[0]
         .lines
         .iter()
         .filter(|l| l.kind == LineKind::Added)
@@ -159,9 +158,7 @@ fn unstage_subset_of_lines() {
         .collect();
     assert_eq!(staged_adds, vec!["TWO"]);
 
-    let unstaged_adds: Vec<_> = find(&repo, DiffSource::Unstaged, "file.txt")
-        .unwrap()
-        .hunks[0]
+    let unstaged_adds: Vec<_> = find(&repo, DiffSource::Unstaged, "file.txt").unwrap().hunks[0]
         .lines
         .iter()
         .filter(|l| l.kind == LineKind::Added)
@@ -211,9 +208,18 @@ fn discard_staged_file_preserves_unstaged_edit() {
 
     // line 2 reverted (staged delta gone); line 9 still carries the unstaged edit.
     let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
-    assert!(contents.contains("\nline2\n"), "staged delta should be reverted");
-    assert!(!contents.contains("STAGEDONLY"), "staged delta should be gone");
-    assert!(contents.contains("WORKONLY"), "unstaged edit must be preserved");
+    assert!(
+        contents.contains("\nline2\n"),
+        "staged delta should be reverted"
+    );
+    assert!(
+        !contents.contains("STAGEDONLY"),
+        "staged delta should be gone"
+    );
+    assert!(
+        contents.contains("WORKONLY"),
+        "unstaged edit must be preserved"
+    );
     let s = repo.status().unwrap();
     let e = entry(&s, "file.txt").unwrap();
     assert!(!e.is_staged(), "staged delta should be discarded");
@@ -231,7 +237,10 @@ fn discard_staged_new_file_deletes_it() {
 
     let repo = open(&t);
     repo.discard_staged_file("added.txt").unwrap();
-    assert!(!t.path().join("added.txt").exists(), "new file should be removed");
+    assert!(
+        !t.path().join("added.txt").exists(),
+        "new file should be removed"
+    );
     assert!(repo.status().unwrap().is_clean());
 }
 
@@ -270,7 +279,10 @@ fn unstage_staged_rename_is_complete() {
 
     // Nothing should remain staged (no lingering `D old.txt`).
     let s = repo.status().unwrap();
-    assert!(s.staged().next().is_none(), "rename should be fully unstaged");
+    assert!(
+        s.staged().next().is_none(),
+        "rename should be fully unstaged"
+    );
     // The rename is now reflected only in the worktree (old gone, new present).
     assert!(!t.path().join("old.txt").exists());
     assert!(t.path().join("new.txt").exists());
@@ -288,7 +300,9 @@ fn discard_staged_deletion_resurrects() {
 
     // No longer a staged deletion; HEAD content is back in the index.
     let s = repo.status().unwrap();
-    assert!(!entry(&s, "doomed.txt").map(|e| e.is_staged()).unwrap_or(false));
+    assert!(!entry(&s, "doomed.txt")
+        .map(|e| e.is_staged())
+        .unwrap_or(false));
 }
 
 /// Discarding a staged rename renames the file back to its original path.
@@ -302,9 +316,15 @@ fn discard_staged_rename_renames_back() {
     let repo = open(&t);
     repo.discard_staged_file("new.txt").unwrap();
 
-    assert!(t.path().join("old.txt").exists(), "should be renamed back to old");
+    assert!(
+        t.path().join("old.txt").exists(),
+        "should be renamed back to old"
+    );
     assert!(!t.path().join("new.txt").exists());
-    assert!(repo.status().unwrap().is_clean(), "tree should be clean again");
+    assert!(
+        repo.status().unwrap().is_clean(),
+        "tree should be clean again"
+    );
 }
 
 #[test]
@@ -346,9 +366,7 @@ fn discard_staged_lines_subset() {
     // First change gone from both sides; second change still staged.
     let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
     assert_eq!(contents, "1\n2\n3\nFOUR\n5\n");
-    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt")
-        .unwrap()
-        .hunks[0]
+    let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt").unwrap().hunks[0]
         .lines
         .iter()
         .filter(|l| l.kind == LineKind::Added)
@@ -383,7 +401,8 @@ fn stage_lines_across_two_hunks() {
         line_index(&diff.hunks[1], LineKind::Removed, "18"),
         line_index(&diff.hunks[1], LineKind::Added, "EIGHTEEN"),
     ];
-    repo.stage_file_lines(&diff, &[(0, sel0), (1, sel1)]).unwrap();
+    repo.stage_file_lines(&diff, &[(0, sel0), (1, sel1)])
+        .unwrap();
 
     // Both changes are now staged, and nothing remains unstaged.
     let staged_adds: Vec<_> = find(&repo, DiffSource::Staged, "file.txt")
@@ -443,7 +462,10 @@ index 1111111..2222222 100644
     assert!(patch.contains("\n-2\n"));
     assert!(patch.contains("\n+TWO\n"));
     assert!(!patch.contains("+FOUR"));
-    assert!(patch.contains("\n 4\n"), "unselected removal should be context");
+    assert!(
+        patch.contains("\n 4\n"),
+        "unselected removal should be context"
+    );
     // old side: 1,2,3,4,5 = 5 lines; new side: 1,TWO,3,4,5 = 5 lines.
     assert!(patch.contains("@@ -1,5 +1,5 @@"));
 }

@@ -17,7 +17,11 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
         .args(args)
         .output()
         .expect("spawn git");
-    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 

@@ -93,7 +93,10 @@ fn reword_changes_message_without_staging() {
     assert_eq!(subject(&t), "fix typo in message");
     // ...but b.txt is NOT in HEAD; it's still staged.
     let files = t.git(["show", "--stat", "--format=", "HEAD"]);
-    assert!(!files.contains("b.txt"), "reword must not commit staged changes");
+    assert!(
+        !files.contains("b.txt"),
+        "reword must not commit staged changes"
+    );
     let staged: Vec<_> = open(&t)
         .status()
         .unwrap()

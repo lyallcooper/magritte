@@ -85,7 +85,9 @@ fn unchanged_path_has_no_diff() {
     t.write("file.txt", "stable\n");
     t.commit_all("initial");
 
-    let diff = open(&t).diff_path(DiffSource::Unstaged, "file.txt").unwrap();
+    let diff = open(&t)
+        .diff_path(DiffSource::Unstaged, "file.txt")
+        .unwrap();
     assert!(diff.is_none());
 }
 
@@ -140,7 +142,12 @@ index 1234567..89abcde 100644
 
     let first = &file.hunks[0];
     assert_eq!(
-        (first.old_start, first.old_count, first.new_start, first.new_count),
+        (
+            first.old_start,
+            first.old_count,
+            first.new_start,
+            first.new_count
+        ),
         (1, 3, 1, 3)
     );
     assert_eq!(first.section_heading, "fn header");

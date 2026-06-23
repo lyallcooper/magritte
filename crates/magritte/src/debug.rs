@@ -22,12 +22,12 @@
 //!   sleep <millis>       pause (e.g. to let a frame paint)
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 use std::fs;
+use std::path::PathBuf;
 #[cfg(all(target_os = "macos", not(feature = "debug-capture")))]
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use gpui::{
     point, px, AnyWindowHandle, AppContext, AsyncApp, Keystroke, Modifiers, MouseButton,
@@ -85,41 +85,39 @@ pub fn init(handle: AnyWindowHandle, cx: &mut gpui::App) {
     let _ = fs::remove_file(dir.join("done"));
     eprintln!("magritte debug: watching {}", dir.display());
 
-    cx.spawn(async move |cx: &mut AsyncApp| {
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(60))
-                .await;
-            let cmd_path = dir.join("cmd");
-            let Ok(content) = fs::read_to_string(&cmd_path) else {
-                continue;
-            };
-            let _ = fs::remove_file(&cmd_path);
+    cx.spawn(async move |cx: &mut AsyncApp| loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(60))
+            .await;
+        let cmd_path = dir.join("cmd");
+        let Ok(content) = fs::read_to_string(&cmd_path) else {
+            continue;
+        };
+        let _ = fs::remove_file(&cmd_path);
 
-            let mut out = String::new();
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
+        let mut out = String::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match run_command(line, handle, cx).await {
+                Ok(Some(msg)) => {
+                    out.push_str(&msg);
+                    out.push('\n');
                 }
-                match run_command(line, handle, cx).await {
-                    Ok(Some(msg)) => {
-                        out.push_str(&msg);
-                        out.push('\n');
-                    }
-                    Ok(None) => {}
-                    Err(msg) => {
-                        out.push_str("error: ");
-                        out.push_str(&msg);
-                        out.push('\n');
-                    }
+                Ok(None) => {}
+                Err(msg) => {
+                    out.push_str("error: ");
+                    out.push_str(&msg);
+                    out.push('\n');
                 }
             }
-            if out.is_empty() {
-                out.push_str("ok\n");
-            }
-            let _ = fs::write(dir.join("done"), out);
         }
+        if out.is_empty() {
+            out.push_str("ok\n");
+        }
+        let _ = fs::write(dir.join("done"), out);
     })
     .detach();
 }
@@ -148,8 +146,14 @@ async fn run_command(
         }
         "click" => {
             let mut parts = rest.split_whitespace();
-            let x: f32 = parts.next().and_then(|s| s.parse().ok()).ok_or("click needs: x y")?;
-            let y: f32 = parts.next().and_then(|s| s.parse().ok()).ok_or("click needs: x y")?;
+            let x: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("click needs: x y")?;
+            let y: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("click needs: x y")?;
             dispatch_click(handle, x, y, cx)?;
             Ok(None)
         }
@@ -171,14 +175,18 @@ async fn run_command(
         "targets" => {
             force_draw(handle, cx);
             let targets = TARGETS.lock().map_err(|_| "targets lock poisoned")?;
-            let mut lines: Vec<String> =
-                targets.iter().map(|(k, (x, y))| format!("{k}  {x:.0},{y:.0}")).collect();
+            let mut lines: Vec<String> = targets
+                .iter()
+                .map(|(k, (x, y))| format!("{k}  {x:.0},{y:.0}"))
+                .collect();
             lines.sort();
             Ok(Some(lines.join("\n")))
         }
         "sleep" => {
             let ms: u64 = rest.parse().map_err(|_| format!("bad millis: {rest}"))?;
-            cx.background_executor().timer(Duration::from_millis(ms)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(ms))
+                .await;
             Ok(None)
         }
         "shot" => {
@@ -216,7 +224,9 @@ async fn run_command(
             #[cfg(not(feature = "debug-capture"))]
             {
                 let _ = cx.update_window(handle, |_, window, _| window.refresh());
-                cx.background_executor().timer(Duration::from_millis(80)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(80))
+                    .await;
                 // The window's logical size, so we can downscale the Retina
                 // capture to point-space — then image px == click coords 1:1.
                 let size = cx
@@ -234,7 +244,12 @@ async fn run_command(
 }
 
 /// Dispatch a left click (move → down → up) at a window-relative point.
-fn dispatch_click(handle: AnyWindowHandle, x: f32, y: f32, cx: &mut AsyncApp) -> Result<(), String> {
+fn dispatch_click(
+    handle: AnyWindowHandle,
+    x: f32,
+    y: f32,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
     let pos = point(px(x), px(y));
     cx.update_window(handle, |_, window, cx| {
         window.dispatch_event(

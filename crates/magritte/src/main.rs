@@ -16,10 +16,10 @@ use std::path::PathBuf;
 
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
-    FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
-    Menu, MenuItem, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowAppearance, WindowBounds,
-    WindowOptions,
+    FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding,
+    KeyDownEvent, Menu, MenuItem, MouseButton, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, TitlebarOptions, UniformListScrollHandle, Window,
+    WindowAppearance, WindowBounds, WindowOptions,
 };
 
 use gpui::prelude::FluentBuilder;
@@ -48,7 +48,7 @@ use gpui_component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::select::{Select, SearchableVec, SelectEvent, SelectState};
+use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::tag::Tag;
 use gpui_component::{ActiveTheme, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
@@ -188,7 +188,6 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
-
 impl Palette {
     fn from_theme(cx: &App) -> Self {
         let t = cx.theme();
@@ -292,8 +291,15 @@ struct FileRef {
 #[derive(Debug, Clone)]
 enum Target {
     File(FileRef),
-    Hunk { file: FileRef, hunk: usize },
-    Line { file: FileRef, hunk: usize, line: usize },
+    Hunk {
+        file: FileRef,
+        hunk: usize,
+    },
+    Line {
+        file: FileRef,
+        hunk: usize,
+        line: usize,
+    },
 }
 
 /// A stable identity of a selected row, so the cursor can be restored to the
@@ -409,8 +415,11 @@ enum RowKind {
 }
 
 /// The appearance options, in display order. Label paired with config value.
-const APPEARANCE_OPTIONS: [(&str, &str); 3] =
-    [("Auto (system)", "auto"), ("Light", "light"), ("Dark", "dark")];
+const APPEARANCE_OPTIONS: [(&str, &str); 3] = [
+    ("Auto (system)", "auto"),
+    ("Light", "light"),
+    ("Dark", "dark"),
+];
 
 /// The live settings screen, built from gpui-component `Select` dropdowns (each
 /// with built-in mouse + keyboard handling). Tab cycles focus between them;
@@ -700,12 +709,17 @@ impl StatusView {
         let default = cx.theme().foreground;
         let mut next = HashMap::new();
         for (key, state) in &self.diffs {
-            let DiffState::Loaded(diff) = state else { continue };
+            let DiffState::Loaded(diff) = state else {
+                continue;
+            };
             if diff.is_binary {
                 continue;
             }
             if let Some(&lang) = self.diff_langs.get(key) {
-                next.insert(key.clone(), highlight::highlight_diff(diff, lang, cx, default));
+                next.insert(
+                    key.clone(),
+                    highlight::highlight_diff(diff, lang, cx, default),
+                );
             }
         }
         self.highlights = next;
@@ -936,7 +950,10 @@ impl StatusView {
 
         if status.is_clean() {
             rows.push(spacer());
-            rows.push(plain("Nothing to commit, working tree clean", self.palette.dim));
+            rows.push(plain(
+                "Nothing to commit, working tree clean",
+                self.palette.dim,
+            ));
         }
 
         self.rows = rows;
@@ -980,7 +997,8 @@ impl StatusView {
                 section: id,
                 path: path.clone(),
             };
-            let file_expanded = source.map(|s| self.expanded.contains(&FoldKey::File(s, path.clone())));
+            let file_expanded =
+                source.map(|s| self.expanded.contains(&FoldKey::File(s, path.clone())));
             rows.push(Row {
                 indent: 1,
                 selectable: true,
@@ -1059,9 +1077,13 @@ impl StatusView {
                     }
                 }
             }
-            Some(DiffState::Loading) | None => rows.push(message("Loading diff…", self.palette.dim)),
+            Some(DiffState::Loading) | None => {
+                rows.push(message("Loading diff…", self.palette.dim))
+            }
             Some(DiffState::Empty) => rows.push(message("(no changes)", self.palette.dim)),
-            Some(DiffState::Failed(e)) => rows.push(message(&format!("diff failed: {e}"), self.palette.dim)),
+            Some(DiffState::Failed(e)) => {
+                rows.push(message(&format!("diff failed: {e}"), self.palette.dim))
+            }
         }
     }
 
@@ -1086,7 +1108,9 @@ impl StatusView {
 
     fn select_edge(&mut self, last: bool) {
         let found = if last {
-            (0..self.rows.len()).rev().find(|&i| self.rows[i].selectable)
+            (0..self.rows.len())
+                .rev()
+                .find(|&i| self.rows[i].selectable)
         } else {
             (0..self.rows.len()).find(|&i| self.rows[i].selectable)
         };
@@ -1101,7 +1125,9 @@ impl StatusView {
         let next = if forward {
             (self.selected + 1..self.rows.len()).find(|&i| is_section(&self.rows[i]))
         } else {
-            (0..self.selected).rev().find(|&i| is_section(&self.rows[i]))
+            (0..self.selected)
+                .rev()
+                .find(|&i| is_section(&self.rows[i]))
         };
         if let Some(i) = next {
             self.selected = i;
@@ -1114,12 +1140,13 @@ impl StatusView {
         let row = self.rows.get(self.selected);
         // Use the row's own fold key, or — for a diff line — the enclosing hunk,
         // so `Tab` anywhere inside a hunk collapses/expands it (like magit).
-        let key = row.and_then(|r| r.fold.clone()).or_else(|| match row.map(|r| &r.target) {
-            Some(Some(Target::Line { file, hunk, .. })) => {
-                section_source(file.section).map(|src| FoldKey::Hunk(src, file.path.clone(), *hunk))
-            }
-            _ => None,
-        });
+        let key = row
+            .and_then(|r| r.fold.clone())
+            .or_else(|| match row.map(|r| &r.target) {
+                Some(Some(Target::Line { file, hunk, .. })) => section_source(file.section)
+                    .map(|src| FoldKey::Hunk(src, file.path.clone(), *hunk)),
+                _ => None,
+            });
         let Some(key) = key else {
             return;
         };
@@ -1171,7 +1198,9 @@ impl StatusView {
     /// The logical identity of the row at `ix`.
     fn ident_of(&self, ix: usize) -> AnchorIdent {
         match self.rows.get(ix) {
-            Some(Row { target: Some(t), .. }) => match t {
+            Some(Row {
+                target: Some(t), ..
+            }) => match t {
                 Target::File(f) => AnchorIdent::File(f.section, f.path.clone()),
                 Target::Hunk { file, hunk } => {
                     AnchorIdent::Hunk(file.section, file.path.clone(), *hunk)
@@ -1180,7 +1209,10 @@ impl StatusView {
                     AnchorIdent::Line(file.section, file.path.clone(), *hunk, *line)
                 }
             },
-            Some(Row { fold: Some(FoldKey::Section(s)), .. }) => AnchorIdent::Section(*s),
+            Some(Row {
+                fold: Some(FoldKey::Section(s)),
+                ..
+            }) => AnchorIdent::Section(*s),
             _ => AnchorIdent::Top,
         }
     }
@@ -1188,8 +1220,8 @@ impl StatusView {
     /// The row indices belonging to a section: its header through the row before
     /// the next section header (or end).
     fn section_rows(&self, section: SectionId) -> Vec<usize> {
-        let Some(start) = (0..self.rows.len())
-            .find(|&i| self.rows[i].fold == Some(FoldKey::Section(section)))
+        let Some(start) =
+            (0..self.rows.len()).find(|&i| self.rows[i].fold == Some(FoldKey::Section(section)))
         else {
             return Vec::new();
         };
@@ -1317,7 +1349,9 @@ impl StatusView {
             (Op::Stage, Target::Hunk { file, hunk }) if file.section == SectionId::Unstaged => {
                 Some(Action::StageHunk(self.diff_for(&file)?, hunk))
             }
-            (Op::Stage, Target::Line { file, hunk, line }) if file.section == SectionId::Unstaged => {
+            (Op::Stage, Target::Line { file, hunk, line })
+                if file.section == SectionId::Unstaged =>
+            {
                 Some(Action::StageLines(self.diff_for(&file)?, hunk, vec![line]))
             }
 
@@ -1328,8 +1362,14 @@ impl StatusView {
             (Op::Unstage, Target::Hunk { file, hunk }) if file.section == SectionId::Staged => {
                 Some(Action::UnstageHunk(self.diff_for(&file)?, hunk))
             }
-            (Op::Unstage, Target::Line { file, hunk, line }) if file.section == SectionId::Staged => {
-                Some(Action::UnstageLines(self.diff_for(&file)?, hunk, vec![line]))
+            (Op::Unstage, Target::Line { file, hunk, line })
+                if file.section == SectionId::Staged =>
+            {
+                Some(Action::UnstageLines(
+                    self.diff_for(&file)?,
+                    hunk,
+                    vec![line],
+                ))
             }
 
             // Discard: untracked removes the file; unstaged reverts to the
@@ -1345,8 +1385,16 @@ impl StatusView {
                 SectionId::Untracked => None,
             },
             (Op::Discard, Target::Line { file, hunk, line }) => match file.section {
-                SectionId::Unstaged => Some(Action::DiscardLines(self.diff_for(&file)?, hunk, vec![line])),
-                SectionId::Staged => Some(Action::DiscardStagedLines(self.diff_for(&file)?, hunk, vec![line])),
+                SectionId::Unstaged => Some(Action::DiscardLines(
+                    self.diff_for(&file)?,
+                    hunk,
+                    vec![line],
+                )),
+                SectionId::Staged => Some(Action::DiscardStagedLines(
+                    self.diff_for(&file)?,
+                    hunk,
+                    vec![line],
+                )),
                 SectionId::Untracked => None,
             },
 
@@ -1534,7 +1582,12 @@ impl StatusView {
         if state.pending_dash {
             state.pending_dash = false;
             let full = format!("-{key}");
-            if let Some(sw) = state.def.switches().find(|s| s.key == full).map(|s| s.key.to_string()) {
+            if let Some(sw) = state
+                .def
+                .switches()
+                .find(|s| s.key == full)
+                .map(|s| s.key.to_string())
+            {
                 if !state.active.remove(&sw) {
                     state.active.insert(sw);
                 }
@@ -1575,7 +1628,12 @@ impl StatusView {
 
     /// Run a transient command on the background executor, showing progress in
     /// the bottom bar, then refresh.
-    fn run_command(&mut self, command: transient::Command, switches: Vec<String>, cx: &mut Context<Self>) {
+    fn run_command(
+        &mut self,
+        command: transient::Command,
+        switches: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -1617,11 +1675,18 @@ impl StatusView {
                 .multi_line(true)
                 .submit_on_enter(false)
         });
-        let sub = cx.subscribe_in(&state, window, |this, _state, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { secondary: true, .. } = ev {
-                this.submit_editor(window, cx);
-            }
-        });
+        let sub = cx.subscribe_in(
+            &state,
+            window,
+            |this, _state, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter {
+                    secondary: true, ..
+                } = ev
+                {
+                    this.submit_editor(window, cx);
+                }
+            },
+        );
         // Focus the input so typing goes straight into it.
         state.read(cx).focus_handle(cx).focus(window, cx);
         self.editor = Some(CommitEditor {
@@ -1696,7 +1761,9 @@ impl StatusView {
                 }
                 if let Some(err) = error {
                     if let Some(ed) = this.editor.as_mut() {
-                        ed.diff = vec![CommitDiffRow::Note(format!("staged diff unavailable: {err}"))];
+                        ed.diff = vec![CommitDiffRow::Note(format!(
+                            "staged diff unavailable: {err}"
+                        ))];
                     }
                     cx.notify();
                     return;
@@ -1707,7 +1774,9 @@ impl StatusView {
                 for (diff, lang) in &files {
                     rows.push(CommitDiffRow::File(diff.display_path().to_string()));
                     let hl = match lang {
-                        Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),
+                        Some(l) if !diff.is_binary => {
+                            Some(highlight::highlight_diff(diff, l, cx, default))
+                        }
                         _ => None,
                     };
                     for (hi, hunk) in diff.hunks.iter().enumerate() {
@@ -1718,10 +1787,17 @@ impl StatusView {
                                 .and_then(|h| h.get(&(hi, li)))
                                 .cloned()
                                 .unwrap_or_else(|| {
-                                    let color = if line.kind == LineKind::NoNewline { dim } else { fg };
+                                    let color = if line.kind == LineKind::NoNewline {
+                                        dim
+                                    } else {
+                                        fg
+                                    };
                                     vec![(line.content.clone(), color)]
                                 });
-                            rows.push(CommitDiffRow::Line { kind: line.kind, spans });
+                            rows.push(CommitDiffRow::Line {
+                                kind: line.kind,
+                                spans,
+                            });
                         }
                     }
                 }
@@ -1738,7 +1814,12 @@ impl StatusView {
     /// Capture-phase handler: Escape cancels the editor. (Enter is consumed by
     /// the Input as a bound action and never reaches here — commit is driven by
     /// the PressEnter subscription instead.)
-    fn on_capture_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_capture_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.editor.is_none() {
             return;
         }
@@ -1793,57 +1874,87 @@ impl StatusView {
             .map(|(label, _)| SharedString::from(*label))
             .collect();
 
-        let appearance = cx.new(|cx| {
-            SelectState::new(appearance_items, row(appearance_ix), &mut *window, cx)
-        });
+        let appearance =
+            cx.new(|cx| SelectState::new(appearance_items, row(appearance_ix), &mut *window, cx));
         let light_theme = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(theme_names.clone()), row(light_ix), &mut *window, cx)
-                .searchable(true)
+            SelectState::new(
+                SearchableVec::new(theme_names.clone()),
+                row(light_ix),
+                &mut *window,
+                cx,
+            )
+            .searchable(true)
         });
         let dark_theme = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(theme_names), row(dark_ix), &mut *window, cx)
-                .searchable(true)
+            SelectState::new(
+                SearchableVec::new(theme_names),
+                row(dark_ix),
+                &mut *window,
+                cx,
+            )
+            .searchable(true)
         });
         let font = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(font_items), row(font_ix), &mut *window, cx)
-                .searchable(true)
+            SelectState::new(
+                SearchableVec::new(font_items),
+                row(font_ix),
+                &mut *window,
+                cx,
+            )
+            .searchable(true)
         });
 
         let subs = vec![
-            cx.subscribe_in(&appearance, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
-                if let SelectEvent::Confirm(Some(label)) = ev {
-                    let value = APPEARANCE_OPTIONS
-                        .iter()
-                        .find(|(l, _)| *l == label.as_ref())
-                        .map_or("auto", |(_, v)| v);
-                    this.config.appearance = value.to_string();
-                    this.apply_and_save(cx);
-                }
-            }),
-            cx.subscribe_in(&light_theme, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                if let SelectEvent::Confirm(Some(name)) = ev {
-                    this.config.light_theme = name.to_string();
-                    this.apply_and_save(cx);
-                }
-            }),
-            cx.subscribe_in(&dark_theme, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                if let SelectEvent::Confirm(Some(name)) = ev {
-                    this.config.dark_theme = name.to_string();
-                    this.apply_and_save(cx);
-                }
-            }),
-            cx.subscribe_in(&font, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                if let SelectEvent::Confirm(Some(name)) = ev {
-                    // "System Default" → empty config (adaptive system mono).
-                    this.config.font = if name.as_ref() == SYSTEM_FONT_LABEL {
-                        String::new()
-                    } else {
-                        name.to_string()
-                    };
-                    this.font = resolve_font(&this.config, cx);
-                    this.apply_and_save(cx);
-                }
-            }),
+            cx.subscribe_in(
+                &appearance,
+                window,
+                |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(label)) = ev {
+                        let value = APPEARANCE_OPTIONS
+                            .iter()
+                            .find(|(l, _)| *l == label.as_ref())
+                            .map_or("auto", |(_, v)| v);
+                        this.config.appearance = value.to_string();
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &light_theme,
+                window,
+                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = ev {
+                        this.config.light_theme = name.to_string();
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &dark_theme,
+                window,
+                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = ev {
+                        this.config.dark_theme = name.to_string();
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &font,
+                window,
+                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = ev {
+                        // "System Default" → empty config (adaptive system mono).
+                        this.config.font = if name.as_ref() == SYSTEM_FONT_LABEL {
+                            String::new()
+                        } else {
+                            name.to_string()
+                        };
+                        this.font = resolve_font(&this.config, cx);
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
         ];
 
         appearance.update(cx, |st, cx| st.focus(window, cx));
@@ -1872,9 +1983,18 @@ impl StatusView {
         };
         s.focus_ix = (s.focus_ix + 1) % 4;
         match s.focus_ix {
-            0 => s.appearance.clone().update(cx, |st, cx| st.focus(window, cx)),
-            1 => s.light_theme.clone().update(cx, |st, cx| st.focus(window, cx)),
-            2 => s.dark_theme.clone().update(cx, |st, cx| st.focus(window, cx)),
+            0 => s
+                .appearance
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
+            1 => s
+                .light_theme
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
+            2 => s
+                .dark_theme
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
             _ => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
         }
     }
@@ -1903,7 +2023,13 @@ impl StatusView {
         self.run_commit(text.trim_end().to_string(), ed.mode, ed.args, cx);
     }
 
-    fn run_commit(&mut self, message: String, mode: CommitMode, args: Vec<String>, cx: &mut Context<Self>) {
+    fn run_commit(
+        &mut self,
+        message: String,
+        mode: CommitMode,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -1950,7 +2076,11 @@ impl StatusView {
 
         // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
         // reconstruct the cased key from the shift modifier.
-        let cased = if shift { key.to_uppercase() } else { key.clone() };
+        let cased = if shift {
+            key.to_uppercase()
+        } else {
+            key.clone()
+        };
 
         // A command transient is modal — it captures every key.
         if matches!(self.popup, Some(Popup::Transient(_))) {
@@ -2007,7 +2137,8 @@ impl StatusView {
                 }
                 _ => {}
             }
-            self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+            self.scroll
+                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
             cx.notify();
             return;
         }
@@ -2069,7 +2200,8 @@ impl StatusView {
             }
             _ => return,
         }
-        self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+        self.scroll
+            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
         cx.notify();
     }
 
@@ -2133,7 +2265,8 @@ impl StatusView {
                     "gk" => self.select_section(false),
                     _ => {}
                 }
-                self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                self.scroll
+                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
                 cx.notify();
             }
         }
@@ -2198,7 +2331,11 @@ impl StatusView {
                         // flag in parens. Only the flag itself dims (off) or
                         // highlights bold in the `modified` accent (on) — the
                         // parens stay a constant neutral color.
-                        let flag_color = if on { self.palette.modified } else { self.palette.dim };
+                        let flag_color = if on {
+                            self.palette.modified
+                        } else {
+                            self.palette.dim
+                        };
                         let flag = if on {
                             div().text_color(flag_color).font_weight(FontWeight::BOLD)
                         } else {
@@ -2315,7 +2452,11 @@ impl StatusView {
         let mut row = div().flex().items_center().gap_1();
         for token in keys.split_whitespace() {
             row = if token == "/" {
-                row.child(div().text_color(self.palette.dim).child(SharedString::from("/")))
+                row.child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("/")),
+                )
             } else {
                 row.child(key_chip(token, self.palette.dim))
             };
@@ -2379,18 +2520,40 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(SharedString::from(title)),
                     )
-                    .child(self.key_action("editor-commit", "cmd-enter", "commit", view, Self::submit_editor))
-                    .child(self.key_action("editor-cancel", "esc", "cancel", view, Self::cancel_editor)),
+                    .child(self.key_action(
+                        "editor-commit",
+                        "cmd-enter",
+                        "commit",
+                        view,
+                        Self::submit_editor,
+                    ))
+                    .child(self.key_action(
+                        "editor-cancel",
+                        "esc",
+                        "cancel",
+                        view,
+                        Self::cancel_editor,
+                    )),
             );
 
         // With a staged diff to review, the message takes a fixed band at the
         // top and the diff fills the rest (scrollable); otherwise the message
         // fills the window.
         if ed.diff.is_empty() {
-            root.child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
+            root.child(
+                div()
+                    .flex_grow(1.0)
+                    .w_full()
+                    .child(Input::new(&ed.state).h_full()),
+            )
         } else {
-            root.child(div().h(px(176.0)).w_full().child(Input::new(&ed.state).h_full()))
-                .child(self.render_commit_diff(ed, view))
+            root.child(
+                div()
+                    .h(px(176.0))
+                    .w_full()
+                    .child(Input::new(&ed.state).h_full()),
+            )
+            .child(self.render_commit_diff(ed, view))
         }
     }
 
@@ -2424,7 +2587,12 @@ impl StatusView {
     }
 
     fn render_commit_diff_row(&self, row: &CommitDiffRow) -> AnyElement {
-        let base = div().h(px(ROW_HEIGHT)).w_full().px_2().flex().items_center();
+        let base = div()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_2()
+            .flex()
+            .items_center();
         match row {
             CommitDiffRow::File(path) => base
                 .child(
@@ -2457,7 +2625,11 @@ impl StatusView {
                         .child(SharedString::from(sign.to_string())),
                 );
                 for (text, color) in spans {
-                    line = line.child(div().text_color(*color).child(SharedString::from(text.clone())));
+                    line = line.child(
+                        div()
+                            .text_color(*color)
+                            .child(SharedString::from(text.clone())),
+                    );
                 }
                 el.child(line).into_any_element()
             }
@@ -2500,9 +2672,25 @@ impl StatusView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().text_color(self.palette.section).child(SharedString::from("Settings")))
-                    .child(self.key_action("settings-switch", "tab", "switch", view, Self::cycle_settings_focus))
-                    .child(self.key_action("settings-close", "esc", "close", view, Self::close_settings)),
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(SharedString::from("Settings")),
+                    )
+                    .child(self.key_action(
+                        "settings-switch",
+                        "tab",
+                        "switch",
+                        view,
+                        Self::cycle_settings_focus,
+                    ))
+                    .child(self.key_action(
+                        "settings-close",
+                        "esc",
+                        "close",
+                        view,
+                        Self::close_settings,
+                    )),
             )
             .child(field(
                 "appearance",
@@ -2561,9 +2749,9 @@ impl StatusView {
         }
 
         let content = match &row.kind {
-            RowKind::Plain { text, color } => {
-                el.text_color(*color).child(SharedString::from(text.clone()))
-            }
+            RowKind::Plain { text, color } => el
+                .text_color(*color)
+                .child(SharedString::from(text.clone())),
             RowKind::Section {
                 title,
                 count,
@@ -2604,13 +2792,13 @@ impl StatusView {
                 }
                 el.child(SharedString::from(label.clone()))
             }
-            RowKind::HunkHeader { text, expanded } => el
-                .child(chevron(*expanded, self.palette.dim))
-                .child(
+            RowKind::HunkHeader { text, expanded } => {
+                el.child(chevron(*expanded, self.palette.dim)).child(
                     div()
                         .text_color(self.palette.hunk)
                         .child(SharedString::from(text.clone())),
-                ),
+                )
+            }
             RowKind::Diff { kind, spans } => {
                 let (sign, sign_color, tint) = match kind {
                     LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
@@ -2624,11 +2812,17 @@ impl StatusView {
                     }
                 }
                 // Sign + syntax-highlighted content as adjacent runs (no gap).
-                let mut line = div()
-                    .flex()
-                    .child(div().text_color(sign_color).child(SharedString::from(sign.to_string())));
+                let mut line = div().flex().child(
+                    div()
+                        .text_color(sign_color)
+                        .child(SharedString::from(sign.to_string())),
+                );
                 for (text, color) in spans {
-                    line = line.child(div().text_color(*color).child(SharedString::from(text.clone())));
+                    line = line.child(
+                        div()
+                            .text_color(*color)
+                            .child(SharedString::from(text.clone())),
+                    );
                 }
                 el.child(line)
             }
@@ -2830,7 +3024,9 @@ impl Render for StatusView {
                         let view = view.clone();
                         move |range, _window, cx| {
                             let this = view.read(cx);
-                            range.map(|ix| this.render_row(ix, &view)).collect::<Vec<_>>()
+                            range
+                                .map(|ix| this.render_row(ix, &view))
+                                .collect::<Vec<_>>()
                         }
                     })
                     .track_scroll(&self.scroll)
@@ -2876,11 +3072,33 @@ impl Render for StatusView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(div().text_color(self.palette.section).child(SharedString::from("VISUAL")))
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(SharedString::from("VISUAL")),
+                    )
                     .child(self.key_action("visual-stage", "s", "stage", &view, Self::visual_stage))
-                    .child(self.key_action("visual-unstage", "u", "unstage", &view, Self::visual_unstage))
-                    .child(self.key_action("visual-discard", "x", "discard", &view, Self::visual_discard))
-                    .child(self.key_action("visual-cancel", "esc", "cancel", &view, Self::visual_cancel)),
+                    .child(self.key_action(
+                        "visual-unstage",
+                        "u",
+                        "unstage",
+                        &view,
+                        Self::visual_unstage,
+                    ))
+                    .child(self.key_action(
+                        "visual-discard",
+                        "x",
+                        "discard",
+                        &view,
+                        Self::visual_discard,
+                    ))
+                    .child(self.key_action(
+                        "visual-cancel",
+                        "esc",
+                        "cancel",
+                        &view,
+                        Self::visual_cancel,
+                    )),
             );
         } else if let Some(msg) = &self.status_message {
             root = root.child(status_bar(
@@ -3092,11 +3310,17 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
     let parts: Vec<&str> = key.split('-').collect();
     let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
     let label = if is_chord {
-        parts.iter().map(|p| key_word(p)).collect::<Vec<_>>().join("+")
+        parts
+            .iter()
+            .map(|p| key_word(p))
+            .collect::<Vec<_>>()
+            .join("+")
     } else {
         key_word(key)
     };
-    chip_box(color).child(SharedString::from(label)).into_any_element()
+    chip_box(color)
+        .child(SharedString::from(label))
+        .into_any_element()
 }
 
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
@@ -3107,7 +3331,11 @@ fn switch_chip(key: &str, color: Hsla, accent: Hsla, pending: bool) -> AnyElemen
     let dash_color = if pending { accent } else { color };
     chip_box(color)
         .child(div().text_color(dash_color).child(SharedString::from("-")))
-        .child(div().text_color(color).child(SharedString::from(rest.to_string())))
+        .child(
+            div()
+                .text_color(color)
+                .child(SharedString::from(rest.to_string())),
+        )
         .into_any_element()
 }
 

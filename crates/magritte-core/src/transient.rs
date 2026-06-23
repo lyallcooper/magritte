@@ -265,7 +265,12 @@ impl Repo {
                 let branch = self.current_branch()?.ok_or_else(|| {
                     Error::Message("cannot set upstream: HEAD is detached".into())
                 })?;
-                vec!["push".into(), "--set-upstream".into(), "origin".into(), branch]
+                vec![
+                    "push".into(),
+                    "--set-upstream".into(),
+                    "origin".into(),
+                    branch,
+                ]
             }
             Command::Pull => vec!["pull".into()],
             Command::Fetch => vec!["fetch".into()],

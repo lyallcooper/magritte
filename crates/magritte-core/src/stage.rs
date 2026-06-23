@@ -300,17 +300,29 @@ impl Repo {
     // `selections` maps hunk index -> selected line indices, so a region that
     // spans several hunks of one file is applied as a single patch.
 
-    pub fn stage_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+    pub fn stage_file_lines(
+        &self,
+        file: &FileDiff,
+        selections: &[(usize, Vec<usize>)],
+    ) -> Result<()> {
         let patch = build_file_patch(file, selections, false);
         self.apply_patch(&patch, ApplyTarget::Index, false)
     }
 
-    pub fn unstage_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+    pub fn unstage_file_lines(
+        &self,
+        file: &FileDiff,
+        selections: &[(usize, Vec<usize>)],
+    ) -> Result<()> {
         let patch = build_file_patch(file, selections, true);
         self.apply_patch(&patch, ApplyTarget::Index, true)
     }
 
-    pub fn discard_file_lines(&self, file: &FileDiff, selections: &[(usize, Vec<usize>)]) -> Result<()> {
+    pub fn discard_file_lines(
+        &self,
+        file: &FileDiff,
+        selections: &[(usize, Vec<usize>)],
+    ) -> Result<()> {
         let patch = build_file_patch(file, selections, true);
         self.apply_patch(&patch, ApplyTarget::Worktree, true)
     }

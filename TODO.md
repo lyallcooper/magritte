@@ -1,0 +1,30 @@
+- [x] We're currently using what appears to be the git status --short output. E.g. "??", " M", "MM", etc. That's not very user friendly, so let's replace it with something more obvious. Feel free to look at magit for inspiration.
+- [x] Settings screen where we can set the font and theme. Should take effect immediately without restart or save button so previewing is easy.
+- [x] A special debug mode that lets us send emulate keyboard commands directly without having to use apple script, and also lets us screenshot the window without having to use system APIs. This should speed up development, and allow us to do it without needing to forground the window.
+- [x] cmd+q and cmd+w don't work
+- [x] Auto light/dark mode switching support with system theme
+- [x] Maybe we should limit shown fonts to only monospace ones?
+- [x] Mouse support. Not everything needs to be 100% keyboard driven, eg the settings screen. A dropdown would be appropriate, for instance
+- [x] Theme list should be alphabetized
+- [x] We don't need to show "enter" for newline on the commit message screen
+- [x] X-ing out the last window should close the app altogether
+- [x] Cmd+, should also open settings on macOS, since that's the standard shortcut
+- [x] The app menu Magritte > Settings should open the settings as expected
+- [x] The outline on the count tags should be a little smaller, not quite as tall
+- [x] Use "Return" instead of "Enter" for the name of the key
+- [x] Should we use GPUI component collapsible for the file diff headers? — DECIDED NO: Collapsible renders its content as regular (non-virtualized) child elements. Our diff is a single flat uniform_list of all rows (sections/files/hunks/lines) so only on-screen rows are realized; Collapsible would eagerly build every line of an expanded diff, breaking the large-repo performance that's a core goal.
+- [x] The file count tag slightly touches the first line of the diff when it's expanded, which doesn't look great. Maybe we should use tag (small) instead? And I prefer the default partially rounded look instead of fully rounded, looking at the component gallery (https://longbridge.github.io/gpui-component/gallery/)
+- [x] Clicking outside of the ? dispatch area should dismiss it
+- [x] The commit and cancel buttons on the commit editor screen should be clickable. In general, whenever we show keys like that they should be clickable buttons that perform the associated action
+- [x] Default theme (when unconfigured) should be Default Light/Dark, appearance auto, and font should be system default monospace UI font.
+- [x] When in visual mode, the current line should be the same color as the highlighted lines
+- [x] kbd + label buttons should show mouseover by highlighting just the text label, not the kbd element too. But clicking on the kbd should work still.
+- [x] Right click actions. E.g. click on a file name or hunk or selection to stage, unstage, discard, etc.
+- [x] The discard confirmation "Discard unstaged ... (y/n)" bar partially overlaps the '?' button in the bottom right, which looks ugly.
+- [x] The discard confirmation y/n should be clickable kbd buttons
+- [x] Click and drag should select like 'v'.
+- [x] Commit editor should show the diff to be committed like magit does
+- [x] Visual mode indicator should use standard kbd button keys like everywhere else
+- [x] Tab inside a hunk collapses (or expands) it, just like it magit
+- [x] Opening the settings screen prints warnings like "2026-06-23 11:40:38.247 magritte\[99253:4332374] CoreText note: Client requested name ".ZedSans", it will get TimesNewRomanPSMT rather than the intended font. All system UI font access should be through proper APIs such as CTFontCreateUIFontForLanguage() or +\[NSFont systemFontOfSize:]."
+- [x] When perfoming an action that changes the status UI, eg staging/unstaging/folding/unfolding, we can improve where we move the cursor line to after the action is performed to make it more user friendly and more like magit. We should bias the cursor line totay within the current section whenever possible. Folding inside a hunk should put us on the header line of that hunk. In general we shouldn't keep the cursor line number the same and hope it makes sense
