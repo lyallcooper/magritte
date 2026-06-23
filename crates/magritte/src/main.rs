@@ -3143,9 +3143,9 @@ impl StatusView {
             ))
     }
 
-    /// A mouse-friendly button that opens the on-disk config file in the
-    /// platform's default text editor — an escape hatch for settings the UI
-    /// doesn't expose, and a way to see where the file lives.
+    /// A mouse-friendly button that opens the on-disk config file in the OS
+    /// default app for it — an escape hatch for settings the UI doesn't expose,
+    /// and a way to see where the file lives.
     fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
         let view = view.clone();
         Button::new("open-config")
@@ -3159,17 +3159,15 @@ impl StatusView {
     }
 
     /// Write the current config (so the file exists even if untouched) and open
-    /// it in the default text editor.
+    /// it with the OS default app for the file — honoring whatever editor you've
+    /// associated with it, rather than forcing the plain-text editor.
     fn open_config_file(&self) {
         config::save(&self.config);
         let Some(path) = config::path() else {
             return;
         };
         #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open")
-            .arg("-t")
-            .arg(&path)
-            .spawn();
+        let _ = std::process::Command::new("open").arg(&path).spawn();
         #[cfg(not(target_os = "macos"))]
         let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
     }
