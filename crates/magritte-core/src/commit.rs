@@ -49,6 +49,14 @@ impl Repo {
         Ok(summary(&out.stdout, &out.stderr))
     }
 
+    /// Whether `rev` has already been published — i.e. it's contained in some
+    /// remote-tracking branch. Used to warn before amending/rewording a pushed
+    /// commit (rewriting published history).
+    pub fn is_published(&self, rev: &str) -> Result<bool> {
+        let out = self.run(["branch", "-r", "--contains", rev])?;
+        Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+    }
+
     /// Amend HEAD with the staged changes, keeping its message (`--no-edit`).
     pub fn commit_extend(&self, args: &[String]) -> Result<String> {
         let mut argv: Vec<String> = vec!["commit".into(), "--amend".into(), "--no-edit".into()];

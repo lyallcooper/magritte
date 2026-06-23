@@ -742,6 +742,9 @@ enum Confirm {
     /// `c c` with nothing staged: on `y`, commit all tracked changes by
     /// opening the message editor with `--all` (the carried switches) appended.
     CommitAll(Vec<String>),
+    /// Amend/reword/extend of an already-published HEAD: on `y`, proceed with
+    /// the carried command + switches (rewriting pushed history).
+    AmendPushed(transient::Command, Vec<String>),
 }
 
 struct StatusView {
@@ -1833,6 +1836,9 @@ impl StatusView {
                 }
                 self.open_editor(CommitMode::Create, switches, window, cx);
             }
+            Some((_, Confirm::AmendPushed(command, switches))) => {
+                self.proceed_history_rewrite(command, switches, window, cx);
+            }
             None => {}
         }
         cx.notify();
@@ -1911,14 +1917,72 @@ impl StatusView {
             self.popup = None;
             match action.command {
                 transient::Command::CommitCreate => self.start_commit(switches, window, cx),
-                transient::Command::CommitAmend => {
-                    self.open_editor(CommitMode::Amend, switches, window, cx)
-                }
-                transient::Command::CommitReword => {
-                    self.open_editor(CommitMode::Reword, switches, window, cx)
+                // Amend/reword/extend rewrite HEAD: warn first if it's published.
+                transient::Command::CommitAmend
+                | transient::Command::CommitReword
+                | transient::Command::CommitExtend => {
+                    self.begin_history_rewrite(action.command, switches, window, cx)
                 }
                 _ => self.run_command(action.command, switches, cx),
             }
+        }
+    }
+
+    /// Begin an amend/reword/extend, first checking (off the UI thread) whether
+    /// HEAD has already been pushed; if so, confirm before rewriting published
+    /// history (mirrors magit's `magit-commit-amend-assert`).
+    fn begin_history_rewrite(
+        &mut self,
+        command: transient::Command,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let published = cx
+                .background_executor()
+                .spawn(async move { repo.is_published("HEAD").unwrap_or(false) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if published {
+                    let verb = match command {
+                        transient::Command::CommitReword => "Reword",
+                        transient::Command::CommitExtend => "Extend",
+                        _ => "Amend",
+                    };
+                    this.confirm = Some((
+                        format!("HEAD is already pushed. {verb} it anyway?"),
+                        Confirm::AmendPushed(command, switches),
+                    ));
+                    cx.notify();
+                } else {
+                    this.proceed_history_rewrite(command, switches, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Carry out an amend/reword/extend (after any published-history warning):
+    /// amend/reword open the message editor; extend commits straight away.
+    fn proceed_history_rewrite(
+        &mut self,
+        command: transient::Command,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            transient::Command::CommitAmend => {
+                self.open_editor(CommitMode::Amend, switches, window, cx)
+            }
+            transient::Command::CommitReword => {
+                self.open_editor(CommitMode::Reword, switches, window, cx)
+            }
+            _ => self.run_command(command, switches, cx),
         }
     }
 
@@ -2132,37 +2196,41 @@ impl StatusView {
                 .detach();
             }
         }
-        // Show the staged diff being committed. Reword commits no tree change,
-        // so its diff stays empty.
-        if matches!(mode, CommitMode::Create | CommitMode::Amend) {
-            self.load_commit_diff(cx);
-        }
+        // Preview the relevant diff: the staged change for create/amend, or the
+        // reworded commit's own changes for reword.
+        self.load_commit_diff(cx);
         cx.notify();
     }
 
-    /// Load the staged diff in the background and flatten it (with syntax
-    /// highlighting) into the open editor's `diff` for read-only preview. When
-    /// committing with `--all` and nothing is staged, preview the unstaged
-    /// (tracked) changes instead — that's what the commit will actually take.
+    /// Load the diff to preview in the open editor, in the background, and
+    /// flatten it (with syntax highlighting) for read-only display. Create/amend
+    /// show the staged diff being committed (or, with `--all` and nothing
+    /// staged, the unstaged changes that will be); reword shows the diff of the
+    /// commit it's renaming (HEAD's own changes), since it makes no tree change.
     fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let also_unstaged = self
-            .editor
-            .as_ref()
-            .is_some_and(|e| e.args.iter().any(|a| a == "--all"));
+        let Some(ed) = self.editor.as_ref() else {
+            return;
+        };
+        let reword = ed.mode == CommitMode::Reword;
+        let also_unstaged = ed.args.iter().any(|a| a == "--all");
         cx.spawn(async move |this, cx| {
             let files = cx
                 .background_executor()
                 .spawn(async move {
-                    let loaded = repo.diff_all(DiffSource::Staged).and_then(|staged| {
-                        if staged.is_empty() && also_unstaged {
-                            repo.diff_all(DiffSource::Unstaged)
-                        } else {
-                            Ok(staged)
-                        }
-                    });
+                    let loaded = if reword {
+                        repo.diff_commit("HEAD")
+                    } else {
+                        repo.diff_all(DiffSource::Staged).and_then(|staged| {
+                            if staged.is_empty() && also_unstaged {
+                                repo.diff_all(DiffSource::Unstaged)
+                            } else {
+                                Ok(staged)
+                            }
+                        })
+                    };
                     match loaded {
                         Ok(diffs) => {
                             let mapped = diffs
@@ -2188,9 +2256,7 @@ impl StatusView {
                 }
                 if let Some(err) = error {
                     if let Some(ed) = this.editor.as_mut() {
-                        ed.diff = vec![CommitDiffRow::Note(format!(
-                            "staged diff unavailable: {err}"
-                        ))];
+                        ed.diff = vec![CommitDiffRow::Note(format!("diff unavailable: {err}"))];
                     }
                     cx.notify();
                     return;
