@@ -73,6 +73,13 @@ struct CommitEditor {
     state: Entity<InputState>,
     mode: CommitMode,
     args: Vec<String>,
+    /// The baseline message we'd discard back to: empty for a new commit, or
+    /// HEAD's message for amend/reword. Canceling only prompts when the current
+    /// text differs from this.
+    initial: String,
+    /// Whether a "discard message?" confirmation is showing (cancel was pressed
+    /// with unsaved edits).
+    confirming_cancel: bool,
     /// The staged diff being committed, flattened for read-only display below
     /// the message (magit's commit buffer). Empty until loaded, and left empty
     /// for reword (which commits no tree change).
@@ -2088,6 +2095,8 @@ impl StatusView {
             state: state.clone(),
             mode,
             args,
+            initial: String::new(),
+            confirming_cancel: false,
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             _sub: sub,
@@ -2105,13 +2114,18 @@ impl StatusView {
                     let _ = cx.update(|window, app| {
                         state.update(app, |s, cx| {
                             if s.value().is_empty() {
-                                s.set_value(msg, window, cx);
+                                s.set_value(msg.clone(), window, cx);
                             }
                         });
                     });
                     // set_value doesn't emit Change, so update the summary
-                    // warning for the pre-filled message ourselves.
+                    // warning for the pre-filled message ourselves. Also record
+                    // HEAD's message as the baseline, so canceling an unedited
+                    // amend/reword doesn't prompt to discard.
                     let _ = this.update_in(cx, |this, window, cx| {
+                        if let Some(ed) = this.editor.as_mut() {
+                            ed.initial = msg;
+                        }
                         this.on_editor_changed(window, cx);
                     });
                 })
@@ -2236,10 +2250,26 @@ impl StatusView {
         if self.editor.is_none() {
             return;
         }
-        if event.keystroke.key == "escape" {
+        let key = event.keystroke.key.as_str();
+        // While the "discard message?" confirmation is up, capture y / n / esc.
+        if self.editor.as_ref().is_some_and(|e| e.confirming_cancel) {
+            match key {
+                "y" => {
+                    cx.stop_propagation();
+                    self.discard_editor(window, cx);
+                }
+                "n" | "escape" => {
+                    cx.stop_propagation();
+                    self.keep_editing(window, cx);
+                }
+                _ => {}
+            }
+            return;
+        }
+        if key == "escape" {
             cx.stop_propagation();
             self.cancel_editor(window, cx);
-        } else if event.keystroke.key == "q" && event.keystroke.modifiers.alt {
+        } else if key == "q" && event.keystroke.modifiers.alt {
             // alt-q reflows the body (Emacs fill-paragraph heritage); capture it
             // so the Input doesn't insert the character.
             cx.stop_propagation();
@@ -2247,9 +2277,35 @@ impl StatusView {
         }
     }
 
+    /// Cancel the editor — but if there are unsaved edits, ask first rather than
+    /// silently dropping the message.
     fn cancel_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty = match &self.editor {
+            Some(ed) => ed.state.read(cx).value().trim() != ed.initial.trim(),
+            None => return,
+        };
+        if dirty {
+            if let Some(ed) = self.editor.as_mut() {
+                ed.confirming_cancel = true;
+            }
+            cx.notify();
+        } else {
+            self.discard_editor(window, cx);
+        }
+    }
+
+    /// Close the editor, discarding its message.
+    fn discard_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor = None;
         self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Dismiss the discard confirmation and keep editing.
+    fn keep_editing(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ed) = self.editor.as_mut() {
+            ed.confirming_cancel = false;
+        }
         cx.notify();
     }
 
@@ -2939,27 +2995,52 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(SharedString::from(title)),
                     )
-                    .child(self.key_action(
-                        "editor-commit",
-                        "cmd-enter",
-                        "commit",
-                        view,
-                        Self::submit_editor,
-                    ))
-                    .child(self.key_action(
-                        "editor-reflow",
-                        "alt-q",
-                        "reflow",
-                        view,
-                        Self::reflow_editor,
-                    ))
-                    .child(self.key_action(
-                        "editor-cancel",
-                        "esc",
-                        "cancel",
-                        view,
-                        Self::cancel_editor,
-                    )),
+                    .map(|el| {
+                        if ed.confirming_cancel {
+                            // Unsaved edits: confirm before discarding the message.
+                            el.child(
+                                div()
+                                    .text_color(self.palette.dim)
+                                    .child(SharedString::from("Discard message?")),
+                            )
+                            .child(self.key_action(
+                                "editor-discard-yes",
+                                "y",
+                                "discard",
+                                view,
+                                Self::discard_editor,
+                            ))
+                            .child(self.key_action(
+                                "editor-discard-no",
+                                "n",
+                                "keep editing",
+                                view,
+                                Self::keep_editing,
+                            ))
+                        } else {
+                            el.child(self.key_action(
+                                "editor-commit",
+                                "cmd-enter",
+                                "commit",
+                                view,
+                                Self::submit_editor,
+                            ))
+                            .child(self.key_action(
+                                "editor-reflow",
+                                "alt-q",
+                                "reflow",
+                                view,
+                                Self::reflow_editor,
+                            ))
+                            .child(self.key_action(
+                                "editor-cancel",
+                                "esc",
+                                "cancel",
+                                view,
+                                Self::cancel_editor,
+                            ))
+                        }
+                    }),
             );
 
         // With a staged diff to review, the message takes a fixed band at the
@@ -3398,6 +3479,10 @@ impl StatusView {
                     Tag::secondary()
                         .small()
                         .outline()
+                        // A touch smaller than Tag's `small`: tighter padding
+                        // and font so the count reads as a subtle badge.
+                        .text_size(px(10.0))
+                        .px_1()
                         .child(SharedString::from(count.to_string())),
                 ),
             RowKind::File {
