@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_LIGHT_THEME: &str = "Default Light";
 pub const DEFAULT_DARK_THEME: &str = "Default Dark";
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// "auto" (follow the system), "light", or "dark". Empty = "auto".
@@ -24,6 +24,26 @@ pub struct Config {
     pub dark_theme: String,
     /// Monospace font family. Empty = platform default.
     pub font: String,
+    /// Highlight commit-summary characters past 50 columns in the editor.
+    pub commit_title_ruler: bool,
+    /// Auto-hard-wrap the commit body at 72 columns as you type.
+    pub commit_body_wrap: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        // The commit-editor aids follow the git 50/72 convention out of the box;
+        // `#[serde(default)]` also fills these in for configs written before the
+        // fields existed, so an upgrade keeps them on.
+        Self {
+            appearance: String::new(),
+            light_theme: String::new(),
+            dark_theme: String::new(),
+            font: String::new(),
+            commit_title_ruler: true,
+            commit_body_wrap: true,
+        }
+    }
 }
 
 impl Config {
