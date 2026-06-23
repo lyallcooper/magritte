@@ -64,7 +64,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
-    Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
+    Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, RemoteTargets, Repo,
+    Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -107,14 +108,18 @@ struct TransientState {
     active: std::collections::HashSet<String>,
     /// True after `-` is pressed, awaiting the switch letter (magit `-f`).
     pending_dash: bool,
+    /// Resolved push/pull/fetch targets, so dispatch can route to the right
+    /// remote without recomputing (empty for non-remote transients).
+    targets: RemoteTargets,
 }
 
 impl TransientState {
-    fn new(def: Transient) -> Self {
+    fn new(def: Transient, targets: RemoteTargets) -> Self {
         TransientState {
             def,
             active: std::collections::HashSet::new(),
             pending_dash: false,
+            targets,
         }
     }
 }
@@ -127,6 +132,47 @@ impl TransientState {
 enum Popup {
     Transient(TransientState),
     Dispatch(Transient),
+    /// Picking which remote to push/pull/fetch against (when the target isn't
+    /// configured, or for "elsewhere", and more than one remote exists).
+    RemotePicker(RemotePickerState),
+}
+
+/// What to do with a remote once it's resolved (from config or the picker).
+#[derive(Clone)]
+enum Transfer {
+    /// `git push [--set-upstream] <remote> <branch>`; `save_push_remote` records
+    /// `branch.<b>.pushRemote` first (first push to a push-remote).
+    Push {
+        branch: String,
+        set_upstream: bool,
+        save_push_remote: bool,
+    },
+    /// `git pull <remote> <branch>` — `branch` is the remote branch to merge.
+    Pull { branch: String },
+    /// `git fetch <remote>`.
+    Fetch,
+}
+
+impl Transfer {
+    /// Present-tense label for the progress message.
+    fn verb(&self) -> &'static str {
+        match self {
+            Transfer::Push { .. } => "Pushing",
+            Transfer::Pull { .. } => "Pulling",
+            Transfer::Fetch => "Fetching",
+        }
+    }
+}
+
+/// An open remote picker: a dropdown of remotes plus the pending transfer to run
+/// once one is chosen.
+struct RemotePickerState {
+    title: SharedString,
+    select: Entity<SelectState<Vec<SharedString>>>,
+    transfer: Transfer,
+    switches: Vec<String>,
+    /// Kept alive so the Confirm subscription stays active.
+    _sub: Subscription,
 }
 
 /// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
@@ -1867,9 +1913,18 @@ impl StatusView {
 
     // --- Popups (transients + help) --------------------------------------
 
-    fn open_transient(&mut self, def: Transient, cx: &mut Context<Self>) {
-        self.popup = Some(Popup::Transient(TransientState::new(def)));
+    fn open_transient(&mut self, def: Transient, targets: RemoteTargets, cx: &mut Context<Self>) {
+        self.popup = Some(Popup::Transient(TransientState::new(def, targets)));
         cx.notify();
+    }
+
+    /// The current branch's resolved push/pull/fetch targets (empty on error or
+    /// no repo), for building and dispatching the remote transients.
+    fn remote_targets(&self) -> RemoteTargets {
+        self.repo
+            .as_ref()
+            .and_then(|r| r.remote_targets().ok())
+            .unwrap_or_default()
     }
 
     fn handle_transient_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1906,24 +1961,28 @@ impl StatusView {
         }
 
         // Invoke an action.
-        let action = state.def.action_for(key).copied();
+        let action = state.def.action_for(key).cloned();
         let switches: Vec<String> = state
             .def
             .switches()
             .filter(|s| state.active.contains(s.key))
             .map(|s| s.arg.to_string())
             .collect();
+        let targets = state.targets.clone();
         if let Some(action) = action {
             self.popup = None;
+            use transient::Command::*;
             match action.command {
-                transient::Command::CommitCreate => self.start_commit(switches, window, cx),
+                CommitCreate => self.start_commit(switches, window, cx),
                 // Amend/reword/extend rewrite HEAD: warn first if it's published.
-                transient::Command::CommitAmend
-                | transient::Command::CommitReword
-                | transient::Command::CommitExtend => {
+                CommitAmend | CommitReword | CommitExtend => {
                     self.begin_history_rewrite(action.command, switches, window, cx)
                 }
-                _ => self.run_command(action.command, switches, cx),
+                // Push/pull/fetch resolve a remote (prompting if needed) then run.
+                PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
+                | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
+                    self.dispatch_transfer(action.command, &targets, switches, window, cx)
+                }
             }
         }
     }
@@ -2008,6 +2067,234 @@ impl StatusView {
             let result = cx
                 .background_executor()
                 .spawn(async move { repo.execute(command, &switches) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.status_message = Some(match result {
+                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
+                    Ok(msg) => last_line(&msg),
+                    Err(e) => format!("error: {e}"),
+                });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // --- Push / pull / fetch --------------------------------------------
+
+    /// Resolve a push/pull/fetch command to a concrete remote and run it: use
+    /// the configured push-remote/upstream when present, otherwise pick a remote
+    /// (prompting only when there's a real choice) — setting the relevant config
+    /// for first push, like magit.
+    fn dispatch_transfer(
+        &mut self,
+        command: transient::Command,
+        targets: &RemoteTargets,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        // Push/pull need the current branch; fetch doesn't.
+        let needs_branch = !matches!(
+            command,
+            FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere
+        );
+        if needs_branch && targets.branch.is_none() {
+            self.status_message = Some("HEAD is detached — can't push/pull a branch".to_string());
+            cx.notify();
+            return;
+        }
+        let branch = targets.branch.clone().unwrap_or_default();
+        match command {
+            PushPushRemote => {
+                let t = Transfer::Push {
+                    branch,
+                    set_upstream: false,
+                    save_push_remote: targets.push_remote.is_none(),
+                };
+                self.resolve_remote(t, targets.push_remote.clone(), switches, window, cx);
+            }
+            PushUpstream => {
+                let t = Transfer::Push {
+                    branch,
+                    set_upstream: targets.upstream.is_none(),
+                    save_push_remote: false,
+                };
+                let remote = targets.upstream.as_ref().map(|u| u.remote.clone());
+                self.resolve_remote(t, remote, switches, window, cx);
+            }
+            PushElsewhere => {
+                let t = Transfer::Push {
+                    branch,
+                    set_upstream: false,
+                    save_push_remote: false,
+                };
+                self.resolve_remote(t, None, switches, window, cx);
+            }
+            PullPushRemote => self.resolve_remote(
+                Transfer::Pull { branch },
+                targets.push_remote.clone(),
+                switches,
+                window,
+                cx,
+            ),
+            PullUpstream => match &targets.upstream {
+                Some(u) => self.run_transfer(
+                    Transfer::Pull {
+                        branch: u.branch.clone(),
+                    },
+                    u.remote.clone(),
+                    switches,
+                    cx,
+                ),
+                None => self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx),
+            },
+            PullElsewhere => {
+                self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx)
+            }
+            FetchPushRemote => self.resolve_remote(
+                Transfer::Fetch,
+                targets.push_remote.clone(),
+                switches,
+                window,
+                cx,
+            ),
+            FetchUpstream => {
+                let remote = targets.upstream.as_ref().map(|u| u.remote.clone());
+                self.resolve_remote(Transfer::Fetch, remote, switches, window, cx);
+            }
+            FetchAll => self.run_fetch_all(switches, cx),
+            FetchElsewhere => self.resolve_remote(Transfer::Fetch, None, switches, window, cx),
+            _ => {}
+        }
+    }
+
+    /// Run `transfer` against `remote` if known; otherwise pick one — using the
+    /// sole remote directly, prompting only when several exist.
+    fn resolve_remote(
+        &mut self,
+        transfer: Transfer,
+        remote: Option<String>,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(remote) = remote {
+            self.run_transfer(transfer, remote, switches, cx);
+            return;
+        }
+        let remotes = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.remotes().ok())
+            .unwrap_or_default();
+        match remotes.len() {
+            0 => {
+                self.status_message = Some("No remotes configured".to_string());
+                cx.notify();
+            }
+            1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
+            _ => self.open_remote_picker(transfer, remotes, switches, window, cx),
+        }
+    }
+
+    /// Open the remote-picker dropdown for a pending transfer (>1 remote).
+    fn open_remote_picker(
+        &mut self,
+        transfer: Transfer,
+        remotes: Vec<String>,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = SharedString::from(format!("{} to", transfer.verb().trim_end_matches("ing")));
+        let items: Vec<SharedString> = remotes.into_iter().map(SharedString::from).collect();
+        let select =
+            cx.new(|cx| SelectState::new(items, Some(IndexPath::default()), &mut *window, cx));
+        let sub = cx.subscribe_in(
+            &select,
+            window,
+            |this, _select, ev: &SelectEvent<Vec<SharedString>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(remote)) = ev {
+                    let remote = remote.to_string();
+                    if let Some(Popup::RemotePicker(p)) = this.popup.take() {
+                        this.run_transfer(p.transfer, remote, p.switches, cx);
+                    }
+                }
+            },
+        );
+        select.update(cx, |st, cx| st.focus(window, cx));
+        self.popup = Some(Popup::RemotePicker(RemotePickerState {
+            title,
+            select,
+            transfer,
+            switches,
+            _sub: sub,
+        }));
+        cx.notify();
+    }
+
+    /// Run a resolved push/pull/fetch on the background executor, then refresh.
+    fn run_transfer(
+        &mut self,
+        transfer: Transfer,
+        remote: String,
+        switches: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some(format!("{}…", transfer.verb()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match transfer {
+                        Transfer::Push {
+                            branch,
+                            set_upstream,
+                            save_push_remote,
+                        } => {
+                            if save_push_remote {
+                                let _ = repo.set_push_remote(&branch, &remote);
+                            }
+                            repo.push_to(&remote, &branch, set_upstream, &switches)
+                        }
+                        Transfer::Pull { branch } => repo.pull_from(&remote, &branch, &switches),
+                        Transfer::Fetch => repo.fetch_from(&remote, &switches),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.status_message = Some(match result {
+                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
+                    Ok(msg) => last_line(&msg),
+                    Err(e) => format!("error: {e}"),
+                });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// `git fetch --all` (no remote needed).
+    fn run_fetch_all(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Fetching…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.fetch_all(&switches) })
                 .await;
             this.update(cx, |this, cx| {
                 this.status_message = Some(match result {
@@ -2633,6 +2920,16 @@ impl StatusView {
             return;
         }
 
+        // The remote picker's dropdown owns most keys; we just close on esc/q
+        // (which bubble up from the focused Select).
+        if matches!(self.popup, Some(Popup::RemotePicker(_))) {
+            if matches!(key.as_str(), "escape" | "q") {
+                self.popup = None;
+                cx.notify();
+            }
+            return;
+        }
+
         // The `?` dispatch popup is modal (like magit's dispatch): a command
         // key runs that command, esc/q/? close it, other keys are ignored.
         if matches!(self.popup, Some(Popup::Dispatch(_))) {
@@ -2722,11 +3019,26 @@ impl StatusView {
             "u" => return self.act(Op::Unstage, cx),
             "x" => return self.act(Op::Discard, cx),
             // Commit transient.
-            "c" => return self.open_transient(transient::commit_transient(), cx),
+            "c" => {
+                return self.open_transient(
+                    transient::commit_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
-            "p" => return self.open_transient(transient::push_transient(), cx),
-            "f" if shift => return self.open_transient(transient::pull_transient(), cx),
-            "f" => return self.open_transient(transient::fetch_transient(), cx),
+            "p" => {
+                let t = self.remote_targets();
+                return self.open_transient(transient::push_transient(&t), t, cx);
+            }
+            "f" if shift => {
+                let t = self.remote_targets();
+                return self.open_transient(transient::pull_transient(&t), t, cx);
+            }
+            "f" => {
+                let t = self.remote_targets();
+                return self.open_transient(transient::fetch_transient(&t), t, cx);
+            }
             // Settings (theme + font), applied live.
             "," => {
                 self.open_settings(window, cx);
@@ -2776,10 +3088,19 @@ impl StatusView {
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
         match key {
-            "c" => self.open_transient(transient::commit_transient(), cx),
-            "p" => self.open_transient(transient::push_transient(), cx),
-            "F" => self.open_transient(transient::pull_transient(), cx),
-            "f" => self.open_transient(transient::fetch_transient(), cx),
+            "c" => self.open_transient(transient::commit_transient(), RemoteTargets::default(), cx),
+            "p" => {
+                let t = self.remote_targets();
+                self.open_transient(transient::push_transient(&t), t, cx);
+            }
+            "F" => {
+                let t = self.remote_targets();
+                self.open_transient(transient::pull_transient(&t), t, cx);
+            }
+            "f" => {
+                let t = self.remote_targets();
+                self.open_transient(transient::fetch_transient(&t), t, cx);
+            }
             "," => self.open_settings(window, cx),
             "s" => self.act(Op::Stage, cx),
             "S" => self.run_action(Action::StageAll, cx),
@@ -2846,6 +3167,47 @@ impl StatusView {
             .text_color(color)
             .group_hover(KBD_ROW_GROUP, |s| s.bg(self.palette.visual))
             .child(SharedString::from(text.to_string()))
+    }
+
+    /// The remote-picker overlay: a title, a dropdown of remotes, and a cancel
+    /// hint. Selecting a remote runs the pending transfer (see the Confirm
+    /// subscription in `open_remote_picker`).
+    fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
+        div()
+            .w_full()
+            .border_t_1()
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
+            .py_2()
+            .px_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(state.title.clone()),
+                    )
+                    .child(self.key_action(
+                        "remote-picker-cancel",
+                        "esc",
+                        "cancel",
+                        view,
+                        Self::cancel_popup,
+                    )),
+            )
+            .child(div().w(px(280.0)).child(Select::new(&state.select)))
+    }
+
+    /// Close any open popup (e.g. cancel the remote picker).
+    fn cancel_popup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = None;
+        cx.notify();
     }
 
     fn render_transient(
@@ -2937,7 +3299,7 @@ impl StatusView {
                             .group(KBD_ROW_GROUP)
                             .child(track_target(a.key))
                             .child(key_chip(a.key, self.palette.dim))
-                            .child(self.hover_label(a.description, self.palette.fg))
+                            .child(self.hover_label(&a.description, self.palette.fg))
                             .on_click(move |_, window, cx: &mut App| {
                                 view.update(cx, |v, vcx| {
                                     v.click_suffix(key.clone(), false, window, vcx)
@@ -3853,6 +4215,7 @@ impl Render for StatusView {
             root = root.child(match popup {
                 Popup::Transient(state) => self.render_transient(&state.def, Some(state), &view),
                 Popup::Dispatch(def) => self.render_transient(def, None, &view),
+                Popup::RemotePicker(state) => self.render_remote_picker(state, &view),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(
@@ -4009,9 +4372,9 @@ fn chevron(expanded: bool, color: Hsla) -> gpui_component::Icon {
 fn describe_command(command: transient::Command) -> &'static str {
     use transient::Command::*;
     match command {
-        Push | PushSetUpstream => "Pushing",
-        Pull => "Pulling",
-        Fetch | FetchAll => "Fetching",
+        PushPushRemote | PushUpstream | PushElsewhere => "Pushing",
+        PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
+        FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
         CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
     }
 }

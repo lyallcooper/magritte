@@ -177,4 +177,38 @@ impl Repo {
             .map_err(|source| Error::Spawn { source })?;
         Ok(status.success())
     }
+
+    /// Like [`run`](Self::run) but a non-zero exit yields `Ok(None)` rather than
+    /// an error — for queries where "no result" is expected (an unset config
+    /// key, a branch with no upstream, …).
+    pub fn run_optional<I, S>(&self, args: I) -> Result<Option<GitOutput>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.workdir)
+            .args(["-c", "core.quotepath=false"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(args)
+            .output()
+            .map_err(|source| Error::Spawn { source })?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(GitOutput {
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            stdout: output.stdout,
+        }))
+    }
+
+    /// Read a single git config value (`git config --get <key>`), `None` if
+    /// unset.
+    pub fn config_get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.run_optional(["config", "--get", key])?.and_then(|o| {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            (!v.is_empty()).then_some(v)
+        }))
+    }
 }

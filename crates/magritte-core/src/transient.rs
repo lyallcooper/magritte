@@ -8,16 +8,24 @@
 //! fires it calls [`Repo::execute`] with the active switch arguments.
 
 use crate::error::{Error, Result};
+use crate::remote::{RemoteTargets, Upstream};
 use crate::repo::Repo;
 
-/// The git operation an [`Action`] runs.
+/// The git operation an [`Action`] runs. Push/pull/fetch come in magit's three
+/// flavors — to the push-remote, to the upstream, or elsewhere (the frontend
+/// resolves the actual remote, prompting when unconfigured).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    Push,
-    PushSetUpstream,
-    Pull,
-    Fetch,
+    PushPushRemote,
+    PushUpstream,
+    PushElsewhere,
+    PullPushRemote,
+    PullUpstream,
+    PullElsewhere,
+    FetchPushRemote,
+    FetchUpstream,
     FetchAll,
+    FetchElsewhere,
     /// New commit (needs a message — handled via the editor, not `execute`).
     CommitCreate,
     /// Amend HEAD (needs a message).
@@ -36,11 +44,12 @@ pub struct Switch {
     pub description: &'static str,
 }
 
-/// An invokable command (e.g. `p` → push).
-#[derive(Debug, Clone, Copy)]
+/// An invokable command (e.g. `p` → push). The description is dynamic so the
+/// push/pull/fetch menus can name their resolved targets (`master → origin/master`).
+#[derive(Debug, Clone)]
 pub struct Action {
     pub key: &'static str,
-    pub description: &'static str,
+    pub description: String,
     pub command: Command,
 }
 
@@ -53,7 +62,7 @@ pub struct Info {
     pub description: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Suffix {
     Switch(Switch),
     Action(Action),
@@ -94,7 +103,23 @@ impl Transient {
     }
 }
 
-pub fn push_transient() -> Transient {
+/// `branch → remote/branch`, the push-remote target label.
+fn push_remote_label(t: &RemoteTargets) -> String {
+    match (&t.branch, &t.push_remote) {
+        (Some(b), Some(r)) => format!("{b} \u{2192} {r}/{b}"),
+        _ => "push-remote".to_string(),
+    }
+}
+
+/// The upstream label (`origin/master`).
+fn upstream_label(t: &RemoteTargets) -> String {
+    t.upstream
+        .as_ref()
+        .map(Upstream::display)
+        .unwrap_or_else(|| "upstream".to_string())
+}
+
+pub fn push_transient(t: &RemoteTargets) -> Transient {
     Transient {
         title: "Push",
         groups: vec![
@@ -114,17 +139,22 @@ pub fn push_transient() -> Transient {
                 ],
             },
             Group {
-                title: "Push",
+                title: "Push to",
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "p",
-                        description: "Push to upstream",
-                        command: Command::Push,
+                        description: push_remote_label(t),
+                        command: Command::PushPushRemote,
                     }),
                     Suffix::Action(Action {
                         key: "u",
-                        description: "Push and set upstream (origin)",
-                        command: Command::PushSetUpstream,
+                        description: upstream_label(t),
+                        command: Command::PushUpstream,
+                    }),
+                    Suffix::Action(Action {
+                        key: "e",
+                        description: "elsewhere".to_string(),
+                        command: Command::PushElsewhere,
                     }),
                 ],
             },
@@ -165,7 +195,7 @@ pub fn commit_transient() -> Transient {
                 title: "Create",
                 suffixes: vec![Suffix::Action(Action {
                     key: "c",
-                    description: "Commit",
+                    description: "Commit".to_string(),
                     command: Command::CommitCreate,
                 })],
             },
@@ -174,17 +204,17 @@ pub fn commit_transient() -> Transient {
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "e",
-                        description: "Extend (keep message)",
+                        description: "Extend (keep message)".to_string(),
                         command: Command::CommitExtend,
                     }),
                     Suffix::Action(Action {
                         key: "a",
-                        description: "Amend",
+                        description: "Amend".to_string(),
                         command: Command::CommitAmend,
                     }),
                     Suffix::Action(Action {
                         key: "w",
-                        description: "Reword (message only)",
+                        description: "Reword (message only)".to_string(),
                         command: Command::CommitReword,
                     }),
                 ],
@@ -193,7 +223,12 @@ pub fn commit_transient() -> Transient {
     }
 }
 
-pub fn pull_transient() -> Transient {
+pub fn pull_transient(t: &RemoteTargets) -> Transient {
+    // Pulling from the push-remote merges its same-named branch.
+    let push_remote = match (&t.branch, &t.push_remote) {
+        (Some(b), Some(r)) => format!("{r}/{b}"),
+        _ => "push-remote".to_string(),
+    };
     Transient {
         title: "Pull",
         groups: vec![
@@ -206,18 +241,40 @@ pub fn pull_transient() -> Transient {
                 })],
             },
             Group {
-                title: "Pull",
-                suffixes: vec![Suffix::Action(Action {
-                    key: "F",
-                    description: "Pull from upstream",
-                    command: Command::Pull,
-                })],
+                title: "Pull from",
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "p",
+                        description: push_remote,
+                        command: Command::PullPushRemote,
+                    }),
+                    Suffix::Action(Action {
+                        key: "u",
+                        description: upstream_label(t),
+                        command: Command::PullUpstream,
+                    }),
+                    Suffix::Action(Action {
+                        key: "e",
+                        description: "elsewhere".to_string(),
+                        command: Command::PullElsewhere,
+                    }),
+                ],
             },
         ],
     }
 }
 
-pub fn fetch_transient() -> Transient {
+pub fn fetch_transient(t: &RemoteTargets) -> Transient {
+    // Fetch acts on a whole remote, so label with the remote name.
+    let push_remote = t
+        .push_remote
+        .clone()
+        .unwrap_or_else(|| "push-remote".to_string());
+    let upstream = t
+        .upstream
+        .as_ref()
+        .map(|u| u.remote.clone())
+        .unwrap_or_else(|| "upstream".to_string());
     Transient {
         title: "Fetch",
         groups: vec![
@@ -230,17 +287,27 @@ pub fn fetch_transient() -> Transient {
                 })],
             },
             Group {
-                title: "Fetch",
+                title: "Fetch from",
                 suffixes: vec![
                     Suffix::Action(Action {
-                        key: "f",
-                        description: "Fetch from upstream",
-                        command: Command::Fetch,
+                        key: "p",
+                        description: push_remote,
+                        command: Command::FetchPushRemote,
+                    }),
+                    Suffix::Action(Action {
+                        key: "u",
+                        description: upstream,
+                        command: Command::FetchUpstream,
                     }),
                     Suffix::Action(Action {
                         key: "a",
-                        description: "Fetch all remotes",
+                        description: "all remotes".to_string(),
                         command: Command::FetchAll,
+                    }),
+                    Suffix::Action(Action {
+                        key: "e",
+                        description: "elsewhere".to_string(),
+                        command: Command::FetchElsewhere,
                     }),
                 ],
             },
@@ -256,42 +323,16 @@ impl Repo {
         Ok(if name == "HEAD" { None } else { Some(name) })
     }
 
-    /// Run a transient command with the given active switch arguments.
-    /// Returns git's progress/result text (push and fetch report on stderr).
+    /// Run a transient command that doesn't need a resolved remote or a message:
+    /// currently only commit-extend. Push/pull/fetch are run via the dedicated
+    /// [`Repo::push_to`]/[`pull_from`](Repo::pull_from)/etc. methods (the frontend
+    /// resolves the remote first), and the message commits go through the editor.
     pub fn execute(&self, command: Command, switches: &[String]) -> Result<String> {
-        let mut args: Vec<String> = match command {
-            Command::Push => vec!["push".into()],
-            Command::PushSetUpstream => {
-                let branch = self.current_branch()?.ok_or_else(|| {
-                    Error::Message("cannot set upstream: HEAD is detached".into())
-                })?;
-                vec![
-                    "push".into(),
-                    "--set-upstream".into(),
-                    "origin".into(),
-                    branch,
-                ]
-            }
-            Command::Pull => vec!["pull".into()],
-            Command::Fetch => vec!["fetch".into()],
-            Command::FetchAll => vec!["fetch".into(), "--all".into()],
-            // Reuse the dedicated builder rather than reconstructing the args.
-            Command::CommitExtend => return self.commit_extend(switches),
-            Command::CommitCreate | Command::CommitAmend | Command::CommitReword => {
-                return Err(Error::Message(
-                    "commit requires a message (use the editor)".into(),
-                ));
-            }
-        };
-        args.extend(switches.iter().cloned());
-
-        let out = self.run(&args)?;
-        let stderr = out.stderr.trim();
-        let msg = if stderr.is_empty() {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        } else {
-            stderr.to_string()
-        };
-        Ok(msg)
+        match command {
+            Command::CommitExtend => self.commit_extend(switches),
+            _ => Err(Error::Message(
+                "command is not run via execute()".to_string(),
+            )),
+        }
     }
 }

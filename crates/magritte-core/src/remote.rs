@@ -1,0 +1,139 @@
+//! Remote targets (push-remote / upstream) and the push/pull/fetch operations
+//! against them — mirroring magit's pushRemote-vs-upstream distinction.
+//!
+//! git itself distinguishes the two: `branch.<b>.pushRemote` / `remote.pushDefault`
+//! (where `git push` sends) versus `branch.<b>.remote`+`merge` (the upstream you
+//! track). We resolve both so the menus can label them, and run explicit
+//! commands against a chosen remote rather than leaning on bare `git push`.
+
+use crate::error::Result;
+use crate::repo::{GitOutput, Repo};
+
+/// A branch's upstream, split into its remote and remote-branch parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream {
+    pub remote: String,
+    pub branch: String,
+}
+
+impl Upstream {
+    /// The `remote/branch` display form (e.g. `origin/main`).
+    pub fn display(&self) -> String {
+        format!("{}/{}", self.remote, self.branch)
+    }
+}
+
+/// The current branch's resolved push/pull/fetch targets, for labeling menus.
+#[derive(Debug, Clone, Default)]
+pub struct RemoteTargets {
+    /// Current branch name; `None` when HEAD is detached.
+    pub branch: Option<String>,
+    /// Resolved push-remote name (e.g. `origin`); `None` when unconfigured.
+    pub push_remote: Option<String>,
+    /// Upstream branch; `None` when unconfigured.
+    pub upstream: Option<Upstream>,
+}
+
+impl Repo {
+    /// Configured remote names (`git remote`).
+    pub fn remotes(&self) -> Result<Vec<String>> {
+        let out = self.run(["remote"])?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Resolve the current branch's push-remote and upstream.
+    pub fn remote_targets(&self) -> Result<RemoteTargets> {
+        let branch = self.current_branch()?;
+        let Some(b) = branch.clone() else {
+            return Ok(RemoteTargets::default());
+        };
+        let push_remote = self
+            .config_get(&format!("branch.{b}.pushRemote"))?
+            .or(self.config_get("remote.pushDefault")?);
+        let upstream = self
+            .run_optional([
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                &format!("{b}@{{upstream}}"),
+            ])?
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                s.split_once('/').map(|(remote, branch)| Upstream {
+                    remote: remote.to_string(),
+                    branch: branch.to_string(),
+                })
+            });
+        Ok(RemoteTargets {
+            branch,
+            push_remote,
+            upstream,
+        })
+    }
+
+    /// Persist a branch's push-remote (`branch.<b>.pushRemote`) so future pushes
+    /// default there — matches magit setting it on first push to a push-remote.
+    pub fn set_push_remote(&self, branch: &str, remote: &str) -> Result<()> {
+        self.run(["config", &format!("branch.{branch}.pushRemote"), remote])?;
+        Ok(())
+    }
+
+    /// `git push [--set-upstream] [switches] <remote> <branch>` (pushes the
+    /// local branch to the same-named branch on `remote`).
+    pub fn push_to(
+        &self,
+        remote: &str,
+        branch: &str,
+        set_upstream: bool,
+        switches: &[String],
+    ) -> Result<String> {
+        let mut args = vec!["push".to_string()];
+        if set_upstream {
+            args.push("--set-upstream".into());
+        }
+        args.extend(switches.iter().cloned());
+        args.push(remote.to_string());
+        args.push(branch.to_string());
+        Ok(summary(self.run(&args)?))
+    }
+
+    /// `git pull [switches] <remote> <branch>`.
+    pub fn pull_from(&self, remote: &str, branch: &str, switches: &[String]) -> Result<String> {
+        let mut args = vec!["pull".to_string()];
+        args.extend(switches.iter().cloned());
+        args.push(remote.to_string());
+        args.push(branch.to_string());
+        Ok(summary(self.run(&args)?))
+    }
+
+    /// `git fetch [switches] <remote>`.
+    pub fn fetch_from(&self, remote: &str, switches: &[String]) -> Result<String> {
+        let mut args = vec!["fetch".to_string()];
+        args.extend(switches.iter().cloned());
+        args.push(remote.to_string());
+        Ok(summary(self.run(&args)?))
+    }
+
+    /// `git fetch --all [switches]`.
+    pub fn fetch_all(&self, switches: &[String]) -> Result<String> {
+        let mut args = vec!["fetch".to_string(), "--all".to_string()];
+        args.extend(switches.iter().cloned());
+        Ok(summary(self.run(&args)?))
+    }
+}
+
+/// git reports push/fetch progress on stderr; prefer it, else stdout.
+fn summary(out: GitOutput) -> String {
+    let stderr = out.stderr.trim();
+    if stderr.is_empty() {
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    } else {
+        stderr.to_string()
+    }
+}
