@@ -144,7 +144,7 @@ async fn run_command(
             }
             Ok(None)
         }
-        "click" => {
+        "click" | "shift-click" => {
             let mut parts = rest.split_whitespace();
             let x: f32 = parts
                 .next()
@@ -154,16 +154,16 @@ async fn run_command(
                 .next()
                 .and_then(|s| s.parse().ok())
                 .ok_or("click needs: x y")?;
-            dispatch_click(handle, x, y, cx)?;
+            dispatch_click(handle, x, y, click_modifiers(verb), cx)?;
             Ok(None)
         }
-        "click-id" => {
+        "click-id" | "shift-click-id" => {
             // Force a paint first: when the window is occluded the OS display
             // link is paused, so the target registry would otherwise be stale.
             force_draw(handle, cx);
             let target = TARGETS.lock().ok().and_then(|t| t.get(rest).copied());
             let (x, y) = target.ok_or_else(|| format!("no clickable target with id {rest:?}"))?;
-            dispatch_click(handle, x, y, cx)?;
+            dispatch_click(handle, x, y, click_modifiers(verb), cx)?;
             Ok(Some(format!("clicked {rest} @ {x:.0},{y:.0}")))
         }
         "draw" => {
@@ -243,11 +243,25 @@ async fn run_command(
     }
 }
 
-/// Dispatch a left click (move → down → up) at a window-relative point.
+/// Modifiers a click verb implies: the `shift-` prefixed variants hold shift.
+fn click_modifiers(verb: &str) -> Modifiers {
+    if verb.starts_with("shift-") {
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        }
+    } else {
+        Modifiers::default()
+    }
+}
+
+/// Dispatch a left click (move → down → up) at a window-relative point, with
+/// the given keyboard modifiers held (e.g. shift, to test shift-click).
 fn dispatch_click(
     handle: AnyWindowHandle,
     x: f32,
     y: f32,
+    modifiers: Modifiers,
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
     let pos = point(px(x), px(y));
@@ -256,7 +270,7 @@ fn dispatch_click(
             PlatformInput::MouseMove(MouseMoveEvent {
                 position: pos,
                 pressed_button: None,
-                modifiers: Modifiers::default(),
+                modifiers,
             }),
             cx,
         );
@@ -264,7 +278,7 @@ fn dispatch_click(
             PlatformInput::MouseDown(MouseDownEvent {
                 button: MouseButton::Left,
                 position: pos,
-                modifiers: Modifiers::default(),
+                modifiers,
                 click_count: 1,
                 first_mouse: false,
             }),
@@ -274,7 +288,7 @@ fn dispatch_click(
             PlatformInput::MouseUp(MouseUpEvent {
                 button: MouseButton::Left,
                 position: pos,
-                modifiers: Modifiers::default(),
+                modifiers,
                 click_count: 1,
             }),
             cx,
