@@ -25,7 +25,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use std::{fs, process::Command};
+use std::fs;
+#[cfg(all(target_os = "macos", not(feature = "debug-capture")))]
+use std::process::Command;
 
 use gpui::{
     point, px, AnyWindowHandle, AppContext, AsyncApp, Keystroke, Modifiers, MouseButton,
@@ -60,6 +62,24 @@ pub fn init(handle: AnyWindowHandle, cx: &mut gpui::App) {
         return;
     };
     let _ = fs::create_dir_all(&dir);
+    // The control channel can inject keys/clicks and trigger destructive git
+    // actions, so the control dir must be private. Lock it to 0700 and refuse
+    // to start if it stays group/world-accessible (e.g. owned by someone else).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        let private = fs::metadata(&dir)
+            .map(|m| m.permissions().mode() & 0o077 == 0)
+            .unwrap_or(false);
+        if !private {
+            eprintln!(
+                "magritte debug: refusing control dir {} (not private; chmod 700 it)",
+                dir.display()
+            );
+            return;
+        }
+    }
     // Clear any stale files from a previous run.
     let _ = fs::remove_file(dir.join("cmd"));
     let _ = fs::remove_file(dir.join("done"));
@@ -317,7 +337,7 @@ fn char_keystroke(ch: char) -> Keystroke {
 /// window by id so it works even when the window isn't frontmost. If a logical
 /// window size is given, the Retina capture is downscaled to it so that image
 /// pixels map 1:1 to click/dispatch coordinates (points).
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "debug-capture")))]
 fn screenshot(path: &str, logical_size: Option<(f32, f32)>) -> Result<(), String> {
     let id = our_window_id().ok_or("could not find our window id")?;
     let status = Command::new("screencapture")
@@ -346,7 +366,7 @@ fn screenshot(path: &str, logical_size: Option<(f32, f32)>) -> Result<(), String
 
 /// Find the CoreGraphics window number for our process's main window. This
 /// reads only window metadata (no screen-recording permission required).
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "debug-capture")))]
 fn our_window_id() -> Option<i64> {
     use core_foundation::base::TCFType;
     use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
@@ -389,7 +409,7 @@ fn our_window_id() -> Option<i64> {
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(feature = "debug-capture")))]
 fn screenshot(_path: &str, _logical_size: Option<(f32, f32)>) -> Result<(), String> {
     Err("screenshots are only implemented on macOS".into())
 }
