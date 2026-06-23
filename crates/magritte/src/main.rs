@@ -1942,25 +1942,29 @@ impl StatusView {
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
-            let published = cx
+            let branches = cx
                 .background_executor()
-                .spawn(async move { repo.is_published("HEAD").unwrap_or(false) })
+                .spawn(async move { repo.published_branches("HEAD").unwrap_or_default() })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if published {
-                    let verb = match command {
-                        transient::Command::CommitReword => "Reword",
-                        transient::Command::CommitExtend => "Extend",
-                        _ => "Amend",
-                    };
-                    this.confirm = Some((
-                        format!("HEAD is already pushed. {verb} it anyway?"),
-                        Confirm::AmendPushed(command, switches),
-                    ));
-                    cx.notify();
-                } else {
+                if branches.is_empty() {
                     this.proceed_history_rewrite(command, switches, window, cx);
+                    return;
                 }
+                let verb = match command {
+                    transient::Command::CommitReword => "Reword",
+                    transient::Command::CommitExtend => "Extend",
+                    _ => "Amend",
+                };
+                let target = match branches.as_slice() {
+                    [one] => one.clone(),
+                    many => format!("{} remote branches", many.len()),
+                };
+                this.confirm = Some((
+                    format!("This commit has already been pushed to {target}. {verb} it anyway?"),
+                    Confirm::AmendPushed(command, switches),
+                ));
+                cx.notify();
             });
         })
         .detach();

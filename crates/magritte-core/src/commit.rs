@@ -49,12 +49,18 @@ impl Repo {
         Ok(summary(&out.stdout, &out.stderr))
     }
 
-    /// Whether `rev` has already been published — i.e. it's contained in some
-    /// remote-tracking branch. Used to warn before amending/rewording a pushed
-    /// commit (rewriting published history).
-    pub fn is_published(&self, rev: &str) -> Result<bool> {
+    /// Remote-tracking branches that contain `rev` — i.e. where it's already
+    /// been published. Empty means unpushed. Used to warn (naming the branch)
+    /// before amending/rewording a pushed commit (rewriting published history).
+    pub fn published_branches(&self, rev: &str) -> Result<Vec<String>> {
         let out = self.run(["branch", "-r", "--contains", rev])?;
-        Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            // Skip the "origin/HEAD -> origin/main" symbolic-ref line.
+            .filter(|l| !l.is_empty() && !l.contains(" -> "))
+            .map(str::to_string)
+            .collect())
     }
 
     /// Amend HEAD with the staged changes, keeping its message (`--no-edit`).
