@@ -30,6 +30,9 @@ case "$cmd" in
     pkill -f "target/debug/magritte" 2>/dev/null || true
     sleep 0.3
     rm -rf "$DIR"; mkdir -p "$DIR"
+    # Build with `debug-capture` so `shot` can grab the window via offscreen
+    # render (works while the app is backgrounded/occluded). Dev-only feature.
+    ( cd "$ROOT" && cargo build --features debug-capture ) || { echo "build failed"; exit 1; }
     MAGRITTE_DEBUG_DIR="$DIR" "$BIN" "$repo" >"$LOG" 2>&1 &
     pid=$!
     for _ in $(seq 1 60); do
