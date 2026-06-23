@@ -8,10 +8,10 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-/// Default theme names for the light and dark slots.
-pub const DEFAULT_LIGHT_THEME: &str = "Solarized Light";
-pub const DEFAULT_DARK_THEME: &str = "Solarized Dark";
-pub const DEFAULT_FONT: &str = "Menlo";
+/// Default theme names for the light and dark slots (gpui-component's built-in
+/// neutral themes).
+pub const DEFAULT_LIGHT_THEME: &str = "Default Light";
+pub const DEFAULT_DARK_THEME: &str = "Default Dark";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -32,9 +32,6 @@ impl Config {
     }
     pub fn dark_theme(&self) -> &str {
         non_empty(&self.dark_theme, DEFAULT_DARK_THEME)
-    }
-    pub fn font(&self) -> &str {
-        non_empty(&self.font, DEFAULT_FONT)
     }
 }
 
