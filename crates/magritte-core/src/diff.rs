@@ -105,6 +105,24 @@ impl Repo {
         })
     }
 
+    /// Diff every changed path for a source in one call (e.g. `git diff
+    /// --cached` for all staged changes). Used to show the full staged diff in
+    /// the commit editor.
+    pub fn diff_all(&self, source: DiffSource) -> Result<Vec<FileDiff>> {
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--default-prefix",
+            "--find-renames",
+        ];
+        if source == DiffSource::Staged {
+            args.push("--cached");
+        }
+        let out = self.run(args)?;
+        parse_diff(&out.stdout)
+    }
+
     /// Cheap per-file changed-line counts via `git diff --numstat` (no content),
     /// returning `(path, added + removed)`. Used to decide which diffs are small
     /// enough to prefetch. Binary files and renames are omitted (best-effort).
