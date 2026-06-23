@@ -496,12 +496,27 @@ fn apply_appearance(cfg: &config::Config, cx: &mut App) {
     gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
 }
 
+/// Label for the font-picker entry that follows the OS default monospace.
+const SYSTEM_FONT_LABEL: &str = "System Default";
+
+/// The platform's system monospace UI font. On macOS this is the SF Mono-based
+/// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
+/// which Apple does not expose as a normal selectable font family.
+#[cfg(target_os = "macos")]
+fn system_mono_font(_cx: &App) -> SharedString {
+    SharedString::from(".AppleSystemUIFontMonospaced")
+}
+#[cfg(not(target_os = "macos"))]
+fn system_mono_font(cx: &App) -> SharedString {
+    cx.theme().mono_font_family.clone()
+}
+
 /// The monospace font family to render with: the user's configured choice, or
-/// the platform's default monospace UI font (gpui-component's theme mono font,
-/// e.g. Menlo on macOS) when unset.
+/// the platform's system monospace UI font when unset (the "System Default"
+/// font-picker entry, stored as an empty config value so it stays adaptive).
 fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
     if cfg.font.is_empty() {
-        cx.theme().mono_font_family.clone()
+        system_mono_font(cx)
     } else {
         SharedString::from(cfg.font.clone())
     }
@@ -1443,8 +1458,15 @@ impl StatusView {
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(window, cx);
         }
-        let resolved_font = resolve_font(&self.config, cx);
-        let font_ix = pos(&self.mono_fonts, resolved_font.as_ref());
+        // Lead with a "System Default" entry (maps to an empty config value, so
+        // it follows the OS monospace); the rest are concrete families.
+        let mut font_items: Vec<SharedString> = vec![SharedString::from(SYSTEM_FONT_LABEL)];
+        font_items.extend(self.mono_fonts.iter().cloned());
+        let font_ix = if self.config.font.is_empty() {
+            0
+        } else {
+            pos(&font_items, self.config.font.as_str())
+        };
 
         let appearance_items: Vec<SharedString> = APPEARANCE_OPTIONS
             .iter()
@@ -1463,7 +1485,7 @@ impl StatusView {
                 .searchable(true)
         });
         let font = cx.new(|cx| {
-            SelectState::new(SearchableVec::new(self.mono_fonts.clone()), row(font_ix), &mut *window, cx)
+            SelectState::new(SearchableVec::new(font_items), row(font_ix), &mut *window, cx)
                 .searchable(true)
         });
 
@@ -1492,8 +1514,13 @@ impl StatusView {
             }),
             cx.subscribe_in(&font, window, |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                 if let SelectEvent::Confirm(Some(name)) = ev {
-                    this.config.font = name.to_string();
-                    this.font = SharedString::from(name.to_string());
+                    // "System Default" → empty config (adaptive system mono).
+                    this.config.font = if name.as_ref() == SYSTEM_FONT_LABEL {
+                        String::new()
+                    } else {
+                        name.to_string()
+                    };
+                    this.font = resolve_font(&this.config, cx);
                     this.apply_and_save(cx);
                 }
             }),
