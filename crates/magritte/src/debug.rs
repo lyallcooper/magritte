@@ -157,6 +157,19 @@ async fn run_command(
             dispatch_click(handle, x, y, click_modifiers(verb), cx)?;
             Ok(None)
         }
+        "move" => {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("move needs: x y")?;
+            let y: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("move needs: x y")?;
+            dispatch_move(handle, x, y, cx)?;
+            Ok(None)
+        }
         "click-id" | "shift-click-id" => {
             // Force a paint first: when the window is occluded the OS display
             // link is paused, so the target registry would otherwise be stale.
@@ -241,6 +254,23 @@ async fn run_command(
         }
         other => Err(format!("unknown command: {other}")),
     }
+}
+
+/// Dispatch a bare mouse move (no button) to a window-relative point — e.g. to
+/// hover an element and trigger its tooltip.
+fn dispatch_move(handle: AnyWindowHandle, x: f32, y: f32, cx: &mut AsyncApp) -> Result<(), String> {
+    let pos = point(px(x), px(y));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: pos,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Modifiers a click verb implies: the `shift-` prefixed variants hold shift.

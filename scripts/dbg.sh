@@ -13,6 +13,7 @@
 #   scripts/dbg.sh click <x> <y>      click at window-relative point (points, matches shot pixels)
 #   scripts/dbg.sh shift-click-id <id>  shift-click an element by id (extends selection)
 #   scripts/dbg.sh shift-click <x> <y>  shift-click at window-relative point
+#   scripts/dbg.sh move <x> <y>       hover the pointer at a point (e.g. for tooltips)
 #   scripts/dbg.sh sleep <ms>         pause (let a frame paint)
 #
 # Override the control dir with MAGRITTE_DEBUG_DIR (default /tmp/magritte-debug).
@@ -60,12 +61,12 @@ case "$cmd" in
     if [ -f "$DIR/done" ]; then cat "$DIR/done"; rm -f "$DIR/done"; else echo "(timed out waiting for response)"; fi
     ;;
 
-  key|type|shot|sleep|click|click-id|shift-click|shift-click-id|targets)
+  key|type|shot|sleep|click|click-id|shift-click|shift-click-id|move|targets)
     exec "$0" send "$cmd $*"
     ;;
 
   *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
