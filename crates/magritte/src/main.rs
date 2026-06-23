@@ -45,10 +45,12 @@ actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 actions!(magritte, [CtxStage, CtxUnstage, CtxDiscard]);
 use gpui::Subscription;
 use gpui_component::button::{Button, ButtonRounded, ButtonVariants};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
+use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_component::switch::Switch;
 use gpui_component::tag::Tag;
 use gpui_component::{ActiveTheme, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
@@ -341,6 +343,122 @@ fn section_source(section: SectionId) -> Option<DiffSource> {
         SectionId::Unstaged => Some(DiffSource::Unstaged),
         SectionId::Staged => Some(DiffSource::Staged),
     }
+}
+
+/// git convention: keep the commit summary within 50 columns, and wrap the
+/// body at 72.
+const COMMIT_TITLE_LIMIT: usize = 50;
+const COMMIT_BODY_WIDTH: usize = 72;
+
+/// Break a single line into pieces no longer than `width` characters, splitting
+/// at the last space at or before the limit. A word longer than `width` (no
+/// usable space) is left intact on its own piece rather than chopped.
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut rest = line;
+    loop {
+        if rest.chars().count() <= width {
+            pieces.push(rest.to_string());
+            break;
+        }
+        // Last space whose preceding text fits in `width` columns.
+        let split = rest
+            .char_indices()
+            .enumerate()
+            .take_while(|&(ci, _)| ci <= width)
+            .filter(|&(ci, (_, ch))| ch == ' ' && ci > 0)
+            .last()
+            .map(|(_, (bi, _))| bi);
+        match split {
+            Some(bi) => {
+                pieces.push(rest[..bi].to_string());
+                rest = &rest[bi + 1..]; // drop the space we broke on
+            }
+            None => {
+                pieces.push(rest.to_string()); // unbreakable long word
+                break;
+            }
+        }
+    }
+    pieces
+}
+
+/// Auto-fill the commit *body* to `width`: any over-long body line is broken at
+/// word boundaries. The summary (line 0) is never wrapped, and existing line
+/// breaks are preserved (lines are only split, never joined) — so this is safe
+/// to run on every keystroke. Because it only ever turns a space into a
+/// newline, total length and character offsets are preserved.
+fn auto_fill_body(text: &str, width: usize) -> String {
+    let mut out = Vec::new();
+    for (i, line) in text.split('\n').enumerate() {
+        if i == 0 || line.chars().count() <= width {
+            out.push(line.to_string());
+        } else {
+            out.extend(wrap_line(line, width));
+        }
+    }
+    out.join("\n")
+}
+
+/// Reflow the commit *body* to `width`: each blank-line-separated paragraph is
+/// joined into one line then re-wrapped, collapsing runs of whitespace. The
+/// summary (line 0) and blank separator lines are left untouched. Unlike
+/// [`auto_fill_body`], this *re-joins* manually-broken lines, so it's an
+/// explicit action rather than something to run while typing.
+fn reflow_body(text: &str, width: usize) -> String {
+    let mut iter = text.split('\n');
+    let mut out = vec![iter.next().unwrap_or("").to_string()];
+    let body: Vec<&str> = iter.collect();
+    let mut i = 0;
+    while i < body.len() {
+        if body[i].trim().is_empty() {
+            out.push(String::new());
+            i += 1;
+        } else {
+            let start = i;
+            while i < body.len() && !body[i].trim().is_empty() {
+                i += 1;
+            }
+            let collapsed = body[start..i].join(" ");
+            let collapsed = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+            out.extend(wrap_line(&collapsed, width));
+        }
+    }
+    out.join("\n")
+}
+
+/// The UTF-16 column range of the part of the summary (line 0) that overruns
+/// `limit` columns, as `(start, end)` for a diagnostic `Position`. `None` when
+/// the summary fits. Columns are counted in characters; the start is the
+/// UTF-16 offset of the `limit`-th character.
+fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
+    let title = text.split('\n').next().unwrap_or("");
+    if title.chars().count() <= limit {
+        return None;
+    }
+    let start: usize = title.chars().take(limit).map(char::len_utf16).sum();
+    let end: usize = title.chars().map(char::len_utf16).sum();
+    Some((start as u32, end as u32))
+}
+
+/// Convert a UTF-16 offset into `text` to a 0-based line/column [`Position`],
+/// for restoring the cursor after a programmatic edit.
+fn utf16_offset_to_position(text: &str, offset: usize) -> Position {
+    let (mut line, mut col, mut seen) = (0u32, 0u32, 0usize);
+    for ch in text.chars() {
+        if seen >= offset {
+            break;
+        }
+        let w = ch.len_utf16();
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += w as u32;
+        }
+        seen += w;
+    }
+    Position::new(line, col)
 }
 
 /// The repo-relative path of the file a target belongs to.
@@ -1790,6 +1908,71 @@ impl StatusView {
         cx.notify();
     }
 
+    /// React to an edit in the commit message: auto-wrap the body (if enabled)
+    /// and refresh the over-50 summary warning (if enabled). Reads the toggles
+    /// live from config so the settings screen takes effect without reopening.
+    fn on_editor_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.editor.as_ref().map(|e| e.state.clone()) else {
+            return;
+        };
+        let wrap = self.config.commit_body_wrap;
+        let ruler = self.config.commit_title_ruler;
+        state.update(cx, |s, cx| {
+            if wrap {
+                let value = s.value().to_string();
+                let wrapped = auto_fill_body(&value, COMMIT_BODY_WIDTH);
+                if wrapped != value {
+                    // Auto-fill only turns spaces into newlines, so the cursor's
+                    // UTF-16 offset is unchanged — recompute its line/column in
+                    // the rewrapped text and restore it.
+                    let offset = s.cursor();
+                    s.set_value(wrapped.clone(), window, cx);
+                    s.set_cursor_position(utf16_offset_to_position(&wrapped, offset), window, cx);
+                }
+            }
+            // Diagnostics carry their own copy of the text for position math;
+            // reset it to the current value, then flag any summary overflow.
+            let rope = s.text().clone();
+            if let Some(diags) = s.diagnostics_mut() {
+                diags.reset(&rope);
+                if ruler {
+                    if let Some((start, end)) =
+                        title_overflow(&rope.to_string(), COMMIT_TITLE_LIMIT)
+                    {
+                        diags.push(
+                            Diagnostic::new(
+                                Position::new(0, start)..Position::new(0, end),
+                                "Summary longer than 50 characters",
+                            )
+                            .with_severity(DiagnosticSeverity::Warning),
+                        );
+                    }
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    /// Reflow the commit body to 72 columns (the `alt-q` key / "reflow" button).
+    /// Unlike auto-wrap, this rejoins manually-broken lines before re-wrapping,
+    /// so it tidies a paragraph you've been editing.
+    fn reflow_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.editor.as_ref().map(|e| e.state.clone()) else {
+            return;
+        };
+        state.update(cx, |s, cx| {
+            let value = s.value().to_string();
+            let reflowed = reflow_body(&value, COMMIT_BODY_WIDTH);
+            if reflowed != value {
+                let end = reflowed.encode_utf16().count();
+                s.set_value(reflowed.clone(), window, cx);
+                s.set_cursor_position(utf16_offset_to_position(&reflowed, end), window, cx);
+            }
+        });
+        // Refresh the summary warning against the reflowed text.
+        self.on_editor_changed(window, cx);
+    }
+
     fn open_editor(
         &mut self,
         mode: CommitMode,
@@ -1798,22 +1981,28 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         // Return inserts a newline; Cmd/Ctrl+Return submits (reported as a
-        // PressEnter with secondary=true).
+        // PressEnter with secondary=true). We use code-editor mode (with the
+        // grammar-less "text" language, so no syntax coloring) purely to get its
+        // diagnostics layer, which we use to flag the over-50 summary; gutter,
+        // line numbers, and folding are turned off so it reads as a plain box.
         let state = cx.new(|cx| {
             InputState::new(window, cx)
-                .multi_line(true)
+                .code_editor("text")
                 .submit_on_enter(false)
+                .line_number(false)
+                .folding(false)
         });
         let sub = cx.subscribe_in(
             &state,
             window,
-            |this, _state, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter {
+            |this, _state, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter {
                     secondary: true, ..
-                } = ev
-                {
-                    this.submit_editor(window, cx);
-                }
+                } => this.submit_editor(window, cx),
+                // Re-wrap the body and refresh the summary-length warning as the
+                // message is edited.
+                InputEvent::Change => this.on_editor_changed(window, cx),
+                _ => {}
             },
         );
         // Focus the input so typing goes straight into it.
@@ -1831,7 +2020,7 @@ impl StatusView {
         // hasn't started typing.
         if matches!(mode, CommitMode::Amend | CommitMode::Reword) {
             if let Some(repo) = self.repo.clone() {
-                cx.spawn_in(window, async move |_this, cx| {
+                cx.spawn_in(window, async move |this, cx| {
                     let msg = cx
                         .background_executor()
                         .spawn(async move { repo.head_message().unwrap_or_default() })
@@ -1842,6 +2031,11 @@ impl StatusView {
                                 s.set_value(msg, window, cx);
                             }
                         });
+                    });
+                    // set_value doesn't emit Change, so update the summary
+                    // warning for the pre-filled message ourselves.
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.on_editor_changed(window, cx);
                     });
                 })
                 .detach();
@@ -1968,6 +2162,11 @@ impl StatusView {
         if event.keystroke.key == "escape" {
             cx.stop_propagation();
             self.cancel_editor(window, cx);
+        } else if event.keystroke.key == "q" && event.keystroke.modifiers.alt {
+            // alt-q reflows the body (Emacs fill-paragraph heritage); capture it
+            // so the Input doesn't insert the character.
+            cx.stop_propagation();
+            self.reflow_editor(window, cx);
         }
     }
 
@@ -2670,6 +2869,13 @@ impl StatusView {
                         Self::submit_editor,
                     ))
                     .child(self.key_action(
+                        "editor-reflow",
+                        "alt-q",
+                        "reflow",
+                        view,
+                        Self::reflow_editor,
+                    ))
+                    .child(self.key_action(
                         "editor-cancel",
                         "esc",
                         "cancel",
@@ -2860,6 +3066,50 @@ impl StatusView {
                     .search_placeholder("Search fonts")
                     .into_any_element(),
             ))
+            .child(field(
+                "commit-title-ruler",
+                "Commit summary ruler",
+                self.config_switch(
+                    "commit-title-ruler",
+                    self.config.commit_title_ruler,
+                    view,
+                    |cfg, on| cfg.commit_title_ruler = on,
+                ),
+            ))
+            .child(field(
+                "commit-body-wrap",
+                "Commit body auto-wrap",
+                self.config_switch(
+                    "commit-body-wrap",
+                    self.config.commit_body_wrap,
+                    view,
+                    |cfg, on| cfg.commit_body_wrap = on,
+                ),
+            ))
+    }
+
+    /// A settings toggle bound to a `bool` field of the config: flips the field
+    /// and persists on click. (Mouse-driven, like the rest of the settings
+    /// screen; not part of the Tab focus ring, which cycles the dropdowns.)
+    fn config_switch(
+        &self,
+        id: &'static str,
+        checked: bool,
+        view: &Entity<Self>,
+        set: fn(&mut config::Config, bool),
+    ) -> AnyElement {
+        let view = view.clone();
+        Switch::new(id)
+            .checked(checked)
+            .on_click(move |on, _window, cx| {
+                let on = *on;
+                view.update(cx, |this, cx| {
+                    set(&mut this.config, on);
+                    config::save(&this.config);
+                    cx.notify();
+                });
+            })
+            .into_any_element()
     }
 
     fn render_row(&self, ix: usize, view: &Entity<Self>) -> AnyElement {
@@ -3719,6 +3969,76 @@ mod tests {
     fn untracked_files_carry_no_status_word() {
         let untracked = entry(EntryKind::Untracked, Change::Unmodified, Change::Modified);
         assert_eq!(status_label(&untracked, SectionId::Untracked), "");
+    }
+
+    #[test]
+    fn title_overflow_flags_only_past_the_limit() {
+        // Within the limit: no overflow.
+        assert_eq!(title_overflow("a short summary", 50), None);
+        // Exactly at the limit: still fine.
+        let fifty = "x".repeat(50);
+        assert_eq!(title_overflow(&fifty, 50), None);
+        // One over: range covers just the overflow (col 50..51).
+        let fifty_one = "x".repeat(51);
+        assert_eq!(title_overflow(&fifty_one, 50), Some((50, 51)));
+        // Only the first line (summary) counts; a long body doesn't trigger it.
+        assert_eq!(title_overflow("ok\n\nbody line", 50), None);
+    }
+
+    #[test]
+    fn auto_fill_wraps_body_but_not_the_summary() {
+        // A summary well past the width is left intact.
+        let long_title = "w ".repeat(60); // 120 chars, all on line 0
+        let filled = auto_fill_body(long_title.trim_end(), 72);
+        assert_eq!(filled.lines().count(), 1, "summary must not wrap");
+
+        // A long body line wraps at a space, each piece within the width.
+        let text = format!("summary\n\n{}", "word ".repeat(30).trim_end());
+        let filled = auto_fill_body(&text, 72);
+        let body_lines: Vec<&str> = filled.lines().skip(2).collect();
+        assert!(body_lines.len() > 1, "long body line should wrap");
+        assert!(body_lines.iter().all(|l| l.chars().count() <= 72));
+        // Wrapping only splits — joining the pieces with spaces restores it.
+        assert_eq!(body_lines.join(" "), "word ".repeat(30).trim_end());
+    }
+
+    #[test]
+    fn auto_fill_preserves_offsets_and_is_idempotent() {
+        let text = format!("summary\n\n{}", "word ".repeat(30).trim_end());
+        let once = auto_fill_body(&text, 72);
+        // Space->newline keeps total length identical (offset-preserving).
+        assert_eq!(once.chars().count(), text.chars().count());
+        // Running it again changes nothing (already wrapped).
+        assert_eq!(auto_fill_body(&once, 72), once);
+    }
+
+    #[test]
+    fn auto_fill_leaves_unbreakable_long_words() {
+        let word = "x".repeat(100);
+        let text = format!("summary\n\n{word}");
+        let filled = auto_fill_body(&text, 72);
+        assert_eq!(filled.lines().nth(2), Some(word.as_str()));
+    }
+
+    #[test]
+    fn reflow_rejoins_then_rewraps_paragraphs() {
+        // Two short manually-broken lines in one paragraph rejoin and re-wrap.
+        let text = "summary\n\nthese are\nseveral short\nlines";
+        let reflowed = reflow_body(text, 72);
+        assert_eq!(reflowed, "summary\n\nthese are several short lines");
+
+        // A blank line separates paragraphs, which stay separate.
+        let text = "summary\n\npara one here\n\npara two here";
+        let reflowed = reflow_body(text, 72);
+        assert_eq!(reflowed, "summary\n\npara one here\n\npara two here");
+    }
+
+    #[test]
+    fn utf16_offset_to_position_tracks_lines() {
+        assert_eq!(utf16_offset_to_position("abc", 2), Position::new(0, 2));
+        // Offset just past the first newline -> start of line 1.
+        assert_eq!(utf16_offset_to_position("ab\ncd", 3), Position::new(1, 0));
+        assert_eq!(utf16_offset_to_position("ab\ncd", 5), Position::new(1, 2));
     }
 
     #[test]
