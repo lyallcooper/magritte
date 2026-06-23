@@ -1310,6 +1310,21 @@ impl StatusView {
         .detach();
     }
 
+    /// Confirm a pending destructive action (the `y` key or the confirm bar's
+    /// "yes" button).
+    fn confirm_yes(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, action)) = self.confirm.take() {
+            self.run_action(action, cx);
+        }
+        cx.notify();
+    }
+
+    /// Cancel a pending destructive action (any other key, or the "no" button).
+    fn confirm_no(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm = None;
+        cx.notify();
+    }
+
     // --- Popups (transients + help) --------------------------------------
 
     fn open_transient(&mut self, def: Transient, cx: &mut Context<Self>) {
@@ -1693,12 +1708,10 @@ impl StatusView {
         // A pending discard confirmation captures the next key.
         if self.confirm.is_some() {
             if key == "y" {
-                let action = self.confirm.take().unwrap().1;
-                self.run_action(action, cx);
+                self.confirm_yes(window, cx);
             } else {
-                self.confirm = None;
+                self.confirm_no(window, cx);
             }
-            cx.notify();
             return;
         }
 
@@ -2421,12 +2434,22 @@ impl Render for StatusView {
                 Popup::Dispatch(def) => self.render_transient(def, None, &view),
             });
         } else if let Some((prompt, _)) = &self.confirm {
-            root = root.child(status_bar(
-                prompt.clone(),
-                self.palette.banner,
-                self.palette.fg,
-                self.palette.border,
-            ));
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(self.palette.border)
+                    .bg(self.palette.banner)
+                    .text_color(self.palette.fg)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(SharedString::from(prompt.clone()))
+                    .child(self.key_action("confirm-yes", "y", "yes", &view, Self::confirm_yes))
+                    .child(self.key_action("confirm-no", "n", "no", &view, Self::confirm_no)),
+            );
         } else if self.visual.is_some() {
             root = root.child(status_bar(
                 "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel".to_string(),
@@ -2671,20 +2694,20 @@ fn status_bar(text: String, bg: Hsla, fg: Hsla, border: Hsla) -> gpui::Div {
 
 fn describe_discard(action: &Action) -> String {
     match action {
-        Action::DiscardUntracked(p) => format!("Delete untracked {p}?  (y/n)"),
-        Action::DiscardTracked(p) => format!("Discard unstaged changes to {p}?  (y/n)"),
-        Action::DiscardHunk(f, _) => format!("Discard hunk in {}?  (y/n)", f.display_path()),
+        Action::DiscardUntracked(p) => format!("Delete untracked {p}?"),
+        Action::DiscardTracked(p) => format!("Discard unstaged changes to {p}?"),
+        Action::DiscardHunk(f, _) => format!("Discard hunk in {}?", f.display_path()),
         Action::DiscardLines(f, _, l) => {
-            format!("Discard {} line(s) in {}?  (y/n)", l.len(), f.display_path())
+            format!("Discard {} line(s) in {}?", l.len(), f.display_path())
         }
         Action::DiscardStagedFile(p) => {
-            format!("Discard staged {p} (reverts index and worktree to HEAD)?  (y/n)")
+            format!("Discard staged {p} (reverts index and worktree to HEAD)?")
         }
         Action::DiscardStagedHunk(f, _) => {
-            format!("Discard staged hunk in {} (index + worktree)?  (y/n)", f.display_path())
+            format!("Discard staged hunk in {} (index + worktree)?", f.display_path())
         }
         Action::DiscardStagedLines(f, _, l) => format!(
-            "Discard {} staged line(s) in {} (index + worktree)?  (y/n)",
+            "Discard {} staged line(s) in {} (index + worktree)?",
             l.len(),
             f.display_path()
         ),
@@ -2692,15 +2715,15 @@ fn describe_discard(action: &Action) -> String {
             let n: usize = selections.iter().map(|(_, l)| l.len()).sum();
             let staged = matches!(kind, RegionKind::DiscardStaged);
             format!(
-                "Discard {n} line(s) in {}{}?  (y/n)",
+                "Discard {n} line(s) in {}{}?",
                 file.display_path(),
                 if staged { " (index + worktree)" } else { "" }
             )
         }
         Action::Batch(actions) => {
-            format!("Discard selection across {} files?  (y/n)", actions.len())
+            format!("Discard selection across {} files?", actions.len())
         }
-        _ => "Discard?  (y/n)".to_string(),
+        _ => "Discard?".to_string(),
     }
 }
 
