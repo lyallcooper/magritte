@@ -123,6 +123,30 @@ impl Repo {
         parse_diff(&out.stdout)
     }
 
+    /// The diff a single commit introduced (its changes vs. its first parent),
+    /// for previewing the commit being reworded. Root commits (no parent) are
+    /// diffed against the empty tree.
+    pub fn diff_commit(&self, rev: &str) -> Result<Vec<FileDiff>> {
+        // git's well-known empty-tree object, for diffing a parentless commit.
+        const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        let parent = format!("{rev}^");
+        let base = if self.succeeds(["rev-parse", "--verify", "--quiet", &parent])? {
+            parent
+        } else {
+            EMPTY_TREE.to_string()
+        };
+        let out = self.run([
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--default-prefix",
+            "--find-renames",
+            &base,
+            rev,
+        ])?;
+        parse_diff(&out.stdout)
+    }
+
     /// Cheap per-file changed-line counts via `git diff --numstat` (no content),
     /// returning `(path, added + removed)`. Used to decide which diffs are small
     /// enough to prefetch. Binary files and renames are omitted (best-effort).
