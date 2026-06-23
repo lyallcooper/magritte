@@ -140,7 +140,12 @@ impl Repo {
 pub fn parse_diff(bytes: &[u8]) -> Result<Vec<FileDiff>> {
     let text = String::from_utf8_lossy(bytes);
     let mut files = Vec::new();
-    let mut lines = text.lines().peekable();
+    // Split on '\n' manually rather than `str::lines()`: `lines()` strips a
+    // trailing '\r', which would silently drop the carriage return from the
+    // content of CRLF files and corrupt reconstructed patches. We trim a single
+    // trailing newline first so we don't emit a spurious empty final line.
+    let body = text.strip_suffix('\n').unwrap_or(&text);
+    let mut lines = body.split('\n').peekable();
 
     while let Some(&line) = lines.peek() {
         if line.starts_with("diff --git ") {

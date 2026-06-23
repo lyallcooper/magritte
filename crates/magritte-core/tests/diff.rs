@@ -176,6 +176,41 @@ fn line_counts_report_changed_lines() {
     assert_eq!(map.get("b.txt"), Some(&2));
 }
 
+/// CRLF content lines must keep their `\r` so reconstructed patches preserve
+/// the original line endings (a `str::lines()` split would drop it).
+#[test]
+fn parser_preserves_crlf_in_content() {
+    let raw = concat!(
+        "diff --git a/f.txt b/f.txt\n",
+        "index 1111111..2222222 100644\n",
+        "--- a/f.txt\n",
+        "+++ b/f.txt\n",
+        "@@ -1,2 +1,2 @@\n",
+        " keep\r\n",
+        "-old\r\n",
+        "+new\r\n",
+    );
+    let files = parse_diff(raw.as_bytes()).unwrap();
+    let hunk = &files[0].hunks[0];
+    let added = hunk
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Added)
+        .unwrap();
+    let context = hunk
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Context)
+        .unwrap();
+    assert_eq!(added.content, "new\r", "carriage return must be preserved");
+    assert_eq!(context.content, "keep\r");
+    // No spurious trailing empty context line from the final newline.
+    assert!(!hunk
+        .lines
+        .iter()
+        .any(|l| l.kind == LineKind::Context && l.content.is_empty()));
+}
+
 #[test]
 fn parser_detects_binary() {
     let raw = "\
