@@ -227,6 +227,9 @@ const INDENT_STEP: f32 = 16.0;
 const ROW_PAD_LEFT: f32 = 8.0;
 /// Fixed width (points) of the status-word column on file rows.
 const STATUS_COL_WIDTH: f32 = 84.0;
+/// Group name shared by keycap+label button rows so hovering a row highlights
+/// only its label (via `group_hover`), not its keycap.
+const KBD_ROW_GROUP: &str = "kbd-row";
 
 /// After a refresh, warm at most this many file diffs in the background...
 const PREFETCH_FILE_CAP: usize = 16;
@@ -493,6 +496,17 @@ fn apply_appearance(cfg: &config::Config, cx: &mut App) {
     gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
 }
 
+/// The monospace font family to render with: the user's configured choice, or
+/// the platform's default monospace UI font (gpui-component's theme mono font,
+/// e.g. Menlo on macOS) when unset.
+fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
+    if cfg.font.is_empty() {
+        cx.theme().mono_font_family.clone()
+    } else {
+        SharedString::from(cfg.font.clone())
+    }
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -542,7 +556,7 @@ impl StatusView {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
-        let font = SharedString::from(config.font().to_string());
+        let font = resolve_font(&config, cx);
 
         // Sections are expanded by default; individual files start collapsed,
         // so opening a large repo loads no diffs until a file is expanded.
@@ -627,7 +641,7 @@ impl StatusView {
     /// update the font.
     fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         self.config = cfg;
-        self.font = SharedString::from(self.config.font().to_string());
+        self.font = resolve_font(&self.config, cx);
         self.reapply_theme(cx);
     }
 
@@ -1429,7 +1443,8 @@ impl StatusView {
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(window, cx);
         }
-        let font_ix = pos(&self.mono_fonts, self.config.font());
+        let resolved_font = resolve_font(&self.config, cx);
+        let font_ix = pos(&self.mono_fonts, resolved_font.as_ref());
 
         let appearance_items: Vec<SharedString> = APPEARANCE_OPTIONS
             .iter()
@@ -1798,6 +1813,18 @@ impl StatusView {
     /// Render a popup (command transient or the `?` help menu) as a bottom
     /// panel. `state` is `None` for the help menu, which has no toggled
     /// switches and no pending-dash prefix.
+    /// A button label that gets a background highlight only when its containing
+    /// [`KBD_ROW_GROUP`] row is hovered — so mousing over a keycap+label button
+    /// highlights the text, not the keycap.
+    fn hover_label(&self, text: &str, color: Hsla) -> gpui::Div {
+        div()
+            .px_1()
+            .rounded(px(3.0))
+            .text_color(color)
+            .group_hover(KBD_ROW_GROUP, |s| s.bg(self.palette.visual))
+            .child(SharedString::from(text.to_string()))
+    }
+
     fn render_transient(
         &self,
         def: &Transient,
@@ -1844,7 +1871,7 @@ impl StatusView {
                             .px_1()
                             .rounded(px(4.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(self.palette.visual))
+                            .group(KBD_ROW_GROUP)
                             .child(track_target(sw.key))
                             .child(switch_chip(
                                 sw.key,
@@ -1852,11 +1879,7 @@ impl StatusView {
                                 self.palette.removed,
                                 pending_dash,
                             ))
-                            .child(
-                                div()
-                                    .text_color(self.palette.fg)
-                                    .child(SharedString::from(sw.description)),
-                            )
+                            .child(self.hover_label(sw.description, self.palette.fg))
                             .child(
                                 div()
                                     .flex()
@@ -1884,10 +1907,10 @@ impl StatusView {
                             .px_1()
                             .rounded(px(4.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(self.palette.visual))
+                            .group(KBD_ROW_GROUP)
                             .child(track_target(a.key))
                             .child(key_chip(a.key, self.palette.dim))
-                            .child(SharedString::from(a.description))
+                            .child(self.hover_label(a.description, self.palette.fg))
                             .on_click(move |_, window, cx: &mut App| {
                                 view.update(cx, |v, vcx| {
                                     v.click_suffix(key.clone(), false, window, vcx)
@@ -1908,14 +1931,10 @@ impl StatusView {
                             .px_1()
                             .rounded(px(4.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(self.palette.visual))
+                            .group(KBD_ROW_GROUP)
                             .child(track_target(i.keys))
                             .child(self.key_tokens(i.keys))
-                            .child(
-                                div()
-                                    .text_color(self.palette.fg)
-                                    .child(SharedString::from(i.description)),
-                            )
+                            .child(self.hover_label(i.description, self.palette.fg))
                             .on_click(move |_, window, cx: &mut App| {
                                 view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
                             })
@@ -1980,10 +1999,10 @@ impl StatusView {
             .px_1()
             .rounded(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(self.palette.visual))
+            .group(KBD_ROW_GROUP)
             .child(track_target(id))
             .child(key_chip(key, self.palette.dim))
-            .child(div().text_color(self.palette.dim).child(SharedString::from(label)))
+            .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| action(v, window, vcx));
             })
@@ -2108,10 +2127,12 @@ impl StatusView {
             .w_full()
             .when(clickable, |el| el.cursor_pointer())
             .pl(px(ROW_PAD_LEFT + row.indent as f32 * INDENT_STEP));
+        // In visual mode the whole region — including the current line — uses
+        // the region color, so the cursor line doesn't stand out from it.
+        // Otherwise the current line gets the selection accent.
         if in_region {
             el = el.bg(self.palette.visual);
-        }
-        if selected {
+        } else if selected {
             el = el.bg(self.palette.selection);
         }
 
