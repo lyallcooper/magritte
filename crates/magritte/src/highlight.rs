@@ -256,9 +256,21 @@ mod tests {
     }
 }
 
+/// A diff larger than this (total lines across hunks) is rendered as plain
+/// text rather than syntax-highlighted, so a huge file never blocks the UI
+/// thread parsing it. Highlighting runs in the foreground (the gpui-component
+/// tree-sitter highlighter isn't trivially `Send`), so a cap is how we keep
+/// expanding a big file responsive.
+const MAX_HIGHLIGHT_LINES: usize = 2000;
+
 /// Highlight every line of a file diff. `default` is the fallback text color
-/// for unstyled spans (context, gaps between tokens).
+/// for unstyled spans (context, gaps between tokens). Returns an empty map for
+/// diffs over [`MAX_HIGHLIGHT_LINES`], so the caller falls back to plain text.
 pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> FileHighlights {
+    let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+    if total_lines > MAX_HIGHLIGHT_LINES {
+        return FileHighlights::new();
+    }
     let theme = cx.theme();
     let hl_theme = &theme.highlight_theme;
     let mut highlighter = SyntaxHighlighter::new(lang);

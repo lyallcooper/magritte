@@ -77,6 +77,8 @@ enum CommitDiffRow {
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
     Line { kind: LineKind, spans: Vec<Span> },
+    /// A dim status note (e.g. when the staged diff couldn't be loaded).
+    Note(String),
 }
 
 /// An open transient popup and the switches toggled on within it.
@@ -689,7 +691,12 @@ struct StatusView {
 }
 
 impl StatusView {
-    fn new(start_dir: Option<PathBuf>, config: config::Config, cx: &mut Context<Self>) -> Self {
+    fn new(
+        start_dir: Option<PathBuf>,
+        config: config::Config,
+        startup_warning: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let root = start_dir
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
@@ -725,7 +732,7 @@ impl StatusView {
             font,
             config,
             mono_fonts: Vec::new(),
-            status_message: None,
+            status_message: startup_warning,
             confirm: None,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -1778,20 +1785,35 @@ impl StatusView {
             let files = cx
                 .background_executor()
                 .spawn(async move {
-                    let diffs = repo.diff_all(DiffSource::Staged).unwrap_or_default();
-                    diffs
-                        .into_iter()
-                        .map(|d| {
-                            let (head, tail) = file_head_tail(&repo.workdir().join(d.display_path()));
-                            let lang = highlight::detect_language(d.display_path(), &head, &tail);
-                            (d, lang)
-                        })
-                        .collect::<Vec<_>>()
+                    match repo.diff_all(DiffSource::Staged) {
+                        Ok(diffs) => {
+                            let mapped = diffs
+                                .into_iter()
+                                .map(|d| {
+                                    let (head, tail) =
+                                        file_head_tail(&repo.workdir().join(d.display_path()));
+                                    let lang =
+                                        highlight::detect_language(d.display_path(), &head, &tail);
+                                    (d, lang)
+                                })
+                                .collect::<Vec<_>>();
+                            (mapped, None)
+                        }
+                        Err(e) => (Vec::new(), Some(e.to_string())),
+                    }
                 })
                 .await;
+            let (files, error) = files;
             this.update(cx, |this, cx| {
                 if this.editor.is_none() {
                     return; // editor closed before the diff loaded
+                }
+                if let Some(err) = error {
+                    if let Some(ed) = this.editor.as_mut() {
+                        ed.diff = vec![CommitDiffRow::Note(format!("staged diff unavailable: {err}"))];
+                    }
+                    cx.notify();
+                    return;
                 }
                 let default = cx.theme().foreground;
                 let (fg, dim) = (this.palette.fg, this.palette.dim);
@@ -2527,6 +2549,10 @@ impl StatusView {
                 .into_any_element(),
             CommitDiffRow::Hunk(text) => base
                 .text_color(self.palette.hunk)
+                .child(SharedString::from(text.clone()))
+                .into_any_element(),
+            CommitDiffRow::Note(text) => base
+                .text_color(self.palette.dim)
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
             CommitDiffRow::Line { kind, spans } => {
@@ -3348,7 +3374,7 @@ fn main() {
         register_bundled_themes(cx);
         // Apply the saved appearance/themes. Theme::change first ensures the
         // Theme global exists so apply_appearance can set its slots.
-        let cfg = config::load();
+        let (cfg, cfg_warning) = config::load_reporting();
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
         apply_appearance(&cfg, cx);
         // Standard macOS app shortcuts. Quit is global; Close Window runs on
@@ -3393,7 +3419,9 @@ fn main() {
         cx.spawn(async move |cx| {
             let window = cx
                 .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| StatusView::new(start_dir.clone(), cfg.clone(), cx));
+                    let view = cx.new(|cx| {
+                        StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx)
+                    });
                     // The window's root must be a gpui-component Root (provides
                     // theming, overlays, and the component context).
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
