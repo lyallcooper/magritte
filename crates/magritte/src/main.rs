@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
     FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, MouseButton, ParentElement, Render, SharedString,
+    KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, TitlebarOptions, UniformListScrollHandle, Window,
     WindowAppearance, WindowBounds, WindowOptions,
 };
@@ -569,6 +569,9 @@ struct StatusView {
     /// Row where a left-button drag began, while the button is held. Dragging
     /// across rows turns into a visual selection (mouse equivalent of `v`).
     drag_anchor: Option<usize>,
+    /// Set by a shift-click mouse-down so the following click extends the
+    /// selection (and doesn't toggle the row's fold).
+    shift_click: bool,
     generation: u64,
     pending_g: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
@@ -628,6 +631,7 @@ impl StatusView {
             selected: 0,
             visual: None,
             drag_anchor: None,
+            shift_click: false,
             generation: 0,
             pending_g: false,
             popup: None,
@@ -2976,16 +2980,28 @@ impl StatusView {
                     }
                 })
                 // Click-and-drag selects a range, like pressing `v` and moving.
+                // Shift-click extends a selection from the current cursor (or
+                // the existing anchor) to the clicked row, like a list widget.
                 .on_mouse_down(MouseButton::Left, {
                     let view = view.clone();
-                    move |_, _window, cx: &mut App| {
+                    move |ev: &MouseDownEvent, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.rows.get(ix).is_some_and(|r| r.selectable) {
+                            if !v.rows.get(ix).is_some_and(|r| r.selectable) {
+                                return;
+                            }
+                            if ev.modifiers.shift {
+                                let anchor = v.visual.unwrap_or(v.selected);
+                                v.visual = (ix != anchor).then_some(anchor);
+                                v.selected = ix;
+                                v.drag_anchor = None;
+                                v.shift_click = true;
+                            } else {
                                 v.drag_anchor = Some(ix);
                                 v.visual = None;
                                 v.selected = ix;
-                                vcx.notify();
+                                v.shift_click = false;
                             }
+                            vcx.notify();
                         });
                     }
                 })
@@ -3060,6 +3076,13 @@ impl StatusView {
 
     /// Mouse click on a status row: select it, and toggle its fold if foldable.
     fn click_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        // A shift-click already set up the extended selection in `on_mouse_down`;
+        // don't also toggle the row's fold.
+        if self.shift_click {
+            self.shift_click = false;
+            cx.notify();
+            return;
+        }
         let Some(row) = self.rows.get(ix) else {
             return;
         };
