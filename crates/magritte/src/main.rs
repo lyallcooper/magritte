@@ -59,8 +59,23 @@ struct CommitEditor {
     state: Entity<InputState>,
     mode: CommitMode,
     args: Vec<String>,
+    /// The staged diff being committed, flattened for read-only display below
+    /// the message (magit's commit buffer). Empty until loaded, and left empty
+    /// for reword (which commits no tree change).
+    diff: Vec<CommitDiffRow>,
+    diff_scroll: UniformListScrollHandle,
     /// Kept alive so the PressEnter subscription stays active.
     _sub: Subscription,
+}
+
+/// One flattened row of the commit editor's staged-diff preview.
+enum CommitDiffRow {
+    /// A file header (the path).
+    File(String),
+    /// A hunk header (`@@ … @@`).
+    Hunk(String),
+    /// A diff line: its kind plus syntax-highlighted (or fallback) content.
+    Line { kind: LineKind, spans: Vec<Span> },
 }
 
 /// An open transient popup and the switches toggled on within it.
@@ -1470,9 +1485,75 @@ impl StatusView {
             state,
             mode,
             args,
+            diff: Vec::new(),
+            diff_scroll: UniformListScrollHandle::new(),
             _sub: sub,
         });
+        // Show the staged diff being committed. Reword commits no tree change,
+        // so its diff stays empty.
+        if matches!(mode, CommitMode::Create | CommitMode::Amend) {
+            self.load_commit_diff(cx);
+        }
         cx.notify();
+    }
+
+    /// Load the staged diff in the background and flatten it (with syntax
+    /// highlighting) into the open editor's `diff` for read-only preview.
+    fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let files = cx
+                .background_executor()
+                .spawn(async move {
+                    let diffs = repo.diff_all(DiffSource::Staged).unwrap_or_default();
+                    diffs
+                        .into_iter()
+                        .map(|d| {
+                            let (head, tail) = file_head_tail(&repo.workdir().join(d.display_path()));
+                            let lang = highlight::detect_language(d.display_path(), &head, &tail);
+                            (d, lang)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.editor.is_none() {
+                    return; // editor closed before the diff loaded
+                }
+                let default = cx.theme().foreground;
+                let (fg, dim) = (this.palette.fg, this.palette.dim);
+                let mut rows = Vec::new();
+                for (diff, lang) in &files {
+                    rows.push(CommitDiffRow::File(diff.display_path().to_string()));
+                    let hl = match lang {
+                        Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),
+                        _ => None,
+                    };
+                    for (hi, hunk) in diff.hunks.iter().enumerate() {
+                        rows.push(CommitDiffRow::Hunk(hunk_header_text(hunk)));
+                        for (li, line) in hunk.lines.iter().enumerate() {
+                            let spans = hl
+                                .as_ref()
+                                .and_then(|h| h.get(&(hi, li)))
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    let color = if line.kind == LineKind::NoNewline { dim } else { fg };
+                                    vec![(line.content.clone(), color)]
+                                });
+                            rows.push(CommitDiffRow::Line { kind: line.kind, spans });
+                        }
+                    }
+                }
+                if let Some(ed) = this.editor.as_mut() {
+                    ed.diff = rows;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Capture-phase handler: Escape cancels the editor. (Enter is consumed by
@@ -2102,7 +2183,7 @@ impl StatusView {
             CommitMode::Reword => "Reword commit",
         };
 
-        div()
+        let root = div()
             .flex()
             .flex_col()
             .flex_grow(1.0)
@@ -2121,8 +2202,83 @@ impl StatusView {
                     )
                     .child(self.key_action("editor-commit", "cmd-enter", "commit", view, Self::submit_editor))
                     .child(self.key_action("editor-cancel", "esc", "cancel", view, Self::cancel_editor)),
+            );
+
+        // With a staged diff to review, the message takes a fixed band at the
+        // top and the diff fills the rest (scrollable); otherwise the message
+        // fills the window.
+        if ed.diff.is_empty() {
+            root.child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
+        } else {
+            root.child(div().h(px(176.0)).w_full().child(Input::new(&ed.state).h_full()))
+                .child(self.render_commit_diff(ed, view))
+        }
+    }
+
+    /// The read-only, scrollable staged-diff preview shown below the message.
+    fn render_commit_diff(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
+        let count = ed.diff.len();
+        div()
+            .relative()
+            .w_full()
+            .flex_grow(1.0)
+            .border_t_1()
+            .border_color(self.palette.border)
+            .child(
+                uniform_list("commit-diff", count, {
+                    let view = view.clone();
+                    move |range, _window, cx| {
+                        let this = view.read(cx);
+                        match this.editor.as_ref() {
+                            Some(ed) => range
+                                .map(|ix| this.render_commit_diff_row(&ed.diff[ix]))
+                                .collect::<Vec<_>>(),
+                            None => Vec::new(),
+                        }
+                    }
+                })
+                .track_scroll(&ed.diff_scroll)
+                .size_full()
+                .py_1(),
             )
-            .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
+            .vertical_scrollbar(&ed.diff_scroll)
+    }
+
+    fn render_commit_diff_row(&self, row: &CommitDiffRow) -> AnyElement {
+        let base = div().h(px(ROW_HEIGHT)).w_full().px_2().flex().items_center();
+        match row {
+            CommitDiffRow::File(path) => base
+                .child(
+                    div()
+                        .text_color(self.palette.section)
+                        .child(SharedString::from(path.clone())),
+                )
+                .into_any_element(),
+            CommitDiffRow::Hunk(text) => base
+                .text_color(self.palette.hunk)
+                .child(SharedString::from(text.clone()))
+                .into_any_element(),
+            CommitDiffRow::Line { kind, spans } => {
+                let (sign, sign_color, tint) = match kind {
+                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
+                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
+                    _ => (' ', self.palette.dim, None),
+                };
+                let mut el = base;
+                if let Some(t) = tint {
+                    el = el.bg(t);
+                }
+                let mut line = div().flex().child(
+                    div()
+                        .text_color(sign_color)
+                        .child(SharedString::from(sign.to_string())),
+                );
+                for (text, color) in spans {
+                    line = line.child(div().text_color(*color).child(SharedString::from(text.clone())));
+                }
+                el.child(line).into_any_element()
+            }
+        }
     }
 
     /// Render the live settings screen as a form of dropdowns. The `Select`
