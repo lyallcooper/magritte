@@ -1329,6 +1329,21 @@ impl StatusView {
         cx.notify();
     }
 
+    // Visual-mode bar buttons (mirror the s/u/x/esc keys on the region).
+    fn visual_stage(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.act(Op::Stage, cx);
+    }
+    fn visual_unstage(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.act(Op::Unstage, cx);
+    }
+    fn visual_discard(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.act(Op::Discard, cx);
+    }
+    fn visual_cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.visual = None;
+        cx.notify();
+    }
+
     // --- Popups (transients + help) --------------------------------------
 
     fn open_transient(&mut self, def: Transient, cx: &mut Context<Self>) {
@@ -2447,19 +2462,23 @@ impl Render for StatusView {
 
         // The list takes the flexible space; the status bar (added below)
         // sits beneath it, so showing the bar never shifts content down.
-        // While a popup is open, clicking the list area (anywhere outside the
-        // bottom panel) dismisses it. The panel is a sibling, so a click on it
-        // never reaches this handler.
-        let popup_open = self.popup.is_some();
+        // Clicking the list area dismisses an open popup or an active visual
+        // selection — including clicks on empty space, not just on rows. (A
+        // bottom popup panel is a sibling, so clicks on it don't reach here.)
+        let dismissable = self.popup.is_some() || self.visual.is_some();
         root = root.child(
             div()
                 .id("list-area")
                 .relative()
                 .w_full()
                 .flex_grow(1.0)
-                .when(popup_open, |el| {
+                .when(dismissable, |el| {
                     el.on_click(cx.listener(|this, _, _window, cx| {
-                        this.popup = None;
+                        if this.popup.is_some() {
+                            this.popup = None;
+                        } else {
+                            this.visual = None;
+                        }
                         cx.notify();
                     }))
                 })
@@ -2502,12 +2521,24 @@ impl Render for StatusView {
                     .child(self.key_action("confirm-no", "n", "no", &view, Self::confirm_no)),
             );
         } else if self.visual.is_some() {
-            root = root.child(status_bar(
-                "-- VISUAL --   s stage · u unstage · x discard · v/esc cancel".to_string(),
-                self.palette.visual,
-                self.palette.fg,
-                self.palette.border,
-            ));
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(self.palette.border)
+                    .bg(self.palette.visual)
+                    .text_color(self.palette.fg)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().text_color(self.palette.section).child(SharedString::from("VISUAL")))
+                    .child(self.key_action("visual-stage", "s", "stage", &view, Self::visual_stage))
+                    .child(self.key_action("visual-unstage", "u", "unstage", &view, Self::visual_unstage))
+                    .child(self.key_action("visual-discard", "x", "discard", &view, Self::visual_discard))
+                    .child(self.key_action("visual-cancel", "esc", "cancel", &view, Self::visual_cancel)),
+            );
         } else if let Some(msg) = &self.status_message {
             root = root.child(status_bar(
                 msg.clone(),
