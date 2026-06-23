@@ -81,6 +81,9 @@ impl Repo {
             .arg(&self.workdir)
             // Keep output stable and machine-readable regardless of user config.
             .args(["-c", "core.quotepath=false"])
+            // Never block on an interactive credential/passphrase prompt: fail
+            // fast instead of hanging a background thread with no terminal.
+            .env("GIT_TERMINAL_PROMPT", "0")
             .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
@@ -117,6 +120,7 @@ impl Repo {
             .arg("-C")
             .arg(&self.workdir)
             .args(["-c", "core.quotepath=false"])
+            .env("GIT_TERMINAL_PROMPT", "0")
             .args(&arg_vec)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -124,12 +128,14 @@ impl Repo {
             .spawn()
             .map_err(|source| Error::Spawn { source })?;
 
-        // Write the whole input, then drop the handle to signal EOF.
+        // Write the whole input, then drop the handle to signal EOF. Ignore a
+        // write error: if git exited early (e.g. it rejected the patch) the
+        // pipe breaks here, but git's real status + stderr are the authoritative
+        // signal — so always wait and report those rather than a generic
+        // broken-pipe error.
         {
             let mut stdin = child.stdin.take().expect("stdin was piped");
-            stdin
-                .write_all(input)
-                .map_err(|source| Error::Spawn { source })?;
+            let _ = stdin.write_all(input);
         }
 
         let output = child
@@ -149,5 +155,26 @@ impl Repo {
             stdout: output.stdout,
             stderr,
         })
+    }
+
+    /// Run `git <args>` and report whether it exited successfully, without
+    /// treating a non-zero exit as an error. For predicate commands such as
+    /// `git diff --quiet` (exit 1 means "there are differences").
+    pub fn succeeds<I, S>(&self, args: I) -> Result<bool>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&self.workdir)
+            .args(["-c", "core.quotepath=false"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| Error::Spawn { source })?;
+        Ok(status.success())
     }
 }
