@@ -203,59 +203,6 @@ pub fn language_from_shebang(line: &str) -> Option<&'static str> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shebangs() {
-        assert_eq!(language_from_shebang("#!/usr/bin/env python3"), Some("python"));
-        assert_eq!(language_from_shebang("#!/bin/bash"), Some("bash"));
-        assert_eq!(language_from_shebang("#! /usr/bin/ruby"), Some("ruby"));
-        assert_eq!(language_from_shebang("#!/usr/bin/env node"), Some("javascript"));
-        assert_eq!(language_from_shebang("not a shebang"), None);
-        assert_eq!(language_from_shebang("#!/usr/bin/perl"), None); // unsupported
-    }
-
-    #[test]
-    fn vim_modelines() {
-        assert_eq!(vim_filetype("# vim: set ft=python ts=4 et:"), Some("python"));
-        assert_eq!(vim_filetype("// vim: ft=rust"), Some("rust"));
-        assert_eq!(vim_filetype("/* vi: set filetype=cpp: */"), Some("cpp"));
-        assert_eq!(vim_filetype("no modeline here"), None);
-    }
-
-    #[test]
-    fn emacs_modelines() {
-        assert_eq!(emacs_mode("# -*- mode: python; tab-width: 4 -*-"), Some("python"));
-        assert_eq!(emacs_mode("/* -*- c++ -*- */"), Some("c++"));
-        assert_eq!(emacs_mode("plain line"), None);
-    }
-
-    #[test]
-    fn modeline_overrides_extension() {
-        // A .txt file declaring python via emacs/vim modeline.
-        assert_eq!(detect_language("notes.txt", "-*- mode: python -*-\n", ""), Some("python"));
-        assert_eq!(detect_language("notes.txt", "x = 1\n# vim: ft=ruby\n", ""), Some("ruby"));
-        // No modeline: fall back to extension.
-        assert_eq!(detect_language("a.rs", "fn main() {}", ""), Some("rust"));
-        // Emacs wins over vim when both present.
-        assert_eq!(
-            detect_language("x", "-*- mode: go -*-\n# vim: ft=ruby\n", ""),
-            Some("go")
-        );
-    }
-
-    #[test]
-    fn special_filenames_and_shebang_fallback() {
-        assert_eq!(language_for_path("Makefile"), Some("make"));
-        assert_eq!(language_for_path("config/.bashrc"), Some("bash"));
-        assert_eq!(language_for_path("Vagrantfile"), Some("ruby"));
-        // Extensionless, no modeline → shebang.
-        assert_eq!(detect_language("bin/runme", "#!/bin/sh\necho hi\n", ""), Some("bash"));
-    }
-}
-
 /// A diff larger than this (total lines across hunks) is rendered as plain
 /// text rather than syntax-highlighted, so a huge file never blocks the UI
 /// thread parsing it. Highlighting runs in the foreground (the gpui-component
@@ -374,4 +321,57 @@ fn line_spans(
         push(block.get(pos..range.end), default, &mut spans);
     }
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shebangs() {
+        assert_eq!(language_from_shebang("#!/usr/bin/env python3"), Some("python"));
+        assert_eq!(language_from_shebang("#!/bin/bash"), Some("bash"));
+        assert_eq!(language_from_shebang("#! /usr/bin/ruby"), Some("ruby"));
+        assert_eq!(language_from_shebang("#!/usr/bin/env node"), Some("javascript"));
+        assert_eq!(language_from_shebang("not a shebang"), None);
+        assert_eq!(language_from_shebang("#!/usr/bin/perl"), None); // unsupported
+    }
+
+    #[test]
+    fn vim_modelines() {
+        assert_eq!(vim_filetype("# vim: set ft=python ts=4 et:"), Some("python"));
+        assert_eq!(vim_filetype("// vim: ft=rust"), Some("rust"));
+        assert_eq!(vim_filetype("/* vi: set filetype=cpp: */"), Some("cpp"));
+        assert_eq!(vim_filetype("no modeline here"), None);
+    }
+
+    #[test]
+    fn emacs_modelines() {
+        assert_eq!(emacs_mode("# -*- mode: python; tab-width: 4 -*-"), Some("python"));
+        assert_eq!(emacs_mode("/* -*- c++ -*- */"), Some("c++"));
+        assert_eq!(emacs_mode("plain line"), None);
+    }
+
+    #[test]
+    fn modeline_overrides_extension() {
+        // A .txt file declaring python via emacs/vim modeline.
+        assert_eq!(detect_language("notes.txt", "-*- mode: python -*-\n", ""), Some("python"));
+        assert_eq!(detect_language("notes.txt", "x = 1\n# vim: ft=ruby\n", ""), Some("ruby"));
+        // No modeline: fall back to extension.
+        assert_eq!(detect_language("a.rs", "fn main() {}", ""), Some("rust"));
+        // Emacs wins over vim when both present.
+        assert_eq!(
+            detect_language("x", "-*- mode: go -*-\n# vim: ft=ruby\n", ""),
+            Some("go")
+        );
+    }
+
+    #[test]
+    fn special_filenames_and_shebang_fallback() {
+        assert_eq!(language_for_path("Makefile"), Some("make"));
+        assert_eq!(language_for_path("config/.bashrc"), Some("bash"));
+        assert_eq!(language_for_path("Vagrantfile"), Some("ruby"));
+        // Extensionless, no modeline → shebang.
+        assert_eq!(detect_language("bin/runme", "#!/bin/sh\necho hi\n", ""), Some("bash"));
+    }
 }
