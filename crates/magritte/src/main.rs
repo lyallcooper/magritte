@@ -17,8 +17,9 @@ use std::path::PathBuf;
 use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, Context, Entity,
     FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
-    Menu, MenuItem, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowAppearance, WindowBounds, WindowOptions,
+    Menu, MenuItem, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, TitlebarOptions, UniformListScrollHandle, Window, WindowAppearance, WindowBounds,
+    WindowOptions,
 };
 
 use gpui::prelude::FluentBuilder;
@@ -35,9 +36,14 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 // Tab is bound by gpui-component's Root (focus nav) and so never reaches an
 // on_key_down listener; we override it with an action in our key context.
 actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
+// Right-click context-menu actions; dispatched by the PopupMenu and handled on
+// the status view, which applies them to the row at point (selected on
+// right-click) or the active visual selection.
+actions!(magritte, [CtxStage, CtxUnstage, CtxDiscard]);
 use gpui::Subscription;
 use gpui_component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select, SearchableVec, SelectEvent, SelectState};
 use gpui_component::tag::Tag;
@@ -361,6 +367,21 @@ fn section_source(section: SectionId) -> Option<DiffSource> {
         SectionId::Untracked => None,
         SectionId::Unstaged => Some(DiffSource::Unstaged),
         SectionId::Staged => Some(DiffSource::Staged),
+    }
+}
+
+/// Which staging verbs apply to a target, by section: `(stage, unstage,
+/// discard)`. Populates the right-click menu with only meaningful actions.
+fn target_ops(target: &Target) -> (bool, bool, bool) {
+    let section = match target {
+        Target::File(f) => f.section,
+        Target::Hunk { file, .. } | Target::Line { file, .. } => file.section,
+    };
+    match section {
+        // Untracked/unstaged content can be staged or discarded.
+        SectionId::Untracked | SectionId::Unstaged => (true, false, true),
+        // Staged content can be unstaged or discarded.
+        SectionId::Staged => (false, true, true),
     }
 }
 
@@ -2238,14 +2259,46 @@ impl StatusView {
             }
         };
         if clickable {
-            let view = view.clone();
-            content
+            let el = content
                 .relative()
                 .child(track_target(format!("status-row-{ix}")))
-                .on_click(move |_, _window, cx: &mut App| {
-                    view.update(cx, |v, cx| v.click_row(ix, cx));
-                })
-                .into_any_element()
+                .on_click({
+                    let view = view.clone();
+                    move |_, _window, cx: &mut App| {
+                        view.update(cx, |v, cx| v.click_row(ix, cx));
+                    }
+                });
+            // Right-click on a stageable row: select it (unless a visual
+            // selection is in progress) and show a menu of the staging verbs
+            // that apply. The actions act on the row at point / the selection.
+            match &row.target {
+                Some(target) => {
+                    let (can_stage, can_unstage, can_discard) = target_ops(target);
+                    let view = view.clone();
+                    el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+                        view.update(cx, |v, vcx| {
+                            if v.visual.is_none() && v.rows.get(ix).is_some_and(|r| r.selectable) {
+                                v.selected = ix;
+                                vcx.notify();
+                            }
+                        });
+                    })
+                    .context_menu(move |mut menu, _window, _cx| {
+                        if can_stage {
+                            menu = menu.menu("Stage", Box::new(CtxStage));
+                        }
+                        if can_unstage {
+                            menu = menu.menu("Unstage", Box::new(CtxUnstage));
+                        }
+                        if can_discard {
+                            menu = menu.menu("Discard", Box::new(CtxDiscard));
+                        }
+                        menu
+                    })
+                    .into_any_element()
+                }
+                None => el.into_any_element(),
+            }
         } else {
             content.into_any_element()
         }
@@ -2306,6 +2359,10 @@ impl Render for StatusView {
                     this.open_settings(window, cx);
                 }
             }))
+            // Right-click menu actions, applied to the row at point / selection.
+            .on_action(cx.listener(|this, _: &CtxStage, _window, cx| this.act(Op::Stage, cx)))
+            .on_action(cx.listener(|this, _: &CtxUnstage, _window, cx| this.act(Op::Unstage, cx)))
+            .on_action(cx.listener(|this, _: &CtxDiscard, _window, cx| this.act(Op::Discard, cx)))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
