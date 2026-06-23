@@ -11,13 +11,16 @@ name = "magritte"
 path = "src/main.rs"
 
 [features]
-# Opt-in dev/testing capability ONLY — never enabled for release builds.
-# Adds offscreen window capture (`Window::render_to_image`) so the debug
-# channel's `shot` can grab the window while the app is backgrounded, without
-# foregrounding it. Pulls in gpui's `test-support` machinery (proptest,
-# backtrace, leak-detection) plus the `image` crate, so it's gated behind this
-# flag and excluded from a normal `cargo build --release`.
-debug-capture = ["dep:image", "gpui_platform/test-support"]
+# The debug control channel (key/click injection, screenshots, etc.). Dev-only
+# — it lets any process that can write the control dir drive the app, so it is
+# compiled out of release builds entirely.
+debug = []
+# Adds offscreen window capture (`Window::render_to_image`) to the debug
+# channel so `shot` can grab the window while the app is backgrounded. Implies
+# `debug`; additionally pulls in gpui's `test-support` machinery (proptest,
+# backtrace, leak-detection) plus the `image` crate, all excluded from a normal
+# `cargo build --release`.
+debug-capture = ["debug", "dep:image", "gpui_platform/test-support"]
 
 [dependencies]
 # gpui + gpui-component must share the exact same gpui git rev so their types

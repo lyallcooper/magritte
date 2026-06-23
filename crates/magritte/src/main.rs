@@ -25,6 +25,7 @@ use gpui::{
 use gpui::prelude::FluentBuilder;
 
 mod config;
+#[cfg(feature = "debug")]
 mod debug;
 mod highlight;
 use highlight::{FileHighlights, Span};
@@ -3157,8 +3158,10 @@ fn is_modifier(token: &str) -> bool {
 }
 
 /// A transparent overlay that records its element's on-screen center for the
-/// debug `click-id` command (no-op unless debug mode is on). Add as a child of
-/// a `.relative()` clickable element so synthetic tests can click it by id.
+/// debug `click-id` command. Add as a child of a `.relative()` clickable
+/// element so synthetic tests can click it by id. Compiled only with the
+/// `debug` feature; otherwise it's an empty no-op element.
+#[cfg(feature = "debug")]
 fn track_target(id: impl Into<SharedString>) -> impl IntoElement {
     let id = id.into();
     gpui::canvas(
@@ -3173,6 +3176,11 @@ fn track_target(id: impl Into<SharedString>) -> impl IntoElement {
     )
     .absolute()
     .size_full()
+}
+
+#[cfg(not(feature = "debug"))]
+fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
+    gpui::Empty
 }
 
 /// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
@@ -3427,8 +3435,12 @@ fn main() {
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 })
                 .expect("failed to open window");
-            // Start the debug control channel (no-op unless MAGRITTE_DEBUG_DIR is set).
+            // Start the debug control channel (dev builds only; no-op unless
+            // MAGRITTE_DEBUG_DIR is set).
+            #[cfg(feature = "debug")]
             cx.update(|cx| debug::init(window.into(), cx));
+            #[cfg(not(feature = "debug"))]
+            let _ = window;
         })
         .detach();
     });
