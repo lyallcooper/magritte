@@ -18,9 +18,13 @@
 //! Context lines are always kept; the `\ No newline at end of file` marker is
 //! emitted only when the line it annotates was emitted.
 
-use crate::diff::{FileDiff, Hunk, LineKind};
+use std::fs;
+use std::path::Path;
+
+use crate::diff::{DiffSource, FileDiff, Hunk, LineKind};
 use crate::error::Result;
 use crate::repo::Repo;
+use crate::status::Change;
 
 /// Where a patch is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,9 +44,20 @@ impl Repo {
         Ok(())
     }
 
-    /// Unstage `path`, resetting its index entry to HEAD.
+    /// Unstage `path`, resetting its index entry to HEAD. For a staged rename,
+    /// reset both the new and original paths — `reset -- <new>` alone leaves the
+    /// original's staged deletion behind (`D <old>`).
     pub fn unstage_file(&self, path: &str) -> Result<()> {
-        self.run(["reset", "-q", "--", path])?;
+        let orig = self
+            .status()
+            .ok()
+            .and_then(|s| s.entries.into_iter().find(|e| e.path == path))
+            .filter(|e| e.index == Change::Renamed)
+            .and_then(|e| e.orig_path);
+        match orig {
+            Some(old) => self.run(["reset", "-q", "--", path, &old])?,
+            None => self.run(["reset", "-q", "--", path])?,
+        };
         Ok(())
     }
 
@@ -143,15 +158,117 @@ impl Repo {
         Ok(())
     }
 
+    /// Run `git apply <flags> --recount` over `patch` (from stdin). When
+    /// `lenient`, a non-zero exit is ignored — used for the `--reject` step,
+    /// where hunks that conflict with unstaged edits go to `.rej` files rather
+    /// than aborting the whole operation.
+    fn git_apply(&self, patch: &str, flags: &[&str], lenient: bool) -> Result<()> {
+        let mut args: Vec<&str> = vec!["apply"];
+        args.extend_from_slice(flags);
+        args.push("--recount");
+        match self.run_with_input(args, patch.as_bytes()) {
+            Ok(_) => Ok(()),
+            Err(_) if lenient => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether `path` has changes in the working tree not yet staged.
+    fn has_unstaged(&self, path: &str) -> Result<bool> {
+        // `git diff --quiet` exits non-zero when there are unstaged differences.
+        Ok(!self.succeeds(["diff", "--quiet", "--", path])?)
+    }
+
+    /// Reverse-apply a discard `patch`, mirroring magit's `magit-discard-apply`:
+    ///
+    /// * **Unstaged** changes → reverse-apply to the working tree only.
+    /// * **Staged** changes, file otherwise clean → reverse-apply to index and
+    ///   working tree together (`--index`).
+    /// * **Staged** changes on a file that *also* has unstaged edits → reverse
+    ///   the staged delta in the index (`--cached`), then in the working tree
+    ///   with `--reject` (so overlapping hunks land in `.rej` instead of
+    ///   clobbering the unstaged edit).
+    fn discard_apply(&self, patch: &str, source: DiffSource, path: &str) -> Result<()> {
+        match source {
+            DiffSource::Unstaged => self.git_apply(patch, &["--reverse"], false),
+            DiffSource::Staged => {
+                if self.has_unstaged(path)? {
+                    self.git_apply(patch, &["--reverse", "--cached"], false)?;
+                    self.git_apply(patch, &["--reverse", "--reject"], true)
+                } else {
+                    self.git_apply(patch, &["--reverse", "--index"], false)
+                }
+            }
+        }
+    }
+
     // --- Discarding staged changes ---------------------------------------
     //
-    // Discarding a *staged* change reverts both the index and the working tree
-    // to HEAD for the affected content. **Destructive.**
+    // Discarding a *staged* change removes the staged delta from the index and
+    // working tree while preserving any unrelated unstaged edits, mirroring
+    // magit's `magit-discard-files` / `magit-discard-apply`. **Destructive.**
 
-    /// Revert a staged file entirely to its HEAD state (index and worktree).
+    /// Discard a staged file, dispatching on its status the way magit does —
+    /// `checkout HEAD -- path` is *not* used (it would also blow away unstaged
+    /// worktree edits and fails on staged new/renamed files).
     pub fn discard_staged_file(&self, path: &str) -> Result<()> {
-        self.run(["checkout", "HEAD", "--", path])?;
+        let status = self.status()?;
+        let Some(entry) = status.entries.iter().find(|e| e.path == path) else {
+            return Ok(());
+        };
+        match entry.index {
+            // Staged new/copied file: delete it (or, if it also has unstaged
+            // edits, fall back to untracked via add+reset, keeping the content).
+            Change::Added | Change::Copied => {
+                if entry.worktree.is_modified() {
+                    self.run(["add", "--", path])?;
+                    self.run(["reset", "-q", "--", path])?;
+                } else {
+                    self.run(["rm", "--cached", "--force", "--", path])?;
+                    let _ = fs::remove_file(self.workdir().join(path));
+                }
+            }
+            // Staged deletion: resurrect by unstaging it.
+            Change::Deleted => {
+                self.run(["reset", "-q", "--", path])?;
+            }
+            // Staged rename: rename back to the original path.
+            Change::Renamed => {
+                let orig = entry.orig_path.clone().unwrap_or_default();
+                if orig.is_empty() {
+                    // No original recorded; fall back to reverting the content.
+                    self.discard_staged_modified(path)?;
+                } else if self.workdir().join(path).exists() {
+                    if let Some(parent) = Path::new(&orig).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            let _ = fs::create_dir_all(self.workdir().join(parent));
+                        }
+                    }
+                    self.run(["mv", path, &orig])?;
+                } else {
+                    self.run(["rm", "--cached", "--", path])?;
+                    self.run(["reset", "-q", "--", &orig])?;
+                }
+            }
+            // Staged content change (Modified / TypeChanged): reverse-apply.
+            _ => self.discard_staged_modified(path)?,
+        }
         Ok(())
+    }
+
+    /// Reverse-apply the entire staged diff of a modified file.
+    fn discard_staged_modified(&self, path: &str) -> Result<()> {
+        let Some(diff) = self.diff_path(DiffSource::Staged, path)? else {
+            return Ok(());
+        };
+        let selections: Vec<(usize, Vec<usize>)> = diff
+            .hunks
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (i, all_change_indices(h)))
+            .collect();
+        let patch = build_file_patch(&diff, &selections, true);
+        self.discard_apply(&patch, DiffSource::Staged, path)
     }
 
     /// Discard a staged hunk from both the index and the working tree.
@@ -159,11 +276,8 @@ impl Repo {
         self.discard_staged_lines(file, hunk, &all_change_indices(hunk))
     }
 
-    /// Discard the selected staged lines from both the index and working tree.
-    ///
-    /// Both reverse-applies are dry-run-checked first, so if either would fail
-    /// (e.g. the worktree has further unstaged edits to these lines) we abort
-    /// without leaving a half-applied, inconsistent state.
+    /// Discard the selected staged lines from both the index and working tree,
+    /// preserving any unrelated unstaged edits (see [`discard_apply`]).
     pub fn discard_staged_lines(
         &self,
         file: &FileDiff,
@@ -171,11 +285,7 @@ impl Repo {
         selected: &[usize],
     ) -> Result<()> {
         let patch = build_patch(file, hunk, selected, true);
-        self.run_apply(&patch, ApplyTarget::Index, true, true)?;
-        self.run_apply(&patch, ApplyTarget::Worktree, true, true)?;
-        self.run_apply(&patch, ApplyTarget::Index, true, false)?;
-        self.run_apply(&patch, ApplyTarget::Worktree, true, false)?;
-        Ok(())
+        self.discard_apply(&patch, DiffSource::Staged, file.display_path())
     }
 
     // --- Multi-hunk region operations ------------------------------------
@@ -204,11 +314,7 @@ impl Repo {
         selections: &[(usize, Vec<usize>)],
     ) -> Result<()> {
         let patch = build_file_patch(file, selections, true);
-        self.run_apply(&patch, ApplyTarget::Index, true, true)?;
-        self.run_apply(&patch, ApplyTarget::Worktree, true, true)?;
-        self.run_apply(&patch, ApplyTarget::Index, true, false)?;
-        self.run_apply(&patch, ApplyTarget::Worktree, true, false)?;
-        Ok(())
+        self.discard_apply(&patch, DiffSource::Staged, file.display_path())
     }
 }
 

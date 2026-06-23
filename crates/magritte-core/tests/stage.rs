@@ -187,6 +187,126 @@ fn discard_staged_file_reverts_to_head() {
     assert_eq!(contents, "original\n");
 }
 
+/// The bug the reviewer flagged: discarding a *staged* change on an MM file
+/// must drop the staged delta but PRESERVE the unrelated unstaged worktree edit
+/// (the old `git checkout HEAD -- path` reverted the whole worktree to base).
+/// The two edits are kept far apart so the staged hunk lifts out cleanly.
+#[test]
+fn discard_staged_file_preserves_unstaged_edit() {
+    let t = TestRepo::new();
+    let base: String = (1..=10).map(|n| format!("line{n}\n")).collect();
+    t.write("file.txt", &base);
+    t.commit_all("init");
+    // Stage a change to line 2... (tokens chosen so neither contains the other)
+    let mut lines: Vec<String> = (1..=10).map(|n| format!("line{n}")).collect();
+    lines[1] = "STAGEDONLY".into();
+    t.write("file.txt", &format!("{}\n", lines.join("\n")));
+    t.git(["add", "file.txt"]);
+    // ...then an unrelated unstaged change to line 9 (well outside the hunk).
+    lines[8] = "WORKONLY".into();
+    t.write("file.txt", &format!("{}\n", lines.join("\n")));
+
+    let repo = open(&t);
+    repo.discard_staged_file("file.txt").unwrap();
+
+    // line 2 reverted (staged delta gone); line 9 still carries the unstaged edit.
+    let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
+    assert!(contents.contains("\nline2\n"), "staged delta should be reverted");
+    assert!(!contents.contains("STAGEDONLY"), "staged delta should be gone");
+    assert!(contents.contains("WORKONLY"), "unstaged edit must be preserved");
+    let s = repo.status().unwrap();
+    let e = entry(&s, "file.txt").unwrap();
+    assert!(!e.is_staged(), "staged delta should be discarded");
+    assert!(e.is_unstaged(), "unstaged edit should remain");
+}
+
+/// A staged brand-new file (no further edits) is deleted on discard.
+#[test]
+fn discard_staged_new_file_deletes_it() {
+    let t = TestRepo::new();
+    t.write("keep.txt", "x\n");
+    t.commit_all("init");
+    t.write("added.txt", "new\n");
+    t.git(["add", "added.txt"]);
+
+    let repo = open(&t);
+    repo.discard_staged_file("added.txt").unwrap();
+    assert!(!t.path().join("added.txt").exists(), "new file should be removed");
+    assert!(repo.status().unwrap().is_clean());
+}
+
+/// A staged new file that also has unstaged edits falls back to untracked
+/// (the file and its content stay; it's just no longer staged).
+#[test]
+fn discard_staged_new_file_with_unstaged_becomes_untracked() {
+    let t = TestRepo::new();
+    t.write("keep.txt", "x\n");
+    t.commit_all("init");
+    t.write("added.txt", "v1\n");
+    t.git(["add", "added.txt"]);
+    t.write("added.txt", "v1\nv2\n"); // unstaged edit on top of the staged add
+
+    let repo = open(&t);
+    repo.discard_staged_file("added.txt").unwrap();
+
+    assert!(t.path().join("added.txt").exists(), "file should be kept");
+    let s = repo.status().unwrap();
+    let e = entry(&s, "added.txt").unwrap();
+    assert_eq!(e.kind, magritte_core::EntryKind::Untracked);
+}
+
+/// Discarding a staged deletion resurrects the file.
+/// Unstaging a staged rename must fully undo it in the index, not leave the
+/// original path's deletion staged (`git reset -- <new>` alone is incomplete).
+#[test]
+fn unstage_staged_rename_is_complete() {
+    let t = TestRepo::new();
+    t.write("old.txt", "stable\n");
+    t.commit_all("init");
+    t.git(["mv", "old.txt", "new.txt"]);
+
+    let repo = open(&t);
+    repo.unstage_file("new.txt").unwrap();
+
+    // Nothing should remain staged (no lingering `D old.txt`).
+    let s = repo.status().unwrap();
+    assert!(s.staged().next().is_none(), "rename should be fully unstaged");
+    // The rename is now reflected only in the worktree (old gone, new present).
+    assert!(!t.path().join("old.txt").exists());
+    assert!(t.path().join("new.txt").exists());
+}
+
+#[test]
+fn discard_staged_deletion_resurrects() {
+    let t = TestRepo::new();
+    t.write("doomed.txt", "alive\n");
+    t.commit_all("init");
+    t.git(["rm", "doomed.txt"]); // stages the deletion
+
+    let repo = open(&t);
+    repo.discard_staged_file("doomed.txt").unwrap();
+
+    // No longer a staged deletion; HEAD content is back in the index.
+    let s = repo.status().unwrap();
+    assert!(!entry(&s, "doomed.txt").map(|e| e.is_staged()).unwrap_or(false));
+}
+
+/// Discarding a staged rename renames the file back to its original path.
+#[test]
+fn discard_staged_rename_renames_back() {
+    let t = TestRepo::new();
+    t.write("old.txt", "stable contents here\n");
+    t.commit_all("init");
+    t.git(["mv", "old.txt", "new.txt"]); // stages the rename
+
+    let repo = open(&t);
+    repo.discard_staged_file("new.txt").unwrap();
+
+    assert!(t.path().join("old.txt").exists(), "should be renamed back to old");
+    assert!(!t.path().join("new.txt").exists());
+    assert!(repo.status().unwrap().is_clean(), "tree should be clean again");
+}
+
 #[test]
 fn discard_staged_hunk_reverts_index_and_worktree() {
     let t = TestRepo::new();
