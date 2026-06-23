@@ -61,13 +61,27 @@ pub fn mtime() -> Option<SystemTime> {
 
 /// Load the config, returning defaults if it's missing or unreadable.
 pub fn load() -> Config {
+    load_reporting().0
+}
+
+/// Like [`load`], but also returns a warning when the config file *exists* yet
+/// fails to parse — so we can tell the user their settings were ignored rather
+/// than silently falling back to defaults. A missing/unreadable file is not a
+/// warning (defaulting is the intended behavior there).
+pub fn load_reporting() -> (Config, Option<String>) {
     let Some(path) = path() else {
-        return Config::default();
+        return (Config::default(), None);
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Config::default();
+        return (Config::default(), None);
     };
-    toml::from_str(&text).unwrap_or_default()
+    match toml::from_str(&text) {
+        Ok(config) => (config, None),
+        Err(e) => (
+            Config::default(),
+            Some(format!("Ignoring invalid config at {}: {e}", path.display())),
+        ),
+    }
 }
 
 /// Write the config, creating parent directories as needed. Errors are
