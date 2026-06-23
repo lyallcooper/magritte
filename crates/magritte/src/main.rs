@@ -1667,26 +1667,17 @@ impl StatusView {
             self.popup = None;
             match action.command {
                 transient::Command::CommitCreate => {
-                    self.open_editor(CommitMode::Create, switches, String::new(), window, cx)
+                    self.open_editor(CommitMode::Create, switches, window, cx)
                 }
                 transient::Command::CommitAmend => {
-                    let initial = self.head_message();
-                    self.open_editor(CommitMode::Amend, switches, initial, window, cx)
+                    self.open_editor(CommitMode::Amend, switches, window, cx)
                 }
                 transient::Command::CommitReword => {
-                    let initial = self.head_message();
-                    self.open_editor(CommitMode::Reword, switches, initial, window, cx)
+                    self.open_editor(CommitMode::Reword, switches, window, cx)
                 }
                 _ => self.run_command(action.command, switches, cx),
             }
         }
-    }
-
-    fn head_message(&self) -> String {
-        self.repo
-            .as_ref()
-            .and_then(|r| r.head_message().ok())
-            .unwrap_or_default()
     }
 
     /// Run a transient command on the background executor, showing progress in
@@ -1723,7 +1714,6 @@ impl StatusView {
         &mut self,
         mode: CommitMode,
         args: Vec<String>,
-        initial: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1733,7 +1723,6 @@ impl StatusView {
             InputState::new(window, cx)
                 .multi_line(true)
                 .submit_on_enter(false)
-                .default_value(initial)
         });
         let sub = cx.subscribe_in(&state, window, |this, _state, ev: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { secondary: true, .. } = ev {
@@ -1743,13 +1732,34 @@ impl StatusView {
         // Focus the input so typing goes straight into it.
         state.read(cx).focus_handle(cx).focus(window, cx);
         self.editor = Some(CommitEditor {
-            state,
+            state: state.clone(),
             mode,
             args,
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             _sub: sub,
         });
+        // Amend/reword pre-fill HEAD's message — loaded off the UI thread (the
+        // git call must not block the UI), then set into the input if the user
+        // hasn't started typing.
+        if matches!(mode, CommitMode::Amend | CommitMode::Reword) {
+            if let Some(repo) = self.repo.clone() {
+                cx.spawn_in(window, async move |_this, cx| {
+                    let msg = cx
+                        .background_executor()
+                        .spawn(async move { repo.head_message().unwrap_or_default() })
+                        .await;
+                    let _ = cx.update(|window, app| {
+                        state.update(app, |s, cx| {
+                            if s.value().is_empty() {
+                                s.set_value(msg, window, cx);
+                            }
+                        });
+                    });
+                })
+                .detach();
+            }
+        }
         // Show the staged diff being committed. Reword commits no tree change,
         // so its diff stays empty.
         if matches!(mode, CommitMode::Create | CommitMode::Amend) {
