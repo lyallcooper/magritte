@@ -476,7 +476,10 @@ fn monospace_font_names(cx: &App) -> Vec<SharedString> {
         .text_system()
         .all_font_names()
         .into_iter()
-        .filter(|name| is_monospace_font(name))
+        // Skip dot-prefixed system/fallback tokens (".SystemUIFont", ".ZedSans",
+        // ".ZedMono", …). They aren't user-selectable families, and probing them
+        // by name makes CoreText log "should use CTFontCreateUIFontForLanguage".
+        .filter(|name| !name.starts_with('.') && is_monospace_font(name))
         .map(SharedString::from)
         .collect();
     names.sort_by_key(|f| f.to_lowercase());
