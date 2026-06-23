@@ -271,6 +271,9 @@ enum SectionId {
 enum FoldKey {
     Section(SectionId),
     File(DiffSource, String),
+    /// A hunk within a file's diff: (source, path, hunk index). Unlike sections
+    /// and files, hunks are expanded by default; see `collapsed_hunks`.
+    Hunk(DiffSource, String, usize),
 }
 
 /// The staging verb a keypress requests.
@@ -439,6 +442,7 @@ enum RowKind {
     },
     HunkHeader {
         text: String,
+        expanded: bool,
     },
     Diff {
         kind: LineKind,
@@ -573,6 +577,9 @@ struct StatusView {
     status: Option<Status>,
     error: Option<String>,
     expanded: HashSet<FoldKey>,
+    /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
+    /// to expanded, so this tracks the exceptions rather than `expanded` does.
+    collapsed_hunks: HashSet<FoldKey>,
     diffs: HashMap<(DiffSource, String), DiffState>,
     /// Cached syntax highlighting per file diff, keyed like `diffs`.
     highlights: HashMap<(DiffSource, String), FileHighlights>,
@@ -633,6 +640,7 @@ impl StatusView {
             status: None,
             error: None,
             expanded,
+            collapsed_hunks: HashSet::new(),
             diffs: HashMap::new(),
             highlights: HashMap::new(),
             diff_langs: HashMap::new(),
@@ -748,6 +756,9 @@ impl StatusView {
         self.diffs.clear();
         self.highlights.clear();
         self.diff_langs.clear();
+        // Hunk indices shift when the diff changes, so don't carry collapse
+        // state across a refresh.
+        self.collapsed_hunks.clear();
         self.error = None;
 
         let Some(repo) = self.repo.clone() else {
@@ -793,7 +804,7 @@ impl StatusView {
             .iter()
             .filter_map(|k| match k {
                 FoldKey::File(source, path) => Some((*source, path.clone())),
-                FoldKey::Section(_) => None,
+                FoldKey::Section(_) | FoldKey::Hunk(..) => None,
             })
             .collect();
         for (source, path) in files {
@@ -1032,18 +1043,24 @@ impl StatusView {
                     rows.push(message("(no textual changes)", self.palette.dim));
                 }
                 for (hunk_ix, hunk) in diff.hunks.iter().enumerate() {
+                    let hunk_key = FoldKey::Hunk(source, file.path.clone(), hunk_ix);
+                    let hunk_expanded = !self.collapsed_hunks.contains(&hunk_key);
                     rows.push(Row {
                         indent: 2,
                         selectable: true,
-                        fold: None,
+                        fold: Some(hunk_key),
                         target: Some(Target::Hunk {
                             file: file.clone(),
                             hunk: hunk_ix,
                         }),
                         kind: RowKind::HunkHeader {
                             text: hunk_header_text(hunk),
+                            expanded: hunk_expanded,
                         },
                     });
+                    if !hunk_expanded {
+                        continue;
+                    }
                     let file_hl = self.highlights.get(&(source, file.path.clone()));
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
                         // Use cached highlight spans if present, else a single
@@ -1128,10 +1145,25 @@ impl StatusView {
     fn toggle_fold(&mut self, cx: &mut Context<Self>) {
         // Folding changes row indices, which would invalidate a visual anchor.
         self.visual = None;
-        let Some(key) = self.rows.get(self.selected).and_then(|r| r.fold.clone()) else {
+        let row = self.rows.get(self.selected);
+        // Use the row's own fold key, or — for a diff line — the enclosing hunk,
+        // so `Tab` anywhere inside a hunk collapses/expands it (like magit).
+        let key = row.and_then(|r| r.fold.clone()).or_else(|| match row.map(|r| &r.target) {
+            Some(Some(Target::Line { file, hunk, .. })) => {
+                section_source(file.section).map(|src| FoldKey::Hunk(src, file.path.clone(), *hunk))
+            }
+            _ => None,
+        });
+        let Some(key) = key else {
             return;
         };
-        if self.expanded.contains(&key) {
+        // Hunks default to expanded, so their state lives in `collapsed_hunks`
+        // (present = collapsed); sections/files use `expanded` (present = open).
+        if matches!(key, FoldKey::Hunk(..)) {
+            if !self.collapsed_hunks.remove(&key) {
+                self.collapsed_hunks.insert(key);
+            }
+        } else if self.expanded.contains(&key) {
             self.expanded.remove(&key);
         } else {
             self.expanded.insert(key.clone());
@@ -2424,9 +2456,13 @@ impl StatusView {
                 }
                 el.child(SharedString::from(label.clone()))
             }
-            RowKind::HunkHeader { text } => {
-                el.text_color(self.palette.hunk).child(SharedString::from(text.clone()))
-            }
+            RowKind::HunkHeader { text, expanded } => el
+                .child(chevron(*expanded, self.palette.dim))
+                .child(
+                    div()
+                        .text_color(self.palette.hunk)
+                        .child(SharedString::from(text.clone())),
+                ),
             RowKind::Diff { kind, spans } => {
                 let (sign, sign_color, tint) = match kind {
                     LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
