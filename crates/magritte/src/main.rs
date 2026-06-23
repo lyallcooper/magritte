@@ -536,6 +536,15 @@ fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
     }
 }
 
+/// A pending yes/no confirmation shown in the bottom bar.
+enum Confirm {
+    /// A destructive staging action awaiting `y`.
+    Action(Action),
+    /// `c c` with nothing staged: on `y`, commit all tracked changes by
+    /// opening the message editor with `--all` (the carried switches) appended.
+    CommitAll(Vec<String>),
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -577,8 +586,8 @@ struct StatusView {
     mono_fonts: Vec<SharedString>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
-    /// A pending destructive confirmation: (prompt, action awaiting `y`).
-    confirm: Option<(String, Action)>,
+    /// A pending confirmation: (prompt, what to do on `y`).
+    confirm: Option<(String, Confirm)>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     /// Colors for the current theme, refreshed at the top of each render.
@@ -1354,6 +1363,24 @@ impl StatusView {
         }
     }
 
+    /// Resolve a whole-file staging action for `op` on `f`, honoring its
+    /// section (e.g. you cannot stage a file that's already staged; discard
+    /// means delete for untracked, revert-to-index for unstaged, and
+    /// revert-the-index for staged). Shared by point resolution and by region
+    /// selections that include a file-name row.
+    fn file_action(&self, f: &FileRef, op: Op) -> Option<Action> {
+        Some(match (op, f.section) {
+            (Op::Stage, SectionId::Untracked | SectionId::Unstaged) => {
+                Action::StageFile(f.path.clone())
+            }
+            (Op::Unstage, SectionId::Staged) => Action::UnstageFile(f.path.clone()),
+            (Op::Discard, SectionId::Untracked) => Action::DiscardUntracked(f.path.clone()),
+            (Op::Discard, SectionId::Unstaged) => Action::DiscardTracked(f.path.clone()),
+            (Op::Discard, SectionId::Staged) => Action::DiscardStagedFile(f.path.clone()),
+            _ => return None,
+        })
+    }
+
     /// Resolve the row at point + verb into a concrete git action, if the verb
     /// is meaningful there (e.g. you cannot stage something already staged).
     fn resolve_action(&self, op: Op) -> Option<Action> {
@@ -1362,11 +1389,10 @@ impl StatusView {
             return None;
         }
         match (op, target) {
-            // Stage: from the untracked or unstaged side.
-            (Op::Stage, Target::File(f)) => match f.section {
-                SectionId::Untracked | SectionId::Unstaged => Some(Action::StageFile(f.path)),
-                SectionId::Staged => None,
-            },
+            // Whole-file staging (any verb) — shared with region selections.
+            (op, Target::File(f)) => self.file_action(&f, op),
+
+            // Stage: from the unstaged side.
             (Op::Stage, Target::Hunk { file, hunk }) if file.section == SectionId::Unstaged => {
                 Some(Action::StageHunk(self.diff_for(&file)?, hunk))
             }
@@ -1377,9 +1403,6 @@ impl StatusView {
             }
 
             // Unstage: from the staged side.
-            (Op::Unstage, Target::File(f)) if f.section == SectionId::Staged => {
-                Some(Action::UnstageFile(f.path))
-            }
             (Op::Unstage, Target::Hunk { file, hunk }) if file.section == SectionId::Staged => {
                 Some(Action::UnstageHunk(self.diff_for(&file)?, hunk))
             }
@@ -1393,13 +1416,8 @@ impl StatusView {
                 ))
             }
 
-            // Discard: untracked removes the file; unstaged reverts to the
-            // index; staged reverts both index and worktree to HEAD.
-            (Op::Discard, Target::File(f)) => match f.section {
-                SectionId::Untracked => Some(Action::DiscardUntracked(f.path)),
-                SectionId::Unstaged => Some(Action::DiscardTracked(f.path)),
-                SectionId::Staged => Some(Action::DiscardStagedFile(f.path)),
-            },
+            // Discard hunks/lines: unstaged reverts to the index, staged
+            // reverts the index (whole-file discard is handled above).
             (Op::Discard, Target::Hunk { file, hunk }) => match file.section {
                 SectionId::Unstaged => Some(Action::DiscardHunk(self.diff_for(&file)?, hunk)),
                 SectionId::Staged => Some(Action::DiscardStagedHunk(self.diff_for(&file)?, hunk)),
@@ -1429,58 +1447,112 @@ impl StatusView {
             .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
     }
 
-    /// Resolve a region (visual) selection into actions. Selected lines are
-    /// grouped by file and hunk, so a selection spanning multiple hunks (or
-    /// files) acts on *all* of them. Groups whose section doesn't match the
-    /// verb (e.g. a staged file when staging) are skipped.
+    /// Resolve a region (visual) selection into actions. Each file in the
+    /// selection acts at the coarsest granularity it was selected with: a
+    /// file-name row stages the whole file (even when its diff is collapsed),
+    /// while selected hunks/lines act on just those. A selection spanning
+    /// multiple files acts on *all* of them; parts whose section doesn't match
+    /// the verb (e.g. a staged file when staging) are skipped.
     fn resolve_region_action(&self, op: Op) -> Option<Action> {
         let (lo, hi) = self.visual_range()?;
 
-        // Group selected diff lines: file (section+path) -> hunk -> line indices,
-        // preserving encounter order.
-        let mut groups: Vec<(FileRef, HunkSelections)> = Vec::new();
-        for ix in lo..=hi {
-            let Some(Target::Line { file, hunk, line }) =
-                self.rows.get(ix).and_then(|r| r.target.as_ref())
-            else {
-                continue;
-            };
-            let gi = match groups
-                .iter()
-                .position(|(f, _)| f.section == file.section && f.path == file.path)
-            {
-                Some(i) => i,
-                None => {
-                    groups.push((file.clone(), Vec::new()));
-                    groups.len() - 1
-                }
-            };
-            let hunks = &mut groups[gi].1;
-            match hunks.iter_mut().find(|(h, _)| *h == *hunk) {
-                Some((_, lines)) => lines.push(*line),
-                None => hunks.push((*hunk, vec![*line])),
+        /// The granularity at which a file in the selection should be acted on.
+        /// A whole-file row wins over individual hunks/lines of the same file.
+        enum Gran {
+            Whole,
+            Lines(HunkSelections),
+        }
+        fn add_lines(
+            sels: &mut HunkSelections,
+            hunk: usize,
+            lines: impl IntoIterator<Item = usize>,
+        ) {
+            match sels.iter_mut().find(|(h, _)| *h == hunk) {
+                Some((_, existing)) => existing.extend(lines),
+                None => sels.push((hunk, lines.into_iter().collect())),
             }
         }
 
+        // Collect per file (section+path), preserving encounter order.
+        let mut files: Vec<(FileRef, Gran)> = Vec::new();
+        let slot = |files: &mut Vec<(FileRef, Gran)>, f: &FileRef| -> usize {
+            match files
+                .iter()
+                .position(|(g, _)| g.section == f.section && g.path == f.path)
+            {
+                Some(i) => i,
+                None => {
+                    files.push((f.clone(), Gran::Lines(Vec::new())));
+                    files.len() - 1
+                }
+            }
+        };
+        for ix in lo..=hi {
+            match self.rows.get(ix).and_then(|r| r.target.as_ref()) {
+                Some(Target::File(f)) => {
+                    let i = slot(&mut files, f);
+                    files[i].1 = Gran::Whole;
+                }
+                Some(Target::Hunk { file, hunk }) => {
+                    let i = slot(&mut files, file);
+                    // Selecting a hunk header acts on the whole hunk: pull in
+                    // every line index (the core ignores context lines).
+                    if let Gran::Lines(sels) = &mut files[i].1 {
+                        if let Some(h) = self
+                            .diff_for(file)
+                            .and_then(|d| d.hunks.into_iter().nth(*hunk))
+                        {
+                            add_lines(sels, *hunk, 0..h.lines.len());
+                        }
+                    }
+                }
+                Some(Target::Line { file, hunk, line }) => {
+                    let i = slot(&mut files, file);
+                    if let Gran::Lines(sels) = &mut files[i].1 {
+                        add_lines(sels, *hunk, [*line]);
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // Conflicted files in the region are handled up-front in `act` (the
+        // whole action is refused), so none reach here.
         let mut actions = Vec::new();
-        for (file, selections) in groups {
-            // Conflicted files in the region are handled up-front in `act`
-            // (the whole action is refused), so none should reach here.
-            let kind = match (op, file.section) {
-                (Op::Stage, SectionId::Unstaged) => RegionKind::Stage,
-                (Op::Unstage, SectionId::Staged) => RegionKind::Unstage,
-                (Op::Discard, SectionId::Unstaged) => RegionKind::Discard,
-                (Op::Discard, SectionId::Staged) => RegionKind::DiscardStaged,
-                _ => continue, // section doesn't match the verb
-            };
-            let Some(diff) = self.diff_for(&file) else {
-                continue;
-            };
-            actions.push(Action::ApplyRegion {
-                kind,
-                file: diff,
-                selections,
-            });
+        for (file, gran) in files {
+            match gran {
+                Gran::Whole => {
+                    if let Some(a) = self.file_action(&file, op) {
+                        actions.push(a);
+                    }
+                }
+                Gran::Lines(mut selections) => {
+                    let kind = match (op, file.section) {
+                        (Op::Stage, SectionId::Unstaged) => RegionKind::Stage,
+                        (Op::Unstage, SectionId::Staged) => RegionKind::Unstage,
+                        (Op::Discard, SectionId::Unstaged) => RegionKind::Discard,
+                        (Op::Discard, SectionId::Staged) => RegionKind::DiscardStaged,
+                        _ => continue, // section doesn't match the verb
+                    };
+                    // A hunk header and its lines can both land in the range;
+                    // collapse the duplicates.
+                    for (_, lines) in &mut selections {
+                        lines.sort_unstable();
+                        lines.dedup();
+                    }
+                    if selections.iter().all(|(_, l)| l.is_empty()) {
+                        continue;
+                    }
+                    let Some(diff) = self.diff_for(&file) else {
+                        continue;
+                    };
+                    actions.push(Action::ApplyRegion {
+                        kind,
+                        file: diff,
+                        selections,
+                    });
+                }
+            }
         }
 
         match actions.len() {
@@ -1509,7 +1581,7 @@ impl StatusView {
             return;
         };
         if op == Op::Discard {
-            self.confirm = Some((describe_discard(&action), action));
+            self.confirm = Some((describe_discard(&action), Confirm::Action(action)));
         } else {
             self.run_action(action, cx);
         }
@@ -1543,11 +1615,18 @@ impl StatusView {
         .detach();
     }
 
-    /// Confirm a pending destructive action (the `y` key or the confirm bar's
-    /// "yes" button).
-    fn confirm_yes(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((_, action)) = self.confirm.take() {
-            self.run_action(action, cx);
+    /// Confirm a pending action (the `y` key or the confirm bar's "yes"
+    /// button): run the destructive action, or proceed with a commit-all.
+    fn confirm_yes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.confirm.take() {
+            Some((_, Confirm::Action(action))) => self.run_action(action, cx),
+            Some((_, Confirm::CommitAll(mut switches))) => {
+                if !switches.iter().any(|s| s == "--all") {
+                    switches.push("--all".into());
+                }
+                self.open_editor(CommitMode::Create, switches, window, cx);
+            }
+            None => {}
         }
         cx.notify();
     }
@@ -1624,9 +1703,7 @@ impl StatusView {
         if let Some(action) = action {
             self.popup = None;
             match action.command {
-                transient::Command::CommitCreate => {
-                    self.open_editor(CommitMode::Create, switches, window, cx)
-                }
+                transient::Command::CommitCreate => self.start_commit(switches, window, cx),
                 transient::Command::CommitAmend => {
                     self.open_editor(CommitMode::Amend, switches, window, cx)
                 }
@@ -1672,6 +1749,42 @@ impl StatusView {
     }
 
     // --- Commit message editor -------------------------------------------
+
+    /// Begin a new commit (`c c`). Mirrors magit's `magit-commit-assert`: a
+    /// commit only takes the *staged* changes, so with nothing staged we either
+    /// refuse (nothing to commit at all) or offer to commit everything (`--all`,
+    /// like `git commit -a`). An explicit `--all`/`--allow-empty` switch means
+    /// the user already decided, so we skip straight to the editor.
+    fn start_commit(&mut self, switches: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let has_staged = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.staged().next().is_some());
+        let preempted = switches
+            .iter()
+            .any(|s| s == "--all" || s == "--allow-empty");
+        if has_staged || preempted {
+            self.open_editor(CommitMode::Create, switches, window, cx);
+            return;
+        }
+        // Nothing staged. `--all` only stages *tracked* modifications (so does
+        // `Status::unstaged`, which excludes untracked) — if there's nothing
+        // there either, there is genuinely nothing to commit.
+        let has_unstaged = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.unstaged().next().is_some());
+        if !has_unstaged {
+            self.status_message = Some("Nothing staged (or unstaged)".to_string());
+            cx.notify();
+            return;
+        }
+        self.confirm = Some((
+            "Nothing staged. Commit all uncommitted changes?".to_string(),
+            Confirm::CommitAll(switches),
+        ));
+        cx.notify();
+    }
 
     fn open_editor(
         &mut self,
@@ -1739,16 +1852,29 @@ impl StatusView {
     }
 
     /// Load the staged diff in the background and flatten it (with syntax
-    /// highlighting) into the open editor's `diff` for read-only preview.
+    /// highlighting) into the open editor's `diff` for read-only preview. When
+    /// committing with `--all` and nothing is staged, preview the unstaged
+    /// (tracked) changes instead — that's what the commit will actually take.
     fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let also_unstaged = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.args.iter().any(|a| a == "--all"));
         cx.spawn(async move |this, cx| {
             let files = cx
                 .background_executor()
                 .spawn(async move {
-                    match repo.diff_all(DiffSource::Staged) {
+                    let loaded = repo.diff_all(DiffSource::Staged).and_then(|staged| {
+                        if staged.is_empty() && also_unstaged {
+                            repo.diff_all(DiffSource::Unstaged)
+                        } else {
+                            Ok(staged)
+                        }
+                    });
+                    match loaded {
                         Ok(diffs) => {
                             let mapped = diffs
                                 .into_iter()
