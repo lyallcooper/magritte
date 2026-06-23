@@ -1,11 +1,15 @@
-//! Magritte — M2: the status view as a foldable, virtualized section tree with
-//! evil-style navigation.
+//! Magritte's status view: a foldable section tree with evil-style navigation,
+//! act-at-point staging, transient command popups, a commit editor, and a live
+//! settings screen.
 //!
 //! The view holds a flattened list of [`Row`]s rebuilt from the parsed status,
 //! the fold state, and any lazily-loaded diffs. Rendering goes through
-//! `uniform_list`, so only on-screen rows become elements — a 50k-line diff
-//! costs the same as a short one. All git work (status + per-file diffs) runs
-//! on the background executor; a generation counter drops stale results.
+//! `uniform_list`, so only on-screen rows become elements — scrolling a long
+//! diff stays cheap regardless of its length. Note the `Row` *model* is still
+//! materialized eagerly for everything currently expanded, so the cost of
+//! expanding one huge file is paid up front (magit-style collapsed defaults
+//! keep that off the opening render). All git work (status + per-file diffs)
+//! runs on the background executor; a generation counter drops stale results.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -215,6 +219,15 @@ impl Default for Palette {
     }
 }
 
+/// Fixed row height (points) so `uniform_list` can virtualize every row.
+const ROW_HEIGHT: f32 = 18.0;
+/// Left padding (points) added per indent level.
+const INDENT_STEP: f32 = 16.0;
+/// Base left padding (points) before any indent.
+const ROW_PAD_LEFT: f32 = 8.0;
+/// Fixed width (points) of the status-word column on file rows.
+const STATUS_COL_WIDTH: f32 = 84.0;
+
 /// After a refresh, warm at most this many file diffs in the background...
 const PREFETCH_FILE_CAP: usize = 16;
 /// ...skipping any whose changed-line count exceeds this, so massive diffs are
@@ -259,6 +272,10 @@ enum Target {
     Line { file: FileRef, hunk: usize, line: usize },
 }
 
+/// Selected changed lines within one file, grouped by hunk: each entry is
+/// `(hunk index, line indices within that hunk)`.
+type HunkSelections = Vec<(usize, Vec<usize>)>;
+
 /// How a multi-hunk region selection should be applied.
 #[derive(Debug, Clone, Copy)]
 enum RegionKind {
@@ -289,7 +306,7 @@ enum Action {
     ApplyRegion {
         kind: RegionKind,
         file: FileDiff,
-        selections: Vec<(usize, Vec<usize>)>,
+        selections: HunkSelections,
     },
     /// Several actions applied in sequence (a region spanning multiple files).
     Batch(Vec<Action>),
@@ -375,8 +392,9 @@ enum RowKind {
         expanded: bool,
     },
     File {
-        code: String,
-        code_color: Hsla,
+        /// Humanized status word ("modified", "new file", …); empty for untracked.
+        status: String,
+        status_color: Hsla,
         label: String,
         expanded: Option<bool>,
     },
@@ -485,6 +503,9 @@ struct StatusView {
     diffs: HashMap<(DiffSource, String), DiffState>,
     /// Cached syntax highlighting per file diff, keyed like `diffs`.
     highlights: HashMap<(DiffSource, String), FileHighlights>,
+    /// Detected highlight language per file diff, kept so highlighting can be
+    /// recomputed on a theme change without re-reading files off the UI thread.
+    diff_langs: HashMap<(DiffSource, String), &'static str>,
     rows: Vec<Row>,
     selected: usize,
     /// Anchor row of an active visual (region) selection; `None` when off.
@@ -538,6 +559,7 @@ impl StatusView {
             expanded,
             diffs: HashMap::new(),
             highlights: HashMap::new(),
+            diff_langs: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
             visual: None,
@@ -584,12 +606,13 @@ impl StatusView {
                 }
                 let cfg = config_changed.then(config::load);
                 let updated = this.update(cx, |view, cx| {
-                    if let Some(cfg) = cfg {
-                        view.apply_config(cfg, cx);
-                    } else {
+                    match cfg {
+                        // Skip a re-apply when the file's contents are unchanged
+                        // (e.g. our own in-app save, or a no-op external edit).
+                        Some(cfg) if cfg != view.config => view.apply_config(cfg, cx),
+                        Some(_) => {}
                         // System appearance flipped; re-apply with the same config.
-                        apply_appearance(&view.config, cx);
-                        cx.notify();
+                        None => view.reapply_theme(cx),
                     }
                 });
                 if updated.is_err() {
@@ -605,8 +628,40 @@ impl StatusView {
     fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         self.config = cfg;
         self.font = SharedString::from(self.config.font().to_string());
+        self.reapply_theme(cx);
+    }
+
+    /// Re-apply the current config's theme and refresh everything that bakes in
+    /// theme colors. Diff/status/plain row colors are stored in the `Row` model
+    /// and the syntax-highlight cache is theme-derived, so a live theme switch
+    /// must rebuild both — otherwise the screen keeps the old theme's colors.
+    fn reapply_theme(&mut self, cx: &mut Context<Self>) {
         apply_appearance(&self.config, cx);
+        self.palette = Palette::from_theme(cx);
+        self.recompute_highlights(cx);
+        self.rebuild_rows();
         cx.notify();
+    }
+
+    /// Recompute the syntax-highlight cache for every loaded diff against the
+    /// current theme. Reuses the languages detected at load time, so no files
+    /// are re-read.
+    fn recompute_highlights(&mut self, cx: &mut Context<Self>) {
+        if self.highlights.is_empty() && self.diff_langs.is_empty() {
+            return;
+        }
+        let default = cx.theme().foreground;
+        let mut next = HashMap::new();
+        for (key, state) in &self.diffs {
+            let DiffState::Loaded(diff) = state else { continue };
+            if diff.is_binary {
+                continue;
+            }
+            if let Some(&lang) = self.diff_langs.get(key) {
+                next.insert(key.clone(), highlight::highlight_diff(diff, lang, cx, default));
+            }
+        }
+        self.highlights = next;
     }
 
     /// Reload status from scratch, invalidating any in-flight work.
@@ -615,6 +670,7 @@ impl StatusView {
         let generation = self.generation;
         self.diffs.clear();
         self.highlights.clear();
+        self.diff_langs.clear();
         self.error = None;
 
         let Some(repo) = self.repo.clone() else {
@@ -751,6 +807,9 @@ impl StatusView {
                     Ok(None) => DiffState::Empty,
                     Err(e) => DiffState::Failed(e.to_string()),
                 };
+                if let Some(lang) = lang {
+                    this.diff_langs.insert(key.clone(), lang);
+                }
                 // Precompute syntax highlighting for the loaded diff.
                 if let DiffState::Loaded(diff) = &state {
                     if !diff.is_binary {
@@ -821,7 +880,7 @@ impl StatusView {
             Some(DiffSource::Staged),
         );
 
-        if rows.len() <= 2 {
+        if status.is_clean() {
             rows.push(spacer());
             rows.push(plain("Nothing to commit, working tree clean", self.palette.dim));
         }
@@ -874,8 +933,8 @@ impl StatusView {
                 fold: source.map(|s| FoldKey::File(s, path.clone())),
                 target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
-                    code: status_label(entry, id),
-                    code_color: code_color(entry, id, &self.palette),
+                    status: status_label(entry, id),
+                    status_color: status_color(entry, id, &self.palette),
                     label,
                     expanded: file_expanded,
                 },
@@ -917,9 +976,9 @@ impl StatusView {
                             .cloned()
                             .unwrap_or_else(|| {
                                 let color = if line.kind == LineKind::NoNewline {
-                                    self.palette.dim.into()
+                                    self.palette.dim
                                 } else {
-                                    self.palette.fg.into()
+                                    self.palette.fg
                                 };
                                 vec![(line.content.clone(), color)]
                             });
@@ -1101,7 +1160,7 @@ impl StatusView {
 
         // Group selected diff lines: file (section+path) -> hunk -> line indices,
         // preserving encounter order.
-        let mut groups: Vec<(FileRef, Vec<(usize, Vec<usize>)>)> = Vec::new();
+        let mut groups: Vec<(FileRef, HunkSelections)> = Vec::new();
         for ix in lo..=hi {
             let Some(Target::Line { file, hunk, line }) =
                 self.rows.get(ix).and_then(|r| r.target.as_ref())
@@ -1182,8 +1241,11 @@ impl StatusView {
                 .spawn(async move { action.run(&repo) })
                 .await;
             this.update(cx, |this, cx| {
-                if let Err(e) = result {
-                    this.error = Some(e);
+                // Use status_message, not `error`: refresh() clears `error` at
+                // its top, so a failure stored there would never be shown.
+                match result {
+                    Ok(()) => this.status_message = None,
+                    Err(e) => this.status_message = Some(format!("error: {e}")),
                 }
                 this.refresh(cx);
                 cx.notify();
@@ -1436,34 +1498,22 @@ impl StatusView {
 
     /// Re-apply the theme for the current config and persist it.
     fn apply_and_save(&mut self, cx: &mut Context<Self>) {
-        apply_appearance(&self.config, cx);
+        self.reapply_theme(cx);
         config::save(&self.config);
-        cx.notify();
     }
 
-    /// Tab moves focus to the next settings dropdown.
+    /// Tab moves focus to the next settings dropdown. (The four dropdowns have
+    /// distinct `SelectState` types, so each arm focuses its own entity.)
     fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = self.settings.as_mut() else {
             return;
         };
         s.focus_ix = (s.focus_ix + 1) % 4;
         match s.focus_ix {
-            0 => {
-                let e = self.settings.as_ref().unwrap().appearance.clone();
-                e.update(cx, |st, cx| st.focus(window, cx));
-            }
-            1 => {
-                let e = self.settings.as_ref().unwrap().light_theme.clone();
-                e.update(cx, |st, cx| st.focus(window, cx));
-            }
-            2 => {
-                let e = self.settings.as_ref().unwrap().dark_theme.clone();
-                e.update(cx, |st, cx| st.focus(window, cx));
-            }
-            _ => {
-                let e = self.settings.as_ref().unwrap().font.clone();
-                e.update(cx, |st, cx| st.focus(window, cx));
-            }
+            0 => s.appearance.clone().update(cx, |st, cx| st.focus(window, cx)),
+            1 => s.light_theme.clone().update(cx, |st, cx| st.focus(window, cx)),
+            2 => s.dark_theme.clone().update(cx, |st, cx| st.focus(window, cx)),
+            _ => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
         }
     }
 
@@ -1729,13 +1779,20 @@ impl StatusView {
         }
     }
 
-    /// Whether `key` is a single-key `?`-dispatch command (Tab arrives via the
-    /// ToggleFold action; `gr`/`gg`/`gj`/`gk` via the g-prefix).
+    /// Whether `key` is a single-key `?`-dispatch command. Derived from
+    /// `dispatch_menu` so the menu is the single source of truth: any row added
+    /// there becomes routable here (as long as `run_dispatch` handles it). The
+    /// multi-stroke entries are handled elsewhere — Tab via the ToggleFold
+    /// action, and `gr`/`gg`/`gj`/`gk` via the g-prefix — so they're excluded.
     fn is_dispatch_key(key: &str) -> bool {
-        matches!(
-            key,
-            "c" | "p" | "F" | "f" | "," | "s" | "S" | "u" | "U" | "x" | "v" | "j" | "k" | "G"
-        )
+        if matches!(key, "tab" | "gr" | "gg" | "gj" | "gk") {
+            return false;
+        }
+        dispatch_menu()
+            .groups
+            .iter()
+            .flat_map(|g| &g.suffixes)
+            .any(|s| matches!(s, Suffix::Info(i) if i.keys == key))
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -1767,8 +1824,8 @@ impl StatusView {
                         let on = state.is_some_and(|s| s.active.contains(sw.key));
                         // magit layout: key, description, then the literal git
                         // flag in parens. Only the flag itself dims (off) or
-                        // highlights in cyan + bold (on) — the parens stay a
-                        // constant neutral color.
+                        // highlights bold in the `modified` accent (on) — the
+                        // parens stay a constant neutral color.
                         let flag_color = if on { self.palette.modified } else { self.palette.dim };
                         let flag = if on {
                             div().text_color(flag_color).font_weight(FontWeight::BOLD)
@@ -2027,10 +2084,10 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(18.0))
+            .h(px(ROW_HEIGHT))
             .w_full()
             .when(clickable, |el| el.cursor_pointer())
-            .pl(px(8.0 + row.indent as f32 * 16.0));
+            .pl(px(ROW_PAD_LEFT + row.indent as f32 * INDENT_STEP));
         if in_region {
             el = el.bg(self.palette.visual);
         }
@@ -2061,8 +2118,8 @@ impl StatusView {
                         .child(SharedString::from(count.to_string())),
                 ),
             RowKind::File {
-                code,
-                code_color,
+                status,
+                status_color,
                 label,
                 expanded,
             } => {
@@ -2073,12 +2130,12 @@ impl StatusView {
                 let mut el = el.child(lead);
                 // Only files with a status word get the fixed-width status
                 // column; untracked files (no word) sit flush after the lead.
-                if !code.is_empty() {
+                if !status.is_empty() {
                     el = el.child(
                         div()
-                            .w(px(84.0))
-                            .text_color(*code_color)
-                            .child(SharedString::from(code.clone())),
+                            .w(px(STATUS_COL_WIDTH))
+                            .text_color(*status_color)
+                            .child(SharedString::from(status.clone())),
                     );
                 }
                 el.child(SharedString::from(label.clone()))
@@ -2546,7 +2603,7 @@ fn status_label(entry: &FileEntry, section: SectionId) -> String {
     .to_string()
 }
 
-fn code_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
+fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
     if entry.kind == EntryKind::Untracked {
         return p.added;
     }
@@ -2663,8 +2720,57 @@ fn main() {
                 })
                 .expect("failed to open window");
             // Start the debug control channel (no-op unless MAGRITTE_DEBUG_DIR is set).
-            let _ = cx.update(|cx| debug::init(window.into(), cx));
+            cx.update(|cx| debug::init(window.into(), cx));
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(kind: EntryKind, index: Change, worktree: Change) -> FileEntry {
+        FileEntry {
+            path: "f".into(),
+            orig_path: None,
+            kind,
+            index,
+            worktree,
+        }
+    }
+
+    #[test]
+    fn status_label_humanizes_per_section() {
+        // A staged row reflects the index status; unstaged reflects the worktree.
+        let staged_add = entry(EntryKind::Tracked, Change::Added, Change::Unmodified);
+        assert_eq!(status_label(&staged_add, SectionId::Staged), "new file");
+
+        let modified = entry(EntryKind::Tracked, Change::Unmodified, Change::Modified);
+        assert_eq!(status_label(&modified, SectionId::Unstaged), "modified");
+
+        let deleted = entry(EntryKind::Tracked, Change::Unmodified, Change::Deleted);
+        assert_eq!(status_label(&deleted, SectionId::Unstaged), "deleted");
+
+        let conflicted = entry(EntryKind::Unmerged, Change::Unmodified, Change::Unmerged);
+        assert_eq!(status_label(&conflicted, SectionId::Unstaged), "conflicted");
+    }
+
+    #[test]
+    fn untracked_files_carry_no_status_word() {
+        let untracked = entry(EntryKind::Untracked, Change::Unmodified, Change::Modified);
+        assert_eq!(status_label(&untracked, SectionId::Untracked), "");
+    }
+
+    #[test]
+    fn is_dispatch_key_matches_single_key_menu_rows() {
+        // Single-key commands route; multi-stroke / g-prefix entries don't.
+        assert!(StatusView::is_dispatch_key("c"));
+        assert!(StatusView::is_dispatch_key("s"));
+        assert!(StatusView::is_dispatch_key("G"));
+        assert!(!StatusView::is_dispatch_key("tab"));
+        assert!(!StatusView::is_dispatch_key("gg"));
+        assert!(!StatusView::is_dispatch_key("gr"));
+        assert!(!StatusView::is_dispatch_key("z")); // not in the menu
+    }
 }

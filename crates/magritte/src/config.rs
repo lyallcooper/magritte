@@ -13,7 +13,7 @@ pub const DEFAULT_LIGHT_THEME: &str = "Solarized Light";
 pub const DEFAULT_DARK_THEME: &str = "Solarized Dark";
 pub const DEFAULT_FONT: &str = "Menlo";
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// "auto" (follow the system), "light", or "dark". Empty = "auto".

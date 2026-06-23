@@ -44,8 +44,9 @@ pub struct Action {
     pub command: Command,
 }
 
-/// A non-invokable reference row (e.g. the `?` dispatch/help cheatsheet:
-/// `j / k  move up / down`). `keys` may list several keystrokes.
+/// A keys-and-description row with no toggle state of its own (e.g. the rows of
+/// the `?` dispatch menu). The frontend decides what a row does when invoked;
+/// `keys` may list several keystrokes (e.g. `gg`).
 #[derive(Debug, Clone, Copy)]
 pub struct Info {
     pub keys: &'static str,
