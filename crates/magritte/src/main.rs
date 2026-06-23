@@ -1959,9 +1959,39 @@ impl StatusView {
         row
     }
 
+    /// A clickable key hint: a keycap + label that runs `action` (the same
+    /// behavior its key triggers). Lets shown keys double as mouse buttons —
+    /// used by the commit editor and settings screen.
+    fn key_action(
+        &self,
+        id: &'static str,
+        key: &'static str,
+        label: &'static str,
+        view: &Entity<Self>,
+        action: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> impl IntoElement {
+        let view = view.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(self.palette.visual))
+            .child(track_target(id))
+            .child(key_chip(key, self.palette.dim))
+            .child(div().text_color(self.palette.dim).child(SharedString::from(label)))
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| action(v, window, vcx));
+            })
+    }
+
     /// Render the commit message editor: a header, the editable text with a
     /// caret, all filling the window.
-    fn render_editor(&self, ed: &CommitEditor) -> gpui::Div {
+    fn render_editor(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
         let title = match ed.mode {
             CommitMode::Create => "Commit message",
             CommitMode::Amend => "Amend commit",
@@ -1985,10 +2015,8 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(SharedString::from(title)),
                     )
-                    .child(key_chip("cmd-enter", self.palette.dim))
-                    .child(div().text_color(self.palette.dim).child(SharedString::from("commit")))
-                    .child(key_chip("esc", self.palette.dim))
-                    .child(div().text_color(self.palette.dim).child(SharedString::from("cancel"))),
+                    .child(self.key_action("editor-commit", "cmd-enter", "commit", view, Self::submit_editor))
+                    .child(self.key_action("editor-cancel", "esc", "cancel", view, Self::cancel_editor)),
             )
             .child(div().flex_grow(1.0).w_full().child(Input::new(&ed.state).h_full()))
     }
@@ -1996,15 +2024,7 @@ impl StatusView {
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
-    fn render_settings(&self, s: &SettingsState) -> gpui::Div {
-        let hint = |k: &str, label: &str| {
-            div()
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(key_chip(k, self.palette.dim))
-                .child(div().text_color(self.palette.dim).child(SharedString::from(label.to_string())))
-        };
+    fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
         let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
                 .flex()
@@ -2038,8 +2058,8 @@ impl StatusView {
                     .items_center()
                     .gap_3()
                     .child(div().text_color(self.palette.section).child(SharedString::from("Settings")))
-                    .child(hint("tab", "switch"))
-                    .child(hint("esc", "close")),
+                    .child(self.key_action("settings-switch", "tab", "switch", view, Self::cycle_settings_focus))
+                    .child(self.key_action("settings-close", "esc", "close", view, Self::close_settings)),
             )
             .child(field(
                 "appearance",
@@ -2112,8 +2132,7 @@ impl StatusView {
                 )
                 .child(
                     Tag::secondary()
-                        .xsmall()
-                        .rounded_full()
+                        .small()
                         .outline()
                         .child(SharedString::from(count.to_string())),
                 ),
@@ -2246,19 +2265,30 @@ impl Render for StatusView {
 
         // The settings screen and commit editor each take over the window.
         if let Some(s) = &self.settings {
-            return root.child(self.render_settings(s));
+            return root.child(self.render_settings(s, &view));
         }
         if let Some(ed) = &self.editor {
-            return root.child(self.render_editor(ed));
+            return root.child(self.render_editor(ed, &view));
         }
 
         // The list takes the flexible space; the status bar (added below)
         // sits beneath it, so showing the bar never shifts content down.
+        // While a popup is open, clicking the list area (anywhere outside the
+        // bottom panel) dismisses it. The panel is a sibling, so a click on it
+        // never reaches this handler.
+        let popup_open = self.popup.is_some();
         root = root.child(
             div()
+                .id("list-area")
                 .relative()
                 .w_full()
                 .flex_grow(1.0)
+                .when(popup_open, |el| {
+                    el.on_click(cx.listener(|this, _, _window, cx| {
+                        this.popup = None;
+                        cx.notify();
+                    }))
+                })
                 .child(
                     uniform_list("rows", count, {
                         let view = view.clone();
@@ -2435,7 +2465,7 @@ fn key_word(token: &str) -> String {
         "ctrl" | "control" => "Ctrl".into(),
         "alt" | "opt" | "option" => "Opt".into(),
         "shift" => "Shift".into(),
-        "enter" | "return" => "Enter".into(),
+        "enter" | "return" => "Return".into(),
         "esc" | "ESC" | "escape" => "Esc".into(),
         "tab" | "TAB" => "Tab".into(),
         "space" => "Space".into(),
