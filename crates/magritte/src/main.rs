@@ -566,6 +566,9 @@ struct StatusView {
     /// Anchor row of an active visual (region) selection; `None` when off.
     /// The selection spans `min(anchor, selected)..=max(anchor, selected)`.
     visual: Option<usize>,
+    /// Row where a left-button drag began, while the button is held. Dragging
+    /// across rows turns into a visual selection (mouse equivalent of `v`).
+    drag_anchor: Option<usize>,
     generation: u64,
     pending_g: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
@@ -618,6 +621,7 @@ impl StatusView {
             rows: Vec::new(),
             selected: 0,
             visual: None,
+            drag_anchor: None,
             generation: 0,
             pending_g: false,
             popup: None,
@@ -2279,6 +2283,53 @@ impl StatusView {
                     let view = view.clone();
                     move |_, _window, cx: &mut App| {
                         view.update(cx, |v, cx| v.click_row(ix, cx));
+                    }
+                })
+                // Click-and-drag selects a range, like pressing `v` and moving.
+                .on_mouse_down(MouseButton::Left, {
+                    let view = view.clone();
+                    move |_, _window, cx: &mut App| {
+                        view.update(cx, |v, vcx| {
+                            if v.rows.get(ix).is_some_and(|r| r.selectable) {
+                                v.drag_anchor = Some(ix);
+                                v.visual = None;
+                                v.selected = ix;
+                                vcx.notify();
+                            }
+                        });
+                    }
+                })
+                .on_mouse_move({
+                    let view = view.clone();
+                    move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+                        if ev.pressed_button != Some(MouseButton::Left) {
+                            return;
+                        }
+                        view.update(cx, |v, vcx| {
+                            let Some(anchor) = v.drag_anchor else { return };
+                            if !v.rows.get(ix).is_some_and(|r| r.selectable) {
+                                return;
+                            }
+                            // Skip redundant work while the cursor stays on one row.
+                            if v.selected == ix && (ix == anchor || v.visual == Some(anchor)) {
+                                return;
+                            }
+                            if ix != anchor {
+                                v.visual = Some(anchor);
+                            }
+                            v.selected = ix;
+                            vcx.notify();
+                        });
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, {
+                    let view = view.clone();
+                    move |_, _window, cx: &mut App| {
+                        view.update(cx, |v, vcx| {
+                            if v.drag_anchor.take().is_some() {
+                                vcx.notify();
+                            }
+                        });
                     }
                 });
             // Right-click on a stageable row: select it (unless a visual
