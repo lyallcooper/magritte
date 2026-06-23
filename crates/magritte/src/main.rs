@@ -3086,8 +3086,7 @@ impl StatusView {
                     "commit-title-ruler",
                     self.config.commit_title_ruler,
                     "Underlines characters past column 50 on the commit summary \
-                     (first) line — the conventional limit so summaries stay \
-                     readable in logs and UIs.",
+                     (first) line.",
                     view,
                     |cfg, on| cfg.commit_title_ruler = on,
                 ),
@@ -3099,8 +3098,7 @@ impl StatusView {
                     "commit-body-wrap",
                     self.config.commit_body_wrap,
                     "Hard-wraps the commit body at 72 columns as you type at the \
-                     end of a line (the summary line is never wrapped). Use \
-                     alt-q in the editor to reflow a paragraph you've edited.",
+                     end of a line (the summary line is never wrapped).",
                     view,
                     |cfg, on| cfg.commit_body_wrap = on,
                 ),
@@ -3142,14 +3140,21 @@ impl StatusView {
                     .text_color(self.palette.dim),
             )
             // gpui's native tooltip (not the library's managed one) so we can
-            // drop the show-delay to zero and bound the width so it wraps.
-            .tooltip(move |window, cx| {
-                Tooltip::element(move |_, _| {
-                    div()
-                        .max_w(px(280.0))
-                        .child(SharedString::from(explanation))
-                })
-                .build(window, cx)
+            // drop the show-delay to zero and bound the width so it wraps. The
+            // library tooltip forces the theme's UI font; override it back to
+            // our monospace chrome font so it matches the rest of the app.
+            .tooltip({
+                let font = self.font.clone();
+                move |window, cx| {
+                    let font = font.clone();
+                    Tooltip::element(move |_, _| {
+                        div()
+                            .max_w(px(280.0))
+                            .font_family(font.clone())
+                            .child(SharedString::from(explanation))
+                    })
+                    .build(window, cx)
+                }
             })
             .tooltip_show_delay(Duration::ZERO);
         div()
