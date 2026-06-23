@@ -226,6 +226,34 @@ fn discard_staged_file_preserves_unstaged_edit() {
     assert!(e.is_unstaged(), "unstaged edit should remain");
 }
 
+/// When the unstaged edit overlaps the staged hunk, the worktree `--reject`
+/// step leaves a `.rej` and exits non-zero. The index delta is still removed,
+/// but the partial result is reported as an error rather than swallowed.
+#[test]
+fn discard_staged_file_reports_partial_on_overlap() {
+    let t = TestRepo::new();
+    t.write("file.txt", "line1\nline2\nline3\n");
+    t.commit_all("init");
+    // Stage a change to line2, then make an *overlapping* unstaged edit to it.
+    t.write("file.txt", "line1\nSTAGEDONLY\nline3\n");
+    t.git(["add", "file.txt"]);
+    t.write("file.txt", "line1\nWORKONLY\nline3\n");
+
+    let repo = open(&t);
+    let result = repo.discard_staged_file("file.txt");
+    assert!(
+        result.is_err(),
+        "overlapping worktree hunk should report partial"
+    );
+
+    // The index delta was still removed (nothing staged), and the worktree
+    // edit is preserved (a .rej was written rather than clobbering it).
+    let s = repo.status().unwrap();
+    assert!(!entry(&s, "file.txt").unwrap().is_staged());
+    let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
+    assert!(contents.contains("WORKONLY"), "unstaged edit preserved");
+}
+
 /// A staged brand-new file (no further edits) is deleted on discard.
 #[test]
 fn discard_staged_new_file_deletes_it() {

@@ -72,8 +72,16 @@ pub fn load_reporting() -> (Config, Option<String>) {
     let Some(path) = path() else {
         return (Config::default(), None);
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (Config::default(), None);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        // A missing file is the normal "use defaults" case; an existing but
+        // unreadable one (permissions, etc.) is worth telling the user about.
+        Err(e) => {
+            let warning = path
+                .exists()
+                .then(|| format!("Could not read config at {}: {e}", path.display()));
+            return (Config::default(), warning);
+        }
     };
     match toml::from_str(&text) {
         Ok(config) => (config, None),
@@ -87,8 +95,10 @@ pub fn load_reporting() -> (Config, Option<String>) {
     }
 }
 
-/// Write the config, creating parent directories as needed. Errors are
-/// reported but not fatal — settings just won't persist.
+/// Write the config, creating parent directories as needed. Written
+/// atomically (temp file + rename) so an interrupted write can't truncate or
+/// corrupt the existing config. Errors are reported but not fatal — settings
+/// just won't persist.
 pub fn save(config: &Config) {
     let Some(path) = path() else {
         return;
@@ -99,12 +109,21 @@ pub fn save(config: &Config) {
             return;
         }
     }
-    match toml::to_string_pretty(config) {
-        Ok(text) => {
-            if let Err(e) = std::fs::write(&path, text) {
-                eprintln!("magritte: could not write config: {e}");
-            }
+    let text = match toml::to_string_pretty(config) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("magritte: could not serialize config: {e}");
+            return;
         }
-        Err(e) => eprintln!("magritte: could not serialize config: {e}"),
+    };
+    // Write to a sibling temp file, then atomically rename it into place.
+    let tmp = path.with_extension("toml.tmp");
+    if let Err(e) = std::fs::write(&tmp, text) {
+        eprintln!("magritte: could not write config: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        eprintln!("magritte: could not replace config: {e}");
+        let _ = std::fs::remove_file(&tmp);
     }
 }

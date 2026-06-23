@@ -1333,6 +1333,27 @@ impl StatusView {
         })
     }
 
+    /// The first conflicted file in the current selection — the row at point, or
+    /// any file touched by the visual region. Used to refuse the *whole* action
+    /// (point or region) rather than silently acting on a subset.
+    fn conflicted_in_selection(&self) -> Option<String> {
+        let path_at = |ix: usize| {
+            self.rows
+                .get(ix)
+                .and_then(|r| r.target.as_ref())
+                .map(target_path)
+        };
+        match self.visual_range() {
+            Some((lo, hi)) => (lo..=hi)
+                .filter_map(path_at)
+                .find(|p| self.is_conflicted(p))
+                .map(str::to_string),
+            None => path_at(self.selected)
+                .filter(|p| self.is_conflicted(p))
+                .map(str::to_string),
+        }
+    }
+
     /// Resolve the row at point + verb into a concrete git action, if the verb
     /// is meaningful there (e.g. you cannot stage something already staged).
     fn resolve_action(&self, op: Op) -> Option<Action> {
@@ -1443,9 +1464,8 @@ impl StatusView {
 
         let mut actions = Vec::new();
         for (file, selections) in groups {
-            if self.is_conflicted(&file.path) {
-                continue; // conflicts aren't acted on (see is_conflicted)
-            }
+            // Conflicted files in the region are handled up-front in `act`
+            // (the whole action is refused), so none should reach here.
             let kind = match (op, file.section) {
                 (Op::Stage, SectionId::Unstaged) => RegionKind::Stage,
                 (Op::Unstage, SectionId::Staged) => RegionKind::Unstage,
@@ -1472,21 +1492,13 @@ impl StatusView {
 
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     fn act(&mut self, op: Op, cx: &mut Context<Self>) {
-        // Explain rather than silently no-op when acting on a conflicted file.
-        if self.visual.is_none() {
-            if let Some(path) = self
-                .rows
-                .get(self.selected)
-                .and_then(|r| r.target.as_ref())
-                .map(target_path)
-            {
-                if self.is_conflicted(path) {
-                    self.status_message =
-                        Some(format!("{path} is conflicted — resolve it before staging"));
-                    cx.notify();
-                    return;
-                }
-            }
+        // Refuse the whole action if the selection (point or region) touches a
+        // conflicted file — rather than silently acting on a subset — and say
+        // why. Conflict resolution isn't supported in-app yet.
+        if let Some(path) = self.conflicted_in_selection() {
+            self.status_message = Some(format!("{path} is conflicted — resolve it before staging"));
+            cx.notify();
+            return;
         }
         let resolved = if self.visual.is_some() {
             self.resolve_region_action(op)
