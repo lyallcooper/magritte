@@ -94,16 +94,6 @@ core, and integration tests against throwaway repos are the right instincts.
 But the staged-discard behavior, conflict handling, and real cancellation story
 need attention before this should touch important repositories.
 
-<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
-Everything above was addressed (commits up to `fa03734`), except:
-  - #4 (cancellation): only the fail-fast part is done (GIT_TERMINAL_PROMPT=0);
-    real subprocess cancellation is deferred to milestone M6.
-  - #10 (evil/magit keybinding matrix): not done — premise is off (j/k as
-    motion matches evil-collection-magit; vanilla magit's j-as-jump doesn't
-    apply). A written compatibility matrix is a nice-to-have, not a bug.
-Add any new feedback BELOW this marker.
-────────────────────────────────────────────────────────────────────────── -->
-
 ## Second-Pass Findings
 
 These are from a re-review after the first batch of feedback was addressed.
@@ -175,3 +165,16 @@ better, and the extracted `git_action.rs` layer is a useful separation.
   `block v0.1.6`, pulled in through GPUI/cocoa. `cargo tree -i block` confirms
   this is not Magritte code, but it is worth tracking because a future Rust
   release may turn it into a hard error.
+
+<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
+First pass (#1–#12) and second pass (SP1–SP7) addressed — commits up to af8f9e2.
+Deferred (by decision, not oversight):
+  - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
+    is the interim fail-fast mitigation.
+  - #10 (evil/magit keybinding matrix): premise is off — j/k as motion matches
+    evil-collection-magit (vanilla magit's j-as-jump doesn't apply). A written
+    compatibility matrix is a nice-to-have, not a bug.
+  - SP5 (byte/bstr paths vs lossy UTF-8): broad core refactor, low value for a
+    macOS-only v1; revisit for non-UTF-8 path fidelity.
+Add any new feedback BELOW this marker.
+────────────────────────────────────────────────────────────────────────── -->
