@@ -299,6 +299,39 @@ enum Target {
     Line { file: FileRef, hunk: usize, line: usize },
 }
 
+/// A stable identity of a selected row, so the cursor can be restored to the
+/// same logical place after the row list is rebuilt — rather than left at the
+/// same numeric index (which may now mean something unrelated).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AnchorIdent {
+    /// A top header row (Head / Push) — outside any section.
+    Top,
+    Section(SectionId),
+    File(SectionId, String),
+    Hunk(SectionId, String, usize),
+    Line(SectionId, String, usize, usize),
+}
+
+impl AnchorIdent {
+    fn section(&self) -> Option<SectionId> {
+        match self {
+            AnchorIdent::Top => None,
+            AnchorIdent::Section(s)
+            | AnchorIdent::File(s, _)
+            | AnchorIdent::Hunk(s, _, _)
+            | AnchorIdent::Line(s, _, _, _) => Some(*s),
+        }
+    }
+}
+
+/// A captured selection: its logical identity plus its ordinal among the
+/// selectable rows of its section, used as a fallback when the identity is gone.
+#[derive(Debug, Clone)]
+struct SelAnchor {
+    ident: AnchorIdent,
+    ordinal: usize,
+}
+
 /// Selected changed lines within one file, grouped by hunk: each entry is
 /// `(hunk index, line indices within that hunk)`.
 type HunkSelections = Vec<(usize, Vec<usize>)>;
@@ -751,6 +784,9 @@ impl StatusView {
 
     /// Reload status from scratch, invalidating any in-flight work.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        // Capture the cursor's logical position so we can restore it after the
+        // rebuild rather than leaving it at the same numeric index.
+        let anchor = self.capture_anchor();
         self.generation += 1;
         let generation = self.generation;
         self.diffs.clear();
@@ -784,7 +820,7 @@ impl StatusView {
                     Err(e) => this.error = Some(e.to_string()),
                 }
                 this.rebuild_rows();
-                this.clamp_selection();
+                this.restore_anchor(anchor);
                 // Re-load diffs for any files that were expanded before the
                 // refresh cleared them, so they don't get stuck on "Loading…".
                 this.reload_expanded_diffs(cx);
@@ -909,7 +945,8 @@ impl StatusView {
                     }
                 }
                 this.diffs.insert(key, state);
-                this.rebuild_rows();
+                // A diff finishing load inserts rows; keep the cursor put.
+                this.rebuild_preserving_selection();
                 cx.notify();
             })
             .ok();
@@ -1171,8 +1208,10 @@ impl StatusView {
                 self.ensure_diff(*source, path.clone(), cx);
             }
         }
-        self.rebuild_rows();
-        self.clamp_selection();
+        // Restore the cursor to the same node: collapsing a hunk from one of its
+        // lines lands on the hunk header (the line is gone, so the anchor
+        // degrades to it); folding/unfolding otherwise keeps the header.
+        self.rebuild_preserving_selection();
         cx.notify();
     }
 
@@ -1191,6 +1230,123 @@ impl StatusView {
                 self.selected = i;
             }
         }
+    }
+
+    // --- Selection restoration across rebuilds ---------------------------
+    //
+    // Rather than keep the cursor at the same numeric row index (which may mean
+    // something unrelated after staging/folding), we capture the selected row's
+    // logical identity before a rebuild and restore it to the same place — or,
+    // if that's gone, to a sensible nearby row within the same section.
+
+    /// The logical identity of the row at `ix`.
+    fn ident_of(&self, ix: usize) -> AnchorIdent {
+        match self.rows.get(ix) {
+            Some(Row { target: Some(t), .. }) => match t {
+                Target::File(f) => AnchorIdent::File(f.section, f.path.clone()),
+                Target::Hunk { file, hunk } => {
+                    AnchorIdent::Hunk(file.section, file.path.clone(), *hunk)
+                }
+                Target::Line { file, hunk, line } => {
+                    AnchorIdent::Line(file.section, file.path.clone(), *hunk, *line)
+                }
+            },
+            Some(Row { fold: Some(FoldKey::Section(s)), .. }) => AnchorIdent::Section(*s),
+            _ => AnchorIdent::Top,
+        }
+    }
+
+    /// The row indices belonging to a section: its header through the row before
+    /// the next section header (or end).
+    fn section_rows(&self, section: SectionId) -> Vec<usize> {
+        let Some(start) = (0..self.rows.len())
+            .find(|&i| self.rows[i].fold == Some(FoldKey::Section(section)))
+        else {
+            return Vec::new();
+        };
+        let mut out = vec![start];
+        for i in (start + 1)..self.rows.len() {
+            if matches!(self.rows[i].kind, RowKind::Section { .. }) {
+                break;
+            }
+            out.push(i);
+        }
+        out
+    }
+
+    /// Capture the current selection for restoration after a rebuild.
+    fn capture_anchor(&self) -> Option<SelAnchor> {
+        if self.rows.is_empty() {
+            return None;
+        }
+        let ident = self.ident_of(self.selected);
+        let scope: Vec<usize> = match ident.section() {
+            Some(s) => self.section_rows(s),
+            None => (0..self.rows.len()).collect(),
+        };
+        let ordinal = scope
+            .iter()
+            .filter(|&&i| self.rows[i].selectable)
+            .position(|&i| i == self.selected)
+            .unwrap_or(0);
+        Some(SelAnchor { ident, ordinal })
+    }
+
+    /// Whether the row at `ix` matches `ident` exactly.
+    fn row_matches(&self, ix: usize, ident: &AnchorIdent) -> bool {
+        self.ident_of(ix) == *ident
+    }
+
+    /// Find the best row for `ident`: exact, else progressively less specific
+    /// (a missing line falls back to its hunk header, then its file row).
+    fn locate_ident(&self, ident: &AnchorIdent) -> Option<usize> {
+        let ladder = match ident {
+            AnchorIdent::Line(s, p, h, _) => vec![
+                ident.clone(),
+                AnchorIdent::Hunk(*s, p.clone(), *h),
+                AnchorIdent::File(*s, p.clone()),
+            ],
+            AnchorIdent::Hunk(s, p, _) => vec![ident.clone(), AnchorIdent::File(*s, p.clone())],
+            other => vec![other.clone()],
+        };
+        ladder
+            .iter()
+            .find_map(|id| (0..self.rows.len()).find(|&i| self.row_matches(i, id)))
+    }
+
+    /// Restore the selection captured by [`capture_anchor`] after a rebuild.
+    fn restore_anchor(&mut self, anchor: Option<SelAnchor>) {
+        let Some(anchor) = anchor else {
+            self.clamp_selection();
+            return;
+        };
+        if let Some(ix) = self.locate_ident(&anchor.ident) {
+            self.selected = ix;
+            self.clamp_selection();
+            return;
+        }
+        // The anchored row is gone (e.g. staged away). Stay within the same
+        // section at roughly the same ordinal, else fall back to nearest.
+        if let Some(section) = anchor.ident.section() {
+            let selectable: Vec<usize> = self
+                .section_rows(section)
+                .into_iter()
+                .filter(|&i| self.rows[i].selectable)
+                .collect();
+            if !selectable.is_empty() {
+                let pick = anchor.ordinal.min(selectable.len() - 1);
+                self.selected = selectable[pick];
+                return;
+            }
+        }
+        self.clamp_selection();
+    }
+
+    /// Rebuild rows while keeping the cursor on the same logical row.
+    fn rebuild_preserving_selection(&mut self) {
+        let anchor = self.capture_anchor();
+        self.rebuild_rows();
+        self.restore_anchor(anchor);
     }
 
     // --- Staging ----------------------------------------------------------
