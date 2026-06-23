@@ -3000,6 +3000,7 @@ impl StatusView {
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
     fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
+        // A labelled control row: fixed-width label + the control.
         let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
                 .flex()
@@ -3020,89 +3021,157 @@ impl StatusView {
                         .child(control),
                 )
         };
+        // A titled group: an uppercase heading over a bordered card of rows.
+        let section = |title: &str, rows: Vec<gpui::Div>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(title.to_uppercase())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(self.palette.border)
+                        .p_3()
+                        .children(rows),
+                )
+        };
 
         div()
             .flex()
             .flex_col()
-            .flex_grow(1.0)
             .w_full()
+            .max_w(px(620.0))
             .p_4()
             .gap_4()
             .child(
+                // Header: title on the left; actions on the right.
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .justify_between()
                     .child(
                         div()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.section)
                             .child(SharedString::from("Settings")),
                     )
-                    .child(self.key_action(
-                        "settings-switch",
-                        "tab",
-                        "switch",
-                        view,
-                        Self::cycle_settings_focus,
-                    ))
-                    .child(self.key_action(
-                        "settings-close",
-                        "esc",
-                        "close",
-                        view,
-                        Self::close_settings,
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(self.open_config_button(view))
+                            .child(self.key_action(
+                                "settings-close",
+                                "esc",
+                                "close",
+                                view,
+                                Self::close_settings,
+                            )),
+                    ),
             )
-            .child(field(
-                "appearance",
+            .child(section(
                 "Appearance",
-                Select::new(&s.appearance).into_any_element(),
+                vec![
+                    field(
+                        "appearance",
+                        "Mode",
+                        Select::new(&s.appearance).into_any_element(),
+                    ),
+                    field(
+                        "light-theme",
+                        "Light theme",
+                        Select::new(&s.light_theme)
+                            .search_placeholder("Search themes")
+                            .into_any_element(),
+                    ),
+                    field(
+                        "dark-theme",
+                        "Dark theme",
+                        Select::new(&s.dark_theme)
+                            .search_placeholder("Search themes")
+                            .into_any_element(),
+                    ),
+                    field(
+                        "font",
+                        "Font",
+                        Select::new(&s.font)
+                            .search_placeholder("Search fonts")
+                            .into_any_element(),
+                    ),
+                ],
             ))
-            .child(field(
-                "light-theme",
-                "Light theme",
-                Select::new(&s.light_theme)
-                    .search_placeholder("Search themes")
-                    .into_any_element(),
+            .child(section(
+                "Commit editor",
+                vec![
+                    field(
+                        "commit-title-ruler",
+                        "Summary ruler",
+                        self.toggle_control(
+                            "commit-title-ruler",
+                            self.config.commit_title_ruler,
+                            "Underlines characters past column 50 on the commit summary \
+                             (first) line.",
+                            view,
+                            |cfg, on| cfg.commit_title_ruler = on,
+                        ),
+                    ),
+                    field(
+                        "commit-body-wrap",
+                        "Body auto-wrap",
+                        self.toggle_control(
+                            "commit-body-wrap",
+                            self.config.commit_body_wrap,
+                            "Hard-wraps the commit body at 72 columns as you type at the \
+                             end of a line (the summary line is never wrapped).",
+                            view,
+                            |cfg, on| cfg.commit_body_wrap = on,
+                        ),
+                    ),
+                ],
             ))
-            .child(field(
-                "dark-theme",
-                "Dark theme",
-                Select::new(&s.dark_theme)
-                    .search_placeholder("Search themes")
-                    .into_any_element(),
-            ))
-            .child(field(
-                "font",
-                "Font",
-                Select::new(&s.font)
-                    .search_placeholder("Search fonts")
-                    .into_any_element(),
-            ))
-            .child(field(
-                "commit-title-ruler",
-                "Summary ruler",
-                self.toggle_control(
-                    "commit-title-ruler",
-                    self.config.commit_title_ruler,
-                    "Underlines characters past column 50 on the commit summary \
-                     (first) line.",
-                    view,
-                    |cfg, on| cfg.commit_title_ruler = on,
-                ),
-            ))
-            .child(field(
-                "commit-body-wrap",
-                "Body auto-wrap",
-                self.toggle_control(
-                    "commit-body-wrap",
-                    self.config.commit_body_wrap,
-                    "Hard-wraps the commit body at 72 columns as you type at the \
-                     end of a line (the summary line is never wrapped).",
-                    view,
-                    |cfg, on| cfg.commit_body_wrap = on,
-                ),
-            ))
+    }
+
+    /// A mouse-friendly button that opens the on-disk config file in the
+    /// platform's default text editor — an escape hatch for settings the UI
+    /// doesn't expose, and a way to see where the file lives.
+    fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
+        let view = view.clone();
+        Button::new("open-config")
+            .label("Open config file")
+            .ghost()
+            .small()
+            .icon(IconName::ExternalLink)
+            .on_click(move |_, _window, cx| {
+                view.update(cx, |this, _| this.open_config_file());
+            })
+    }
+
+    /// Write the current config (so the file exists even if untouched) and open
+    /// it in the default text editor.
+    fn open_config_file(&self) {
+        config::save(&self.config);
+        let Some(path) = config::path() else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open")
+            .arg("-t")
+            .arg(&path)
+            .spawn();
+        #[cfg(not(target_os = "macos"))]
+        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
     }
 
     /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
