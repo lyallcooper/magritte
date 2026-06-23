@@ -22,7 +22,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::diff::{DiffSource, FileDiff, Hunk, LineKind};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::repo::Repo;
 use crate::status::Change;
 
@@ -165,19 +165,13 @@ impl Repo {
         Ok(())
     }
 
-    /// Run `git apply <flags> --recount` over `patch` (from stdin). When
-    /// `lenient`, a non-zero exit is ignored — used for the `--reject` step,
-    /// where hunks that conflict with unstaged edits go to `.rej` files rather
-    /// than aborting the whole operation.
-    fn git_apply(&self, patch: &str, flags: &[&str], lenient: bool) -> Result<()> {
+    /// Run `git apply <flags> --recount` over `patch` (from stdin).
+    fn git_apply(&self, patch: &str, flags: &[&str]) -> Result<()> {
         let mut args: Vec<&str> = vec!["apply"];
         args.extend_from_slice(flags);
         args.push("--recount");
-        match self.run_with_input(args, patch.as_bytes()) {
-            Ok(_) => Ok(()),
-            Err(_) if lenient => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.run_with_input(args, patch.as_bytes())?;
+        Ok(())
     }
 
     /// Whether `path` has changes in the working tree not yet staged.
@@ -195,15 +189,26 @@ impl Repo {
     ///   the staged delta in the index (`--cached`), then in the working tree
     ///   with `--reject` (so overlapping hunks land in `.rej` instead of
     ///   clobbering the unstaged edit).
+    ///
+    /// In that last case the index delta is removed first; if the working-tree
+    /// `--reject` then exits non-zero, some hunks were left as `.rej` and we
+    /// report the *partial* discard rather than silently treating it as success.
     fn discard_apply(&self, patch: &str, source: DiffSource, path: &str) -> Result<()> {
         match source {
-            DiffSource::Unstaged => self.git_apply(patch, &["--reverse"], false),
+            DiffSource::Unstaged => self.git_apply(patch, &["--reverse"]),
             DiffSource::Staged => {
                 if self.has_unstaged(path)? {
-                    self.git_apply(patch, &["--reverse", "--cached"], false)?;
-                    self.git_apply(patch, &["--reverse", "--reject"], true)
+                    self.git_apply(patch, &["--reverse", "--cached"])?;
+                    if self.git_apply(patch, &["--reverse", "--reject"]).is_err() {
+                        return Err(Error::Message(format!(
+                            "Unstaged the change to {path}, but some working-tree hunks \
+                             conflicted with your unstaged edits and were left as .rej \
+                             files — resolve them manually."
+                        )));
+                    }
+                    Ok(())
                 } else {
-                    self.git_apply(patch, &["--reverse", "--index"], false)
+                    self.git_apply(patch, &["--reverse", "--index"])
                 }
             }
         }

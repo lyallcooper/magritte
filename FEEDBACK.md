@@ -93,3 +93,85 @@ The foundation is pointed in the right direction: porcelain v2 `-z`, a UI-free
 core, and integration tests against throwaway repos are the right instincts.
 But the staged-discard behavior, conflict handling, and real cancellation story
 need attention before this should touch important repositories.
+
+<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
+Everything above was addressed (commits up to `fa03734`), except:
+  - #4 (cancellation): only the fail-fast part is done (GIT_TERMINAL_PROMPT=0);
+    real subprocess cancellation is deferred to milestone M6.
+  - #10 (evil/magit keybinding matrix): not done — premise is off (j/k as
+    motion matches evil-collection-magit; vanilla magit's j-as-jump doesn't
+    apply). A written compatibility matrix is a nice-to-have, not a bug.
+Add any new feedback BELOW this marker.
+────────────────────────────────────────────────────────────────────────── -->
+
+## Second-Pass Findings
+
+These are from a re-review after the first batch of feedback was addressed.
+The high-value fixes are real: staged discard is no longer the obvious
+data-loss footgun it was, debug support is feature-gated, conflicts are blocked
+for single-file actions, the toolchain is pinned, `git apply` stdin handling is
+better, and the extracted `git_action.rs` layer is a useful separation.
+
+1. `crates/magritte-core/src/stage.rs:172` silently swallows all failures from
+   the staged-discard `git apply --reverse --reject` worktree step. The
+   direction matches Magit (`.reference/magit/lisp/magit-apply.el:527`), but
+   the observability does not. I reproduced an overlapping staged/unstaged hunk
+   in a scratch repo: Git wrote `f.txt.rej` and exited `1`; Magritte would treat
+   that as success, clear the status message, and leave the user to discover
+   the reject file manually. This should return a structured "partial discard"
+   result or at least surface "index reverted; worktree hunk rejected; see
+   <path>.rej".
+
+2. Real subprocess cancellation is still missing. `GIT_TERMINAL_PROMPT=0` in
+   `crates/magritte-core/src/repo.rs:86` is a good fail-fast mitigation, but
+   `Repo::run` and `Repo::run_with_input` still block until child exit. The UI
+   generation counter drops stale status/diff results, but slow remote
+   operations, hooks, SSH issues, or non-terminal blockers can still tie up
+   executor work with no timeout, kill handle, or user-visible cancellation.
+
+3. Visual-region conflict handling is inconsistent with single-file conflict
+   handling. `crates/magritte/src/main.rs:1483` explains and refuses a direct
+   action on a conflicted path, but `resolve_region_action` at
+   `crates/magritte/src/main.rs:1444` silently skips conflicted files and
+   applies the action to the rest of the selected region. For destructive
+   operations, silently applying a subset of the user's selection is a bad
+   trust boundary. Refuse the whole region or explicitly report the skipped
+   paths before mutating anything.
+
+4. The destructive confirmation text is now inaccurate. The comments and prompt
+   around `crates/magritte/src/main.rs:1375` and
+   `crates/magritte/src/git_action.rs:158` still say staged discard "reverts
+   index and worktree to HEAD". The new behavior is better and more Magit-like:
+   it preserves unrelated unstaged edits, may leave a staged-new file as
+   untracked, and may create reject files for overlapping worktree hunks. The
+   prompt should describe the real behavior, especially before a destructive
+   action.
+
+5. Git paths are still represented as lossy UTF-8 strings. `FileEntry.path` in
+   `crates/magritte-core/src/status.rs:66` and parser paths produced by
+   `lossy` at `crates/magritte-core/src/status.rs:347` cannot faithfully round
+   trip non-UTF-8 Git paths. This is probably acceptable for many macOS repos,
+   but it is below Magit-grade Git fidelity. Consider `bstr`/byte paths in the
+   core and converting only at the UI edge.
+
+6. Config persistence remains fragile. `load_reporting` in
+   `crates/magritte/src/config.rs:71` silently treats an unreadable existing
+   config file as defaults, and `save` at `crates/magritte/src/config.rs:102`
+   writes the TOML directly instead of atomically writing a temp file and
+   renaming it into place. Low severity, but easy to harden.
+
+7. Commit-extend logic is duplicated. `Repo::commit_extend` exists in
+   `crates/magritte-core/src/commit.rs:53`, but the transient executor builds
+   the same `git commit --amend --no-edit` command separately in
+   `crates/magritte-core/src/transient.rs:278`. This is not currently a bug,
+   but it is drift-prone once commit switches or error handling become richer.
+
+## Second-Pass Verification
+
+- `cargo fmt --check` passes.
+- `cargo test` passes.
+- `cargo clippy --all-targets --all-features` passes.
+- Cargo still reports a future-incompatibility warning for upstream
+  `block v0.1.6`, pulled in through GPUI/cocoa. `cargo tree -i block` confirms
+  this is not Magritte code, but it is worth tracking because a future Rust
+  release may turn it into a hard error.

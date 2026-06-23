@@ -275,9 +275,8 @@ impl Repo {
             Command::Pull => vec!["pull".into()],
             Command::Fetch => vec!["fetch".into()],
             Command::FetchAll => vec!["fetch".into(), "--all".into()],
-            Command::CommitExtend => {
-                vec!["commit".into(), "--amend".into(), "--no-edit".into()]
-            }
+            // Reuse the dedicated builder rather than reconstructing the args.
+            Command::CommitExtend => return self.commit_extend(switches),
             Command::CommitCreate | Command::CommitAmend | Command::CommitReword => {
                 return Err(Error::Message(
                     "commit requires a message (use the editor)".into(),

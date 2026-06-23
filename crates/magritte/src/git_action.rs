@@ -155,20 +155,17 @@ pub fn describe_discard(action: &Action) -> String {
         Action::DiscardLines(f, _, l) => {
             format!("Discard {} line(s) in {}?", l.len(), f.display_path())
         }
-        Action::DiscardStagedFile(p) => {
-            format!("Discard staged {p} (reverts index and worktree to HEAD)?")
-        }
+        Action::DiscardStagedFile(p) => format!("Discard staged changes to {p}?"),
         Action::DiscardStagedHunk(f, _) => {
+            format!("Discard staged hunk in {}?", f.display_path())
+        }
+        Action::DiscardStagedLines(f, _, l) => {
             format!(
-                "Discard staged hunk in {} (index + worktree)?",
+                "Discard {} staged line(s) in {}?",
+                l.len(),
                 f.display_path()
             )
         }
-        Action::DiscardStagedLines(f, _, l) => format!(
-            "Discard {} staged line(s) in {} (index + worktree)?",
-            l.len(),
-            f.display_path()
-        ),
         Action::ApplyRegion {
             kind,
             file,
@@ -177,9 +174,9 @@ pub fn describe_discard(action: &Action) -> String {
             let n: usize = selections.iter().map(|(_, l)| l.len()).sum();
             let staged = matches!(kind, RegionKind::DiscardStaged);
             format!(
-                "Discard {n} line(s) in {}{}?",
-                file.display_path(),
-                if staged { " (index + worktree)" } else { "" }
+                "Discard {n} {}line(s) in {}?",
+                if staged { "staged " } else { "" },
+                file.display_path()
             )
         }
         Action::Batch(actions) => {

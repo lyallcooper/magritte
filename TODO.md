@@ -28,3 +28,5 @@
 - [x] Tab inside a hunk collapses (or expands) it, just like it magit
 - [x] Opening the settings screen prints warnings like "2026-06-23 11:40:38.247 magritte\[99253:4332374] CoreText note: Client requested name ".ZedSans", it will get TimesNewRomanPSMT rather than the intended font. All system UI font access should be through proper APIs such as CTFontCreateUIFontForLanguage() or +\[NSFont systemFontOfSize:]."
 - [x] When perfoming an action that changes the status UI, eg staging/unstaging/folding/unfolding, we can improve where we move the cursor line to after the action is performed to make it more user friendly and more like magit. We should bias the cursor line totay within the current section whenever possible. Folding inside a hunk should put us on the header line of that hunk. In general we shouldn't keep the cursor line number the same and hope it makes sense
+- [ ] Visual selection should allow us to stage whole files that are selected. Eg if the file diff is not expanded, the file name row being selected should make stage/unstage/etc. actions act upon it
+- [ ] Trying to start a regular commit should prompt to stage files like magit does
