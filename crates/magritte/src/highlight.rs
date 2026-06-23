@@ -297,27 +297,28 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
             }
         }
 
-        // Parse each side once, then slice per line.
-        let mut parsed_new = false;
-        let mut parsed_old = false;
-        for (line_ix, on_new, range) in placements {
-            let block = if on_new {
-                if !parsed_new {
-                    highlighter.update(None, &Rope::from(new_block.as_str()), None);
-                    parsed_new = true;
-                    parsed_old = false;
+        // Parse each side exactly once, slicing every line on that side before
+        // switching. `SyntaxHighlighter::update` replaces the parse tree, so we
+        // must group by side — interleaving would re-parse on every transition.
+        let has_new = placements.iter().any(|(_, on_new, _)| *on_new);
+        let has_old = placements.iter().any(|(_, on_new, _)| !*on_new);
+        if has_new {
+            highlighter.update(None, &Rope::from(new_block.as_str()), None);
+            for (line_ix, on_new, range) in &placements {
+                if *on_new {
+                    let spans = line_spans(&highlighter, &new_block, range, hl_theme, default);
+                    out.insert((hunk_ix, *line_ix), spans);
                 }
-                &new_block
-            } else {
-                if !parsed_old {
-                    highlighter.update(None, &Rope::from(old_block.as_str()), None);
-                    parsed_old = true;
-                    parsed_new = false;
+            }
+        }
+        if has_old {
+            highlighter.update(None, &Rope::from(old_block.as_str()), None);
+            for (line_ix, on_new, range) in &placements {
+                if !*on_new {
+                    let spans = line_spans(&highlighter, &old_block, range, hl_theme, default);
+                    out.insert((hunk_ix, *line_ix), spans);
                 }
-                &old_block
-            };
-            let spans = line_spans(&highlighter, block, &range, hl_theme, default);
-            out.insert((hunk_ix, line_ix), spans);
+            }
         }
     }
     out
