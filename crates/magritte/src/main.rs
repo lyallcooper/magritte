@@ -611,19 +611,31 @@ fn is_monospace_font(_name: &str) -> bool {
     true
 }
 
-/// Installed GUI editors as (display name, `.app` path), for the settings
-/// "Open in" menu. A curated list of common editors checked against the
-/// standard application directories; TextEdit (always present) is the fallback.
+/// Installed text editors as (display name, `.app` path), for the settings
+/// "Open in" menu. A curated list of known editors checked against the standard
+/// application directories.
+///
+/// We deliberately *don't* use LaunchServices here: querying the `.toml` file's
+/// handlers returns generic apps (macOS doesn't type `.toml` as text), and
+/// querying the plain-text / source-code editor handlers returns a noisy set —
+/// browsers, media players, and productivity apps all over-claim the editor
+/// role, while TextEdit doesn't even appear. macOS has no reliable "is a text
+/// editor" signal, so an allow-list gives a cleaner, more useful menu.
 #[cfg(target_os = "macos")]
-fn installed_editors() -> Vec<(SharedString, SharedString)> {
+fn text_editors() -> Vec<(SharedString, SharedString)> {
     const APPS: &[&str] = &[
         "Visual Studio Code",
+        "VSCodium",
         "Cursor",
         "Zed",
         "Sublime Text",
         "Nova",
         "BBEdit",
-        "VSCodium",
+        "TextMate",
+        "CotEditor",
+        "MacVim",
+        "Neovide",
+        "Emacs",
         "TextEdit",
     ];
     let mut dirs = vec![
@@ -649,7 +661,7 @@ fn installed_editors() -> Vec<(SharedString, SharedString)> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn installed_editors() -> Vec<(SharedString, SharedString)> {
+fn text_editors() -> Vec<(SharedString, SharedString)> {
     Vec::new()
 }
 
@@ -2265,7 +2277,7 @@ impl StatusView {
         if self.mono_fonts.is_empty() {
             self.mono_fonts = monospace_font_names(cx);
         }
-        self.editors = installed_editors();
+        self.editors = text_editors();
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
         let mut font_items: Vec<SharedString> = vec![SharedString::from(SYSTEM_FONT_LABEL)];
