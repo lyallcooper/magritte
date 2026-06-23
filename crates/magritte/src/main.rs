@@ -2444,8 +2444,12 @@ impl Render for StatusView {
         }
 
         // A floating "?" button (bottom-right) opens the dispatch menu — a
-        // mouse affordance for discovering commands. Hidden while a popup is up.
-        if self.popup.is_none() {
+        // mouse affordance for discovering commands. Hidden while a popup or a
+        // bottom bar (confirm / visual / status) is shown, so it never overlaps
+        // them.
+        let bottom_bar =
+            self.confirm.is_some() || self.visual.is_some() || self.status_message.is_some();
+        if self.popup.is_none() && !bottom_bar {
             root = root.child(
                 div()
                     .absolute()
