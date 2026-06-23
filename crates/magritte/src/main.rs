@@ -52,7 +52,7 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
 use gpui_component::tag::Tag;
-use gpui_component::{ActiveTheme, IconName, IndexPath, Sizable};
+use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, Repo, Status,
@@ -560,6 +560,10 @@ struct SettingsState {
     font: Entity<SelectState<SearchableVec<SharedString>>>,
     /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font).
     focus_ix: usize,
+    /// Explanation text for the toggle info icon currently hovered, and one
+    /// pinned by a click. The pinned one wins; either shows the help panel.
+    info_hover: Option<&'static str>,
+    info_pin: Option<&'static str>,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
 }
@@ -2315,6 +2319,8 @@ impl StatusView {
             dark_theme,
             font,
             focus_ix: 0,
+            info_hover: None,
+            info_pin: None,
             _subs: subs,
         });
         cx.notify();
@@ -3103,12 +3109,24 @@ impl StatusView {
                     |cfg, on| cfg.commit_body_wrap = on,
                 ),
             ))
+            // Help panel for the toggle info icons (pinned click wins over hover).
+            .child(
+                div()
+                    .min_h(px(48.0))
+                    .max_w(px(460.0))
+                    .text_sm()
+                    .text_color(self.palette.dim)
+                    .when_some(s.info_pin.or(s.info_hover), |el, text| {
+                        el.child(SharedString::from(text))
+                    }),
+            )
     }
 
     /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
-    /// an info icon whose tooltip explains the setting. The switch flips the
-    /// field and persists on click; both are mouse-driven, like the rest of the
-    /// settings screen (not part of the Tab focus ring, which cycles dropdowns).
+    /// an info icon that reveals `explanation` in the help panel — immediately
+    /// on hover, and pinned on click (so it stays for reading). The switch flips
+    /// the field and persists on click; all of it is mouse-driven, like the rest
+    /// of the settings screen (not part of the Tab focus ring).
     fn toggle_control(
         &self,
         id: &'static str,
@@ -3117,29 +3135,57 @@ impl StatusView {
         view: &Entity<Self>,
         set: fn(&mut config::Config, bool),
     ) -> AnyElement {
-        let view = view.clone();
-        let switch = Switch::new(id)
-            .checked(checked)
-            .on_click(move |on, _window, cx| {
+        let switch = Switch::new(id).checked(checked).on_click({
+            let view = view.clone();
+            move |on, _window, cx| {
                 let on = *on;
                 view.update(cx, |this, cx| {
                     set(&mut this.config, on);
                     config::save(&this.config);
                     cx.notify();
                 });
+            }
+        });
+        let info = div()
+            .id(SharedString::from(format!("{id}-info")))
+            .relative()
+            .cursor_pointer()
+            .child(track_target(format!("{id}-info")))
+            .child(
+                Icon::new(IconName::Info)
+                    .xsmall()
+                    .text_color(self.palette.dim),
+            )
+            .on_hover({
+                let view = view.clone();
+                move |hovered, _window, cx| {
+                    let hovered = *hovered;
+                    view.update(cx, |this, cx| {
+                        if let Some(s) = this.settings.as_mut() {
+                            s.info_hover = hovered.then_some(explanation);
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        if let Some(s) = this.settings.as_mut() {
+                            // Toggle the pin: click the open one to dismiss it.
+                            s.info_pin = (s.info_pin != Some(explanation)).then_some(explanation);
+                            cx.notify();
+                        }
+                    });
+                }
             });
         div()
             .flex()
             .items_center()
             .gap_2()
             .child(switch)
-            .child(
-                Button::new(format!("{id}-info"))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Info)
-                    .tooltip(explanation),
-            )
+            .child(info)
             .into_any_element()
     }
 
