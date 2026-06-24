@@ -23,8 +23,14 @@ pub struct ChoiceDelegate {
     lowered: Vec<String>,
     /// Indices into `choices` after filtering, in display (ranked) order.
     matched: Vec<usize>,
-    /// Index into `matched` of the highlighted row.
+    /// Index into `matched` (or the trailing create row) of the highlighted row.
     selected: Option<usize>,
+    /// When set, a non-matching query offers a trailing "create" row that yields
+    /// the typed text verbatim (e.g. a new branch to push to).
+    allow_create: bool,
+    /// The current (trimmed, original-case) query — the value the create row
+    /// yields.
+    query: String,
 }
 
 impl ChoiceDelegate {
@@ -37,13 +43,36 @@ impl ChoiceDelegate {
             lowered,
             matched,
             selected,
+            allow_create: false,
+            query: String::new(),
         }
     }
 
-    /// The currently highlighted choice, if any.
+    /// Allow choosing a freely-typed value that isn't in the list (shown as a
+    /// trailing "create" row).
+    pub fn allow_create(mut self, yes: bool) -> Self {
+        self.allow_create = yes;
+        self
+    }
+
+    /// Whether a "create" row for the typed query is currently shown.
+    fn create_row(&self) -> bool {
+        self.allow_create
+            && !self.query.is_empty()
+            && !self.choices.iter().any(|c| c.as_ref() == self.query)
+    }
+
+    /// The currently highlighted choice — an existing one, or the typed value
+    /// when the create row is selected.
     pub fn selected_choice(&self) -> Option<SharedString> {
         let row = self.selected?;
-        self.matched.get(row).map(|&i| self.choices[i].clone())
+        match self.matched.get(row) {
+            Some(&i) => Some(self.choices[i].clone()),
+            None if self.create_row() && row == self.matched.len() => {
+                Some(SharedString::from(self.query.clone()))
+            }
+            None => None,
+        }
     }
 }
 
@@ -51,7 +80,7 @@ impl ListDelegate for ChoiceDelegate {
     type Item = ListItem;
 
     fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.matched.len()
+        self.matched.len() + usize::from(self.create_row())
     }
 
     fn perform_search(
@@ -60,7 +89,8 @@ impl ListDelegate for ChoiceDelegate {
         _window: &mut Window,
         _cx: &mut Context<ListState<Self>>,
     ) -> Task<()> {
-        let q = query.trim().to_lowercase();
+        self.query = query.trim().to_string();
+        let q = self.query.to_lowercase();
         if q.is_empty() {
             // No query: keep the caller's order (which it picks to be useful).
             self.matched = (0..self.choices.len()).collect();
@@ -81,7 +111,8 @@ impl ListDelegate for ChoiceDelegate {
         }
         // The List re-selects the first row after a search, so the best match is
         // auto-selected; keep our mirror in sync for the initial render.
-        self.selected = (!self.matched.is_empty()).then_some(0);
+        let rows = self.matched.len() + usize::from(self.create_row());
+        self.selected = (rows > 0).then_some(0);
         Task::ready(())
     }
 
@@ -91,8 +122,16 @@ impl ListDelegate for ChoiceDelegate {
         _window: &mut Window,
         _cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let &choice_ix = self.matched.get(ix.row)?;
         let selected = self.selected == Some(ix.row);
+        // The trailing create row (when the query matches nothing existing).
+        if ix.row == self.matched.len() && self.create_row() {
+            return Some(
+                ListItem::new(ix.row)
+                    .selected(selected)
+                    .child(SharedString::from(format!("{}  (new)", self.query))),
+            );
+        }
+        let &choice_ix = self.matched.get(ix.row)?;
         Some(
             ListItem::new(ix.row)
                 .selected(selected)

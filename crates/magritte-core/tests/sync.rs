@@ -95,6 +95,28 @@ fn push_set_upstream_delivers_commits() {
 }
 
 #[test]
+fn push_ref_creates_new_remote_branch() {
+    let (t, remote) = repo_with_remote();
+    let repo = Repo::discover(t.path()).unwrap();
+
+    // Push the local `main` to a differently-named, not-yet-existing target.
+    repo.push_ref("origin", "main", "feature", &[]).unwrap();
+
+    // The remote gained `feature` at our HEAD, and our remote-tracking refs
+    // (after a fetch) list it as `origin/feature`.
+    let local_head = t.git(["rev-parse", "HEAD"]);
+    let remote_head = git_in(remote.path(), &["rev-parse", "feature"]);
+    assert_eq!(local_head, remote_head);
+
+    repo.fetch_from("origin", &[]).unwrap();
+    let branches = repo.remote_branches().unwrap();
+    assert!(
+        branches.iter().any(|b| b == "origin/feature"),
+        "expected origin/feature in {branches:?}"
+    );
+}
+
+#[test]
 fn dry_run_switch_does_not_deliver() {
     let (t, remote) = repo_with_remote();
     let repo = Repo::discover(t.path()).unwrap();

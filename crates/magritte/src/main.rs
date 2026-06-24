@@ -140,7 +140,9 @@ enum Popup {
     RemotePicker(RemotePickerState),
 }
 
-/// What to do with a remote once it's resolved (from config or the picker).
+/// What to do with the picker's chosen value. The remote-level variants take a
+/// remote *name*; the `*Ref` variants take a `remote/branch` ref (magit's
+/// "elsewhere"), so the picker lists remote branches and can create a new one.
 #[derive(Clone)]
 enum Transfer {
     /// `git push [--set-upstream] <remote> <branch>`; `save_push_remote` records
@@ -150,8 +152,13 @@ enum Transfer {
         set_upstream: bool,
         save_push_remote: bool,
     },
+    /// Push the current branch to a chosen `remote/branch` ref (elsewhere),
+    /// creating it if new: `git push <remote> <branch>:<target>`.
+    PushRef { branch: String },
     /// `git pull <remote> <branch>` — `branch` is the remote branch to merge.
     Pull { branch: String },
+    /// Pull a chosen `remote/branch` ref (elsewhere).
+    PullRef,
     /// `git fetch <remote>`.
     Fetch,
 }
@@ -160,8 +167,8 @@ impl Transfer {
     /// Present-tense label for the progress message.
     fn verb(&self) -> &'static str {
         match self {
-            Transfer::Push { .. } => "Pushing",
-            Transfer::Pull { .. } => "Pulling",
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushing",
+            Transfer::Pull { .. } | Transfer::PullRef => "Pulling",
             Transfer::Fetch => "Fetching",
         }
     }
@@ -169,18 +176,28 @@ impl Transfer {
     /// Imperative label for the confirm button ("Push" / "Pull" / "Fetch").
     fn action_label(&self) -> &'static str {
         match self {
-            Transfer::Push { .. } => "Push",
-            Transfer::Pull { .. } => "Pull",
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "Push",
+            Transfer::Pull { .. } | Transfer::PullRef => "Pull",
             Transfer::Fetch => "Fetch",
+        }
+    }
+
+    /// Preposition for the picker title: you push *to* a target, but pull/fetch
+    /// *from* one (matching magit's "Push … to" / "Pull from" / "Fetch from").
+    fn preposition(&self) -> &'static str {
+        match self {
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "to",
+            Transfer::Pull { .. } | Transfer::PullRef | Transfer::Fetch => "from",
         }
     }
 }
 
-/// An open remote picker: a dropdown of remotes plus the pending transfer. The
-/// transfer runs when the user picks an item (Confirm) or clicks the action
-/// button (which uses the dropdown's current value).
+/// An open target picker: a searchable list plus the pending transfer. The
+/// transfer runs when the user picks an item (Confirm) or presses the confirm
+/// button (which uses the highlighted value).
 struct RemotePickerState {
     title: SharedString,
+    placeholder: SharedString,
     list: Entity<ListState<ChoiceDelegate>>,
     transfer: Transfer,
     switches: Vec<String>,
@@ -2140,12 +2157,9 @@ impl StatusView {
                 self.resolve_remote(t, remote, switches, window, cx);
             }
             PushElsewhere => {
-                let t = Transfer::Push {
-                    branch,
-                    set_upstream: false,
-                    save_push_remote: false,
-                };
-                self.prompt_remote(t, switches, window, cx);
+                // Choose (or type a new) remote branch to push the current
+                // branch to.
+                self.prompt_branch(Transfer::PushRef { branch }, true, switches, window, cx);
             }
             PullPushRemote => self.resolve_remote(
                 Transfer::Pull { branch },
@@ -2165,7 +2179,8 @@ impl StatusView {
                 ),
                 None => self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx),
             },
-            PullElsewhere => self.prompt_remote(Transfer::Pull { branch }, switches, window, cx),
+            // Pull an existing remote branch (no create — can't pull a new one).
+            PullElsewhere => self.prompt_branch(Transfer::PullRef, false, switches, window, cx),
             FetchPushRemote => self.resolve_remote(
                 Transfer::Fetch,
                 targets.push_remote.clone(),
@@ -2197,7 +2212,7 @@ impl StatusView {
             self.run_transfer(transfer, remote, switches, cx);
             return;
         }
-        let remotes = self
+        let mut remotes = self
             .repo
             .as_ref()
             .and_then(|r| r.remotes().ok())
@@ -2208,12 +2223,23 @@ impl StatusView {
                 cx.notify();
             }
             1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
-            _ => self.open_remote_picker(transfer, remotes, switches, window, cx),
+            _ => {
+                remotes.sort_by_key(|r| r != "origin");
+                self.open_picker(
+                    transfer,
+                    remotes,
+                    false,
+                    "Choose a remote",
+                    switches,
+                    window,
+                    cx,
+                )
+            }
         }
     }
 
     /// Always show the remote picker for a pending transfer (the "elsewhere"
-    /// actions, where the point is to choose) — even with a single remote.
+    /// fetch, where the point is to choose) — even with a single remote.
     fn prompt_remote(
         &mut self,
         transfer: Transfer,
@@ -2221,7 +2247,7 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remotes = self
+        let mut remotes = self
             .repo
             .as_ref()
             .and_then(|r| r.remotes().ok())
@@ -2231,26 +2257,75 @@ impl StatusView {
             cx.notify();
             return;
         }
-        self.open_remote_picker(transfer, remotes, switches, window, cx);
+        remotes.sort_by_key(|r| r != "origin");
+        self.open_picker(
+            transfer,
+            remotes,
+            false,
+            "Choose a remote",
+            switches,
+            window,
+            cx,
+        );
     }
 
-    /// Open the searchable remote picker for a pending transfer. The list's
-    /// search field is focused on appear, so it's type-to-filter immediately.
-    fn open_remote_picker(
+    /// Show the remote-*branch* picker for a push/pull "elsewhere" (magit's
+    /// ref-level target). `create` allows pushing to a freshly-typed branch.
+    fn prompt_branch(
         &mut self,
         transfer: Transfer,
-        remotes: Vec<String>,
+        create: bool,
         switches: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = SharedString::from(format!("{} to", transfer.action_label()));
-        // Useful default order: the conventional `origin` first, the rest as-is.
-        let mut remotes = remotes;
-        remotes.sort_by_key(|r| r != "origin");
-        let items: Vec<SharedString> = remotes.into_iter().map(SharedString::from).collect();
-        let list =
-            cx.new(|cx| ListState::new(ChoiceDelegate::new(items), window, cx).searchable(true));
+        let Some(repo) = self.repo.as_ref() else {
+            return;
+        };
+        if repo.remotes().map(|r| r.is_empty()).unwrap_or(true) {
+            self.status_message = Some("No remotes configured".to_string());
+            cx.notify();
+            return;
+        }
+        let branches = repo.remote_branches().unwrap_or_default();
+        self.open_picker(
+            transfer,
+            branches,
+            create,
+            "Choose a branch",
+            switches,
+            window,
+            cx,
+        );
+    }
+
+    /// Open the searchable target picker for a pending transfer. The list's
+    /// search field is focused on appear, so it's type-to-filter immediately.
+    #[allow(clippy::too_many_arguments)]
+    fn open_picker(
+        &mut self,
+        transfer: Transfer,
+        choices: Vec<String>,
+        allow_create: bool,
+        placeholder: &'static str,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = SharedString::from(format!(
+            "{} {}",
+            transfer.action_label(),
+            transfer.preposition()
+        ));
+        let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
+        let list = cx.new(|cx| {
+            ListState::new(
+                ChoiceDelegate::new(items).allow_create(allow_create),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         // Enter (or clicking a row) confirms; Esc cancels.
         let sub = cx.subscribe_in(
             &list,
@@ -2269,6 +2344,7 @@ impl StatusView {
         });
         self.popup = Some(Popup::RemotePicker(RemotePickerState {
             title,
+            placeholder: SharedString::from(placeholder),
             list,
             transfer,
             switches,
@@ -2291,10 +2367,12 @@ impl StatusView {
     }
 
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
+    /// `chosen` is a remote name for the remote-level transfers, or a
+    /// `remote/branch` ref (possibly newly typed) for the `*Ref` ones.
     fn run_transfer(
         &mut self,
         transfer: Transfer,
-        remote: String,
+        chosen: String,
         switches: Vec<String>,
         cx: &mut Context<Self>,
     ) {
@@ -2314,12 +2392,20 @@ impl StatusView {
                             save_push_remote,
                         } => {
                             if save_push_remote {
-                                let _ = repo.set_push_remote(&branch, &remote);
+                                let _ = repo.set_push_remote(&branch, &chosen);
                             }
-                            repo.push_to(&remote, &branch, set_upstream, &switches)
+                            repo.push_to(&chosen, &branch, set_upstream, &switches)
                         }
-                        Transfer::Pull { branch } => repo.pull_from(&remote, &branch, &switches),
-                        Transfer::Fetch => repo.fetch_from(&remote, &switches),
+                        Transfer::PushRef { branch } => {
+                            let (remote, target) = split_ref(&repo, &chosen);
+                            repo.push_ref(&remote, &branch, &target, &switches)
+                        }
+                        Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
+                        Transfer::PullRef => {
+                            let (remote, branch) = split_ref(&repo, &chosen);
+                            repo.pull_from(&remote, &branch, &switches)
+                        }
+                        Transfer::Fetch => repo.fetch_from(&chosen, &switches),
                     }
                 })
                 .await;
@@ -3231,8 +3317,8 @@ impl StatusView {
     /// the transfer; the "return" kbd button does the same.
     fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
         let confirm_label = match state.transfer {
-            Transfer::Push { .. } => "push",
-            Transfer::Pull { .. } => "pull",
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "push",
+            Transfer::Pull { .. } | Transfer::PullRef => "pull",
             Transfer::Fetch => "fetch",
         };
         div()
@@ -3274,7 +3360,7 @@ impl StatusView {
                 div()
                     .w(px(280.0))
                     .h(px(200.0))
-                    .child(List::new(&state.list).search_placeholder("Choose a remote")),
+                    .child(List::new(&state.list).search_placeholder(state.placeholder.clone())),
             )
     }
 
@@ -4465,6 +4551,28 @@ fn last_line(text: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+/// Split a chosen `remote/branch` ref into its parts. A bare value (no `/`,
+/// from a freshly-typed branch) defaults to the first configured remote, or
+/// `origin`.
+fn split_ref(repo: &Repo, chosen: &str) -> (String, String) {
+    match chosen.split_once('/') {
+        Some((remote, branch)) => (remote.to_string(), branch.to_string()),
+        None => {
+            let remotes = repo.remotes().unwrap_or_default();
+            // Prefer the conventional `origin`, else the first remote.
+            let remote = if remotes.iter().any(|r| r == "origin") {
+                "origin".to_string()
+            } else {
+                remotes
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| "origin".to_string())
+            };
+            (remote, chosen.to_string())
+        }
+    }
 }
 
 /// Read the first and last ~1 KB of a file (lossy UTF-8) for modeline/shebang
