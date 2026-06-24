@@ -4168,22 +4168,21 @@ impl StatusView {
         let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
 
         let body = if rows == 0 {
-            // No candidates. For a selection picker, say "No match"; for plain
-            // value entry there's nothing to match (you're just typing), so keep
-            // the area empty.
-            let hint = if state.list.is_value_entry() {
-                ""
+            // Value entry has nothing to match — collapse the candidate area
+            // entirely so the hints sit right under the input. A selection
+            // picker instead shows a quiet "No match" line.
+            if state.list.is_value_entry() {
+                div().into_any_element()
             } else {
-                "No match"
-            };
-            div()
-                .h(list_height)
-                .pl(px(ROW_PAD_LEFT))
-                .flex()
-                .items_center()
-                .text_color(self.palette.dim)
-                .child(SharedString::from(hint))
-                .into_any_element()
+                div()
+                    .h(list_height)
+                    .pl(px(ROW_PAD_LEFT))
+                    .flex()
+                    .items_center()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("No match"))
+                    .into_any_element()
+            }
         } else {
             uniform_list("picker-rows", rows, {
                 let view = view.clone();
