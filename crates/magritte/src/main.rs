@@ -257,6 +257,7 @@ fn dispatch_menu() -> Transient {
                     info("tab", "Fold / unfold"),
                     info("gr", "Refresh"),
                     info("v", "Visual selection"),
+                    info("$", "Git command log"),
                 ],
             },
         ],
@@ -865,6 +866,9 @@ struct StatusView {
     editor: Option<CommitEditor>,
     /// The live settings screen, when open (takes over the window).
     settings: Option<SettingsState>,
+    /// The git command-log view (magit's `$` process buffer), when open. Holds
+    /// the scroll handle; the entries are read live from the repo.
+    git_log: Option<UniformListScrollHandle>,
     /// The monospace font family used for all chrome, set via settings.
     font: SharedString,
     /// The loaded user config (theme/appearance/font), kept so we can re-apply
@@ -925,6 +929,7 @@ impl StatusView {
             popup: None,
             editor: None,
             settings: None,
+            git_log: None,
             font,
             config,
             mono_fonts: Vec::new(),
@@ -2997,6 +3002,28 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Open the git command-log view (magit's `$` process buffer), scrolled to
+    /// the most recent command.
+    fn open_git_log(&mut self, cx: &mut Context<Self>) {
+        let scroll = UniformListScrollHandle::new();
+        let last = self
+            .repo
+            .as_ref()
+            .map(|r| r.command_log().len())
+            .unwrap_or(0);
+        if let Some(n) = last.checked_sub(1) {
+            scroll.scroll_to_item(n, gpui::ScrollStrategy::Bottom);
+        }
+        self.git_log = Some(scroll);
+        cx.notify();
+    }
+
+    fn close_git_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.git_log = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editor.as_ref() else {
             return;
@@ -3060,6 +3087,14 @@ impl StatusView {
         if self.settings.is_some() {
             if key == "escape" {
                 self.close_settings(window, cx);
+            }
+            return;
+        }
+
+        // The git command-log view takes over the window; esc/q/$ close it.
+        if self.git_log.is_some() {
+            if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
+                self.close_git_log(window, cx);
             }
             return;
         }
@@ -3199,6 +3234,15 @@ impl StatusView {
                 self.open_settings(window, cx);
                 return;
             }
+            // Git command log (magit's `$` process buffer).
+            "$" => {
+                self.open_git_log(cx);
+                return;
+            }
+            "4" if shift => {
+                self.open_git_log(cx);
+                return;
+            }
             // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
                 self.popup = Some(Popup::Dispatch(dispatch_menu()));
@@ -3257,6 +3301,7 @@ impl StatusView {
                 self.open_transient(transient::fetch_transient(&t), t, cx);
             }
             "," => self.open_settings(window, cx),
+            "$" => self.open_git_log(cx),
             "s" => self.act(Op::Stage, cx),
             "S" => self.run_action(Action::StageAll, cx),
             "u" => self.act(Op::Unstage, cx),
@@ -3878,6 +3923,115 @@ impl StatusView {
         }
     }
 
+    /// Render the git command-log view (magit's `$` process buffer): a header
+    /// and a scrollable list of the recent git invocations, newest at the
+    /// bottom, each flagged with success/failure.
+    fn render_git_log(&self, scroll: &UniformListScrollHandle, view: &Entity<Self>) -> gpui::Div {
+        let count = self
+            .repo
+            .as_ref()
+            .map(|r| r.command_log().len())
+            .unwrap_or(0);
+
+        let body = if count == 0 {
+            div()
+                .text_color(self.palette.dim)
+                .child(SharedString::from("No git commands have run yet."))
+                .into_any_element()
+        } else {
+            uniform_list("git-log-rows", count, {
+                let view = view.clone();
+                move |range, _window, cx| {
+                    let this = view.read(cx);
+                    let entries = this
+                        .repo
+                        .as_ref()
+                        .map(|r| r.command_log())
+                        .unwrap_or_default();
+                    range
+                        .filter_map(|ix| entries.get(ix).map(|e| this.render_git_log_row(e)))
+                        .collect::<Vec<_>>()
+                }
+            })
+            .track_scroll(scroll)
+            .flex_grow(1.0)
+            .into_any_element()
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.section)
+                            .child(SharedString::from("Git command log")),
+                    )
+                    .child(self.key_action(
+                        "git-log-close",
+                        "esc",
+                        "close",
+                        view,
+                        Self::close_git_log,
+                    )),
+            )
+            .child(body)
+    }
+
+    /// One row of the git command log: a success/failure sigil, the dim `git`
+    /// prefix, and the arguments (reddened when the command failed).
+    fn render_git_log_row(&self, e: &magritte_core::GitCommand) -> AnyElement {
+        let (sigil, sigil_color) = if e.ok {
+            ("✓", self.palette.added)
+        } else {
+            ("✗", self.palette.removed)
+        };
+        let args_color = if e.ok {
+            self.palette.fg
+        } else {
+            self.palette.removed
+        };
+        div()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(12.0))
+                    .flex_shrink_0()
+                    .text_color(sigil_color)
+                    .child(SharedString::from(sigil)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from("git")),
+                    )
+                    .child(
+                        div()
+                            .text_color(args_color)
+                            .child(SharedString::from(e.args.join(" "))),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
@@ -4466,12 +4620,16 @@ impl Render for StatusView {
             .flex()
             .flex_col();
 
-        // The settings screen and commit editor each take over the window.
+        // The settings screen, commit editor, and git-log view each take over
+        // the window.
         if let Some(s) = &self.settings {
             return root.child(self.render_settings(s, &view));
         }
         if let Some(ed) = &self.editor {
             return root.child(self.render_editor(ed, &view));
+        }
+        if let Some(scroll) = &self.git_log {
+            return root.child(self.render_git_log(scroll, &view));
         }
 
         // The list takes the flexible space; the status bar (added below)

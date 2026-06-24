@@ -18,7 +18,7 @@ pub use commit::CommitMode;
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use remote::{RemoteTargets, Upstream};
-pub use repo::{GitOutput, Repo};
+pub use repo::{GitCommand, GitOutput, Repo};
 pub use stage::ApplyTarget;
 pub use status::{Change, EntryKind, FileEntry, HeadInfo, Status};
 pub use transient::{Command, Transient};
