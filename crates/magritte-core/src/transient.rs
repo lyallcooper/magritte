@@ -34,6 +34,16 @@ pub enum Command {
     CommitReword,
     /// Amend HEAD with staged changes, keeping its message.
     CommitExtend,
+    /// Check out an existing branch/revision (the frontend prompts).
+    BranchCheckout,
+    /// Create a new branch and check it out (prompts for a name).
+    BranchCreateCheckout,
+    /// Create a new branch without checking it out (prompts for a name).
+    BranchCreate,
+    /// Rename a branch (prompts for the branch, then the new name).
+    BranchRename,
+    /// Delete a branch (prompts for the branch).
+    BranchDelete,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -189,6 +199,52 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                         key: "e",
                         description: "elsewhere".to_string(),
                         command: Command::PushElsewhere,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn branch_transient() -> Transient {
+    Transient {
+        title: plain_title("Branch"),
+        groups: vec![
+            Group {
+                title: plain_title("Checkout"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "b",
+                        description: "branch/revision".to_string(),
+                        command: Command::BranchCheckout,
+                    }),
+                    Suffix::Action(Action {
+                        key: "c",
+                        description: "new branch".to_string(),
+                        command: Command::BranchCreateCheckout,
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Create"),
+                suffixes: vec![Suffix::Action(Action {
+                    key: "n",
+                    description: "new branch".to_string(),
+                    command: Command::BranchCreate,
+                })],
+            },
+            Group {
+                title: plain_title("Do"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "m",
+                        description: "rename".to_string(),
+                        command: Command::BranchRename,
+                    }),
+                    Suffix::Action(Action {
+                        key: "k",
+                        description: "delete".to_string(),
+                        command: Command::BranchDelete,
                     }),
                 ],
             },

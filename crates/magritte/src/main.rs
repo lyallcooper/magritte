@@ -33,7 +33,7 @@ mod highlight;
 mod picker;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
-use picker::PickerList;
+use picker::{CreateMode, PickerList};
 
 /// Key context for our status view, used so our `tab` binding takes precedence
 /// over gpui-component Root's focus-navigation `tab`.
@@ -193,9 +193,73 @@ impl Transfer {
     }
 }
 
+/// A branch-transient operation carried out against a picked branch/name. Some
+/// are two-step (`RenameFrom` → `RenameTo`): the first picker's confirm opens
+/// the second.
+#[derive(Clone)]
+enum BranchAction {
+    /// Check out the chosen branch/revision.
+    Checkout,
+    /// Create a branch named by the chosen value (from HEAD); check it out too
+    /// when `checkout`.
+    Create { checkout: bool },
+    /// Step 1 of rename: the chosen branch is the one to rename.
+    RenameFrom,
+    /// Step 2 of rename: rename `old` to the chosen new name.
+    RenameTo { old: String },
+    /// Delete the chosen branch.
+    Delete,
+}
+
+/// What the picker does with its chosen value: a push/pull/fetch target, or a
+/// branch operation.
+#[derive(Clone)]
+enum PickerAction {
+    Transfer(Transfer),
+    Branch(BranchAction),
+}
+
+impl PickerAction {
+    /// The minibuffer prompt (styled spans) for this picker.
+    fn prompt(&self) -> Vec<TitleSpan> {
+        match self {
+            PickerAction::Transfer(t) => t.prompt(),
+            PickerAction::Branch(b) => match b {
+                BranchAction::Checkout => transient::plain_title("Checkout"),
+                BranchAction::Create { checkout: true } => {
+                    transient::plain_title("Create & checkout branch")
+                }
+                BranchAction::Create { checkout: false } => transient::plain_title("Create branch"),
+                BranchAction::RenameFrom => transient::plain_title("Rename branch"),
+                BranchAction::RenameTo { old } => vec![
+                    TitleSpan::text("Rename "),
+                    TitleSpan::branch(old.clone()),
+                    TitleSpan::text(" to"),
+                ],
+                BranchAction::Delete => transient::plain_title("Delete branch"),
+            },
+        }
+    }
+
+    /// Imperative verb for the confirm key hint.
+    fn confirm_label(&self) -> &'static str {
+        match self {
+            PickerAction::Transfer(Transfer::Push { .. } | Transfer::PushRef { .. }) => "push",
+            PickerAction::Transfer(Transfer::Pull { .. } | Transfer::PullRef) => "pull",
+            PickerAction::Transfer(Transfer::Fetch) => "fetch",
+            PickerAction::Branch(BranchAction::Checkout) => "checkout",
+            PickerAction::Branch(BranchAction::Create { .. }) => "create",
+            PickerAction::Branch(BranchAction::RenameFrom | BranchAction::RenameTo { .. }) => {
+                "rename"
+            }
+            PickerAction::Branch(BranchAction::Delete) => "delete",
+        }
+    }
+}
+
 /// An open target picker (vertico-style): a prompt, an inline query input, a
-/// ranked candidate list, and the pending transfer. The transfer runs against
-/// the highlighted (or clicked) candidate on Enter.
+/// ranked candidate list, and the pending action. It runs against the
+/// highlighted (or clicked) candidate on Enter.
 struct RemotePickerState {
     /// The minibuffer-style prompt as styled spans, e.g. `Push `[main]` to` (the
     /// `:` and the typed text are rendered after it).
@@ -206,7 +270,7 @@ struct RemotePickerState {
     list: PickerList,
     /// Scrolls the (virtualized) candidate rows.
     scroll: UniformListScrollHandle,
-    transfer: Transfer,
+    action: PickerAction,
     switches: Vec<String>,
     /// Kept alive so the input-change subscription stays active.
     _sub: Subscription,
@@ -224,6 +288,7 @@ fn dispatch_menu() -> Transient {
                 title: transient::plain_title("Commands"),
                 suffixes: vec![
                     info("c", "Commit"),
+                    info("b", "Branch"),
                     info("p", "Push"),
                     info("F", "Pull"),
                     info("f", "Fetch"),
@@ -2025,8 +2090,60 @@ impl StatusView {
                 | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
                     self.dispatch_transfer(action.command, &targets, switches, window, cx)
                 }
+                BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename
+                | BranchDelete => self.dispatch_branch(action.command, window, cx),
             }
         }
+    }
+
+    /// Open the picker for a branch-transient command: checkout/rename/delete
+    /// pick an existing branch; create reads a new name (free text).
+    fn dispatch_branch(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        use transient::Command::*;
+        let (action, choices, create) = match command {
+            BranchCheckout => {
+                let mut choices = repo.local_branches().unwrap_or_default();
+                choices.extend(repo.remote_branches().unwrap_or_default());
+                (BranchAction::Checkout, choices, CreateMode::None)
+            }
+            BranchCreateCheckout => (
+                BranchAction::Create { checkout: true },
+                Vec::new(),
+                CreateMode::Any,
+            ),
+            BranchCreate => (
+                BranchAction::Create { checkout: false },
+                Vec::new(),
+                CreateMode::Any,
+            ),
+            BranchRename => (
+                BranchAction::RenameFrom,
+                repo.local_branches().unwrap_or_default(),
+                CreateMode::None,
+            ),
+            BranchDelete => (
+                BranchAction::Delete,
+                repo.local_branches().unwrap_or_default(),
+                CreateMode::None,
+            ),
+            _ => return,
+        };
+        self.open_picker(
+            PickerAction::Branch(action),
+            choices,
+            create,
+            Vec::new(),
+            window,
+            cx,
+        );
     }
 
     /// Begin an amend/reword/extend, first checking (off the UI thread) whether
@@ -2237,7 +2354,14 @@ impl StatusView {
             1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
             _ => {
                 remotes.sort_by_key(|r| r != "origin");
-                self.open_picker(transfer, remotes, false, switches, window, cx)
+                self.open_picker(
+                    PickerAction::Transfer(transfer),
+                    remotes,
+                    CreateMode::None,
+                    switches,
+                    window,
+                    cx,
+                )
             }
         }
     }
@@ -2262,7 +2386,14 @@ impl StatusView {
             return;
         }
         remotes.sort_by_key(|r| r != "origin");
-        self.open_picker(transfer, remotes, false, switches, window, cx);
+        self.open_picker(
+            PickerAction::Transfer(transfer),
+            remotes,
+            CreateMode::None,
+            switches,
+            window,
+            cx,
+        );
     }
 
     /// Show the remote-*branch* picker for a push/pull "elsewhere" (magit's
@@ -2294,22 +2425,34 @@ impl StatusView {
             }
             _ => existing,
         };
-        self.open_picker(transfer, choices, create, switches, window, cx);
+        let create_mode = if create {
+            CreateMode::RemoteBranch
+        } else {
+            CreateMode::None
+        };
+        self.open_picker(
+            PickerAction::Transfer(transfer),
+            choices,
+            create_mode,
+            switches,
+            window,
+            cx,
+        );
     }
 
-    /// Open the vertico-style target picker for a pending transfer. The query
-    /// input is focused on appear, so it's type-to-filter immediately; the model
-    /// re-ranks on every change.
+    /// Open the vertico-style picker for a pending action. The query input is
+    /// focused on appear, so it's type-to-filter immediately; the model re-ranks
+    /// on every change.
     fn open_picker(
         &mut self,
-        transfer: Transfer,
+        action: PickerAction,
         choices: Vec<String>,
-        allow_create: bool,
+        create: CreateMode,
         switches: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prompt = transfer.prompt();
+        let prompt = action.prompt();
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
         let input = cx.new(|cx| InputState::new(window, cx));
         // Re-filter as the query changes (Up/Down/Enter/Esc are handled in the
@@ -2332,25 +2475,32 @@ impl StatusView {
         self.popup = Some(Popup::RemotePicker(RemotePickerState {
             prompt,
             input,
-            list: PickerList::new(items, allow_create),
+            list: PickerList::new(items, create),
             scroll: UniformListScrollHandle::new(),
-            transfer,
+            action,
             switches,
             _sub: sub,
         }));
         cx.notify();
     }
 
-    /// Run the pending transfer against the remote currently highlighted in the
+    /// Run the pending action against the candidate currently highlighted in the
     /// picker (Enter, a row click, or the kbd button).
-    fn confirm_remote_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_remote_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = match &self.popup {
             Some(Popup::RemotePicker(p)) => p.list.selected_choice(),
             _ => None,
         };
         let Some(chosen) = chosen else { return };
         if let Some(Popup::RemotePicker(p)) = self.popup.take() {
-            self.run_transfer(p.transfer, chosen.to_string(), p.switches, cx);
+            match p.action {
+                PickerAction::Transfer(t) => {
+                    self.run_transfer(t, chosen.to_string(), p.switches, cx)
+                }
+                PickerAction::Branch(b) => {
+                    self.run_branch_action(b, chosen.to_string(), window, cx)
+                }
+            }
         }
     }
 
@@ -2432,6 +2582,74 @@ impl StatusView {
             let result = cx
                 .background_executor()
                 .spawn(async move { repo.fetch_all(&switches) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.status_message = Some(match result {
+                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
+                    Ok(msg) => last_line(&msg),
+                    Err(e) => format!("error: {e}"),
+                });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Carry out a branch-transient action against the chosen branch/name.
+    /// Rename is two-step: step 1 (`RenameFrom`) opens the name prompt rather
+    /// than running git.
+    fn run_branch_action(
+        &mut self,
+        action: BranchAction,
+        chosen: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Step 1 of rename: the chosen branch is the one to rename — now prompt
+        // for the new name (free text).
+        if let BranchAction::RenameFrom = action {
+            self.open_picker(
+                PickerAction::Branch(BranchAction::RenameTo { old: chosen }),
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            );
+            return;
+        }
+
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let verb = match &action {
+            BranchAction::Checkout => "Checking out",
+            BranchAction::Create { .. } => "Creating branch",
+            BranchAction::RenameTo { .. } => "Renaming branch",
+            BranchAction::Delete => "Deleting branch",
+            BranchAction::RenameFrom => unreachable!("handled above"),
+        };
+        self.status_message = Some(format!("{verb}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match action {
+                        BranchAction::Checkout => repo.checkout(&chosen),
+                        BranchAction::Create { checkout: true } => {
+                            repo.create_and_checkout(&chosen, None)
+                        }
+                        BranchAction::Create { checkout: false } => {
+                            repo.create_branch(&chosen, None)
+                        }
+                        BranchAction::RenameTo { old } => repo.rename_branch(&old, &chosen),
+                        BranchAction::Delete => repo.delete_branch(&chosen, false),
+                        BranchAction::RenameFrom => unreachable!("handled above"),
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.status_message = Some(match result {
@@ -3216,6 +3434,11 @@ impl StatusView {
                     cx,
                 )
             }
+            // Branch transient.
+            "b" => {
+                let t = self.remote_targets();
+                return self.open_transient(transient::branch_transient(), t, cx);
+            }
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
             "p" => {
                 let t = self.remote_targets();
@@ -3288,6 +3511,10 @@ impl StatusView {
         self.popup = None;
         match key {
             "c" => self.open_transient(transient::commit_transient(), RemoteTargets::default(), cx),
+            "b" => {
+                let t = self.remote_targets();
+                self.open_transient(transient::branch_transient(), t, cx);
+            }
             "p" => {
                 let t = self.remote_targets();
                 self.open_transient(transient::push_transient(&t), t, cx);
@@ -3373,11 +3600,7 @@ impl StatusView {
     /// of remotes (search field focused on appear). Enter / clicking a row runs
     /// the transfer; the "return" kbd button does the same.
     fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
-        let confirm_label = match state.transfer {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "push",
-            Transfer::Pull { .. } | Transfer::PullRef => "pull",
-            Transfer::Fetch => "fetch",
-        };
+        let confirm_label = state.action.confirm_label();
 
         // Show up to a screenful of candidates; the rest scroll.
         const MAX_VISIBLE: usize = 8;
@@ -4837,6 +5060,10 @@ fn describe_command(command: transient::Command) -> &'static str {
         PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
         FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
         CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
+        // Branch commands route through their own picker/runner, not here.
+        BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
+            "Working"
+        }
     }
 }
 

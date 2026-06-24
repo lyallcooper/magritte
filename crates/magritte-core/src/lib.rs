@@ -5,6 +5,7 @@
 //! throwaway repositories with no graphics stack. The frontend is responsible
 //! for running these (blocking) calls off the UI thread and for cancellation.
 
+pub mod branch;
 pub mod commit;
 pub mod diff;
 pub mod error;
