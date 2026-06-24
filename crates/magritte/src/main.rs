@@ -407,6 +407,7 @@ fn dispatch_menu() -> Transient {
                     info("F", "Pull"),
                     info("f", "Fetch"),
                     info(",", "Settings"),
+                    info("$", "Git command log"),
                 ],
             },
             Group {
@@ -436,7 +437,6 @@ fn dispatch_menu() -> Transient {
                     info("tab", "Fold / unfold"),
                     info("gr", "Refresh"),
                     info("v", "Visual selection"),
-                    info("$", "Git command log"),
                 ],
             },
         ],
@@ -5444,6 +5444,12 @@ impl StatusView {
             el = el.bg(self.palette.visual);
         } else if selected {
             el = el.bg(self.palette.selection);
+        } else if clickable {
+            // A subtle hover on rows you can act on (not the current line or a
+            // visual selection, which already have a background) — a faded
+            // selection accent, so it reads as a preview of selecting.
+            let hover = with_alpha(self.palette.selection, 0.4);
+            el = el.hover(move |s| s.bg(hover));
         }
 
         let content = match &row.kind {
