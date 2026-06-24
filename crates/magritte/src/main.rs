@@ -3274,7 +3274,7 @@ impl StatusView {
                 div()
                     .w(px(280.0))
                     .h(px(200.0))
-                    .child(List::new(&state.list).search_placeholder("Search remotes")),
+                    .child(List::new(&state.list).search_placeholder("Choose a remote")),
             )
     }
 
