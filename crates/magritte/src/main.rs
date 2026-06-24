@@ -211,12 +211,23 @@ enum BranchAction {
     Delete,
 }
 
-/// What the picker does with its chosen value: a push/pull/fetch target, or a
-/// branch operation.
+/// A stash-transient operation carried out against a picked stash entry. The
+/// chosen value is the entry's display string; the `stash@{N}` reference is its
+/// first whitespace-delimited token.
+#[derive(Clone, Copy)]
+enum StashAction {
+    Apply,
+    Pop,
+    Drop,
+}
+
+/// What the picker does with its chosen value: a push/pull/fetch target, a
+/// branch operation, or a stash operation.
 #[derive(Clone)]
 enum PickerAction {
     Transfer(Transfer),
     Branch(BranchAction),
+    Stash(StashAction),
 }
 
 impl PickerAction {
@@ -238,6 +249,11 @@ impl PickerAction {
                 ],
                 BranchAction::Delete => transient::plain_title("Delete branch"),
             },
+            PickerAction::Stash(s) => transient::plain_title(match s {
+                StashAction::Apply => "Apply stash",
+                StashAction::Pop => "Pop stash",
+                StashAction::Drop => "Drop stash",
+            }),
         }
     }
 
@@ -253,6 +269,9 @@ impl PickerAction {
                 "rename"
             }
             PickerAction::Branch(BranchAction::Delete) => "delete",
+            PickerAction::Stash(StashAction::Apply) => "apply",
+            PickerAction::Stash(StashAction::Pop) => "pop",
+            PickerAction::Stash(StashAction::Drop) => "drop",
         }
     }
 }
@@ -283,6 +302,23 @@ enum GitLogRow {
     Output(String),
 }
 
+/// The commit-log view (`l`): a scrollable list of commits with j/k navigation;
+/// Enter opens the selected commit's diff in a [`CommitView`].
+struct LogState {
+    entries: Vec<magritte_core::LogEntry>,
+    selected: usize,
+    scroll: UniformListScrollHandle,
+}
+
+/// A single commit's detail (opened from the log): its header and diff, as the
+/// same flattened rows the commit editor renders.
+struct CommitView {
+    /// `<short-hash> <subject>`, shown in the header.
+    title: SharedString,
+    rows: Vec<CommitDiffRow>,
+    scroll: UniformListScrollHandle,
+}
+
 /// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
 /// row is a command invoked by its key or a click.
 ///
@@ -300,6 +336,8 @@ fn dispatch_menu() -> Transient {
                 suffixes: vec![
                     info("c", "Commit"),
                     info("b", "Branch"),
+                    info("Z", "Stash"),
+                    info("l", "Log"),
                     info("p", "Push"),
                     info("F", "Pull"),
                     info("f", "Fetch"),
@@ -945,6 +983,10 @@ struct StatusView {
     /// The git command-log view (magit's `$` process buffer), when open. Holds
     /// the scroll handle; the entries are read live from the repo.
     git_log: Option<UniformListScrollHandle>,
+    /// The commit-log view (`l`), when open.
+    log: Option<LogState>,
+    /// A commit's diff detail (opened from the log with Enter), when open.
+    commit_view: Option<CommitView>,
     /// The monospace font family used for all chrome, set via settings.
     font: SharedString,
     /// The loaded user config (theme/appearance/font), kept so we can re-apply
@@ -1006,6 +1048,8 @@ impl StatusView {
             editor: None,
             settings: None,
             git_log: None,
+            log: None,
+            commit_view: None,
             font,
             config,
             mono_fonts: Vec::new(),
@@ -2103,8 +2147,47 @@ impl StatusView {
                 }
                 BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename
                 | BranchDelete => self.dispatch_branch(action.command, window, cx),
+                StashPush => self.run_stash_push(false, cx),
+                StashPushAll => self.run_stash_push(true, cx),
+                StashApply | StashPop | StashDrop => {
+                    self.dispatch_stash(action.command, window, cx)
+                }
             }
         }
+    }
+
+    /// Open the stash picker for an apply/pop/drop command.
+    fn dispatch_stash(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        use transient::Command::*;
+        let action = match command {
+            StashApply => StashAction::Apply,
+            StashPop => StashAction::Pop,
+            StashDrop => StashAction::Drop,
+            _ => return,
+        };
+        let stashes = repo.stash_list().unwrap_or_default();
+        if stashes.is_empty() {
+            self.status_message = Some("No stashes".to_string());
+            cx.notify();
+            return;
+        }
+        let choices = stashes.iter().map(|s| s.display()).collect();
+        self.open_picker(
+            PickerAction::Stash(action),
+            choices,
+            CreateMode::None,
+            Vec::new(),
+            window,
+            cx,
+        );
     }
 
     /// Open the picker for a branch-transient command: checkout/rename/delete
@@ -2511,6 +2594,7 @@ impl StatusView {
                 PickerAction::Branch(b) => {
                     self.run_branch_action(b, chosen.to_string(), window, cx)
                 }
+                PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
             }
         }
     }
@@ -2523,6 +2607,16 @@ impl StatusView {
                 .scroll_to_item(p.list.selected(), gpui::ScrollStrategy::Top);
             cx.notify();
         }
+    }
+
+    /// Set the status bar from a git operation's result: its last output line,
+    /// "Done" when silent, or the error.
+    fn report_result(&mut self, result: magritte_core::Result<String>) {
+        self.status_message = Some(match result {
+            Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
+            Ok(msg) => last_line(&msg),
+            Err(e) => format!("error: {e}"),
+        });
     }
 
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
@@ -2668,6 +2762,68 @@ impl StatusView {
                     Ok(msg) => last_line(&msg),
                     Err(e) => format!("error: {e}"),
                 });
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Stash the working tree and index (`Z z` / `Z Z`), on the background
+    /// executor, then refresh.
+    fn run_stash_push(&mut self, include_untracked: bool, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Stashing…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.stash_push(None, include_untracked) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report_result(result);
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Apply / pop / drop the chosen stash (`chosen` is the picker's display
+    /// string; the `stash@{N}` reference is its first token).
+    fn run_stash_action(&mut self, action: StashAction, chosen: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let reference = chosen
+            .split_whitespace()
+            .next()
+            .unwrap_or(&chosen)
+            .to_string();
+        let verb = match action {
+            StashAction::Apply => "Applying stash",
+            StashAction::Pop => "Popping stash",
+            StashAction::Drop => "Dropping stash",
+        };
+        self.status_message = Some(format!("{verb}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match action {
+                        StashAction::Apply => repo.stash_apply(&reference),
+                        StashAction::Pop => repo.stash_pop(&reference),
+                        StashAction::Drop => repo.stash_drop(&reference),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report_result(result);
                 this.refresh(cx);
                 cx.notify();
             })
@@ -2918,39 +3074,7 @@ impl StatusView {
                     cx.notify();
                     return;
                 }
-                let default = cx.theme().foreground;
-                let (fg, dim) = (this.palette.fg, this.palette.dim);
-                let mut rows = Vec::new();
-                for (diff, lang) in &files {
-                    rows.push(CommitDiffRow::File(diff.display_path().to_string()));
-                    let hl = match lang {
-                        Some(l) if !diff.is_binary => {
-                            Some(highlight::highlight_diff(diff, l, cx, default))
-                        }
-                        _ => None,
-                    };
-                    for (hi, hunk) in diff.hunks.iter().enumerate() {
-                        rows.push(CommitDiffRow::Hunk(hunk_header_text(hunk)));
-                        for (li, line) in hunk.lines.iter().enumerate() {
-                            let spans = hl
-                                .as_ref()
-                                .and_then(|h| h.get(&(hi, li)))
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    let color = if line.kind == LineKind::NoNewline {
-                                        dim
-                                    } else {
-                                        fg
-                                    };
-                                    vec![(line.content.clone(), color)]
-                                });
-                            rows.push(CommitDiffRow::Line {
-                                kind: line.kind,
-                                spans,
-                            });
-                        }
-                    }
-                }
+                let rows = this.diff_rows(&files, cx);
                 if let Some(ed) = this.editor.as_mut() {
                     ed.diff = rows;
                 }
@@ -2959,6 +3083,48 @@ impl StatusView {
             .ok();
         })
         .detach();
+    }
+
+    /// Flatten loaded file diffs (each paired with its detected language) into
+    /// displayable rows with syntax highlighting. Shared by the commit editor's
+    /// preview and the log's commit-detail view.
+    fn diff_rows(
+        &self,
+        files: &[(FileDiff, Option<&'static str>)],
+        cx: &mut Context<Self>,
+    ) -> Vec<CommitDiffRow> {
+        let default = cx.theme().foreground;
+        let (fg, dim) = (self.palette.fg, self.palette.dim);
+        let mut rows = Vec::new();
+        for (diff, lang) in files {
+            rows.push(CommitDiffRow::File(diff.display_path().to_string()));
+            let hl = match lang {
+                Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),
+                _ => None,
+            };
+            for (hi, hunk) in diff.hunks.iter().enumerate() {
+                rows.push(CommitDiffRow::Hunk(hunk_header_text(hunk)));
+                for (li, line) in hunk.lines.iter().enumerate() {
+                    let spans = hl
+                        .as_ref()
+                        .and_then(|h| h.get(&(hi, li)))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            let color = if line.kind == LineKind::NoNewline {
+                                dim
+                            } else {
+                                fg
+                            };
+                            vec![(line.content.clone(), color)]
+                        });
+                    rows.push(CommitDiffRow::Line {
+                        kind: line.kind,
+                        spans,
+                    });
+                }
+            }
+        }
+        rows
     }
 
     /// Capture-phase handler: Escape cancels the editor. (Enter is consumed by
@@ -3248,6 +3414,121 @@ impl StatusView {
         cx.notify();
     }
 
+    /// How many recent commits the log loads. Bounded so opening the log in a
+    /// huge repo stays cheap; the bar notes when it's capped.
+    const LOG_LIMIT: usize = 256;
+
+    /// Open the commit-log view (`l`): show it immediately (empty), then load
+    /// the commits off the UI thread.
+    fn open_log(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.log = Some(LogState {
+            entries: Vec::new(),
+            selected: 0,
+            scroll: UniformListScrollHandle::new(),
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_executor()
+                .spawn(async move { repo.log("HEAD", Self::LOG_LIMIT).unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some(log) = this.log.as_mut() {
+                    log.entries = entries;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn close_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.log = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Move the log's selection by `delta`, keeping it in view.
+    fn log_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(log) = self.log.as_mut() {
+            if log.entries.is_empty() {
+                return;
+            }
+            let last = log.entries.len() - 1;
+            log.selected = (log.selected as isize + delta).clamp(0, last as isize) as usize;
+            log.scroll
+                .scroll_to_item(log.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Open the selected commit's diff in a [`CommitView`], loaded off the UI
+    /// thread.
+    fn open_commit_view(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let Some(entry) = self
+            .log
+            .as_ref()
+            .and_then(|l| l.entries.get(l.selected).cloned())
+        else {
+            return;
+        };
+        let rev = entry.short_hash.clone();
+        self.commit_view = Some(CommitView {
+            title: SharedString::from(format!("{}  {}", entry.short_hash, entry.subject)),
+            rows: vec![CommitDiffRow::Note("Loading…".to_string())],
+            scroll: UniformListScrollHandle::new(),
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    repo.diff_commit(&rev).map(|diffs| {
+                        diffs
+                            .into_iter()
+                            .map(|d| {
+                                let (head, tail) =
+                                    file_head_tail(&repo.workdir().join(d.display_path()));
+                                let lang =
+                                    highlight::detect_language(d.display_path(), &head, &tail);
+                                (d, lang)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.commit_view.is_none() {
+                    return; // closed before the diff loaded
+                }
+                let rows = match loaded {
+                    Ok(files) => this.diff_rows(&files, cx),
+                    Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                };
+                if let Some(cv) = this.commit_view.as_mut() {
+                    cv.rows = rows;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn close_commit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_view = None;
+        // Return focus to the status root; the log view (still open) handles keys.
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editor.as_ref() else {
             return;
@@ -3319,6 +3600,27 @@ impl StatusView {
         if self.git_log.is_some() {
             if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
                 self.close_git_log(window, cx);
+            }
+            return;
+        }
+
+        // A commit's diff detail (opened from the log) is topmost; esc/q returns
+        // to the log. (Mouse wheel scrolls the diff.)
+        if self.commit_view.is_some() {
+            if key == "escape" || key == "q" {
+                self.close_commit_view(window, cx);
+            }
+            return;
+        }
+
+        // The commit-log view: j/k navigate, Enter opens the commit, esc/q close.
+        if self.log.is_some() {
+            match key.as_str() {
+                "escape" | "q" => self.close_log(window, cx),
+                "j" => self.log_move(1, cx),
+                "k" => self.log_move(-1, cx),
+                "enter" => self.open_commit_view(cx),
+                _ => {}
             }
             return;
         }
@@ -3445,6 +3747,18 @@ impl StatusView {
                 let t = self.remote_targets();
                 return self.open_transient(transient::branch_transient(), t, cx);
             }
+            // Stash transient (Z), log view (l).
+            "z" if shift => {
+                return self.open_transient(
+                    transient::stash_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+            "l" => {
+                self.open_log(cx);
+                return;
+            }
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
             "p" => {
                 let t = self.remote_targets();
@@ -3521,6 +3835,8 @@ impl StatusView {
                 let t = self.remote_targets();
                 self.open_transient(transient::branch_transient(), t, cx);
             }
+            "Z" => self.open_transient(transient::stash_transient(), RemoteTargets::default(), cx),
+            "l" => self.open_log(cx),
             "p" => {
                 let t = self.remote_targets();
                 self.open_transient(transient::push_transient(&t), t, cx);
@@ -4292,6 +4608,173 @@ impl StatusView {
         }
     }
 
+    /// Render the commit-log view (`l`): a header and a scrollable, navigable
+    /// list of commits; the highlighted row opens on Enter or click.
+    fn render_log(&self, log: &LogState, view: &Entity<Self>) -> gpui::Div {
+        let count = log.entries.len();
+        // Note when the listing is capped, rather than pretending it's complete.
+        let capped = count >= Self::LOG_LIMIT;
+
+        let body = if count == 0 {
+            div()
+                .text_color(self.palette.dim)
+                .child(SharedString::from("Loading…"))
+                .into_any_element()
+        } else {
+            uniform_list("log-rows", count, {
+                let view = view.clone();
+                move |range, _window, cx| {
+                    let this = view.read(cx);
+                    match this.log.as_ref() {
+                        Some(log) => range
+                            .map(|ix| {
+                                this.render_log_row(ix, &log.entries[ix], ix == log.selected, &view)
+                            })
+                            .collect::<Vec<_>>(),
+                        None => Vec::new(),
+                    }
+                }
+            })
+            .track_scroll(&log.scroll)
+            .flex_grow(1.0)
+            .into_any_element()
+        };
+
+        let mut header = div().flex().items_center().gap_3().child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.palette.section)
+                .child(SharedString::from("Log")),
+        );
+        if capped {
+            header = header.child(
+                div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(format!("(first {})", Self::LOG_LIMIT))),
+            );
+        }
+        header = header.child(self.key_action("log-close", "esc", "close", view, Self::close_log));
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .p_4()
+            .gap_3()
+            .child(header)
+            .child(body)
+    }
+
+    /// One commit row: short hash, ref decorations, and subject; highlighted
+    /// when current, clickable to open its diff.
+    fn render_log_row(
+        &self,
+        ix: usize,
+        entry: &magritte_core::LogEntry,
+        selected: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let view = view.clone();
+        let mut row = div()
+            .id(SharedString::from(format!("log-row-{ix}")))
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_2()
+            .cursor_pointer()
+            .on_click(move |_, _window, cx: &mut App| {
+                view.update(cx, |this, vcx| {
+                    if let Some(log) = this.log.as_mut() {
+                        log.selected = ix;
+                    }
+                    this.open_commit_view(vcx);
+                });
+            });
+        if selected {
+            row = row.bg(self.palette.selection);
+        } else {
+            row = row.hover(|s| s.bg(self.palette.visual));
+        }
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .text_color(self.palette.modified)
+                .child(SharedString::from(entry.short_hash.clone())),
+        );
+        if !entry.refs.is_empty() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.section)
+                    .child(SharedString::from(format!("({})", entry.refs))),
+            );
+        }
+        row.child(
+            div()
+                .text_color(self.palette.fg)
+                .child(SharedString::from(entry.subject.clone())),
+        )
+        .child(div().flex_grow(1.0))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(self.palette.dim)
+                .child(SharedString::from(entry.date.clone())),
+        )
+        .into_any_element()
+    }
+
+    /// Render a commit's diff detail (opened from the log): a header with the
+    /// hash + subject, then the diff as the same rows the commit editor uses.
+    fn render_commit_view(&self, cv: &CommitView, view: &Entity<Self>) -> gpui::Div {
+        let count = cv.rows.len();
+        let body = uniform_list("commit-view-rows", count, {
+            let view = view.clone();
+            move |range, _window, cx| {
+                let this = view.read(cx);
+                match this.commit_view.as_ref() {
+                    Some(cv) => range
+                        .map(|ix| this.render_commit_diff_row(&cv.rows[ix]))
+                        .collect::<Vec<_>>(),
+                    None => Vec::new(),
+                }
+            }
+        })
+        .track_scroll(&cv.scroll)
+        .flex_grow(1.0);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.section)
+                            .child(cv.title.clone()),
+                    )
+                    .child(self.key_action(
+                        "commit-view-close",
+                        "esc",
+                        "back",
+                        view,
+                        Self::close_commit_view,
+                    )),
+            )
+            .child(body)
+    }
+
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
@@ -4891,6 +5374,13 @@ impl Render for StatusView {
         if let Some(scroll) = &self.git_log {
             return root.child(self.render_git_log(scroll, &view));
         }
+        // A commit's diff detail sits above the log; the log above the status.
+        if let Some(cv) = &self.commit_view {
+            return root.child(self.render_commit_view(cv, &view));
+        }
+        if let Some(log) = &self.log {
+            return root.child(self.render_log(log, &view));
+        }
 
         // The list takes the flexible space; the status bar (added below)
         // sits beneath it, so showing the bar never shifts content down.
@@ -5097,10 +5587,11 @@ fn describe_command(command: transient::Command) -> &'static str {
         PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
         FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
         CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
-        // Branch commands route through their own picker/runner, not here.
+        // Branch and stash commands route through their own picker/runner.
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Working"
         }
+        StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
     }
 }
 
@@ -5615,7 +6106,7 @@ mod tests {
 
         // Mirror of the keys handled by `run_dispatch`'s match.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "p", "F", "f", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "gr", // essential
             "j", "k", "gg", "G", "gj", "gk", // navigation / motions
