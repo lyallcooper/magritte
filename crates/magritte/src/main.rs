@@ -162,10 +162,20 @@ impl Transfer {
             Transfer::Fetch => "Fetching",
         }
     }
+
+    /// Imperative label for the confirm button ("Push" / "Pull" / "Fetch").
+    fn action_label(&self) -> &'static str {
+        match self {
+            Transfer::Push { .. } => "Push",
+            Transfer::Pull { .. } => "Pull",
+            Transfer::Fetch => "Fetch",
+        }
+    }
 }
 
-/// An open remote picker: a dropdown of remotes plus the pending transfer to run
-/// once one is chosen.
+/// An open remote picker: a dropdown of remotes plus the pending transfer. The
+/// transfer runs when the user picks an item (Confirm) or clicks the action
+/// button (which uses the dropdown's current value).
 struct RemotePickerState {
     title: SharedString,
     select: Entity<SelectState<Vec<SharedString>>>,
@@ -2230,20 +2240,18 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = SharedString::from(format!("{} to", transfer.verb().trim_end_matches("ing")));
+        let title = SharedString::from(format!("{} to", transfer.action_label()));
         let items: Vec<SharedString> = remotes.into_iter().map(SharedString::from).collect();
         let select =
             cx.new(|cx| SelectState::new(items, Some(IndexPath::default()), &mut *window, cx));
+        // Picking an item from the dropdown runs the transfer (keyboard: open,
+        // arrow, Enter); the action button does the same with the shown value.
         let sub = cx.subscribe_in(
             &select,
             window,
-            |this, _select, ev: &SelectEvent<Vec<SharedString>>, _window, cx| {
-                if let SelectEvent::Confirm(Some(remote)) = ev {
-                    let remote = remote.to_string();
-                    if let Some(Popup::RemotePicker(p)) = this.popup.take() {
-                        this.run_transfer(p.transfer, remote, p.switches, cx);
-                    }
-                }
+            |this, _select, _ev: &SelectEvent<Vec<SharedString>>, window, cx| {
+                // The only event is Confirm (an item was chosen).
+                this.confirm_remote_picker(window, cx);
             },
         );
         select.update(cx, |st, cx| st.focus(window, cx));
@@ -2255,6 +2263,19 @@ impl StatusView {
             _sub: sub,
         }));
         cx.notify();
+    }
+
+    /// Run the pending transfer against the remote currently chosen in the
+    /// picker (the confirm button, or Enter).
+    fn confirm_remote_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let remote = match &self.popup {
+            Some(Popup::RemotePicker(p)) => p.select.read(cx).selected_value().cloned(),
+            _ => None,
+        };
+        let Some(remote) = remote else { return };
+        if let Some(Popup::RemotePicker(p)) = self.popup.take() {
+            self.run_transfer(p.transfer, remote.to_string(), p.switches, cx);
+        }
     }
 
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
@@ -2940,12 +2961,16 @@ impl StatusView {
             return;
         }
 
-        // The remote picker's dropdown owns most keys; we just close on esc/q
-        // (which bubble up from the focused Select).
+        // The remote picker's dropdown owns most keys; esc/q close it, and Enter
+        // (when it bubbles past a closed dropdown) confirms the shown remote.
         if matches!(self.popup, Some(Popup::RemotePicker(_))) {
-            if matches!(key.as_str(), "escape" | "q") {
-                self.popup = None;
-                cx.notify();
+            match key.as_str() {
+                "escape" | "q" => {
+                    self.popup = None;
+                    cx.notify();
+                }
+                "enter" => self.confirm_remote_picker(window, cx),
+                _ => {}
             }
             return;
         }
@@ -3221,7 +3246,32 @@ impl StatusView {
                         Self::cancel_popup,
                     )),
             )
-            .child(div().w(px(280.0)).child(Select::new(&state.select)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().w(px(240.0)).child(Select::new(&state.select)))
+                    .child(
+                        div()
+                            .relative()
+                            .child(track_target("remote-confirm"))
+                            .child(
+                                Button::new("remote-confirm")
+                                    .label(state.transfer.action_label())
+                                    .primary()
+                                    .small()
+                                    .on_click({
+                                        let view = view.clone();
+                                        move |_, window, cx: &mut App| {
+                                            view.update(cx, |v, vcx| {
+                                                v.confirm_remote_picker(window, vcx)
+                                            });
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
     }
 
     /// Close any open popup (e.g. cancel the remote picker).
