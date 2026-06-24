@@ -33,7 +33,7 @@ mod highlight;
 mod picker;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
-use picker::ChoiceDelegate;
+use picker::PickerList;
 
 /// Key context for our status view, used so our `tab` binding takes precedence
 /// over gpui-component Root's focus-navigation `tab`.
@@ -57,7 +57,6 @@ use gpui::Subscription;
 use gpui_component::button::{Button, ButtonRounded, ButtonVariants, DropdownButton};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
-use gpui_component::list::{List, ListEvent, ListState};
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -173,35 +172,40 @@ impl Transfer {
         }
     }
 
-    /// Imperative label for the confirm button ("Push" / "Pull" / "Fetch").
-    fn action_label(&self) -> &'static str {
+    /// The minibuffer prompt: you push the current branch *to* a target, but
+    /// pull/fetch *from* one (matching magit's "Push master to" / "Pull from" /
+    /// "Fetch from").
+    fn prompt(&self) -> String {
         match self {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "Push",
-            Transfer::Pull { .. } | Transfer::PullRef => "Pull",
-            Transfer::Fetch => "Fetch",
-        }
-    }
-
-    /// Preposition for the picker title: you push *to* a target, but pull/fetch
-    /// *from* one (matching magit's "Push … to" / "Pull from" / "Fetch from").
-    fn preposition(&self) -> &'static str {
-        match self {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "to",
-            Transfer::Pull { .. } | Transfer::PullRef | Transfer::Fetch => "from",
+            Transfer::Push { branch, .. } | Transfer::PushRef { branch } => {
+                if branch.is_empty() {
+                    "Push to".to_string()
+                } else {
+                    format!("Push {branch} to")
+                }
+            }
+            Transfer::Pull { .. } | Transfer::PullRef => "Pull from".to_string(),
+            Transfer::Fetch => "Fetch from".to_string(),
         }
     }
 }
 
-/// An open target picker: a searchable list plus the pending transfer. The
-/// transfer runs when the user picks an item (Confirm) or presses the confirm
-/// button (which uses the highlighted value).
+/// An open target picker (vertico-style): a prompt, an inline query input, a
+/// ranked candidate list, and the pending transfer. The transfer runs against
+/// the highlighted (or clicked) candidate on Enter.
 struct RemotePickerState {
-    title: SharedString,
-    placeholder: SharedString,
-    list: Entity<ListState<ChoiceDelegate>>,
+    /// The minibuffer-style prompt, e.g. `Push main to` (the `:` and the typed
+    /// text are rendered after it).
+    prompt: SharedString,
+    /// The bare query input (type-to-filter).
+    input: Entity<InputState>,
+    /// The filter/rank/select model over the candidates.
+    list: PickerList,
+    /// Scrolls the (virtualized) candidate rows.
+    scroll: UniformListScrollHandle,
     transfer: Transfer,
     switches: Vec<String>,
-    /// Kept alive so the Confirm/Cancel subscription stays active.
+    /// Kept alive so the input-change subscription stays active.
     _sub: Subscription,
 }
 
@@ -2225,15 +2229,7 @@ impl StatusView {
             1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
             _ => {
                 remotes.sort_by_key(|r| r != "origin");
-                self.open_picker(
-                    transfer,
-                    remotes,
-                    false,
-                    "Choose a remote",
-                    switches,
-                    window,
-                    cx,
-                )
+                self.open_picker(transfer, remotes, false, switches, window, cx)
             }
         }
     }
@@ -2258,15 +2254,7 @@ impl StatusView {
             return;
         }
         remotes.sort_by_key(|r| r != "origin");
-        self.open_picker(
-            transfer,
-            remotes,
-            false,
-            "Choose a remote",
-            switches,
-            window,
-            cx,
-        );
+        self.open_picker(transfer, remotes, false, switches, window, cx);
     }
 
     /// Show the remote-*branch* picker for a push/pull "elsewhere" (magit's
@@ -2298,64 +2286,46 @@ impl StatusView {
             }
             _ => existing,
         };
-        self.open_picker(
-            transfer,
-            choices,
-            create,
-            "Choose a branch",
-            switches,
-            window,
-            cx,
-        );
+        self.open_picker(transfer, choices, create, switches, window, cx);
     }
 
-    /// Open the searchable target picker for a pending transfer. The list's
-    /// search field is focused on appear, so it's type-to-filter immediately.
-    #[allow(clippy::too_many_arguments)]
+    /// Open the vertico-style target picker for a pending transfer. The query
+    /// input is focused on appear, so it's type-to-filter immediately; the model
+    /// re-ranks on every change.
     fn open_picker(
         &mut self,
         transfer: Transfer,
         choices: Vec<String>,
         allow_create: bool,
-        placeholder: &'static str,
         switches: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let title = SharedString::from(format!(
-            "{} {}",
-            transfer.action_label(),
-            transfer.preposition()
-        ));
+        let prompt = SharedString::from(transfer.prompt());
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
-        let list = cx.new(|cx| {
-            ListState::new(
-                ChoiceDelegate::new(items).allow_create(allow_create),
-                window,
-                cx,
-            )
-            .searchable(true)
-        });
-        // Enter (or clicking a row) confirms; Esc cancels.
+        let input = cx.new(|cx| InputState::new(window, cx));
+        // Re-filter as the query changes (Up/Down/Enter/Esc are handled in the
+        // capture phase, so the input only ever sees text edits here).
         let sub = cx.subscribe_in(
-            &list,
+            &input,
             window,
-            |this, _list, ev: &ListEvent, window, cx| match ev {
-                ListEvent::Confirm(_) => this.confirm_remote_picker(window, cx),
-                ListEvent::Cancel => this.cancel_popup(window, cx),
-                ListEvent::Select(_) => {}
+            |this, input, ev: &InputEvent, _window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let query = input.read(cx).value().to_string();
+                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                        p.list.set_query(&query);
+                        p.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                        cx.notify();
+                    }
+                }
             },
         );
-        list.update(cx, |st, cx| {
-            // Select the first row up front (the List otherwise only does this
-            // after a search), so it's highlighted on appear; focus the search.
-            st.set_selected_index(Some(gpui_component::IndexPath::default()), window, cx);
-            st.focus(window, cx);
-        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
         self.popup = Some(Popup::RemotePicker(RemotePickerState {
-            title,
-            placeholder: SharedString::from(placeholder),
-            list,
+            prompt,
+            input,
+            list: PickerList::new(items, allow_create),
+            scroll: UniformListScrollHandle::new(),
             transfer,
             switches,
             _sub: sub,
@@ -2366,13 +2336,23 @@ impl StatusView {
     /// Run the pending transfer against the remote currently highlighted in the
     /// picker (Enter, a row click, or the kbd button).
     fn confirm_remote_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let remote = match &self.popup {
-            Some(Popup::RemotePicker(p)) => p.list.read(cx).delegate().selected_choice(),
+        let chosen = match &self.popup {
+            Some(Popup::RemotePicker(p)) => p.list.selected_choice(),
             _ => None,
         };
-        let Some(remote) = remote else { return };
+        let Some(chosen) = chosen else { return };
         if let Some(Popup::RemotePicker(p)) = self.popup.take() {
-            self.run_transfer(p.transfer, remote.to_string(), p.switches, cx);
+            self.run_transfer(p.transfer, chosen.to_string(), p.switches, cx);
+        }
+    }
+
+    /// Move the picker highlight by `delta` rows (Up/Down), keeping it in view.
+    fn picker_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+            p.list.move_by(delta);
+            p.scroll
+                .scroll_to_item(p.list.selected(), gpui::ScrollStrategy::Top);
+            cx.notify();
         }
     }
 
@@ -2753,6 +2733,32 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The vertico picker's query input is focused, so steal navigation /
+        // confirm / cancel keys before the input consumes them; everything else
+        // (text, backspace) falls through to filter the list.
+        if matches!(self.popup, Some(Popup::RemotePicker(_))) {
+            match event.keystroke.key.as_str() {
+                "up" => {
+                    cx.stop_propagation();
+                    self.picker_move(-1, cx);
+                }
+                "down" => {
+                    cx.stop_propagation();
+                    self.picker_move(1, cx);
+                }
+                "enter" => {
+                    cx.stop_propagation();
+                    self.confirm_remote_picker(window, cx);
+                }
+                "escape" => {
+                    cx.stop_propagation();
+                    self.cancel_popup(window, cx);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.editor.is_none() {
             return;
         }
@@ -3069,17 +3075,10 @@ impl StatusView {
             return;
         }
 
-        // The remote picker's dropdown owns most keys; esc/q close it, and Enter
-        // (when it bubbles past a closed dropdown) confirms the shown remote.
+        // The vertico picker's focused input handles text; navigation, confirm
+        // and cancel are caught in the capture phase (on_capture_key). Ignore the
+        // rest here so typed characters aren't read as commands.
         if matches!(self.popup, Some(Popup::RemotePicker(_))) {
-            match key.as_str() {
-                "escape" | "q" => {
-                    self.popup = None;
-                    cx.notify();
-                }
-                "enter" => self.confirm_remote_picker(window, cx),
-                _ => {}
-            }
             return;
         }
 
@@ -3331,6 +3330,48 @@ impl StatusView {
             Transfer::Pull { .. } | Transfer::PullRef => "pull",
             Transfer::Fetch => "fetch",
         };
+
+        // Show up to a screenful of candidates; the rest scroll.
+        const MAX_VISIBLE: usize = 8;
+        let rows = state.list.row_count();
+        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
+
+        let body = if rows == 0 {
+            // No match: a quiet placeholder line rather than gpui-component's
+            // inbox glyph.
+            div()
+                .h(list_height)
+                .pl(px(ROW_PAD_LEFT))
+                .flex()
+                .items_center()
+                .text_color(self.palette.dim)
+                .child(SharedString::from("No match"))
+                .into_any_element()
+        } else {
+            uniform_list("picker-rows", rows, {
+                let view = view.clone();
+                move |range, _window, cx| match &view.read(cx).popup {
+                    Some(Popup::RemotePicker(p)) => range
+                        .map(|ix| match p.list.row(ix) {
+                            Some(r) => view.read(cx).render_picker_row(
+                                ix,
+                                r.label,
+                                r.is_create,
+                                ix == p.list.selected(),
+                                &view,
+                            ),
+                            None => div().h(px(ROW_HEIGHT)).into_any_element(),
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                }
+            })
+            .track_scroll(&state.scroll)
+            .h(list_height)
+            .w_full()
+            .into_any_element()
+        };
+
         div()
             .w_full()
             .border_t_1()
@@ -3340,17 +3381,34 @@ impl StatusView {
             .px_3()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_1()
+            // Prompt with the query typed inline (vertico minibuffer).
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl(px(ROW_PAD_LEFT))
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(SharedString::from(format!("{}:", state.prompt))),
+                    )
+                    .child(
+                        div()
+                            .flex_grow(1.0)
+                            .child(Input::new(&state.input).appearance(false)),
+                    ),
+            )
+            .child(body)
+            // Keyboard hints, consistent with the transient menus.
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        div()
-                            .text_color(self.palette.section)
-                            .child(state.title.clone()),
-                    )
+                    .pt_1()
+                    .pl(px(ROW_PAD_LEFT))
                     .child(self.key_action(
                         "remote-confirm",
                         "return",
@@ -3366,12 +3424,56 @@ impl StatusView {
                         Self::cancel_popup,
                     )),
             )
-            .child(
-                div()
-                    .w(px(280.0))
-                    .h(px(200.0))
-                    .child(List::new(&state.list).search_placeholder(state.placeholder.clone())),
-            )
+    }
+
+    /// One candidate row: a full-width highlight when current (vertico-style, no
+    /// boxy border), a subtle hover for the mouse, and click-to-confirm.
+    fn render_picker_row(
+        &self,
+        ix: usize,
+        label: SharedString,
+        is_create: bool,
+        selected: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let view = view.clone();
+        let mut el = div()
+            .id(SharedString::from(format!("picker-row-{ix}")))
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .pl(px(ROW_PAD_LEFT))
+            .cursor_pointer()
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |this, vcx| {
+                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                        p.list.set_selected(ix);
+                    }
+                    this.confirm_remote_picker(window, vcx);
+                });
+            });
+        if selected {
+            el = el.bg(self.palette.selection);
+        } else {
+            el = el.hover(|s| s.bg(self.palette.visual));
+        }
+        let label_el = if is_create {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().text_color(self.palette.fg).child(label))
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("(new)")),
+                )
+        } else {
+            div().text_color(self.palette.fg).child(label)
+        };
+        el.child(label_el).into_any_element()
     }
 
     /// Close any open popup (e.g. cancel the remote picker).
