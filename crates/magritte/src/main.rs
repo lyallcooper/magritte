@@ -284,8 +284,12 @@ enum GitLogRow {
 }
 
 /// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
-/// row is a command invoked by its key or a click; navigation keys aren't
-/// listed (they're always available, not dispatched).
+/// row is a command invoked by its key or a click.
+///
+/// This menu is the discoverable face of the keymap. The
+/// `dispatch_menu_covers_every_command` test cross-checks it against the keys
+/// `run_dispatch` actually handles, so a command can't be added to one without
+/// the other (the test carries an overrides list for intentional exceptions).
 fn dispatch_menu() -> Transient {
     let info = |keys, description| Suffix::Info(transient::Info { keys, description });
     Transient {
@@ -5598,5 +5602,60 @@ mod tests {
         assert!(!StatusView::is_dispatch_key("gg"));
         assert!(!StatusView::is_dispatch_key("gr"));
         assert!(!StatusView::is_dispatch_key("z")); // not in the menu
+    }
+
+    /// Guards against forgetting to surface a command: the `?` dispatch menu and
+    /// the set of keys `run_dispatch` handles must agree, so a command can't be
+    /// invocable-but-hidden or shown-but-dead. When you add an arm to
+    /// `run_dispatch`, add its key to `DISPATCH_KEYS` here; the test then forces
+    /// it into `dispatch_menu` too (or into `OVERRIDES`, for genuine exceptions).
+    #[test]
+    fn dispatch_menu_covers_every_command() {
+        use std::collections::HashSet;
+
+        // Mirror of the keys handled by `run_dispatch`'s match.
+        const DISPATCH_KEYS: &[&str] = &[
+            "c", "b", "p", "F", "f", ",", "$", // commands
+            "s", "u", "S", "U", "x", // applying changes
+            "v", "tab", "gr", // essential
+            "j", "k", "gg", "G", "gj", "gk", // navigation / motions
+        ];
+        // Keys allowed to be on only one side of the check. Empty today; add a
+        // key here (with a comment) when an exception is genuinely warranted.
+        const OVERRIDES: &[&str] = &[];
+
+        let menu: HashSet<&str> = dispatch_menu()
+            .groups
+            .iter()
+            .flat_map(|g| &g.suffixes)
+            .filter_map(|s| match s {
+                Suffix::Info(i) => Some(i.keys),
+                _ => None,
+            })
+            .collect();
+        let dispatched: HashSet<&str> = DISPATCH_KEYS.iter().copied().collect();
+        let overrides: HashSet<&str> = OVERRIDES.iter().copied().collect();
+
+        let missing_from_menu: Vec<&str> = dispatched
+            .difference(&menu)
+            .copied()
+            .filter(|k| !overrides.contains(k))
+            .collect();
+        assert!(
+            missing_from_menu.is_empty(),
+            "dispatchable commands missing from the `?` menu (add them to dispatch_menu \
+             or OVERRIDES): {missing_from_menu:?}"
+        );
+
+        let missing_handler: Vec<&str> = menu
+            .difference(&dispatched)
+            .copied()
+            .filter(|k| !overrides.contains(k))
+            .collect();
+        assert!(
+            missing_handler.is_empty(),
+            "`?` menu rows with no run_dispatch handler (add them to DISPATCH_KEYS \
+             or OVERRIDES): {missing_handler:?}"
+        );
     }
 }
