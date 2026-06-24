@@ -482,6 +482,15 @@ impl Palette {
         let removed = status.error(cx);
         let modified = status.warning(cx);
         let hunk = status.info(cx);
+        // The bottom panel wants a surface elevated above the background. Most
+        // themes' `popover` is already lifted, but some (e.g. Solarized) map it
+        // to the background itself — then fall back to `secondary` so the panel
+        // isn't a flat continuation of the (very dark) background.
+        let panel = if t.popover == t.background {
+            t.secondary
+        } else {
+            t.popover
+        };
         Palette {
             bg: t.background,
             fg: t.foreground,
@@ -491,7 +500,7 @@ impl Palette {
             visual: with_alpha(t.selection, 0.32),
             section: t.primary,
             hunk,
-            panel: t.popover,
+            panel,
             modified,
             added,
             removed,
