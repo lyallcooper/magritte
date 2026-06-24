@@ -422,7 +422,9 @@ pub fn log_transient() -> Transient {
                         pathspec: false,
                     }),
                     Suffix::Option(Opt {
-                        key: "-f",
+                        // Keyed `--` (entered by pressing `-` twice), matching
+                        // magit's file-limit infix.
+                        key: "--",
                         arg: "",
                         description: "Limit to files",
                         completion: Completion::Files,
