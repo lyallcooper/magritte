@@ -2,8 +2,14 @@
 //! (graph rendering is deferred); a commit's diff is read via
 //! [`Repo::diff_commit`](crate::Repo::diff_commit).
 
+use std::collections::HashSet;
+
 use crate::error::Result;
 use crate::repo::Repo;
+
+/// The fields every log listing requests, unit-separated; records are
+/// NUL-terminated (`-z`) so subjects can't confuse the parse.
+const LOG_FORMAT: &str = "--format=%h%x1f%s%x1f%D%x1f%an%x1f%ar";
 
 /// One commit in a log listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,24 +27,65 @@ pub struct LogEntry {
 }
 
 impl Repo {
-    /// Up to `limit` commits reachable from `rev`, newest first. Fields are
-    /// unit-separated and records NUL-terminated so subjects can't confuse the
-    /// parse.
+    /// Up to `limit` commits reachable from `rev`, newest first.
     pub fn log(&self, rev: &str, limit: usize) -> Result<Vec<LogEntry>> {
+        self.log_with(&[format!("--max-count={limit}"), rev.to_string()])
+    }
+
+    /// `git log <our-format> <args>` — the general form the log transient drives.
+    /// `args` carries the revision/scope (`HEAD`, `--all`, a ref) plus any
+    /// limit/search/author options; the format and `-z` are always supplied.
+    pub fn log_with(&self, args: &[String]) -> Result<Vec<LogEntry>> {
+        let mut full = vec!["log".to_string(), LOG_FORMAT.to_string(), "-z".to_string()];
+        full.extend(args.iter().cloned());
+        let out = self.run(&full)?;
+        Ok(parse_log(&out.stdout))
+    }
+
+    /// `git log -g` (the reflog), newest first. The reflog selector
+    /// (`HEAD@{N}`) is surfaced via the `refs` field and the reflog subject via
+    /// `subject`, so it renders with the same row layout as a normal log.
+    pub fn reflog(&self, limit: usize) -> Result<Vec<LogEntry>> {
         let out = self.run([
             "log",
+            "-g",
             &format!("--max-count={limit}"),
-            "--format=%h%x1f%s%x1f%D%x1f%an%x1f%ar",
+            // %gd = reflog selector, %gs = reflog subject.
+            "--format=%h%x1f%gs%x1f%gd%x1f%an%x1f%ar",
             "-z",
-            rev,
+        ])?;
+        Ok(parse_log(&out.stdout))
+    }
+
+    /// Distinct commit authors as `Name <email>`, most-recent first — the
+    /// autocomplete candidates for the `--author=` log option. Bounded so it
+    /// stays cheap in large repos.
+    pub fn authors(&self) -> Result<Vec<String>> {
+        let out = self.run([
+            "log",
+            "--all",
+            "--max-count=2000",
+            "--format=%aN <%aE>",
+            "-z",
         ])?;
         let text = String::from_utf8_lossy(&out.stdout);
+        let mut seen = HashSet::new();
         Ok(text
             .split('\0')
-            .filter(|r| !r.is_empty())
-            .filter_map(parse_log_record)
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .filter(|a| seen.insert(a.to_string()))
+            .map(str::to_string)
             .collect())
     }
+}
+
+fn parse_log(stdout: &[u8]) -> Vec<LogEntry> {
+    String::from_utf8_lossy(stdout)
+        .split('\0')
+        .filter(|r| !r.is_empty())
+        .filter_map(parse_log_record)
+        .collect()
 }
 
 fn parse_log_record(record: &str) -> Option<LogEntry> {

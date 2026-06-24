@@ -54,6 +54,14 @@ pub enum Command {
     StashPop,
     /// Drop a stash (prompts for which).
     StashDrop,
+    /// Log the current branch (HEAD).
+    LogCurrent,
+    /// Log all branches (`--all`).
+    LogAll,
+    /// Log another ref (prompts for one).
+    LogOther,
+    /// Reflog of HEAD.
+    LogReflog,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -62,6 +70,29 @@ pub struct Switch {
     pub key: &'static str,
     pub arg: &'static str,
     pub description: &'static str,
+}
+
+/// Where a value-reading [`Opt`] sources its autocomplete candidates. The
+/// frontend turns these into picker choices; the user can always type a value
+/// not in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completion {
+    /// No candidates — free text only.
+    None,
+    /// Repository author names (`Name <email>`), for `--author=`.
+    Authors,
+}
+
+/// A value-reading option (magit's transient option, e.g. `-F` → `--grep=<x>`).
+/// The frontend prompts for a value (with [`Completion`] candidates), stores it,
+/// and passes `{arg}{value}` to git. `arg` carries any trailing `=` so both
+/// long (`--grep=`) and short (`-G`) forms concatenate correctly.
+#[derive(Debug, Clone, Copy)]
+pub struct Opt {
+    pub key: &'static str,
+    pub arg: &'static str,
+    pub description: &'static str,
+    pub completion: Completion,
 }
 
 /// An invokable command (e.g. `p` → push). The description is dynamic so the
@@ -86,6 +117,7 @@ pub struct Info {
 pub enum Suffix {
     Switch(Switch),
     Action(Action),
+    Option(Opt),
     Info(Info),
 }
 
@@ -130,8 +162,24 @@ impl Transient {
             .flat_map(|g| g.suffixes.iter())
             .filter_map(|s| match s {
                 Suffix::Switch(sw) => Some(sw),
-                Suffix::Action(_) | Suffix::Info(_) => None,
+                _ => None,
             })
+    }
+
+    /// All value-reading options across all groups.
+    pub fn options(&self) -> impl Iterator<Item = &Opt> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .filter_map(|s| match s {
+                Suffix::Option(o) => Some(o),
+                _ => None,
+            })
+    }
+
+    /// The option bound to `key`, if any.
+    pub fn option_for(&self, key: &str) -> Option<&Opt> {
+        self.options().find(|o| o.key == key)
     }
 
     /// The action bound to `key`, if any.
@@ -298,6 +346,74 @@ pub fn stash_transient() -> Transient {
                         key: "k",
                         description: "drop".to_string(),
                         command: Command::StashDrop,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn log_transient() -> Transient {
+    Transient {
+        title: plain_title("Log"),
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![
+                    Suffix::Option(Opt {
+                        key: "-n",
+                        arg: "-n",
+                        description: "Limit number of commits",
+                        completion: Completion::None,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-A",
+                        arg: "--author=",
+                        description: "Limit to author",
+                        completion: Completion::Authors,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-F",
+                        arg: "--grep=",
+                        description: "Search messages",
+                        completion: Completion::None,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-G",
+                        arg: "-G",
+                        description: "Search changes",
+                        completion: Completion::None,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-S",
+                        arg: "-S",
+                        description: "Search occurrences",
+                        completion: Completion::None,
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Log"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "l",
+                        description: "current".to_string(),
+                        command: Command::LogCurrent,
+                    }),
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "all branches".to_string(),
+                        command: Command::LogAll,
+                    }),
+                    Suffix::Action(Action {
+                        key: "o",
+                        description: "other".to_string(),
+                        command: Command::LogOther,
+                    }),
+                    Suffix::Action(Action {
+                        key: "r",
+                        description: "reflog".to_string(),
+                        command: Command::LogReflog,
                     }),
                 ],
             },
