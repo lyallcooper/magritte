@@ -317,6 +317,15 @@ struct CommitView {
     title: SharedString,
     rows: Vec<CommitDiffRow>,
     scroll: UniformListScrollHandle,
+    /// Tracked top-row index for keyboard scrolling (see [`apply_scroll_key`]).
+    top: usize,
+}
+
+/// Scroll state for a read-only list view: its handle plus the top row we track
+/// for keyboard scrolling (the handle's index getter is test-only).
+struct ScrollView {
+    scroll: UniformListScrollHandle,
+    top: usize,
 }
 
 /// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
@@ -981,8 +990,8 @@ struct StatusView {
     /// The live settings screen, when open (takes over the window).
     settings: Option<SettingsState>,
     /// The git command-log view (magit's `$` process buffer), when open. Holds
-    /// the scroll handle; the entries are read live from the repo.
-    git_log: Option<UniformListScrollHandle>,
+    /// the scroll state; the entries are read live from the repo.
+    git_log: Option<ScrollView>,
     /// The commit-log view (`l`), when open.
     log: Option<LogState>,
     /// A commit's diff detail (opened from the log with Enter), when open.
@@ -3401,10 +3410,9 @@ impl StatusView {
     /// the most recent command.
     fn open_git_log(&mut self, cx: &mut Context<Self>) {
         let scroll = UniformListScrollHandle::new();
-        if let Some(n) = self.git_log_rows().len().checked_sub(1) {
-            scroll.scroll_to_item(n, gpui::ScrollStrategy::Bottom);
-        }
-        self.git_log = Some(scroll);
+        let last = self.git_log_rows().len().saturating_sub(1);
+        scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
+        self.git_log = Some(ScrollView { scroll, top: last });
         cx.notify();
     }
 
@@ -3484,6 +3492,7 @@ impl StatusView {
             title: SharedString::from(format!("{}  {}", entry.short_hash, entry.subject)),
             rows: vec![CommitDiffRow::Note("Loading…".to_string())],
             scroll: UniformListScrollHandle::new(),
+            top: 0,
         });
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -3585,6 +3594,7 @@ impl StatusView {
 
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
+        let ctrl = event.keystroke.modifiers.control;
 
         // While settings is open the focused Select handles keys; we only watch
         // for Esc (when no dropdown menu is open) to close the screen. Tab is
@@ -3596,30 +3606,55 @@ impl StatusView {
             return;
         }
 
-        // The git command-log view takes over the window; esc/q/$ close it.
+        // The git command-log view takes over the window; esc/q/$ close it, and
+        // it scrolls with the usual vi/less keys.
         if self.git_log.is_some() {
             if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
                 self.close_git_log(window, cx);
+                return;
             }
+            let page = page_rows(window);
+            let len = self.git_log_rows().len();
+            if let Some(sv) = self.git_log.as_mut() {
+                apply_scroll_key(&sv.scroll, &mut sv.top, len, &key, shift, ctrl, page);
+            }
+            cx.notify();
             return;
         }
 
         // A commit's diff detail (opened from the log) is topmost; esc/q returns
-        // to the log. (Mouse wheel scrolls the diff.)
+        // to the log, and it scrolls with the usual vi/less keys.
         if self.commit_view.is_some() {
             if key == "escape" || key == "q" {
                 self.close_commit_view(window, cx);
+                return;
             }
+            let page = page_rows(window);
+            if let Some(cv) = self.commit_view.as_mut() {
+                let len = cv.rows.len();
+                apply_scroll_key(&cv.scroll, &mut cv.top, len, &key, shift, ctrl, page);
+            }
+            cx.notify();
             return;
         }
 
-        // The commit-log view: j/k navigate, Enter opens the commit, esc/q close.
+        // The commit-log view: Enter opens the commit; esc/q close; the vi/less
+        // motion keys move the *selection* (paging by a screenful, g/G to ends).
         if self.log.is_some() {
+            let page = page_rows(window) as isize;
+            let half = (page / 2).max(1);
             match key.as_str() {
                 "escape" | "q" => self.close_log(window, cx),
+                "enter" => self.open_commit_view(cx),
                 "j" => self.log_move(1, cx),
                 "k" => self.log_move(-1, cx),
-                "enter" => self.open_commit_view(cx),
+                "d" => self.log_move(half, cx),
+                "u" => self.log_move(-half, cx),
+                "space" => self.log_move(page, cx),
+                "f" if ctrl => self.log_move(page, cx),
+                "b" if ctrl => self.log_move(-page, cx),
+                "g" if shift => self.log_move(isize::MAX / 2, cx), // G → bottom
+                "g" => self.log_move(isize::MIN / 2, cx),          // g → top
                 _ => {}
             }
             return;
@@ -4471,7 +4506,7 @@ impl StatusView {
     /// Render the git command-log view (magit's `$` process buffer): a header
     /// and a scrollable list of the recent git invocations, newest at the
     /// bottom, each flagged with success/failure.
-    fn render_git_log(&self, scroll: &UniformListScrollHandle, view: &Entity<Self>) -> gpui::Div {
+    fn render_git_log(&self, sv: &ScrollView, view: &Entity<Self>) -> gpui::Div {
         let count = self.git_log_rows().len();
 
         let body = if count == 0 {
@@ -4490,7 +4525,7 @@ impl StatusView {
                         .collect::<Vec<_>>()
                 }
             })
-            .track_scroll(scroll)
+            .track_scroll(&sv.scroll)
             .flex_grow(1.0)
             .into_any_element()
         };
@@ -5593,6 +5628,53 @@ fn describe_command(command: transient::Command) -> &'static str {
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
     }
+}
+
+/// The viewport height in rows — a "page" for the scroll/paging keys.
+fn page_rows(window: &Window) -> usize {
+    let height = window.viewport_size().height.as_f32();
+    // Leave a few rows for the header/padding so paging keeps a little overlap.
+    ((height / ROW_HEIGHT) as usize).saturating_sub(3).max(1)
+}
+
+/// Apply a vi/less-style scroll key to a `uniform_list`, updating the
+/// caller-tracked top-row index (`top`) and scrolling the handle to it. We
+/// track `top` ourselves because the handle's index getter is test-only.
+/// Returns whether `key` was a recognized scroll command: `j`/`k` line,
+/// `d`/`u` half-page (with or without Ctrl), `Ctrl-f`/`Ctrl-b`/`Space`
+/// full-page, and `g`/`G` to the ends.
+fn apply_scroll_key(
+    handle: &UniformListScrollHandle,
+    top: &mut usize,
+    len: usize,
+    key: &str,
+    shift: bool,
+    ctrl: bool,
+    page: usize,
+) -> bool {
+    let page = (page as isize).max(1);
+    let half = (page / 2).max(1);
+    let cur = *top as isize;
+    // The furthest the top can scroll: keep a full last page on screen rather
+    // than scrolling content off the bottom.
+    let max_top = (len as isize - page).max(0);
+    let target = match key {
+        "j" => cur + 1,
+        "k" => cur - 1,
+        "d" => cur + half,
+        "u" => cur - half,
+        "space" => cur + page,
+        "f" if ctrl => cur + page,
+        "b" if ctrl => cur - page,
+        "g" if shift => max_top, // G → bottom (last page)
+        "g" => 0,                // g → top
+        _ => return false,
+    };
+    *top = target.clamp(0, max_top) as usize;
+    // Strict: position `top` at the viewport top even when it's already visible,
+    // so line and half-page scrolling actually move.
+    handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
+    true
 }
 
 /// The last non-empty line of git output, for a concise status summary.
