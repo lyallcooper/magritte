@@ -2298,7 +2298,7 @@ impl StatusView {
         self.open_picker(
             PickerAction::SetOption { key, description },
             choices,
-            CreateMode::Any,
+            CreateMode::Value,
             Vec::new(),
             window,
             cx,
@@ -4168,15 +4168,21 @@ impl StatusView {
         let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
 
         let body = if rows == 0 {
-            // No match: a quiet placeholder line rather than gpui-component's
-            // inbox glyph.
+            // No candidates. For a selection picker, say "No match"; for plain
+            // value entry there's nothing to match (you're just typing), so keep
+            // the area empty.
+            let hint = if state.list.is_value_entry() {
+                ""
+            } else {
+                "No match"
+            };
             div()
                 .h(list_height)
                 .pl(px(ROW_PAD_LEFT))
                 .flex()
                 .items_center()
                 .text_color(self.palette.dim)
-                .child(SharedString::from("No match"))
+                .child(SharedString::from(hint))
                 .into_any_element()
         } else {
             uniform_list("picker-rows", rows, {

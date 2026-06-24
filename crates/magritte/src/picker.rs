@@ -12,18 +12,21 @@
 
 use gpui::SharedString;
 
-/// Whether (and how) a freely-typed value that isn't in the list is offered as
-/// a trailing "create" row.
+/// Whether (and how) a freely-typed value that isn't in the list is accepted.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CreateMode {
-    /// No create row — selection only.
+    /// No free text — selection only.
     None,
-    /// Offer only a `remote/branch`-form query (both parts non-empty), like
-    /// magit's push target. A bare name just filters.
+    /// Offer only a `remote/branch`-form query (both parts non-empty) as a
+    /// trailing "create" row, like magit's push target. A bare name just filters.
     RemoteBranch,
-    /// Offer any non-empty query that isn't already a choice — for entering a
-    /// new name (e.g. a branch to create).
+    /// Offer any non-empty query that isn't already a choice as a "create" row —
+    /// for naming a new thing (e.g. a branch to create).
     Any,
+    /// Plain value entry: the typed text is the value, candidates are mere
+    /// suggestions. No "create" row and no "no match" placeholder — Enter takes
+    /// the highlighted suggestion, or the typed text when nothing matches.
+    Value,
 }
 
 /// One displayable row: an existing choice, or the "create" row for a freshly
@@ -98,7 +101,7 @@ impl PickerList {
         let novel =
             !self.query.is_empty() && !self.choices.iter().any(|c| c.as_ref() == self.query);
         match self.create {
-            CreateMode::None => false,
+            CreateMode::None | CreateMode::Value => false,
             CreateMode::Any => novel,
             CreateMode::RemoteBranch => {
                 novel
@@ -108,6 +111,12 @@ impl PickerList {
                     )
             }
         }
+    }
+
+    /// Whether this is a plain value-entry picker (no "create" row, no "no
+    /// match" placeholder — the typed text is itself a valid answer).
+    pub fn is_value_entry(&self) -> bool {
+        self.create == CreateMode::Value
     }
 
     /// Number of visible rows (matches plus the optional create row).
@@ -154,10 +163,17 @@ impl PickerList {
         }
     }
 
-    /// The highlighted choice — an existing one, or the typed `remote/branch`
-    /// value when the create row is highlighted.
+    /// The highlighted choice: an existing match (or the "create" row's typed
+    /// value). In value-entry mode with nothing matching, the typed query is
+    /// itself the answer, so it's returned even with no visible row.
     pub fn selected_choice(&self) -> Option<SharedString> {
-        self.row(self.selected).map(|r| r.label)
+        if let Some(row) = self.row(self.selected) {
+            return Some(row.label);
+        }
+        if self.is_value_entry() {
+            return Some(SharedString::from(self.query.clone()));
+        }
+        None
     }
 }
 
