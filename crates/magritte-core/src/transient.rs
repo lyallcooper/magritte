@@ -74,8 +74,31 @@ pub struct Group {
     pub suffixes: Vec<Suffix>,
 }
 
+/// A piece of a dialog title/prompt: plain text, or a branch/ref name the
+/// frontend styles distinctly so it stands out from the surrounding words
+/// (e.g. the `main` in "Push main to").
+#[derive(Debug, Clone)]
+pub enum TitleSpan {
+    Text(String),
+    Branch(String),
+}
+
+impl TitleSpan {
+    pub fn text(s: impl Into<String>) -> Self {
+        TitleSpan::Text(s.into())
+    }
+    pub fn branch(s: impl Into<String>) -> Self {
+        TitleSpan::Branch(s.into())
+    }
+}
+
+/// A title that's a single run of plain text.
+pub fn plain_title(s: impl Into<String>) -> Vec<TitleSpan> {
+    vec![TitleSpan::Text(s.into())]
+}
+
 pub struct Transient {
-    pub title: &'static str,
+    pub title: Vec<TitleSpan>,
     pub groups: Vec<Group>,
 }
 
@@ -120,8 +143,18 @@ fn upstream_label(t: &RemoteTargets) -> String {
 }
 
 pub fn push_transient(t: &RemoteTargets) -> Transient {
+    // "Push <branch> to" with the branch styled distinctly (magit's framing);
+    // falls back to a bare "Push" when HEAD is detached.
+    let title = match &t.branch {
+        Some(b) => vec![
+            TitleSpan::text("Push "),
+            TitleSpan::branch(b.clone()),
+            TitleSpan::text(" to"),
+        ],
+        None => plain_title("Push"),
+    };
     Transient {
-        title: "Push",
+        title,
         groups: vec![
             Group {
                 title: "Arguments",
@@ -164,7 +197,7 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
 
 pub fn commit_transient() -> Transient {
     Transient {
-        title: "Commit",
+        title: plain_title("Commit"),
         groups: vec![
             Group {
                 title: "Arguments",
@@ -230,7 +263,7 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
         _ => "push-remote".to_string(),
     };
     Transient {
-        title: "Pull",
+        title: plain_title("Pull"),
         groups: vec![
             Group {
                 title: "Arguments",
@@ -276,7 +309,7 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
         .map(|u| u.remote.clone())
         .unwrap_or_else(|| "upstream".to_string());
     Transient {
-        title: "Fetch",
+        title: plain_title("Fetch"),
         groups: vec![
             Group {
                 title: "Arguments",
