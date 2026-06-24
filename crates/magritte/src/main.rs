@@ -61,7 +61,6 @@ use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::switch::Switch;
-use gpui_component::tag::Tag;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
@@ -4211,14 +4210,10 @@ impl StatusView {
                         .text_color(self.palette.section)
                         .child(SharedString::from(title.clone())),
                 )
+                // The section count: just a dim number, no badge/tag chrome.
                 .child(
-                    Tag::secondary()
-                        .small()
-                        .outline()
-                        // A touch smaller than Tag's `small`: tighter padding
-                        // and font so the count reads as a subtle badge.
-                        .text_size(px(10.0))
-                        .px_1()
+                    div()
+                        .text_color(self.palette.dim)
                         .child(SharedString::from(count.to_string())),
                 ),
             RowKind::File {
