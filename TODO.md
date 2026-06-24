@@ -37,3 +37,6 @@
 - [x] Implement branch transient and commands — checkout (DWIM tracking for remote branches), create, create & checkout, rename (two-step), delete. Deferred magit extras: spinoff/spinout, reset, orphan, worktree, shelve, configure, and choosing a non-HEAD start point when creating.
 - [x] Actually make the count tags not tags at all. Just a number in a subtle shade should do the trick
 - [x] Ability to view raw git command log — `$` opens a process-buffer view (magit's `$`); Repo records every invocation in a shared ring buffer.
+- [ ] Mouse hover subtle highlight on file/diff rows
+- [ ] '$' under "essential" on the '?' menu doesn't feel right—I wouldn't call it essential
+- [ ] Sketch out how we might customizable user actions in the future, a la magit and its transient-append-suffix et al functions that let users extend magit to run arbitrary commands. We could scope ours to be a little simpler, since we're not inside of emacs, but it'd be cool to let users remap or unbind existing commands, and to add their own custom commands

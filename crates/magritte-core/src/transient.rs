@@ -44,6 +44,16 @@ pub enum Command {
     BranchRename,
     /// Delete a branch (prompts for the branch).
     BranchDelete,
+    /// Stash the working tree and index.
+    StashPush,
+    /// Stash including untracked files.
+    StashPushAll,
+    /// Apply a stash, keeping it (prompts for which).
+    StashApply,
+    /// Pop a stash (prompts for which).
+    StashPop,
+    /// Drop a stash (prompts for which).
+    StashDrop,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -245,6 +255,49 @@ pub fn branch_transient() -> Transient {
                         key: "k",
                         description: "delete".to_string(),
                         command: Command::BranchDelete,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn stash_transient() -> Transient {
+    Transient {
+        title: plain_title("Stash"),
+        groups: vec![
+            Group {
+                title: plain_title("Stash"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "z",
+                        description: "both".to_string(),
+                        command: Command::StashPush,
+                    }),
+                    Suffix::Action(Action {
+                        key: "Z",
+                        description: "both, incl. untracked".to_string(),
+                        command: Command::StashPushAll,
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Use"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "apply".to_string(),
+                        command: Command::StashApply,
+                    }),
+                    Suffix::Action(Action {
+                        key: "p",
+                        description: "pop".to_string(),
+                        command: Command::StashPop,
+                    }),
+                    Suffix::Action(Action {
+                        key: "k",
+                        description: "drop".to_string(),
+                        command: Command::StashDrop,
                     }),
                 ],
             },
