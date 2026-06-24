@@ -103,11 +103,15 @@ enum CommitDiffRow {
     Note(String),
 }
 
-/// An open transient popup and the switches toggled on within it.
+/// An open transient popup with the switches toggled on and the option values
+/// set within it.
 struct TransientState {
     def: Transient,
     active: std::collections::HashSet<String>,
-    /// True after `-` is pressed, awaiting the switch letter (magit `-f`).
+    /// Value-reading option values, keyed by the option's key (e.g. `-F` →
+    /// `fix bug`). Combined with `active` to build the git argument list.
+    values: std::collections::HashMap<String, String>,
+    /// True after `-` is pressed, awaiting the switch/option letter (magit `-f`).
     pending_dash: bool,
     /// Resolved push/pull/fetch targets, so dispatch can route to the right
     /// remote without recomputing (empty for non-remote transients).
@@ -119,9 +123,25 @@ impl TransientState {
         TransientState {
             def,
             active: std::collections::HashSet::new(),
+            values: std::collections::HashMap::new(),
             pending_dash: false,
             targets,
         }
+    }
+
+    /// The git arguments from the toggled switches and set options, in
+    /// definition order (switches first, then options as `{arg}{value}`).
+    fn args(&self) -> Vec<String> {
+        let switches = self
+            .def
+            .switches()
+            .filter(|s| self.active.contains(s.key))
+            .map(|s| s.arg.to_string());
+        let options = self
+            .def
+            .options()
+            .filter_map(|o| self.values.get(o.key).map(|v| format!("{}{}", o.arg, v)));
+        switches.chain(options).collect()
     }
 }
 
@@ -222,12 +242,23 @@ enum StashAction {
 }
 
 /// What the picker does with its chosen value: a push/pull/fetch target, a
-/// branch operation, or a stash operation.
+/// branch/stash operation, a value for a transient option, or the ref to log.
 #[derive(Clone)]
 enum PickerAction {
     Transfer(Transfer),
     Branch(BranchAction),
     Stash(StashAction),
+    /// Set a transient option's value (`resume` carries the transient to
+    /// reopen with the value applied).
+    SetOption {
+        key: String,
+        description: String,
+    },
+    /// Log the chosen ref, appending it to `args` already gathered from the log
+    /// transient.
+    LogRef {
+        args: Vec<String>,
+    },
 }
 
 impl PickerAction {
@@ -254,6 +285,10 @@ impl PickerAction {
                 StashAction::Pop => "Pop stash",
                 StashAction::Drop => "Drop stash",
             }),
+            PickerAction::SetOption { description, .. } => {
+                transient::plain_title(description.clone())
+            }
+            PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
         }
     }
 
@@ -272,6 +307,8 @@ impl PickerAction {
             PickerAction::Stash(StashAction::Apply) => "apply",
             PickerAction::Stash(StashAction::Pop) => "pop",
             PickerAction::Stash(StashAction::Drop) => "drop",
+            PickerAction::SetOption { .. } => "set",
+            PickerAction::LogRef { .. } => "log",
         }
     }
 }
@@ -291,6 +328,10 @@ struct RemotePickerState {
     scroll: UniformListScrollHandle,
     action: PickerAction,
     switches: Vec<String>,
+    /// A transient to reopen when this picker confirms or cancels — used when a
+    /// transient option prompts for its value, so the menu comes back after.
+    /// Boxed to keep the (already large) picker state from dominating `Popup`.
+    resume: Option<Box<TransientState>>,
     /// Kept alive so the input-change subscription stays active.
     _sub: Subscription,
 }
@@ -2127,19 +2168,29 @@ impl StatusView {
             return;
         };
 
-        // Switches are toggled magit-style: `-` then the letter (e.g. -f).
+        // Switches toggle magit-style (`-` then the letter, e.g. -f); a
+        // value-reading option (e.g. -F) instead prompts for its value.
         if state.pending_dash {
             state.pending_dash = false;
             let full = format!("-{key}");
-            if let Some(sw) = state
-                .def
-                .switches()
-                .find(|s| s.key == full)
-                .map(|s| s.key.to_string())
-            {
-                if !state.active.remove(&sw) {
-                    state.active.insert(sw);
+            if state.def.switches().any(|s| s.key == full) {
+                if !state.active.remove(&full) {
+                    state.active.insert(full);
                 }
+                cx.notify();
+                return;
+            }
+            // Reading the option metadata ends the `state` borrow before we move
+            // the transient into the prompt as its resume target.
+            let opt = state
+                .def
+                .option_for(&full)
+                .map(|o| (o.key.to_string(), o.description.to_string(), o.completion));
+            if let Some((key, description, completion)) = opt {
+                if let Some(Popup::Transient(ts)) = self.popup.take() {
+                    self.open_option_prompt(key, description, completion, ts, window, cx);
+                }
+                return;
             }
             cx.notify();
             return;
@@ -2152,26 +2203,27 @@ impl StatusView {
 
         // Invoke an action.
         let action = state.def.action_for(key).cloned();
-        let switches: Vec<String> = state
-            .def
-            .switches()
-            .filter(|s| state.active.contains(s.key))
-            .map(|s| s.arg.to_string())
-            .collect();
+        // The active git arguments: toggled switches plus set option values.
+        let args = state.args();
         let targets = state.targets.clone();
+        let limit = state
+            .values
+            .get("-n")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(Self::LOG_LIMIT);
         if let Some(action) = action {
             self.popup = None;
             use transient::Command::*;
             match action.command {
-                CommitCreate => self.start_commit(switches, window, cx),
+                CommitCreate => self.start_commit(args, window, cx),
                 // Amend/reword/extend rewrite HEAD: warn first if it's published.
                 CommitAmend | CommitReword | CommitExtend => {
-                    self.begin_history_rewrite(action.command, switches, window, cx)
+                    self.begin_history_rewrite(action.command, args, window, cx)
                 }
                 // Push/pull/fetch resolve a remote (prompting if needed) then run.
                 PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
                 | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
-                    self.dispatch_transfer(action.command, &targets, switches, window, cx)
+                    self.dispatch_transfer(action.command, &targets, args, window, cx)
                 }
                 BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename
                 | BranchDelete => self.dispatch_branch(action.command, window, cx),
@@ -2180,6 +2232,11 @@ impl StatusView {
                 StashApply | StashPop | StashDrop => {
                     self.dispatch_stash(action.command, window, cx)
                 }
+                // Log: append the scope to the gathered args and run.
+                LogCurrent => self.start_log(with_arg(args, "HEAD"), cx),
+                LogAll => self.start_log(with_arg(args, "--all"), cx),
+                LogOther => self.prompt_log_ref(args, window, cx),
+                LogReflog => self.start_reflog(limit, cx),
             }
         }
     }
@@ -2212,6 +2269,57 @@ impl StatusView {
             PickerAction::Stash(action),
             choices,
             CreateMode::None,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    /// Prompt for a transient option's value (free text, with completion
+    /// candidates), stashing `resume` so the transient reopens with the value
+    /// applied (or unchanged on cancel).
+    fn open_option_prompt(
+        &mut self,
+        key: String,
+        description: String,
+        completion: transient::Completion,
+        resume: TransientState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let choices = match completion {
+            transient::Completion::Authors => self
+                .repo
+                .as_ref()
+                .and_then(|r| r.authors().ok())
+                .unwrap_or_default(),
+            transient::Completion::None => Vec::new(),
+        };
+        self.open_picker(
+            PickerAction::SetOption { key, description },
+            choices,
+            CreateMode::Any,
+            Vec::new(),
+            window,
+            cx,
+        );
+        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+            p.resume = Some(Box::new(resume));
+        }
+    }
+
+    /// Prompt for a ref to log (`l o`), carrying the already-gathered log args
+    /// through to the run.
+    fn prompt_log_ref(&mut self, args: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.as_ref() else {
+            return;
+        };
+        let mut choices = repo.local_branches().unwrap_or_default();
+        choices.extend(repo.remote_branches().unwrap_or_default());
+        self.open_picker(
+            PickerAction::LogRef { args },
+            choices,
+            CreateMode::Any,
             Vec::new(),
             window,
             cx,
@@ -2601,6 +2709,7 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             action,
             switches,
+            resume: None,
             _sub: sub,
         }));
         cx.notify();
@@ -2623,6 +2732,23 @@ impl StatusView {
                     self.run_branch_action(b, chosen.to_string(), window, cx)
                 }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
+                // Set the option value (empty clears it) and reopen the transient.
+                PickerAction::SetOption { key, .. } => {
+                    if let Some(mut ts) = p.resume {
+                        let value = chosen.to_string();
+                        if value.trim().is_empty() {
+                            ts.values.remove(&key);
+                        } else {
+                            ts.values.insert(key, value);
+                        }
+                        self.popup = Some(Popup::Transient(*ts));
+                        cx.notify();
+                    }
+                }
+                PickerAction::LogRef { mut args } => {
+                    args.push(chosen.to_string());
+                    self.start_log(args, cx);
+                }
             }
         }
     }
@@ -3445,32 +3571,62 @@ impl StatusView {
     /// huge repo stays cheap; the bar notes when it's capped.
     const LOG_LIMIT: usize = 256;
 
-    /// Open the commit-log view (`l`): show it immediately (empty), then load
-    /// the commits off the UI thread.
-    fn open_log(&mut self, cx: &mut Context<Self>) {
+    /// Open the commit-log view for `git log <args>`: show it immediately
+    /// (empty), then load the commits off the UI thread. A default commit limit
+    /// is added when the args don't set one.
+    fn start_log(&mut self, mut args: Vec<String>, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        if !args
+            .iter()
+            .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))
+        {
+            args.push(format!("--max-count={}", Self::LOG_LIMIT));
+        }
+        self.show_log_loading(cx);
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_executor()
+                .spawn(async move { repo.log_with(&args).unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| this.fill_log(entries, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Open the reflog view (`l r`).
+    fn start_reflog(&mut self, limit: usize, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.show_log_loading(cx);
+        cx.spawn(async move |this, cx| {
+            let entries = cx
+                .background_executor()
+                .spawn(async move { repo.reflog(limit).unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| this.fill_log(entries, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Show the (empty) log view immediately while commits load.
+    fn show_log_loading(&mut self, cx: &mut Context<Self>) {
         self.log = Some(LogState {
             entries: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
         });
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let entries = cx
-                .background_executor()
-                .spawn(async move { repo.log("HEAD", Self::LOG_LIMIT).unwrap_or_default() })
-                .await;
-            this.update(cx, |this, cx| {
-                if let Some(log) = this.log.as_mut() {
-                    log.entries = entries;
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    }
+
+    /// Fill the open log view with loaded entries.
+    fn fill_log(&mut self, entries: Vec<magritte_core::LogEntry>, cx: &mut Context<Self>) {
+        if let Some(log) = self.log.as_mut() {
+            log.entries = entries;
+        }
+        cx.notify();
     }
 
     fn close_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3818,8 +3974,11 @@ impl StatusView {
                 )
             }
             "l" => {
-                self.open_log(cx);
-                return;
+                return self.open_transient(
+                    transient::log_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
             }
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
             "p" => {
@@ -3887,6 +4046,23 @@ impl StatusView {
         }
     }
 
+    /// Click on a value-reading option row: prompt for its value, stashing the
+    /// transient to reopen after (mirrors pressing the option's `-X` key).
+    fn click_option(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let opt = match &self.popup {
+            Some(Popup::Transient(s)) => s
+                .def
+                .option_for(&key)
+                .map(|o| (o.key.to_string(), o.description.to_string(), o.completion)),
+            _ => None,
+        };
+        if let Some((k, desc, comp)) = opt {
+            if let Some(Popup::Transient(ts)) = self.popup.take() {
+                self.open_option_prompt(k, desc, comp, ts, window, cx);
+            }
+        }
+    }
+
     /// Invoke a `?`-dispatch command (by key press or row click): close the
     /// dispatch menu and run the command, like magit's dispatch transient.
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -3898,7 +4074,7 @@ impl StatusView {
                 self.open_transient(transient::branch_transient(), t, cx);
             }
             "Z" => self.open_transient(transient::stash_transient(), RemoteTargets::default(), cx),
-            "l" => self.open_log(cx),
+            "l" => self.open_transient(transient::log_transient(), RemoteTargets::default(), cx),
             "p" => {
                 let t = self.remote_targets();
                 self.open_transient(transient::push_transient(&t), t, cx);
@@ -4137,9 +4313,14 @@ impl StatusView {
         el.child(label_el).into_any_element()
     }
 
-    /// Close any open popup (e.g. cancel the remote picker).
+    /// Close the open picker. If it was prompting for a transient option value,
+    /// reopen that transient unchanged rather than dismissing everything.
     fn cancel_popup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.popup = None;
+        if let Some(Popup::RemotePicker(p)) = self.popup.take() {
+            if let Some(ts) = p.resume {
+                self.popup = Some(Popup::Transient(*ts));
+            }
+        }
         cx.notify();
     }
 
@@ -4215,6 +4396,43 @@ impl StatusView {
                                 view.update(cx, |v, vcx| {
                                     v.click_suffix(key.clone(), true, window, vcx)
                                 });
+                            })
+                            .into_any_element()
+                    }
+                    // A value-reading option: like a switch, but the parens show
+                    // the current value (or just the arg when unset).
+                    Suffix::Option(o) => {
+                        let value = state.and_then(|s| s.values.get(o.key).cloned());
+                        let set = value.is_some();
+                        let shown = format!("({}{})", o.arg, value.as_deref().unwrap_or_default());
+                        let color = if set {
+                            self.palette.modified
+                        } else {
+                            self.palette.dim
+                        };
+                        let view = view.clone();
+                        let okey = o.key.to_string();
+                        div()
+                            .id(o.key)
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .cursor_pointer()
+                            .group(KBD_ROW_GROUP)
+                            .child(track_target(o.key))
+                            .child(switch_chip(
+                                o.key,
+                                self.palette.dim,
+                                self.palette.removed,
+                                pending_dash,
+                            ))
+                            .child(self.hover_label(o.description, self.palette.fg))
+                            .child(div().text_color(color).child(SharedString::from(shown)))
+                            .on_click(move |_, window, cx: &mut App| {
+                                view.update(cx, |v, vcx| v.click_option(okey.clone(), window, vcx));
                             })
                             .into_any_element()
                     }
@@ -5649,12 +5867,20 @@ fn describe_command(command: transient::Command) -> &'static str {
         PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
         FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
         CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
-        // Branch and stash commands route through their own picker/runner.
+        // Branch, stash, and log commands route through their own picker/runner.
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Working"
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
+        LogCurrent | LogAll | LogOther | LogReflog => "Logging",
     }
+}
+
+/// Append `arg` to `args`, returning the combined list (for building a log
+/// invocation's scope onto the gathered option args).
+fn with_arg(mut args: Vec<String>, arg: &str) -> Vec<String> {
+    args.push(arg.to_string());
+    args
 }
 
 /// The viewport height in rows — a "page" for the scroll/paging keys.

@@ -50,3 +50,47 @@ fn log_subjects_with_separators_survive() {
         "feat: do a thing (with parens) and dashes"
     );
 }
+
+#[test]
+fn log_with_grep_filters_by_message() {
+    let t = TestRepo::new();
+    t.write("f", "1\n");
+    t.commit_all("init");
+    t.write("f", "2\n");
+    t.commit_all("fix the bug");
+    let repo = Repo::discover(t.path()).unwrap();
+
+    let matched = repo
+        .log_with(&["--grep=bug".to_string(), "HEAD".to_string()])
+        .unwrap();
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched[0].subject, "fix the bug");
+}
+
+#[test]
+fn authors_are_unique() {
+    let t = TestRepo::new();
+    t.write("f", "1\n");
+    t.commit_all("a");
+    t.write("f", "2\n");
+    t.commit_all("b"); // same author, two commits
+    let repo = Repo::discover(t.path()).unwrap();
+
+    let authors = repo.authors().unwrap();
+    assert_eq!(authors, vec!["Test <test@example.com>"]);
+}
+
+#[test]
+fn reflog_lists_entries() {
+    let t = TestRepo::new();
+    t.write("f", "1\n");
+    t.commit_all("init");
+    t.write("f", "2\n");
+    t.commit_all("second");
+    let repo = Repo::discover(t.path()).unwrap();
+
+    // Committing wrote reflog entries; the newest reflects the latest commit.
+    let entries = repo.reflog(10).unwrap();
+    assert!(!entries.is_empty());
+    assert!(entries[0].refs.starts_with("HEAD@{0}"));
+}
