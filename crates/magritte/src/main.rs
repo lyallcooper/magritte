@@ -222,7 +222,7 @@ fn dispatch_menu() -> Transient {
         title: transient::plain_title("Dispatch"),
         groups: vec![
             Group {
-                title: "Commands",
+                title: transient::plain_title("Commands"),
                 suffixes: vec![
                     info("c", "Commit"),
                     info("p", "Push"),
@@ -232,7 +232,7 @@ fn dispatch_menu() -> Transient {
                 ],
             },
             Group {
-                title: "Applying changes",
+                title: transient::plain_title("Applying changes"),
                 suffixes: vec![
                     info("s", "Stage"),
                     info("u", "Unstage"),
@@ -242,7 +242,7 @@ fn dispatch_menu() -> Transient {
                 ],
             },
             Group {
-                title: "Navigation",
+                title: transient::plain_title("Navigation"),
                 suffixes: vec![
                     info("j", "Move down"),
                     info("k", "Move up"),
@@ -253,7 +253,7 @@ fn dispatch_menu() -> Transient {
                 ],
             },
             Group {
-                title: "Essential",
+                title: transient::plain_title("Essential"),
                 suffixes: vec![
                     info("tab", "Fold / unfold"),
                     info("gr", "Refresh"),
@@ -3397,7 +3397,7 @@ impl StatusView {
                         div()
                             .flex()
                             .items_center()
-                            .child(self.render_title(&state.prompt))
+                            .child(self.render_title(&state.prompt, self.palette.section))
                             .child(
                                 div()
                                     .text_color(self.palette.section)
@@ -3507,11 +3507,12 @@ impl StatusView {
             // items_start so each row's clickable hitbox hugs its content width
             // rather than stretching across the column (which makes clicks land
             // on the wrong row).
-            let mut col = div().flex().flex_col().items_start().gap_1().child(
-                div()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(group.title)),
-            );
+            let mut col = div()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_1()
+                .child(self.render_title(&group.title, self.palette.dim));
             for suffix in &group.suffixes {
                 let row = match suffix {
                     Suffix::Switch(sw) => {
@@ -3627,22 +3628,21 @@ impl StatusView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(self.render_title(&def.title))
+            .child(self.render_title(&def.title, self.palette.section))
             .child(columns)
     }
 
     /// Render a dialog heading from styled spans, with branch/ref names set off
     /// from the surrounding words as a subtly tinted, medium-weight chip so
-    /// they're easy to pick out — e.g. the `main` in "Push main to".
-    fn render_title(&self, spans: &[TitleSpan]) -> gpui::Div {
+    /// they're easy to pick out — e.g. the `main` in "Push main to". `base` is
+    /// the color for the plain text (the heading vs. group-header convention).
+    fn render_title(&self, spans: &[TitleSpan], base: Hsla) -> gpui::Div {
         let mut row = div().flex().items_center();
         for span in spans {
             row = match span {
-                TitleSpan::Text(t) => row.child(
-                    div()
-                        .text_color(self.palette.section)
-                        .child(SharedString::from(t.clone())),
-                ),
+                TitleSpan::Text(t) => {
+                    row.child(div().text_color(base).child(SharedString::from(t.clone())))
+                }
                 TitleSpan::Branch(b) => row.child(
                     div()
                         .px(px(5.0))
