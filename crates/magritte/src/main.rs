@@ -64,7 +64,7 @@ use gpui_component::switch::Switch;
 use gpui_component::tag::Tag;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
-use magritte_core::transient::{self, Group, Suffix, Transient};
+use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, RemoteTargets, Repo,
     Status,
@@ -172,20 +172,24 @@ impl Transfer {
         }
     }
 
-    /// The minibuffer prompt: you push the current branch *to* a target, but
-    /// pull/fetch *from* one (matching magit's "Push master to" / "Pull from" /
-    /// "Fetch from").
-    fn prompt(&self) -> String {
+    /// The minibuffer prompt (styled spans): you push the current branch *to* a
+    /// target, but pull/fetch *from* one (matching magit's "Push master to" /
+    /// "Pull from" / "Fetch from"). The branch is set off as its own span.
+    fn prompt(&self) -> Vec<TitleSpan> {
         match self {
             Transfer::Push { branch, .. } | Transfer::PushRef { branch } => {
                 if branch.is_empty() {
-                    "Push to".to_string()
+                    transient::plain_title("Push to")
                 } else {
-                    format!("Push {branch} to")
+                    vec![
+                        TitleSpan::text("Push "),
+                        TitleSpan::branch(branch.clone()),
+                        TitleSpan::text(" to"),
+                    ]
                 }
             }
-            Transfer::Pull { .. } | Transfer::PullRef => "Pull from".to_string(),
-            Transfer::Fetch => "Fetch from".to_string(),
+            Transfer::Pull { .. } | Transfer::PullRef => transient::plain_title("Pull from"),
+            Transfer::Fetch => transient::plain_title("Fetch from"),
         }
     }
 }
@@ -194,9 +198,9 @@ impl Transfer {
 /// ranked candidate list, and the pending transfer. The transfer runs against
 /// the highlighted (or clicked) candidate on Enter.
 struct RemotePickerState {
-    /// The minibuffer-style prompt, e.g. `Push main to` (the `:` and the typed
-    /// text are rendered after it).
-    prompt: SharedString,
+    /// The minibuffer-style prompt as styled spans, e.g. `Push `[main]` to` (the
+    /// `:` and the typed text are rendered after it).
+    prompt: Vec<TitleSpan>,
     /// The bare query input (type-to-filter).
     input: Entity<InputState>,
     /// The filter/rank/select model over the candidates.
@@ -215,7 +219,7 @@ struct RemotePickerState {
 fn dispatch_menu() -> Transient {
     let info = |keys, description| Suffix::Info(transient::Info { keys, description });
     Transient {
-        title: "Dispatch",
+        title: transient::plain_title("Dispatch"),
         groups: vec![
             Group {
                 title: "Commands",
@@ -2301,7 +2305,7 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prompt = SharedString::from(transfer.prompt());
+        let prompt = transfer.prompt();
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
         let input = cx.new(|cx| InputState::new(window, cx));
         // Re-filter as the query changes (Up/Down/Enter/Esc are handled in the
@@ -3391,8 +3395,14 @@ impl StatusView {
                     .pl(px(ROW_PAD_LEFT))
                     .child(
                         div()
-                            .text_color(self.palette.section)
-                            .child(SharedString::from(format!("{}:", state.prompt))),
+                            .flex()
+                            .items_center()
+                            .child(self.render_title(&state.prompt))
+                            .child(
+                                div()
+                                    .text_color(self.palette.section)
+                                    .child(SharedString::from(":")),
+                            ),
                     )
                     .child(
                         div()
@@ -3617,12 +3627,34 @@ impl StatusView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
-                div()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(def.title)),
-            )
+            .child(self.render_title(&def.title))
             .child(columns)
+    }
+
+    /// Render a dialog heading from styled spans, with branch/ref names set off
+    /// from the surrounding words as a subtly tinted, medium-weight chip so
+    /// they're easy to pick out — e.g. the `main` in "Push main to".
+    fn render_title(&self, spans: &[TitleSpan]) -> gpui::Div {
+        let mut row = div().flex().items_center();
+        for span in spans {
+            row = match span {
+                TitleSpan::Text(t) => row.child(
+                    div()
+                        .text_color(self.palette.section)
+                        .child(SharedString::from(t.clone())),
+                ),
+                TitleSpan::Branch(b) => row.child(
+                    div()
+                        .px(px(5.0))
+                        .rounded(px(4.0))
+                        .bg(with_alpha(self.palette.section, 0.16))
+                        .text_color(self.palette.fg)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(b.clone())),
+                ),
+            };
+        }
+        row
     }
 
     /// Render a whitespace-separated key spec (e.g. `gg / G`) as keycaps with
