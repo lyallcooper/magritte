@@ -5699,9 +5699,15 @@ fn apply_scroll_key(
         _ => return false,
     };
     *top = target.clamp(0, max_top) as usize;
-    // Strict: position `top` at the viewport top even when it's already visible,
-    // so line and half-page scrolling actually move.
-    handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
+    // Strict scrolling positions the row even when it's already visible, so line
+    // and half-page motions actually move. On the last page, pin the final row
+    // to the *bottom* instead — the page-size estimate (header/padding overhead)
+    // is slightly off, and pinning guarantees the very last row is reachable.
+    if *top as isize >= max_top && len > 0 {
+        handle.scroll_to_item_strict(len - 1, gpui::ScrollStrategy::Bottom);
+    } else {
+        handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
+    }
     true
 }
 
