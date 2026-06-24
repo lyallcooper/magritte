@@ -35,3 +35,4 @@
 - [x] Confirm canceling a commit if there's an in progress commit message, or if the message has been modified in the case of a reword
 - [x] Make the count tags a little smaller still
 - [ ] Actually make the count tags not tags at all. Just a number in a subtle shade should do the trick
+- [ ] Ability to view raw git command log
