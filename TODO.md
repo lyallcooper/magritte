@@ -34,6 +34,6 @@
 - [x] The commit editor should highlight chars in the commit title line that go past 50 chars, and we should auto-hard wrap the text after 72 chars in the body. Both of these should be toggleable in the settings. I'd also like some way of being able to reflow the text when editing after the auto-wrap, but not sure how to best expose that
 - [x] Confirm canceling a commit if there's an in progress commit message, or if the message has been modified in the case of a reword
 - [x] Make the count tags a little smaller still
-- [ ] Implement branch transient and commands
-- [ ] Actually make the count tags not tags at all. Just a number in a subtle shade should do the trick
-- [ ] Ability to view raw git command log
+- [x] Implement branch transient and commands — checkout (DWIM tracking for remote branches), create, create & checkout, rename (two-step), delete. Deferred magit extras: spinoff/spinout, reset, orphan, worktree, shelve, configure, and choosing a non-HEAD start point when creating.
+- [x] Actually make the count tags not tags at all. Just a number in a subtle shade should do the trick
+- [x] Ability to view raw git command log — `$` opens a process-buffer view (magit's `$`); Repo records every invocation in a shared ring buffer.

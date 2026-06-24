@@ -159,7 +159,7 @@ impl Repo {
 }
 
 /// git reports push/fetch progress on stderr; prefer it, else stdout.
-fn summary(out: GitOutput) -> String {
+pub(crate) fn summary(out: GitOutput) -> String {
     let stderr = out.stderr.trim();
     if stderr.is_empty() {
         String::from_utf8_lossy(&out.stdout).trim().to_string()

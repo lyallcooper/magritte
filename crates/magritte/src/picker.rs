@@ -12,8 +12,22 @@
 
 use gpui::SharedString;
 
+/// Whether (and how) a freely-typed value that isn't in the list is offered as
+/// a trailing "create" row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CreateMode {
+    /// No create row — selection only.
+    None,
+    /// Offer only a `remote/branch`-form query (both parts non-empty), like
+    /// magit's push target. A bare name just filters.
+    RemoteBranch,
+    /// Offer any non-empty query that isn't already a choice — for entering a
+    /// new name (e.g. a branch to create).
+    Any,
+}
+
 /// One displayable row: an existing choice, or the "create" row for a freshly
-/// typed `remote/branch` value.
+/// typed value.
 pub struct PickerRow {
     pub label: SharedString,
     /// True for the trailing "create" row (the typed value, shown as `… (new)`).
@@ -30,17 +44,15 @@ pub struct PickerList {
     /// Index of the highlighted row (into the visible rows: matched, then the
     /// optional trailing create row). Always valid when `row_count() > 0`.
     selected: usize,
-    /// When set, a `remote/branch`-form query not already a choice offers a
-    /// trailing "create" row. A bare name (no `/`) is never offered — it just
-    /// filters the candidates, mirroring magit's REMOTE/BRANCH requirement.
-    allow_create: bool,
+    /// How a freely-typed value not in the list is offered (or not).
+    create: CreateMode,
     /// The current (trimmed, original-case) query — the value the create row
     /// yields.
     query: String,
 }
 
 impl PickerList {
-    pub fn new(choices: Vec<SharedString>, allow_create: bool) -> Self {
+    pub fn new(choices: Vec<SharedString>, create: CreateMode) -> Self {
         let lowered = choices.iter().map(|c| c.to_lowercase()).collect();
         let matched = (0..choices.len()).collect();
         Self {
@@ -48,7 +60,7 @@ impl PickerList {
             lowered,
             matched,
             selected: 0,
-            allow_create,
+            create,
             query: String::new(),
         }
     }
@@ -79,17 +91,22 @@ impl PickerList {
         self.selected = 0;
     }
 
-    /// Whether a "create" row is shown — only for a `remote/branch`-form query
-    /// (both parts non-empty) that isn't already a choice.
+    /// Whether a "create" row for the typed query is shown. The query must not
+    /// already be a choice; `RemoteBranch` additionally requires the
+    /// `remote/branch` form (both parts non-empty), mirroring magit.
     fn create_row(&self) -> bool {
-        if !self.allow_create {
-            return false;
-        }
-        match self.query.split_once('/') {
-            Some((remote, branch)) if !remote.is_empty() && !branch.is_empty() => {
-                !self.choices.iter().any(|c| c.as_ref() == self.query)
+        let novel =
+            !self.query.is_empty() && !self.choices.iter().any(|c| c.as_ref() == self.query);
+        match self.create {
+            CreateMode::None => false,
+            CreateMode::Any => novel,
+            CreateMode::RemoteBranch => {
+                novel
+                    && matches!(
+                        self.query.split_once('/'),
+                        Some((remote, branch)) if !remote.is_empty() && !branch.is_empty()
+                    )
             }
-            _ => false,
         }
     }
 
@@ -195,26 +212,29 @@ fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_score, PickerList};
+    use super::{fuzzy_score, CreateMode, PickerList};
     use gpui::SharedString;
 
-    fn list(choices: &[&str], allow_create: bool) -> PickerList {
+    fn list(choices: &[&str], create: CreateMode) -> PickerList {
         PickerList::new(
             choices.iter().map(|c| SharedString::from(*c)).collect(),
-            allow_create,
+            create,
         )
     }
 
     #[test]
     fn empty_query_keeps_order_and_selects_first() {
-        let l = list(&["origin/main", "backup/main"], false);
+        let l = list(&["origin/main", "backup/main"], CreateMode::None);
         assert_eq!(l.row_count(), 2);
         assert_eq!(l.selected_choice().as_deref(), Some("origin/main"));
     }
 
     #[test]
     fn fuzzy_ranks_best_match_first() {
-        let mut l = list(&["origin/zztest", "origin/main", "backup/main"], false);
+        let mut l = list(
+            &["origin/zztest", "origin/main", "backup/main"],
+            CreateMode::None,
+        );
         l.set_query("main");
         // Both `*/main` match; the create row is off, and the top match is
         // auto-selected.
@@ -227,7 +247,7 @@ mod tests {
 
     #[test]
     fn create_row_requires_remote_slash_branch_form() {
-        let mut l = list(&["origin/master", "origin/dev"], true);
+        let mut l = list(&["origin/master", "origin/dev"], CreateMode::RemoteBranch);
 
         // A bare name is never offered as new (magit requires REMOTE/BRANCH);
         // it just filters the candidates instead.
@@ -248,8 +268,20 @@ mod tests {
     }
 
     #[test]
+    fn create_mode_any_offers_any_novel_name() {
+        let mut l = list(&["main", "dev"], CreateMode::Any);
+        // A bare name not in the list is offered as a new entry, verbatim.
+        l.set_query("feature");
+        assert_eq!(l.selected_choice().as_deref(), Some("feature"));
+        assert!(l.row(0).is_some_and(|r| r.is_create));
+        // An existing name is not offered as new.
+        l.set_query("main");
+        assert!(l.row(0).is_some_and(|r| !r.is_create));
+    }
+
+    #[test]
     fn move_by_wraps_around() {
-        let mut l = list(&["a/x", "b/x", "c/x"], false);
+        let mut l = list(&["a/x", "b/x", "c/x"], CreateMode::None);
         assert_eq!(l.selected(), 0);
         l.move_by(-1);
         assert_eq!(l.selected(), 2, "up from the top wraps to the bottom");
