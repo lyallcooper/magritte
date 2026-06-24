@@ -2229,7 +2229,6 @@ impl StatusView {
                     transfer,
                     remotes,
                     false,
-                    None,
                     "Choose a remote",
                     switches,
                     window,
@@ -2263,7 +2262,6 @@ impl StatusView {
             transfer,
             remotes,
             false,
-            None,
             "Choose a remote",
             switches,
             window,
@@ -2284,21 +2282,26 @@ impl StatusView {
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
-        if repo.remotes().map(|r| r.is_empty()).unwrap_or(true) {
+        let remotes = repo.remotes().unwrap_or_default();
+        if remotes.is_empty() {
             self.status_message = Some("No remotes configured".to_string());
             cx.notify();
             return;
         }
-        let branches = repo.remote_branches().unwrap_or_default();
-        // When creating, a bare typed name targets the default remote, so qualify
-        // it (e.g. `master` → `origin/master`) — both for the "is this new?" check
-        // and for the ref we push to.
-        let qualify = create.then(|| default_remote(repo));
+        let existing = repo.remote_branches().unwrap_or_default();
+        // Pull lists only existing branches (you can't pull one that doesn't
+        // exist). Push seeds the same-named target on every remote — like magit —
+        // so `origin/<current>` is always a normal candidate, existing or not.
+        let choices = match &transfer {
+            Transfer::PushRef { branch } if create => {
+                seed_push_branches(repo, &remotes, branch, existing)
+            }
+            _ => existing,
+        };
         self.open_picker(
             transfer,
-            branches,
+            choices,
             create,
-            qualify,
             "Choose a branch",
             switches,
             window,
@@ -2314,7 +2317,6 @@ impl StatusView {
         transfer: Transfer,
         choices: Vec<String>,
         allow_create: bool,
-        qualify: Option<String>,
         placeholder: &'static str,
         switches: Vec<String>,
         window: &mut Window,
@@ -2327,11 +2329,12 @@ impl StatusView {
         ));
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
         let list = cx.new(|cx| {
-            let mut delegate = ChoiceDelegate::new(items).allow_create(allow_create);
-            if let Some(prefix) = qualify {
-                delegate = delegate.qualify_with(prefix);
-            }
-            ListState::new(delegate, window, cx).searchable(true)
+            ListState::new(
+                ChoiceDelegate::new(items).allow_create(allow_create),
+                window,
+                cx,
+            )
+            .searchable(true)
         });
         // Enter (or clicking a row) confirms; Esc cancels.
         let sub = cx.subscribe_in(
@@ -4572,6 +4575,42 @@ fn default_remote(repo: &Repo) -> String {
             .next()
             .unwrap_or_else(|| "origin".to_string())
     }
+}
+
+/// The push "elsewhere" candidate list, magit-style: seed `<remote>/<current>`
+/// for every remote (existing or not) so the same-named push target is always a
+/// normal candidate, then append the existing remote branches. The preferred
+/// remote (push-remote if set, else [`default_remote`]) comes first, so the most
+/// likely target is the default selection.
+fn seed_push_branches(
+    repo: &Repo,
+    remotes: &[String],
+    current: &str,
+    existing: Vec<String>,
+) -> Vec<String> {
+    if current.is_empty() {
+        return existing;
+    }
+    let preferred = repo
+        .remote_targets()
+        .ok()
+        .and_then(|t| t.push_remote)
+        .unwrap_or_else(|| default_remote(repo));
+    let mut ordered: Vec<&String> = remotes.iter().collect();
+    ordered.sort_by_key(|r| **r != preferred);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(remotes.len() + existing.len());
+    for cand in ordered
+        .into_iter()
+        .map(|r| format!("{r}/{current}"))
+        .chain(existing)
+    {
+        if seen.insert(cand.clone()) {
+            out.push(cand);
+        }
+    }
+    out
 }
 
 /// Split a chosen `remote/branch` ref into its parts. A bare value (no `/`,
