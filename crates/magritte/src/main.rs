@@ -2245,6 +2245,9 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let title = SharedString::from(format!("{} to", transfer.action_label()));
+        // Useful default order: the conventional `origin` first, the rest as-is.
+        let mut remotes = remotes;
+        remotes.sort_by_key(|r| r != "origin");
         let items: Vec<SharedString> = remotes.into_iter().map(SharedString::from).collect();
         let list =
             cx.new(|cx| ListState::new(ChoiceDelegate::new(items), window, cx).searchable(true));
@@ -2258,7 +2261,12 @@ impl StatusView {
                 ListEvent::Select(_) => {}
             },
         );
-        list.update(cx, |st, cx| st.focus(window, cx));
+        list.update(cx, |st, cx| {
+            // Select the first row up front (the List otherwise only does this
+            // after a search), so it's highlighted on appear; focus the search.
+            st.set_selected_index(Some(gpui_component::IndexPath::default()), window, cx);
+            st.focus(window, cx);
+        });
         self.popup = Some(Popup::RemotePicker(RemotePickerState {
             title,
             list,
