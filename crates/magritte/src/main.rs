@@ -1542,6 +1542,25 @@ impl StatusView {
         }
     }
 
+    /// Move the cursor by ~`delta` rows for paging (Ctrl-d/u/f/b): clamp the
+    /// target into range, then snap to the nearest selectable row (so paging at
+    /// the ends lands on the last/first selectable row rather than stalling).
+    fn page_selection(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let last = self.rows.len() as isize - 1;
+        let target = (self.selected as isize + delta).clamp(0, last);
+        for d in 0..=last {
+            for cand in [target + d, target - d] {
+                if (0..=last).contains(&cand) && self.rows[cand as usize].selectable {
+                    self.selected = cand as usize;
+                    return;
+                }
+            }
+        }
+    }
+
     fn select_edge(&mut self, last: bool) {
         let found = if last {
             (0..self.rows.len())
@@ -3736,9 +3755,17 @@ impl StatusView {
             return;
         }
 
+        // Page-motion size for Ctrl-d/u/f/b (a screenful of rows).
+        let page = page_rows(window) as isize;
+        let half = (page / 2).max(1);
         match key.as_str() {
             "j" => self.move_selection(1),
             "k" => self.move_selection(-1),
+            // Vi-style paging (kept off the `?` menu — a scroll convenience).
+            "d" if ctrl => self.page_selection(half),
+            "u" if ctrl => self.page_selection(-half),
+            "f" if ctrl => self.page_selection(page),
+            "b" if ctrl => self.page_selection(-page),
             "g" if shift => self.select_edge(true), // G
             "g" => {
                 self.pending_g = true;

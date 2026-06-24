@@ -40,3 +40,4 @@
 - [ ] Mouse hover subtle highlight on file/diff rows
 - [ ] '$' under "essential" on the '?' menu doesn't feel right—I wouldn't call it essential
 - [ ] Sketch out how we might customizable user actions in the future, a la magit and its transient-append-suffix et al functions that let users extend magit to run arbitrary commands. We could scope ours to be a little simpler, since we're not inside of emacs, but it'd be cool to let users remap or unbind existing commands, and to add their own custom commands
+- [ ] Command dispatch, in the spirit of M-x, but accessible via ':'. Might need to sketch this one out first too.
