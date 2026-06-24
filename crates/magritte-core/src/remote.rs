@@ -46,6 +46,20 @@ impl Repo {
             .collect())
     }
 
+    /// Remote-tracking branches as `remote/branch` (e.g. `origin/main`), for the
+    /// push/pull "elsewhere" target picker. Skips the symbolic `*/HEAD` refs —
+    /// note `%(refname:short)` collapses `origin/HEAD` to just `origin`, so we
+    /// also drop entries without a `/`.
+    pub fn remote_branches(&self) -> Result<Vec<String>> {
+        let out = self.run(["for-each-ref", "--format=%(refname:short)", "refs/remotes/"])?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains('/') && !l.ends_with("/HEAD"))
+            .map(str::to_string)
+            .collect())
+    }
+
     /// Resolve the current branch's push-remote and upstream.
     pub fn remote_targets(&self) -> Result<RemoteTargets> {
         let branch = self.current_branch()?;
@@ -100,6 +114,22 @@ impl Repo {
         args.extend(switches.iter().cloned());
         args.push(remote.to_string());
         args.push(branch.to_string());
+        Ok(summary(self.run(&args)?))
+    }
+
+    /// `git push [switches] <remote> <local>:<target>` — push the local branch
+    /// to a specific (possibly differently-named or new) remote branch.
+    pub fn push_ref(
+        &self,
+        remote: &str,
+        local: &str,
+        target: &str,
+        switches: &[String],
+    ) -> Result<String> {
+        let mut args = vec!["push".to_string()];
+        args.extend(switches.iter().cloned());
+        args.push(remote.to_string());
+        args.push(format!("{local}:{target}"));
         Ok(summary(self.run(&args)?))
     }
 
