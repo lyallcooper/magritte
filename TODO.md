@@ -37,10 +37,10 @@
 - [x] Implement branch transient and commands — checkout (DWIM tracking for remote branches), create, create & checkout, rename (two-step), delete. Deferred magit extras: spinoff/spinout, reset, orphan, worktree, shelve, configure, and choosing a non-HEAD start point when creating.
 - [x] Actually make the count tags not tags at all. Just a number in a subtle shade should do the trick
 - [x] Ability to view raw git command log — `$` opens a process-buffer view (magit's `$`); Repo records every invocation in a shared ring buffer.
-- [ ] Mouse hover subtle highlight on file/diff rows
-- [ ] '$' under "essential" on the '?' menu doesn't feel right—I wouldn't call it essential
-- [ ] Sketch out how we might customizable user actions in the future, a la magit and its transient-append-suffix et al functions that let users extend magit to run arbitrary commands. We could scope ours to be a little simpler, since we're not inside of emacs, but it'd be cool to let users remap or unbind existing commands, and to add their own custom commands
-- [ ] Command dispatch, in the spirit of M-x, but accessible via ':'. Might need to sketch this one out first too.
-- [ ] The background in solarized dark theme feels a little dark. Why might that be?
+- [x] Mouse hover subtle highlight on file/diff rows
+- [x] '$' under "essential" on the '?' menu doesn't feel right—I wouldn't call it essential — moved to "Commands"
+- [x] Sketch out how we might customizable user actions in the future, a la magit and its transient-append-suffix et al functions that let users extend magit to run arbitrary commands. We could scope ours to be a little simpler, since we're not inside of emacs, but it'd be cool to let users remap or unbind existing commands, and to add their own custom commands — sketched in docs/extensibility.md (implementation deferred)
+- [x] Command dispatch, in the spirit of M-x, but accessible via ':'. Might need to sketch this one out first too. — sketched in docs/extensibility.md (implementation deferred)
+- [x] The background in solarized dark theme feels a little dark. Why might that be? — base03 is the canonical (intentionally dark) Solarized bg; the panel now elevates to base02 so the UI isn't uniformly the darkest shade
 - [ ] Allow users to set a UI font that is used to render non-tabular or code-type text. So something that would be ok for proportional fonts
 - [ ] I think I prefer how magit orders the transient window contents. We seem to only allow a basic column layout, but magit's layout is more flexible and makes more efficient use of screen space
