@@ -84,6 +84,9 @@ pub enum Completion {
     /// A fixed set of values; the user picks one (no free text), e.g. the
     /// commit-order flags.
     OneOf(&'static [&'static str]),
+    /// Tracked file paths (loaded off the UI thread; can be large), for a
+    /// pathspec limit.
+    Files,
 }
 
 /// A value-reading option (magit's transient option, e.g. `-F` → `--grep=<x>`).
@@ -96,6 +99,9 @@ pub struct Opt {
     pub arg: &'static str,
     pub description: &'static str,
     pub completion: Completion,
+    /// A pathspec limit (`-- <value>`): emitted after the revision rather than
+    /// as a `{arg}{value}` flag, so the frontend gathers it separately.
+    pub pathspec: bool,
 }
 
 /// An invokable command (e.g. `p` → push). The description is dynamic so the
@@ -378,36 +384,49 @@ pub fn log_transient() -> Transient {
                             "--author-date-order",
                             "--date-order",
                         ]),
+                        pathspec: false,
                     }),
                     Suffix::Option(Opt {
                         key: "-n",
                         arg: "-n",
                         description: "Limit number of commits",
                         completion: Completion::None,
+                        pathspec: false,
                     }),
                     Suffix::Option(Opt {
                         key: "-A",
                         arg: "--author=",
                         description: "Limit to author",
                         completion: Completion::Authors,
+                        pathspec: false,
                     }),
                     Suffix::Option(Opt {
                         key: "-F",
                         arg: "--grep=",
                         description: "Search messages",
                         completion: Completion::None,
+                        pathspec: false,
                     }),
                     Suffix::Option(Opt {
                         key: "-G",
                         arg: "-G",
                         description: "Search changes",
                         completion: Completion::None,
+                        pathspec: false,
                     }),
                     Suffix::Option(Opt {
                         key: "-S",
                         arg: "-S",
                         description: "Search occurrences",
                         completion: Completion::None,
+                        pathspec: false,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-f",
+                        arg: "",
+                        description: "Limit to files",
+                        completion: Completion::Files,
+                        pathspec: true,
                     }),
                 ],
             },

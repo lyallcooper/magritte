@@ -129,8 +129,10 @@ impl TransientState {
         }
     }
 
-    /// The git arguments from the toggled switches and set options, in
+    /// The git flag arguments from the toggled switches and set options, in
     /// definition order (switches first, then options as `{arg}{value}`).
+    /// Pathspec options are excluded — see [`Self::pathspecs`] — since they must
+    /// trail the revision behind a `--`.
     fn args(&self) -> Vec<String> {
         let switches = self
             .def
@@ -140,8 +142,19 @@ impl TransientState {
         let options = self
             .def
             .options()
+            .filter(|o| !o.pathspec)
             .filter_map(|o| self.values.get(o.key).map(|v| format!("{}{}", o.arg, v)));
         switches.chain(options).collect()
+    }
+
+    /// The values of any set pathspec options (e.g. the log file limit), to be
+    /// placed after the revision behind a `--`.
+    fn pathspecs(&self) -> Vec<String> {
+        self.def
+            .options()
+            .filter(|o| o.pathspec)
+            .filter_map(|o| self.values.get(o.key).cloned())
+            .collect()
     }
 }
 
@@ -254,10 +267,12 @@ enum PickerAction {
         key: String,
         description: String,
     },
-    /// Log the chosen ref, appending it to `args` already gathered from the log
-    /// transient.
+    /// Log the chosen ref, with the flags/pathspecs/limit gathered from the log
+    /// transient assembled around it.
     LogRef {
-        args: Vec<String>,
+        flags: Vec<String>,
+        paths: Vec<String>,
+        limit: usize,
     },
 }
 
@@ -2205,6 +2220,8 @@ impl StatusView {
         let action = state.def.action_for(key).cloned();
         // The active git arguments: toggled switches plus set option values.
         let args = state.args();
+        // Pathspec limits trail the revision behind a `--` (log only).
+        let paths = state.pathspecs();
         let targets = state.targets.clone();
         let limit = state
             .values
@@ -2232,10 +2249,12 @@ impl StatusView {
                 StashApply | StashPop | StashDrop => {
                     self.dispatch_stash(action.command, window, cx)
                 }
-                // Log: append the scope to the gathered args and run.
-                LogCurrent => self.start_log(with_arg(args, "HEAD"), cx),
-                LogAll => self.start_log(with_arg(args, "--all"), cx),
-                LogOther => self.prompt_log_ref(args, window, cx),
+                // Log: assemble flags + scope + pathspecs in the order git needs.
+                LogCurrent => {
+                    self.start_log(build_log_args(args, LogScope::Current, paths, limit), cx)
+                }
+                LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
+                LogOther => self.prompt_log_ref(args, paths, limit, window, cx),
                 LogReflog => self.start_reflog(limit, cx),
             }
         }
@@ -2287,25 +2306,21 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A fixed value set is selection-only; authors and free text accept any
-        // typed value (authors just add suggestions).
-        let (choices, create) = match completion {
-            transient::Completion::Authors => (
-                self.repo
-                    .as_ref()
-                    .and_then(|r| r.authors().ok())
-                    .unwrap_or_default(),
-                CreateMode::Value,
-            ),
-            transient::Completion::OneOf(values) => (
-                values.iter().map(|v| v.to_string()).collect(),
-                CreateMode::None,
-            ),
-            transient::Completion::None => (Vec::new(), CreateMode::Value),
+        // A fixed value set is selection-only; everything else is value entry
+        // (free text, candidates are mere suggestions).
+        let create = match completion {
+            transient::Completion::OneOf(_) => CreateMode::None,
+            _ => CreateMode::Value,
+        };
+        // Candidates available synchronously (a fixed set); git-backed sources
+        // load below, off the UI thread, so opening stays instant in big repos.
+        let initial: Vec<String> = match completion {
+            transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
+            _ => Vec::new(),
         };
         self.open_picker(
             PickerAction::SetOption { key, description },
-            choices,
+            initial,
             create,
             Vec::new(),
             window,
@@ -2314,18 +2329,57 @@ impl StatusView {
         if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
             p.resume = Some(Box::new(resume));
         }
+
+        // Load git-backed candidates (authors, tracked files) asynchronously and
+        // drop them into the open picker — `git ls-files` can be large/slow.
+        let loader: Option<fn(&Repo) -> Vec<String>> = match completion {
+            transient::Completion::Authors => Some(|r| r.authors().unwrap_or_default()),
+            transient::Completion::Files => Some(|r| r.tracked_files().unwrap_or_default()),
+            _ => None,
+        };
+        if let (Some(load), Some(repo)) = (loader, self.repo.clone()) {
+            cx.spawn(async move |this, cx| {
+                let items = cx
+                    .background_executor()
+                    .spawn(async move { load(&repo) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                        // Only the still-open value prompt; ignore if dismissed.
+                        if matches!(p.action, PickerAction::SetOption { .. }) {
+                            p.list
+                                .set_choices(items.into_iter().map(SharedString::from).collect());
+                            cx.notify();
+                        }
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
-    /// Prompt for a ref to log (`l o`), carrying the already-gathered log args
-    /// through to the run.
-    fn prompt_log_ref(&mut self, args: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Prompt for a ref to log (`l o`), carrying the gathered flags, pathspecs,
+    /// and limit through so they apply once the ref is chosen.
+    fn prompt_log_ref(
+        &mut self,
+        flags: Vec<String>,
+        paths: Vec<String>,
+        limit: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
         let mut choices = repo.local_branches().unwrap_or_default();
         choices.extend(repo.remote_branches().unwrap_or_default());
         self.open_picker(
-            PickerAction::LogRef { args },
+            PickerAction::LogRef {
+                flags,
+                paths,
+                limit,
+            },
             choices,
             CreateMode::Any,
             Vec::new(),
@@ -2753,8 +2807,13 @@ impl StatusView {
                         cx.notify();
                     }
                 }
-                PickerAction::LogRef { mut args } => {
-                    args.push(chosen.to_string());
+                PickerAction::LogRef {
+                    flags,
+                    paths,
+                    limit,
+                } => {
+                    let args =
+                        build_log_args(flags, LogScope::Ref(chosen.to_string()), paths, limit);
                     self.start_log(args, cx);
                 }
             }
@@ -3580,18 +3639,12 @@ impl StatusView {
     const LOG_LIMIT: usize = 256;
 
     /// Open the commit-log view for `git log <args>`: show it immediately
-    /// (empty), then load the commits off the UI thread. A default commit limit
-    /// is added when the args don't set one.
-    fn start_log(&mut self, mut args: Vec<String>, cx: &mut Context<Self>) {
+    /// (empty), then load the commits off the UI thread. Args are assembled by
+    /// [`build_log_args`] (including the default limit).
+    fn start_log(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        if !args
-            .iter()
-            .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))
-        {
-            args.push(format!("--max-count={}", Self::LOG_LIMIT));
-        }
         self.show_log_loading(cx);
         cx.spawn(async move |this, cx| {
             let entries = cx
@@ -5897,11 +5950,41 @@ fn describe_command(command: transient::Command) -> &'static str {
     }
 }
 
-/// Append `arg` to `args`, returning the combined list (for building a log
-/// invocation's scope onto the gathered option args).
-fn with_arg(mut args: Vec<String>, arg: &str) -> Vec<String> {
-    args.push(arg.to_string());
-    args
+/// The revision scope for a `git log` invocation.
+enum LogScope {
+    /// HEAD / the current branch.
+    Current,
+    /// All refs (`--all`).
+    All,
+    /// A specific ref.
+    Ref(String),
+}
+
+/// Assemble a `git log` argument list in the order git requires: flags and
+/// options, a commit limit (defaulted when unset), the revision scope, then any
+/// pathspecs behind a `--`.
+fn build_log_args(
+    mut flags: Vec<String>,
+    scope: LogScope,
+    paths: Vec<String>,
+    limit: usize,
+) -> Vec<String> {
+    if !flags
+        .iter()
+        .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))
+    {
+        flags.push(format!("--max-count={limit}"));
+    }
+    match scope {
+        LogScope::Current => flags.push("HEAD".to_string()),
+        LogScope::All => flags.push("--all".to_string()),
+        LogScope::Ref(r) => flags.push(r),
+    }
+    if !paths.is_empty() {
+        flags.push("--".to_string());
+        flags.extend(paths);
+    }
+    flags
 }
 
 /// The viewport height in rows — a "page" for the scroll/paging keys.
