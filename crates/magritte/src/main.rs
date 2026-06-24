@@ -276,6 +276,13 @@ struct RemotePickerState {
     _sub: Subscription,
 }
 
+/// A flattened row of the git command-log view: a command, or one line of its
+/// stderr output. Flattening keeps the view a single uniform-height list.
+enum GitLogRow {
+    Command { args: String, ok: bool },
+    Output(String),
+}
+
 /// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
 /// row is a command invoked by its key or a click; navigation keys aren't
 /// listed (they're always available, not dispatched).
@@ -3224,12 +3231,7 @@ impl StatusView {
     /// the most recent command.
     fn open_git_log(&mut self, cx: &mut Context<Self>) {
         let scroll = UniformListScrollHandle::new();
-        let last = self
-            .repo
-            .as_ref()
-            .map(|r| r.command_log().len())
-            .unwrap_or(0);
-        if let Some(n) = last.checked_sub(1) {
+        if let Some(n) = self.git_log_rows().len().checked_sub(1) {
             scroll.scroll_to_item(n, gpui::ScrollStrategy::Bottom);
         }
         self.git_log = Some(scroll);
@@ -4150,11 +4152,7 @@ impl StatusView {
     /// and a scrollable list of the recent git invocations, newest at the
     /// bottom, each flagged with success/failure.
     fn render_git_log(&self, scroll: &UniformListScrollHandle, view: &Entity<Self>) -> gpui::Div {
-        let count = self
-            .repo
-            .as_ref()
-            .map(|r| r.command_log().len())
-            .unwrap_or(0);
+        let count = self.git_log_rows().len();
 
         let body = if count == 0 {
             div()
@@ -4166,13 +4164,9 @@ impl StatusView {
                 let view = view.clone();
                 move |range, _window, cx| {
                     let this = view.read(cx);
-                    let entries = this
-                        .repo
-                        .as_ref()
-                        .map(|r| r.command_log())
-                        .unwrap_or_default();
+                    let rows = this.git_log_rows();
                     range
-                        .filter_map(|ix| entries.get(ix).map(|e| this.render_git_log_row(e)))
+                        .filter_map(|ix| rows.get(ix).map(|r| this.render_git_log_row(r)))
                         .collect::<Vec<_>>()
                 }
             })
@@ -4210,49 +4204,88 @@ impl StatusView {
             .child(body)
     }
 
-    /// One row of the git command log: a success/failure sigil, the dim `git`
-    /// prefix, and the arguments (reddened when the command failed).
-    fn render_git_log_row(&self, e: &magritte_core::GitCommand) -> AnyElement {
-        let (sigil, sigil_color) = if e.ok {
-            ("✓", self.palette.added)
-        } else {
-            ("✗", self.palette.removed)
+    /// The command log flattened into uniform rows: each invocation becomes a
+    /// command row followed by its (dim, indented) stderr lines — git's
+    /// progress/error narrative.
+    fn git_log_rows(&self) -> Vec<GitLogRow> {
+        let Some(repo) = self.repo.as_ref() else {
+            return Vec::new();
         };
-        let args_color = if e.ok {
-            self.palette.fg
-        } else {
-            self.palette.removed
-        };
-        div()
-            .h(px(ROW_HEIGHT))
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
+        let mut rows = Vec::new();
+        for c in repo.command_log() {
+            rows.push(GitLogRow::Command {
+                args: c.args.join(" "),
+                ok: c.ok,
+            });
+            // stderr progress often uses '\r' to overwrite; split on both so
+            // each update is its own line, and drop the blanks.
+            for line in c.stderr.split(['\n', '\r']) {
+                if !line.trim().is_empty() {
+                    rows.push(GitLogRow::Output(line.trim_end().to_string()));
+                }
+            }
+        }
+        rows
+    }
+
+    /// One row of the git command log: either a command (success/failure sigil,
+    /// dim `git` prefix, arguments reddened on failure) or a dim, indented line
+    /// of that command's stderr output.
+    fn render_git_log_row(&self, row: &GitLogRow) -> AnyElement {
+        match row {
+            GitLogRow::Command { args, ok } => {
+                let (sigil, sigil_color) = if *ok {
+                    ("✓", self.palette.added)
+                } else {
+                    ("✗", self.palette.removed)
+                };
+                let args_color = if *ok {
+                    self.palette.fg
+                } else {
+                    self.palette.removed
+                };
                 div()
-                    .w(px(12.0))
-                    .flex_shrink_0()
-                    .text_color(sigil_color)
-                    .child(SharedString::from(sigil)),
-            )
-            .child(
-                div()
+                    .h(px(ROW_HEIGHT))
+                    .w_full()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .child(
                         div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from("git")),
+                            .w(px(12.0))
+                            .flex_shrink_0()
+                            .text_color(sigil_color)
+                            .child(SharedString::from(sigil)),
                     )
                     .child(
                         div()
-                            .text_color(args_color)
-                            .child(SharedString::from(e.args.join(" "))),
-                    ),
-            )
-            .into_any_element()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_color(self.palette.dim)
+                                    .child(SharedString::from("git")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(args_color)
+                                    .child(SharedString::from(args.clone())),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            GitLogRow::Output(line) => div()
+                .h(px(ROW_HEIGHT))
+                .w_full()
+                .flex()
+                .items_center()
+                // Indent past the sigil gutter so output nests under its command.
+                .pl(px(24.0))
+                .text_color(self.palette.dim)
+                .child(SharedString::from(line.clone()))
+                .into_any_element(),
+        }
     }
 
     /// Render the live settings screen as a form of dropdowns. The `Select`

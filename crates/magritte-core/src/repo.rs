@@ -36,6 +36,10 @@ pub struct GitCommand {
     pub code: Option<i32>,
     /// Whether git exited successfully (status 0).
     pub ok: bool,
+    /// git's stderr — its progress/error narrative (`Switched to branch …`,
+    /// fetch progress, error messages). Empty for the predicate `succeeds`
+    /// calls, which discard output.
+    pub stderr: String,
 }
 
 impl GitCommand {
@@ -105,7 +109,7 @@ impl Repo {
     }
 
     /// Record one invocation in the ring-buffered command log.
-    fn record(&self, args: &[String], code: Option<i32>) {
+    fn record(&self, args: &[String], code: Option<i32>, stderr: &str) {
         if let Ok(mut q) = self.log.lock() {
             if q.len() >= LOG_CAPACITY {
                 q.pop_front();
@@ -114,6 +118,7 @@ impl Repo {
                 args: args.to_vec(),
                 code,
                 ok: code == Some(0),
+                stderr: stderr.to_string(),
             });
         }
     }
@@ -143,7 +148,7 @@ impl Repo {
             .map_err(|source| Error::Spawn { source })?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code());
+        self.record(&arg_vec, output.status.code(), &stderr);
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -197,7 +202,7 @@ impl Repo {
             .wait_with_output()
             .map_err(|source| Error::Spawn { source })?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code());
+        self.record(&arg_vec, output.status.code(), &stderr);
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -235,7 +240,8 @@ impl Repo {
             .stderr(Stdio::null())
             .status()
             .map_err(|source| Error::Spawn { source })?;
-        self.record(&arg_vec, status.code());
+        // Output is discarded (Stdio::null), so there's no stderr to log.
+        self.record(&arg_vec, status.code(), "");
         Ok(status.success())
     }
 
@@ -259,7 +265,8 @@ impl Repo {
             .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
-        self.record(&arg_vec, output.status.code());
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        self.record(&arg_vec, output.status.code(), &stderr);
         if !output.status.success() {
             return Ok(None);
         }
