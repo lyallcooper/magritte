@@ -68,6 +68,15 @@ impl PickerList {
         }
     }
 
+    /// Replace the candidate list (e.g. after loading it off the UI thread) and
+    /// re-rank against the current query.
+    pub fn set_choices(&mut self, choices: Vec<SharedString>) {
+        self.lowered = choices.iter().map(|c| c.to_lowercase()).collect();
+        self.choices = choices;
+        let query = self.query.clone();
+        self.set_query(&query);
+    }
+
     /// Re-filter and re-rank against `query`, resetting the highlight to the top
     /// (the best match, vertico-style).
     pub fn set_query(&mut self, query: &str) {

@@ -9,6 +9,7 @@ pub mod branch;
 pub mod commit;
 pub mod diff;
 pub mod error;
+pub mod files;
 pub mod log;
 pub mod remote;
 pub mod repo;
