@@ -1,19 +1,48 @@
+use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 
+/// How many recent git invocations the command log keeps (a ring buffer).
+const LOG_CAPACITY: usize = 500;
+
 /// A handle to a git working tree.
 ///
-/// `Repo` is deliberately synchronous and cheap to clone: it holds only the
-/// working-directory path. Every method shells out to the `git` binary and
-/// returns plain data. The frontend is responsible for running these calls off
-/// the UI thread (e.g. on a background executor) and for cancellation.
+/// `Repo` is deliberately synchronous and cheap to clone: it holds the
+/// working-directory path and a shared command log. Every method shells out to
+/// the `git` binary and returns plain data. The frontend is responsible for
+/// running these calls off the UI thread (e.g. on a background executor) and
+/// for cancellation. Clones share one command log (it's behind an `Arc`), so a
+/// `Repo` cloned onto a background thread still records into the same log the
+/// UI reads.
 #[derive(Debug, Clone)]
 pub struct Repo {
     workdir: PathBuf,
+    log: Arc<Mutex<VecDeque<GitCommand>>>,
+}
+
+/// One recorded git invocation, for the command log (magit's process buffer).
+#[derive(Debug, Clone)]
+pub struct GitCommand {
+    /// The git arguments, without the `git -C <dir>` boilerplate or the
+    /// internal `-c core.quotepath=false` flags.
+    pub args: Vec<String>,
+    /// The process exit code, or `None` if it was killed by a signal or failed
+    /// to spawn.
+    pub code: Option<i32>,
+    /// Whether git exited successfully (status 0).
+    pub ok: bool,
+}
+
+impl GitCommand {
+    /// The command as a user would type it, e.g. `git fetch origin`.
+    pub fn display(&self) -> String {
+        format!("git {}", self.args.join(" "))
+    }
 }
 
 /// The raw result of a git invocation.
@@ -50,6 +79,7 @@ impl Repo {
 
         Ok(Repo {
             workdir: PathBuf::from(top),
+            log: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -57,11 +87,35 @@ impl Repo {
     pub fn at(workdir: impl Into<PathBuf>) -> Repo {
         Repo {
             workdir: workdir.into(),
+            log: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// A snapshot of the recent git invocations, oldest first (for the command
+    /// log view — magit's `$` process buffer).
+    pub fn command_log(&self) -> Vec<GitCommand> {
+        self.log
+            .lock()
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Record one invocation in the ring-buffered command log.
+    fn record(&self, args: &[String], code: Option<i32>) {
+        if let Ok(mut q) = self.log.lock() {
+            if q.len() >= LOG_CAPACITY {
+                q.pop_front();
+            }
+            q.push_back(GitCommand {
+                args: args.to_vec(),
+                code,
+                ok: code == Some(0),
+            });
+        }
     }
 
     /// Run `git <args>` in the working tree, returning stdout as raw bytes so
@@ -89,6 +143,7 @@ impl Repo {
             .map_err(|source| Error::Spawn { source })?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        self.record(&arg_vec, output.status.code());
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -142,6 +197,7 @@ impl Repo {
             .wait_with_output()
             .map_err(|source| Error::Spawn { source })?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        self.record(&arg_vec, output.status.code());
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -165,16 +221,21 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        let arg_vec: Vec<String> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect();
         let status = Command::new("git")
             .arg("-C")
             .arg(&self.workdir)
             .args(["-c", "core.quotepath=false"])
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args(args)
+            .args(&arg_vec)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .map_err(|source| Error::Spawn { source })?;
+        self.record(&arg_vec, status.code());
         Ok(status.success())
     }
 
@@ -186,14 +247,19 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        let arg_vec: Vec<String> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect();
         let output = Command::new("git")
             .arg("-C")
             .arg(&self.workdir)
             .args(["-c", "core.quotepath=false"])
             .env("GIT_TERMINAL_PROMPT", "0")
-            .args(args)
+            .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
+        self.record(&arg_vec, output.status.code());
         if !output.status.success() {
             return Ok(None);
         }
