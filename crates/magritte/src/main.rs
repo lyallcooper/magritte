@@ -2229,6 +2229,7 @@ impl StatusView {
                     transfer,
                     remotes,
                     false,
+                    None,
                     "Choose a remote",
                     switches,
                     window,
@@ -2262,6 +2263,7 @@ impl StatusView {
             transfer,
             remotes,
             false,
+            None,
             "Choose a remote",
             switches,
             window,
@@ -2288,10 +2290,15 @@ impl StatusView {
             return;
         }
         let branches = repo.remote_branches().unwrap_or_default();
+        // When creating, a bare typed name targets the default remote, so qualify
+        // it (e.g. `master` → `origin/master`) — both for the "is this new?" check
+        // and for the ref we push to.
+        let qualify = create.then(|| default_remote(repo));
         self.open_picker(
             transfer,
             branches,
             create,
+            qualify,
             "Choose a branch",
             switches,
             window,
@@ -2307,6 +2314,7 @@ impl StatusView {
         transfer: Transfer,
         choices: Vec<String>,
         allow_create: bool,
+        qualify: Option<String>,
         placeholder: &'static str,
         switches: Vec<String>,
         window: &mut Window,
@@ -2319,12 +2327,11 @@ impl StatusView {
         ));
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
         let list = cx.new(|cx| {
-            ListState::new(
-                ChoiceDelegate::new(items).allow_create(allow_create),
-                window,
-                cx,
-            )
-            .searchable(true)
+            let mut delegate = ChoiceDelegate::new(items).allow_create(allow_create);
+            if let Some(prefix) = qualify {
+                delegate = delegate.qualify_with(prefix);
+            }
+            ListState::new(delegate, window, cx).searchable(true)
         });
         // Enter (or clicking a row) confirms; Esc cancels.
         let sub = cx.subscribe_in(
@@ -4553,25 +4560,26 @@ fn last_line(text: &str) -> String {
         .to_string()
 }
 
+/// The remote a bare (unqualified) branch name targets: the conventional
+/// `origin` if present, else the first configured remote, else `origin`.
+fn default_remote(repo: &Repo) -> String {
+    let remotes = repo.remotes().unwrap_or_default();
+    if remotes.iter().any(|r| r == "origin") {
+        "origin".to_string()
+    } else {
+        remotes
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "origin".to_string())
+    }
+}
+
 /// Split a chosen `remote/branch` ref into its parts. A bare value (no `/`,
-/// from a freshly-typed branch) defaults to the first configured remote, or
-/// `origin`.
+/// from a freshly-typed branch) defaults to [`default_remote`].
 fn split_ref(repo: &Repo, chosen: &str) -> (String, String) {
     match chosen.split_once('/') {
         Some((remote, branch)) => (remote.to_string(), branch.to_string()),
-        None => {
-            let remotes = repo.remotes().unwrap_or_default();
-            // Prefer the conventional `origin`, else the first remote.
-            let remote = if remotes.iter().any(|r| r == "origin") {
-                "origin".to_string()
-            } else {
-                remotes
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| "origin".to_string())
-            };
-            (remote, chosen.to_string())
-        }
+        None => (default_remote(repo), chosen.to_string()),
     }
 }
 

@@ -28,6 +28,10 @@ pub struct ChoiceDelegate {
     /// When set, a non-matching query offers a trailing "create" row that yields
     /// the typed text verbatim (e.g. a new branch to push to).
     allow_create: bool,
+    /// When set, a query without a `/` is qualified as `{prefix}/{query}` before
+    /// deciding whether it's new and when yielded (e.g. a bare `master` becomes
+    /// `origin/master`, so it isn't offered as "new" when `origin/master` exists).
+    qualify: Option<String>,
     /// The current (trimmed, original-case) query — the value the create row
     /// yields.
     query: String,
@@ -44,6 +48,7 @@ impl ChoiceDelegate {
             matched,
             selected,
             allow_create: false,
+            qualify: None,
             query: String::new(),
         }
     }
@@ -55,21 +60,40 @@ impl ChoiceDelegate {
         self
     }
 
+    /// Qualify a query without a `/` as `{prefix}/{query}` (e.g. a bare branch
+    /// name with its default remote), so it isn't offered as "new" when the
+    /// qualified form already exists, and is yielded in qualified form.
+    pub fn qualify_with(mut self, prefix: impl Into<String>) -> Self {
+        self.qualify = Some(prefix.into());
+        self
+    }
+
+    /// The query in canonical form: qualified with the prefix when one is set
+    /// and the query has no `/` of its own.
+    fn canonical_query(&self) -> String {
+        match &self.qualify {
+            Some(prefix) if !self.query.contains('/') => format!("{prefix}/{}", self.query),
+            _ => self.query.clone(),
+        }
+    }
+
     /// Whether a "create" row for the typed query is currently shown.
     fn create_row(&self) -> bool {
-        self.allow_create
-            && !self.query.is_empty()
-            && !self.choices.iter().any(|c| c.as_ref() == self.query)
+        if !self.allow_create || self.query.is_empty() {
+            return false;
+        }
+        let canonical = self.canonical_query();
+        !self.choices.iter().any(|c| c.as_ref() == canonical)
     }
 
     /// The currently highlighted choice — an existing one, or the typed value
-    /// when the create row is selected.
+    /// (in canonical form) when the create row is selected.
     pub fn selected_choice(&self) -> Option<SharedString> {
         let row = self.selected?;
         match self.matched.get(row) {
             Some(&i) => Some(self.choices[i].clone()),
             None if self.create_row() && row == self.matched.len() => {
-                Some(SharedString::from(self.query.clone()))
+                Some(SharedString::from(self.canonical_query()))
             }
             None => None,
         }
@@ -128,7 +152,10 @@ impl ListDelegate for ChoiceDelegate {
             return Some(
                 ListItem::new(ix.row)
                     .selected(selected)
-                    .child(SharedString::from(format!("{}  (new)", self.query))),
+                    .child(SharedString::from(format!(
+                        "{}  (new)",
+                        self.canonical_query()
+                    ))),
             );
         }
         let &choice_ix = self.matched.get(ix.row)?;
@@ -201,7 +228,37 @@ fn fuzzy_score(text: &str, query: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::fuzzy_score;
+    use super::{fuzzy_score, ChoiceDelegate};
+    use gpui::SharedString;
+
+    fn delegate(choices: &[&str]) -> ChoiceDelegate {
+        ChoiceDelegate::new(choices.iter().map(|c| SharedString::from(*c)).collect())
+    }
+
+    #[test]
+    fn qualified_bare_name_is_not_offered_as_new() {
+        // A bare `master` qualifies to `origin/master`, which already exists —
+        // so no "create" row, and it's not treated as new.
+        let mut d = delegate(&["origin/master", "origin/dev"])
+            .allow_create(true)
+            .qualify_with("origin");
+        d.query = "master".to_string();
+        assert!(!d.create_row(), "origin/master exists, so not new");
+
+        // A genuinely new bare name qualifies and is offered, yielding the
+        // qualified ref.
+        d.query = "feature".to_string();
+        assert!(d.create_row());
+        assert_eq!(d.canonical_query(), "origin/feature");
+    }
+
+    #[test]
+    fn create_row_yields_query_verbatim_without_qualify() {
+        let mut d = delegate(&["main"]).allow_create(true);
+        d.query = "topic".to_string();
+        assert!(d.create_row());
+        assert_eq!(d.canonical_query(), "topic");
+    }
 
     #[test]
     fn non_subsequence_does_not_match() {
