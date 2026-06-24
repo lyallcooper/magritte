@@ -81,6 +81,9 @@ pub enum Completion {
     None,
     /// Repository author names (`Name <email>`), for `--author=`.
     Authors,
+    /// A fixed set of values; the user picks one (no free text), e.g. the
+    /// commit-order flags.
+    OneOf(&'static [&'static str]),
 }
 
 /// A value-reading option (magit's transient option, e.g. `-F` → `--grep=<x>`).
@@ -360,6 +363,22 @@ pub fn log_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
+                    Suffix::Switch(Switch {
+                        key: "-r",
+                        arg: "--reverse",
+                        description: "Reverse order",
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-o",
+                        // The value is the full `--…-order` flag, so no prefix.
+                        arg: "",
+                        description: "Order commits by",
+                        completion: Completion::OneOf(&[
+                            "--topo-order",
+                            "--author-date-order",
+                            "--date-order",
+                        ]),
+                    }),
                     Suffix::Option(Opt {
                         key: "-n",
                         arg: "-n",

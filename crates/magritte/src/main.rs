@@ -2287,18 +2287,26 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let choices = match completion {
-            transient::Completion::Authors => self
-                .repo
-                .as_ref()
-                .and_then(|r| r.authors().ok())
-                .unwrap_or_default(),
-            transient::Completion::None => Vec::new(),
+        // A fixed value set is selection-only; authors and free text accept any
+        // typed value (authors just add suggestions).
+        let (choices, create) = match completion {
+            transient::Completion::Authors => (
+                self.repo
+                    .as_ref()
+                    .and_then(|r| r.authors().ok())
+                    .unwrap_or_default(),
+                CreateMode::Value,
+            ),
+            transient::Completion::OneOf(values) => (
+                values.iter().map(|v| v.to_string()).collect(),
+                CreateMode::None,
+            ),
+            transient::Completion::None => (Vec::new(), CreateMode::Value),
         };
         self.open_picker(
             PickerAction::SetOption { key, description },
             choices,
-            CreateMode::Value,
+            create,
             Vec::new(),
             window,
             cx,
@@ -4405,11 +4413,13 @@ impl StatusView {
                             .into_any_element()
                     }
                     // A value-reading option: like a switch, but the parens show
-                    // the current value (or just the arg when unset).
+                    // the current value (or the bare flag when unset). The parens
+                    // are omitted when there'd be nothing in them (an option
+                    // whose value *is* the flag, e.g. commit order, when unset).
                     Suffix::Option(o) => {
                         let value = state.and_then(|s| s.values.get(o.key).cloned());
                         let set = value.is_some();
-                        let shown = format!("({}{})", o.arg, value.as_deref().unwrap_or_default());
+                        let inner = format!("{}{}", o.arg, value.as_deref().unwrap_or_default());
                         let color = if set {
                             self.palette.modified
                         } else {
@@ -4435,7 +4445,13 @@ impl StatusView {
                                 pending_dash,
                             ))
                             .child(self.hover_label(o.description, self.palette.fg))
-                            .child(div().text_color(color).child(SharedString::from(shown)))
+                            .when(!inner.is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .text_color(color)
+                                        .child(SharedString::from(format!("({inner})"))),
+                                )
+                            })
                             .on_click(move |_, window, cx: &mut App| {
                                 view.update(cx, |v, vcx| v.click_option(okey.clone(), window, vcx));
                             })
