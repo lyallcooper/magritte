@@ -3648,8 +3648,8 @@ impl StatusView {
                 "enter" => self.open_commit_view(cx),
                 "j" => self.log_move(1, cx),
                 "k" => self.log_move(-1, cx),
-                "d" => self.log_move(half, cx),
-                "u" => self.log_move(-half, cx),
+                "d" if ctrl => self.log_move(half, cx),
+                "u" if ctrl => self.log_move(-half, cx),
                 "space" => self.log_move(page, cx),
                 "f" if ctrl => self.log_move(page, cx),
                 "b" if ctrl => self.log_move(-page, cx),
@@ -5637,12 +5637,13 @@ fn page_rows(window: &Window) -> usize {
     ((height / ROW_HEIGHT) as usize).saturating_sub(3).max(1)
 }
 
-/// Apply a vi/less-style scroll key to a `uniform_list`, updating the
-/// caller-tracked top-row index (`top`) and scrolling the handle to it. We
-/// track `top` ourselves because the handle's index getter is test-only.
-/// Returns whether `key` was a recognized scroll command: `j`/`k` line,
-/// `d`/`u` half-page (with or without Ctrl), `Ctrl-f`/`Ctrl-b`/`Space`
-/// full-page, and `g`/`G` to the ends.
+/// Apply a vi-style scroll key to a `uniform_list`, updating the caller-tracked
+/// top-row index (`top`) and scrolling the handle to it. We track `top`
+/// ourselves because the handle's index getter is test-only. Returns whether
+/// `key` was a recognized scroll command: `j`/`k` line, `Ctrl-d`/`Ctrl-u`
+/// half-page, `Ctrl-f`/`Ctrl-b`/`Space` full-page, and `g`/`G` to the ends.
+/// Half-page requires Ctrl so plain `d`/`u` stay free for future commands
+/// (`d` diff, `u` unstage).
 fn apply_scroll_key(
     handle: &UniformListScrollHandle,
     top: &mut usize,
@@ -5661,8 +5662,8 @@ fn apply_scroll_key(
     let target = match key {
         "j" => cur + 1,
         "k" => cur - 1,
-        "d" => cur + half,
-        "u" => cur - half,
+        "d" if ctrl => cur + half,
+        "u" if ctrl => cur - half,
         "space" => cur + page,
         "f" if ctrl => cur + page,
         "b" if ctrl => cur - page,
