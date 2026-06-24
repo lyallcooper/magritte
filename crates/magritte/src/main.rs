@@ -30,8 +30,10 @@ mod config;
 mod debug;
 mod git_action;
 mod highlight;
+mod picker;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
+use picker::ChoiceDelegate;
 
 /// Key context for our status view, used so our `tab` binding takes precedence
 /// over gpui-component Root's focus-navigation `tab`.
@@ -55,6 +57,7 @@ use gpui::Subscription;
 use gpui_component::button::{Button, ButtonRounded, ButtonVariants, DropdownButton};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
+use gpui_component::list::{List, ListEvent, ListState};
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -178,10 +181,10 @@ impl Transfer {
 /// button (which uses the dropdown's current value).
 struct RemotePickerState {
     title: SharedString,
-    select: Entity<SelectState<Vec<SharedString>>>,
+    list: Entity<ListState<ChoiceDelegate>>,
     transfer: Transfer,
     switches: Vec<String>,
-    /// Kept alive so the Confirm subscription stays active.
+    /// Kept alive so the Confirm/Cancel subscription stays active.
     _sub: Subscription,
 }
 
@@ -2231,7 +2234,8 @@ impl StatusView {
         self.open_remote_picker(transfer, remotes, switches, window, cx);
     }
 
-    /// Open the remote-picker dropdown for a pending transfer.
+    /// Open the searchable remote picker for a pending transfer. The list's
+    /// search field is focused on appear, so it's type-to-filter immediately.
     fn open_remote_picker(
         &mut self,
         transfer: Transfer,
@@ -2242,22 +2246,22 @@ impl StatusView {
     ) {
         let title = SharedString::from(format!("{} to", transfer.action_label()));
         let items: Vec<SharedString> = remotes.into_iter().map(SharedString::from).collect();
-        let select =
-            cx.new(|cx| SelectState::new(items, Some(IndexPath::default()), &mut *window, cx));
-        // Picking an item from the dropdown runs the transfer (keyboard: open,
-        // arrow, Enter); the action button does the same with the shown value.
+        let list =
+            cx.new(|cx| ListState::new(ChoiceDelegate::new(items), window, cx).searchable(true));
+        // Enter (or clicking a row) confirms; Esc cancels.
         let sub = cx.subscribe_in(
-            &select,
+            &list,
             window,
-            |this, _select, _ev: &SelectEvent<Vec<SharedString>>, window, cx| {
-                // The only event is Confirm (an item was chosen).
-                this.confirm_remote_picker(window, cx);
+            |this, _list, ev: &ListEvent, window, cx| match ev {
+                ListEvent::Confirm(_) => this.confirm_remote_picker(window, cx),
+                ListEvent::Cancel => this.cancel_popup(window, cx),
+                ListEvent::Select(_) => {}
             },
         );
-        select.update(cx, |st, cx| st.focus(window, cx));
+        list.update(cx, |st, cx| st.focus(window, cx));
         self.popup = Some(Popup::RemotePicker(RemotePickerState {
             title,
-            select,
+            list,
             transfer,
             switches,
             _sub: sub,
@@ -2265,11 +2269,11 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Run the pending transfer against the remote currently chosen in the
-    /// picker (the confirm button, or Enter).
+    /// Run the pending transfer against the remote currently highlighted in the
+    /// picker (Enter, a row click, or the kbd button).
     fn confirm_remote_picker(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let remote = match &self.popup {
-            Some(Popup::RemotePicker(p)) => p.select.read(cx).selected_value().cloned(),
+            Some(Popup::RemotePicker(p)) => p.list.read(cx).delegate().selected_choice(),
             _ => None,
         };
         let Some(remote) = remote else { return };
@@ -3214,10 +3218,15 @@ impl StatusView {
             .child(SharedString::from(text.to_string()))
     }
 
-    /// The remote-picker overlay: a title, a dropdown of remotes, and a cancel
-    /// hint. Selecting a remote runs the pending transfer (see the Confirm
-    /// subscription in `open_remote_picker`).
+    /// The remote-picker overlay: a title and kbd hints over a searchable list
+    /// of remotes (search field focused on appear). Enter / clicking a row runs
+    /// the transfer; the "return" kbd button does the same.
     fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
+        let confirm_label = match state.transfer {
+            Transfer::Push { .. } => "push",
+            Transfer::Pull { .. } => "pull",
+            Transfer::Fetch => "fetch",
+        };
         div()
             .w_full()
             .border_t_1()
@@ -3239,6 +3248,13 @@ impl StatusView {
                             .child(state.title.clone()),
                     )
                     .child(self.key_action(
+                        "remote-confirm",
+                        "return",
+                        confirm_label,
+                        view,
+                        Self::confirm_remote_picker,
+                    ))
+                    .child(self.key_action(
                         "remote-picker-cancel",
                         "esc",
                         "cancel",
@@ -3248,29 +3264,9 @@ impl StatusView {
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().w(px(240.0)).child(Select::new(&state.select)))
-                    .child(
-                        div()
-                            .relative()
-                            .child(track_target("remote-confirm"))
-                            .child(
-                                Button::new("remote-confirm")
-                                    .label(state.transfer.action_label())
-                                    .primary()
-                                    .small()
-                                    .on_click({
-                                        let view = view.clone();
-                                        move |_, window, cx: &mut App| {
-                                            view.update(cx, |v, vcx| {
-                                                v.confirm_remote_picker(window, vcx)
-                                            });
-                                        }
-                                    }),
-                            ),
-                    ),
+                    .w(px(280.0))
+                    .h(px(200.0))
+                    .child(List::new(&state.list).search_placeholder("Search remotes")),
             )
     }
 
@@ -4176,10 +4172,14 @@ impl StatusView {
 
 impl Render for StatusView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Keep keyboard focus on the status view whenever the commit editor
-        // (which owns its own input focus) isn't open, so keys always land —
-        // including debug-channel keystrokes while the window isn't frontmost.
-        if self.editor.is_none() && self.settings.is_none() && !self.focus.is_focused(window) {
+        // Keep keyboard focus on the status view whenever nothing else owns the
+        // keyboard (the commit editor, settings, and the remote picker each have
+        // their own focused input), so keys always land — including debug-channel
+        // keystrokes while the window isn't frontmost.
+        let owns_focus_elsewhere = self.editor.is_some()
+            || self.settings.is_some()
+            || matches!(self.popup, Some(Popup::RemotePicker(_)));
+        if !owns_focus_elsewhere && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
         self.palette = Palette::from_theme(cx);
