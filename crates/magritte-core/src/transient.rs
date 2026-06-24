@@ -70,7 +70,7 @@ pub enum Suffix {
 }
 
 pub struct Group {
-    pub title: &'static str,
+    pub title: Vec<TitleSpan>,
     pub suffixes: Vec<Suffix>,
 }
 
@@ -143,21 +143,22 @@ fn upstream_label(t: &RemoteTargets) -> String {
 }
 
 pub fn push_transient(t: &RemoteTargets) -> Transient {
-    // "Push <branch> to" with the branch styled distinctly (magit's framing);
-    // falls back to a bare "Push" when HEAD is detached.
-    let title = match &t.branch {
+    // The target group reads "Push <branch> to" with the branch styled
+    // distinctly (magit's framing); falls back to "Push to" when HEAD is
+    // detached.
+    let push_to = match &t.branch {
         Some(b) => vec![
             TitleSpan::text("Push "),
             TitleSpan::branch(b.clone()),
             TitleSpan::text(" to"),
         ],
-        None => plain_title("Push"),
+        None => plain_title("Push to"),
     };
     Transient {
-        title,
+        title: plain_title("Push"),
         groups: vec![
             Group {
-                title: "Arguments",
+                title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch {
                         key: "-f",
@@ -172,7 +173,7 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                 ],
             },
             Group {
-                title: "Push to",
+                title: push_to,
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "p",
@@ -200,7 +201,7 @@ pub fn commit_transient() -> Transient {
         title: plain_title("Commit"),
         groups: vec![
             Group {
-                title: "Arguments",
+                title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch {
                         key: "-a",
@@ -225,7 +226,7 @@ pub fn commit_transient() -> Transient {
                 ],
             },
             Group {
-                title: "Create",
+                title: plain_title("Create"),
                 suffixes: vec![Suffix::Action(Action {
                     key: "c",
                     description: "Commit".to_string(),
@@ -233,7 +234,7 @@ pub fn commit_transient() -> Transient {
                 })],
             },
             Group {
-                title: "Edit HEAD",
+                title: plain_title("Edit HEAD"),
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "e",
@@ -266,7 +267,7 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
         title: plain_title("Pull"),
         groups: vec![
             Group {
-                title: "Arguments",
+                title: plain_title("Arguments"),
                 suffixes: vec![Suffix::Switch(Switch {
                     key: "-r",
                     arg: "--rebase",
@@ -274,7 +275,7 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
                 })],
             },
             Group {
-                title: "Pull from",
+                title: plain_title("Pull from"),
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "p",
@@ -312,7 +313,7 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
         title: plain_title("Fetch"),
         groups: vec![
             Group {
-                title: "Arguments",
+                title: plain_title("Arguments"),
                 suffixes: vec![Suffix::Switch(Switch {
                     key: "-p",
                     arg: "--prune",
@@ -320,7 +321,7 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
                 })],
             },
             Group {
-                title: "Fetch from",
+                title: plain_title("Fetch from"),
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "p",
