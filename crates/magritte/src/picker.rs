@@ -25,13 +25,12 @@ pub struct ChoiceDelegate {
     matched: Vec<usize>,
     /// Index into `matched` (or the trailing create row) of the highlighted row.
     selected: Option<usize>,
-    /// When set, a non-matching query offers a trailing "create" row that yields
-    /// the typed text verbatim (e.g. a new branch to push to).
+    /// When set, a query of the form `remote/branch` that isn't already a choice
+    /// offers a trailing "create" row yielding that ref verbatim (e.g. a new
+    /// branch to push to). Like magit, a bare name (no `/`) is *not* offered —
+    /// it just filters the candidates (which include the seeded same-named
+    /// targets), so you reach `origin/master` by selecting it, not creating it.
     allow_create: bool,
-    /// When set, a query without a `/` is qualified as `{prefix}/{query}` before
-    /// deciding whether it's new and when yielded (e.g. a bare `master` becomes
-    /// `origin/master`, so it isn't offered as "new" when `origin/master` exists).
-    qualify: Option<String>,
     /// The current (trimmed, original-case) query — the value the create row
     /// yields.
     query: String,
@@ -48,52 +47,40 @@ impl ChoiceDelegate {
             matched,
             selected,
             allow_create: false,
-            qualify: None,
             query: String::new(),
         }
     }
 
-    /// Allow choosing a freely-typed value that isn't in the list (shown as a
-    /// trailing "create" row).
+    /// Allow choosing a freely-typed `remote/branch` value that isn't in the
+    /// list (shown as a trailing "create" row).
     pub fn allow_create(mut self, yes: bool) -> Self {
         self.allow_create = yes;
         self
     }
 
-    /// Qualify a query without a `/` as `{prefix}/{query}` (e.g. a bare branch
-    /// name with its default remote), so it isn't offered as "new" when the
-    /// qualified form already exists, and is yielded in qualified form.
-    pub fn qualify_with(mut self, prefix: impl Into<String>) -> Self {
-        self.qualify = Some(prefix.into());
-        self
-    }
-
-    /// The query in canonical form: qualified with the prefix when one is set
-    /// and the query has no `/` of its own.
-    fn canonical_query(&self) -> String {
-        match &self.qualify {
-            Some(prefix) if !self.query.contains('/') => format!("{prefix}/{}", self.query),
-            _ => self.query.clone(),
-        }
-    }
-
-    /// Whether a "create" row for the typed query is currently shown.
+    /// Whether a "create" row for the typed query is currently shown — only for
+    /// a `remote/branch`-form query (both parts non-empty) that isn't already a
+    /// choice, mirroring magit's requirement that the target name that form.
     fn create_row(&self) -> bool {
-        if !self.allow_create || self.query.is_empty() {
+        if !self.allow_create {
             return false;
         }
-        let canonical = self.canonical_query();
-        !self.choices.iter().any(|c| c.as_ref() == canonical)
+        match self.query.split_once('/') {
+            Some((remote, branch)) if !remote.is_empty() && !branch.is_empty() => {
+                !self.choices.iter().any(|c| c.as_ref() == self.query)
+            }
+            _ => false,
+        }
     }
 
-    /// The currently highlighted choice — an existing one, or the typed value
-    /// (in canonical form) when the create row is selected.
+    /// The currently highlighted choice — an existing one, or the typed
+    /// `remote/branch` value when the create row is selected.
     pub fn selected_choice(&self) -> Option<SharedString> {
         let row = self.selected?;
         match self.matched.get(row) {
             Some(&i) => Some(self.choices[i].clone()),
             None if self.create_row() && row == self.matched.len() => {
-                Some(SharedString::from(self.canonical_query()))
+                Some(SharedString::from(self.query.clone()))
             }
             None => None,
         }
@@ -152,10 +139,7 @@ impl ListDelegate for ChoiceDelegate {
             return Some(
                 ListItem::new(ix.row)
                     .selected(selected)
-                    .child(SharedString::from(format!(
-                        "{}  (new)",
-                        self.canonical_query()
-                    ))),
+                    .child(SharedString::from(format!("{}  (new)", self.query))),
             );
         }
         let &choice_ix = self.matched.get(ix.row)?;
@@ -236,28 +220,28 @@ mod tests {
     }
 
     #[test]
-    fn qualified_bare_name_is_not_offered_as_new() {
-        // A bare `master` qualifies to `origin/master`, which already exists —
-        // so no "create" row, and it's not treated as new.
-        let mut d = delegate(&["origin/master", "origin/dev"])
-            .allow_create(true)
-            .qualify_with("origin");
-        d.query = "master".to_string();
-        assert!(!d.create_row(), "origin/master exists, so not new");
+    fn create_row_requires_remote_slash_branch_form() {
+        let mut d = delegate(&["origin/master", "origin/dev"]).allow_create(true);
 
-        // A genuinely new bare name qualifies and is offered, yielding the
-        // qualified ref.
+        // A bare name is never offered as new (magit requires REMOTE/BRANCH);
+        // it just filters the candidates instead.
         d.query = "feature".to_string();
-        assert!(d.create_row());
-        assert_eq!(d.canonical_query(), "origin/feature");
-    }
+        assert!(!d.create_row());
 
-    #[test]
-    fn create_row_yields_query_verbatim_without_qualify() {
-        let mut d = delegate(&["main"]).allow_create(true);
-        d.query = "topic".to_string();
+        // A `remote/branch` form not already a choice is offered.
+        d.query = "origin/feature".to_string();
         assert!(d.create_row());
-        assert_eq!(d.canonical_query(), "topic");
+
+        // …but not when it already exists.
+        d.query = "origin/master".to_string();
+        assert!(!d.create_row());
+
+        // When the create row is the highlighted row, it yields the query
+        // verbatim (here: nothing else matched, so it sits at index 0).
+        d.query = "origin/feature".to_string();
+        d.matched = vec![];
+        d.selected = Some(0);
+        assert_eq!(d.selected_choice().as_deref(), Some("origin/feature"));
     }
 
     #[test]
