@@ -19,8 +19,8 @@ use gpui::{
     actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, ClipboardItem,
     Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, TitlebarOptions, UniformListScrollHandle,
-    Window, WindowAppearance, WindowBounds, WindowOptions,
+    SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window,
+    WindowAppearance, WindowBounds, WindowOptions,
 };
 
 use gpui::prelude::FluentBuilder;
@@ -5546,6 +5546,65 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
+    /// The custom window title bar: the repo name, the current branch as a chip,
+    /// its ahead/behind vs upstream, and a dirty marker — styled to match the
+    /// app (so it reads as chrome, not the OS bar). The `TitleBar` component
+    /// handles traffic-light spacing, dragging, and (off-macOS) window controls.
+    fn render_title_bar(&self) -> impl IntoElement {
+        let repo_name = self
+            .repo
+            .as_ref()
+            .map(|r| r.workdir())
+            .unwrap_or(self.root.as_path())
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "—".to_string());
+
+        let mut info = div().flex().items_center().gap_2().child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(repo_name)),
+        );
+
+        if let Some(status) = &self.status {
+            let head = &status.head;
+            let branch = head
+                .branch
+                .clone()
+                .unwrap_or_else(|| "detached".to_string());
+            info = info.child(self.branch_chip(&branch));
+
+            if head.ahead > 0 || head.behind > 0 {
+                let mut ab = String::new();
+                if head.ahead > 0 {
+                    ab.push_str(&format!("↑{}", head.ahead));
+                }
+                if head.behind > 0 {
+                    if !ab.is_empty() {
+                        ab.push(' ');
+                    }
+                    ab.push_str(&format!("↓{}", head.behind));
+                }
+                info = info.child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .font_family(self.font.clone())
+                        .child(SharedString::from(ab)),
+                );
+            }
+
+            if !status.is_clean() {
+                // A small dot in the "modified" hue: uncommitted changes present.
+                info = info.child(div().text_color(self.palette.modified).child("●"));
+            }
+        }
+
+        gpui_component::TitleBar::new()
+            .bg(self.palette.bg)
+            .border_color(self.palette.border)
+            .child(info)
+    }
+
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
     /// `g r`) keeps its keys spaced *inside* the one cap (see [`format_keys`]).
     fn key_tokens(&self, keys: &str) -> gpui::Div {
@@ -6771,6 +6830,9 @@ impl Render for StatusView {
             .flex()
             .flex_col();
 
+        // The title bar sits above every view (status, settings, editor, …).
+        root = root.child(self.render_title_bar());
+
         // The settings screen, commit editor, and git-log view each take over
         // the window.
         if let Some(s) = &self.settings {
@@ -7488,10 +7550,9 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(1000.0), px(720.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from("Magritte")),
-                ..Default::default()
-            }),
+            // Transparent system bar so our custom `TitleBar` draws the chrome
+            // (and the traffic lights sit where the component expects them).
+            titlebar: Some(gpui_component::TitleBar::title_bar_options()),
             ..Default::default()
         };
 
