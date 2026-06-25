@@ -1454,6 +1454,8 @@ struct StatusView {
     /// The loaded user config (theme/appearance/font), kept so we can re-apply
     /// on config-file edits or system appearance changes.
     config: config::Config,
+    /// Per-command usage, for ranking the `:` palette by frecency.
+    usage: config::Usage,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Cached list of all font families, for the UI-font picker.
@@ -1519,6 +1521,7 @@ impl StatusView {
             font,
             ui_font,
             config,
+            usage: config::load_usage(),
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
             editors: Vec::new(),
@@ -3270,6 +3273,7 @@ impl StatusView {
                 // Resolve the chosen title back to its command and run it.
                 PickerAction::RunCommand => {
                     if let Some(cmd) = commands().iter().find(|c| c.title == chosen.as_ref()) {
+                        self.record_use(cmd.id);
                         (cmd.run)(self, window, cx);
                     }
                 }
@@ -4636,6 +4640,7 @@ impl StatusView {
         self.popup = None;
         // A registry command (resolved by its key), the `:` palette, or a motion.
         if let Some(cmd) = commands().iter().find(|c| c.key == Some(key)) {
+            self.record_use(cmd.id);
             (cmd.run)(self, window, cx);
             return;
         }
@@ -4661,18 +4666,32 @@ impl StatusView {
     /// registry, so the command's behavior lives in exactly one place.
     fn invoke_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(cmd) = commands().iter().find(|c| c.id == id) {
+            self.record_use(cmd.id);
             (cmd.run)(self, window, cx);
         }
+    }
+
+    /// Note a command run for the palette's frecency ranking, and persist it.
+    fn record_use(&mut self, id: &str) {
+        self.usage.record(id);
+        config::save_usage(&self.usage);
     }
 
     /// Open the `:` command palette: the vertico picker over the (enabled)
     /// registry commands, matched by title. Enter runs the chosen command.
     fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let choices: Vec<String> = commands()
+        // Order by frecency (most-used-recently first); a stable sort keeps the
+        // registry order among never-used commands and ties. The picker's fuzzy
+        // ranking takes over once the user types, with this order breaking ties.
+        let mut cmds: Vec<&Command> = commands()
             .iter()
             .filter(|c| c.palette && (c.enabled)(self))
-            .map(|c| c.title.to_string())
             .collect();
+        cmds.sort_by(|a, b| {
+            let (sa, sb) = (self.usage.score(a.id), self.usage.score(b.id));
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let choices: Vec<String> = cmds.iter().map(|c| c.title.to_string()).collect();
         self.open_picker(
             PickerAction::RunCommand,
             choices,

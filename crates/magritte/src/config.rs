@@ -3,8 +3,9 @@
 //! `~/.config/magritte/config.toml`). Currently just the chosen theme and
 //! font; written when the settings screen closes, loaded at startup.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +118,84 @@ pub fn load_reporting() -> (Config, Option<String>) {
                 path.display()
             )),
         ),
+    }
+}
+
+/// Command-usage record for the palette's frecency ranking, persisted next to
+/// the config. A single decaying score per command captures both frequency and
+/// recency: each use decays the old score by elapsed time, then adds 1, so a
+/// command used a lot recently outranks one used more but long ago.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub command: HashMap<String, CommandUse>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CommandUse {
+    pub score: f64,
+    /// Unix seconds of the last use, for decaying the score on the next one.
+    pub last_used: u64,
+}
+
+/// The score halves every this-many days of disuse.
+const FRECENCY_HALF_LIFE_DAYS: f64 = 30.0;
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+impl Usage {
+    /// The current frecency score for a command id (0 if never used).
+    pub fn score(&self, id: &str) -> f64 {
+        self.command.get(id).map_or(0.0, |u| u.score)
+    }
+
+    /// Record a use now: decay the prior score by how long it's been, then +1.
+    pub fn record(&mut self, id: &str) {
+        let now = now_secs();
+        let entry = self.command.entry(id.to_string()).or_insert(CommandUse {
+            score: 0.0,
+            last_used: now,
+        });
+        let days = now.saturating_sub(entry.last_used) as f64 / 86_400.0;
+        entry.score = entry.score * 0.5_f64.powf(days / FRECENCY_HALF_LIFE_DAYS) + 1.0;
+        entry.last_used = now;
+    }
+}
+
+/// Path to the usage file (a sibling of the config).
+pub fn usage_path() -> Option<PathBuf> {
+    path().map(|p| p.with_file_name("command-usage.toml"))
+}
+
+/// Load the persisted command usage, or defaults if missing/unreadable.
+pub fn load_usage() -> Usage {
+    let Some(path) = usage_path() else {
+        return Usage::default();
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Persist command usage (atomic temp-file + rename). Best-effort.
+pub fn save_usage(usage: &Usage) {
+    let Some(path) = usage_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = toml::to_string_pretty(usage) {
+        let tmp = path.with_extension("toml.tmp");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
     }
 }
 
