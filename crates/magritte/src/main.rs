@@ -6246,38 +6246,40 @@ impl StatusView {
                         |cfg, on| cfg.commit_in_editor = on,
                     ),
                 )];
-                // The command only matters (and only shows) when the toggle is on.
+                // With the external editor on, only its command is relevant; the
+                // built-in editor's ruler/wrap aids don't apply, so hide them.
                 if self.config.commit_in_editor {
                     rows.push(field(
                         "commit-editor",
                         "Editor command",
                         Input::new(&s.commit_editor).into_any_element(),
                     ));
-                }
-                rows.push(field(
-                    "commit-title-ruler",
-                    "Summary ruler",
-                    self.toggle_control(
+                } else {
+                    rows.push(field(
                         "commit-title-ruler",
-                        self.config.commit_title_ruler,
-                        "Underlines characters past column 50 on the commit summary (first) \
-                         line.",
-                        view,
-                        |cfg, on| cfg.commit_title_ruler = on,
-                    ),
-                ));
-                rows.push(field(
-                    "commit-body-wrap",
-                    "Body auto-wrap",
-                    self.toggle_control(
+                        "Summary ruler",
+                        self.toggle_control(
+                            "commit-title-ruler",
+                            self.config.commit_title_ruler,
+                            "Underlines characters past column 50 on the commit summary (first) \
+                             line.",
+                            view,
+                            |cfg, on| cfg.commit_title_ruler = on,
+                        ),
+                    ));
+                    rows.push(field(
                         "commit-body-wrap",
-                        self.config.commit_body_wrap,
-                        "Hard-wraps the commit body at 72 columns as you type at the end of a \
-                         line (the summary line is never wrapped).",
-                        view,
-                        |cfg, on| cfg.commit_body_wrap = on,
-                    ),
-                ));
+                        "Body auto-wrap",
+                        self.toggle_control(
+                            "commit-body-wrap",
+                            self.config.commit_body_wrap,
+                            "Hard-wraps the commit body at 72 columns as you type at the end of a \
+                             line (the summary line is never wrapped).",
+                            view,
+                            |cfg, on| cfg.commit_body_wrap = on,
+                        ),
+                    ));
+                }
                 rows
             }))
     }
