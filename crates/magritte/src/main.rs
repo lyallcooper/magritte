@@ -4966,25 +4966,41 @@ impl StatusView {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
 
         // Magit's row-driven layout: stack the groups vertically as labeled
-        // bands (Arguments above, then the command group, …), each kept whole as
-        // a single column — that's the default magit look. Only when stacking
-        // would make the panel too tall (the many-group `?` dispatch) do we fall
-        // back to laying the groups out side by side as columns.
+        // bands (Arguments above, then the command group, …). A tall group fans
+        // out into sub-columns *within its band* (capped at BAND_CAP rows each)
+        // so the stack stays compact without resorting to a column-per-group
+        // layout. Only when even the split stack would be too tall (the
+        // many-group `?` dispatch, where the bands themselves pile up) do we
+        // fall back to laying the groups out side by side as columns.
+        const BAND_CAP: usize = 7;
         const STACK_ROW_BUDGET: usize = 18;
-        let stacked_rows: usize = def.groups.iter().map(|g| g.suffixes.len() + 2).sum();
-        let mut columns = if stacked_rows <= STACK_ROW_BUDGET {
-            div().flex().flex_col().items_start().gap_3()
+        let subcols = |n: usize| n.div_ceil(BAND_CAP).max(1);
+        let band_rows = |n: usize| n.div_ceil(subcols(n)); // rows in the tallest sub-column
+        let stacked_rows: usize = def
+            .groups
+            .iter()
+            .map(|g| 1 + band_rows(g.suffixes.len()))
+            .sum();
+
+        let mut columns;
+        if stacked_rows <= STACK_ROW_BUDGET {
+            columns = div().flex().flex_col().items_start().gap_3();
+            for group in &def.groups {
+                let k = subcols(group.suffixes.len());
+                columns = columns.child(self.render_group(group, k, state, pending_dash, view));
+            }
         } else {
-            div()
+            // Too many bands to stack — one column per group, side by side.
+            columns = div()
                 .flex()
                 .flex_row()
                 .flex_wrap()
                 .items_start()
                 .gap_x_8()
-                .gap_y_3()
-        };
-        for group in &def.groups {
-            columns = columns.child(self.render_group(group, state, pending_dash, view));
+                .gap_y_3();
+            for group in &def.groups {
+                columns = columns.child(self.render_group(group, 1, state, pending_dash, view));
+            }
         }
 
         div()
@@ -5001,28 +5017,44 @@ impl StatusView {
             .child(columns)
     }
 
-    /// One transient group as a left-aligned, single-column band: its dim title
-    /// followed by its suffix rows (switches, value options, actions, or
-    /// `?`-menu info), each on its own line. `items_start` so each row's
-    /// clickable hitbox hugs its content width rather than stretching across the
-    /// column (which makes clicks land on the wrong row).
+    /// One transient group as a left-aligned band: its dim title above its
+    /// suffix rows (switches, value options, actions, or `?`-menu info). A tall
+    /// group spreads its rows across `subcols` sub-columns *within the band*
+    /// (magit's `[[col][col]]`) so it doesn't dominate the panel height — e.g.
+    /// the log transient's 8 arguments become two columns of four under one
+    /// "Arguments" heading. `items_start` so each row's clickable hitbox hugs
+    /// its content width (else clicks land on the wrong row).
     fn render_group(
         &self,
         group: &Group,
+        subcols: usize,
         state: Option<&TransientState>,
         pending_dash: bool,
         view: &Entity<Self>,
     ) -> gpui::Div {
-        let mut col = div()
+        let n = group.suffixes.len();
+        let k = subcols.clamp(1, n.max(1));
+        let per = n.div_ceil(k).max(1);
+        let mut buckets: Vec<Vec<AnyElement>> = (0..k).map(|_| Vec::new()).collect();
+        for (i, suffix) in group.suffixes.iter().enumerate() {
+            let bucket = (i / per).min(k - 1);
+            buckets[bucket].push(self.render_suffix(suffix, state, pending_dash, view));
+        }
+        let mut row = div().flex().flex_row().items_start().gap_x_6();
+        for bucket in buckets {
+            let mut sc = div().flex().flex_col().items_start().gap_1();
+            for el in bucket {
+                sc = sc.child(el);
+            }
+            row = row.child(sc);
+        }
+        div()
             .flex()
             .flex_col()
             .items_start()
             .gap_1()
-            .child(self.render_title(&group.title, self.palette.dim));
-        for suffix in &group.suffixes {
-            col = col.child(self.render_suffix(suffix, state, pending_dash, view));
-        }
-        col
+            .child(self.render_title(&group.title, self.palette.dim))
+            .child(row)
     }
 
     /// One transient suffix as a clickable row (switch, value option, action,
