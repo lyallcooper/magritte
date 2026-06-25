@@ -62,6 +62,12 @@ pub enum Command {
     LogOther,
     /// Reflog of HEAD.
     LogReflog,
+    /// Reset HEAD to a commit (the frontend prompts for the target). The mode
+    /// is in the variant; hard is confirmed by the frontend.
+    ResetSoft,
+    ResetMixed,
+    ResetHard,
+    ResetKeep,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -611,6 +617,37 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
                 ],
             },
         ],
+    }
+}
+
+pub fn reset_transient() -> Transient {
+    Transient {
+        title: plain_title("Reset"),
+        groups: vec![Group {
+            title: plain_title("Reset"),
+            suffixes: vec![
+                Suffix::Action(Action {
+                    key: "m",
+                    description: "mixed (HEAD and index)".to_string(),
+                    command: Command::ResetMixed,
+                }),
+                Suffix::Action(Action {
+                    key: "s",
+                    description: "soft (HEAD only)".to_string(),
+                    command: Command::ResetSoft,
+                }),
+                Suffix::Action(Action {
+                    key: "h",
+                    description: "hard (HEAD, index, working tree)".to_string(),
+                    command: Command::ResetHard,
+                }),
+                Suffix::Action(Action {
+                    key: "k",
+                    description: "keep (HEAD and index, keep uncommitted)".to_string(),
+                    command: Command::ResetKeep,
+                }),
+            ],
+        }],
     }
 }
 
