@@ -450,7 +450,7 @@ struct Command {
     title: &'static str,
     /// Which `?`-menu group / palette category it belongs to.
     category: Category,
-    /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "gr").
+    /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "g r").
     /// `None` for leaf subcommands reached via a transient or the palette, not a
     /// top-level key.
     key: Option<&'static str>,
@@ -663,7 +663,7 @@ fn commands() -> &'static [Command] {
             "refresh",
             "Refresh",
             Category::Essential,
-            "gr",
+            "g r",
             |t, _w, cx| {
                 t.refresh(cx);
                 cx.notify();
@@ -761,10 +761,10 @@ fn dispatch_menu() -> Transient {
                 suffixes: vec![
                     info("j", "Move down"),
                     info("k", "Move up"),
-                    info("gg", "Top"),
+                    info("g g", "Top"),
                     info("G", "Bottom"),
-                    info("gj", "Next section"),
-                    info("gk", "Previous section"),
+                    info("g j", "Next section"),
+                    info("g k", "Previous section"),
                 ],
             },
             essential,
@@ -864,7 +864,7 @@ const ROW_HEIGHT: f32 = 18.0;
 /// Taller row height for the picker/palette list, so a keycap (bordered, a
 /// touch taller than a text line) sits comfortably without colliding with its
 /// neighbors.
-const PICKER_ROW_HEIGHT: f32 = 26.0;
+const PICKER_ROW_HEIGHT: f32 = 20.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -4322,10 +4322,10 @@ impl StatusView {
             if self.pending_g {
                 self.pending_g = false;
                 match key.as_str() {
-                    "r" => self.run_dispatch("gr", window, cx),
-                    "g" => self.run_dispatch("gg", window, cx),
-                    "j" => self.run_dispatch("gj", window, cx),
-                    "k" => self.run_dispatch("gk", window, cx),
+                    "r" => self.run_dispatch("g r", window, cx),
+                    "g" => self.run_dispatch("g g", window, cx),
+                    "j" => self.run_dispatch("g j", window, cx),
+                    "k" => self.run_dispatch("g k", window, cx),
                     _ => {}
                 }
                 return;
@@ -4494,10 +4494,10 @@ impl StatusView {
         match key {
             "j" => self.move_selection(1),
             "k" => self.move_selection(-1),
-            "gg" => self.select_edge(false),
+            "g g" => self.select_edge(false),
             "G" => self.select_edge(true),
-            "gj" => self.select_section(true),
-            "gk" => self.select_section(false),
+            "g j" => self.select_section(true),
+            "g k" => self.select_section(false),
             _ => {}
         }
         self.scroll
@@ -4534,9 +4534,9 @@ impl StatusView {
     /// Whether `key` is a single-stroke `?`-dispatch key. Registry command keys
     /// route to their command; the bare motions `j`/`k`/`G` move the selection.
     /// Multi-stroke entries are handled elsewhere — Tab via the ToggleFold
-    /// action, and `gr`/`gg`/`gj`/`gk` via the g-prefix — so they're excluded.
+    /// action, and `g r`/`g g`/`g j`/`g k` via the g-prefix — so they're excluded.
     fn is_dispatch_key(key: &str) -> bool {
-        if matches!(key, "tab" | "gr" | "gg" | "gj" | "gk") {
+        if matches!(key, "tab" | "g r" | "g g" | "g j" | "g k") {
             return false;
         }
         commands().iter().any(|c| c.key == Some(key)) || matches!(key, "j" | "k" | "G" | ":")
@@ -4730,15 +4730,11 @@ impl StatusView {
             div().text_color(self.palette.fg).child(label)
         };
         el = el.child(label_el);
-        // The command's binding (palette only), as keycaps right after the name:
-        // a single key for top-level commands, the full prefix→suffix sequence
-        // for leaves (e.g. `c c` for "Create commit").
+        // The command's binding (palette only) as one compact keycap right after
+        // the name: a single key for top-level commands, or the full
+        // prefix→suffix sequence for leaves (e.g. `c c` for "Create commit").
         if let Some(seq) = hint {
-            let mut keys = div().flex().items_center().gap_1();
-            for k in seq.split(' ') {
-                keys = keys.child(key_chip(k, self.palette.dim));
-            }
-            el = el.child(keys);
+            el = el.child(key_chip_small(&seq, self.palette.dim));
         }
         el.into_any_element()
     }
@@ -4964,22 +4960,13 @@ impl StatusView {
         row
     }
 
-    /// Render a whitespace-separated key spec (e.g. `gg / G`) as keycaps with
-    /// any `/` separators kept as plain text between them.
+    /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
+    /// `g r`) keeps its keys spaced *inside* the one cap (see [`format_keys`]).
     fn key_tokens(&self, keys: &str) -> gpui::Div {
-        let mut row = div().flex().items_center().gap_1();
-        for token in keys.split_whitespace() {
-            row = if token == "/" {
-                row.child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from("/")),
-                )
-            } else {
-                row.child(key_chip(token, self.palette.dim))
-            };
-        }
-        row
+        div()
+            .flex()
+            .items_center()
+            .child(key_chip(keys, self.palette.dim))
     }
 
     /// A clickable key hint: a keycap + label that runs `action` (the same
@@ -6568,13 +6555,17 @@ fn chip_box(color: Hsla) -> gpui::Div {
         .bg(with_alpha(color, 0.12))
 }
 
-/// A keyboard key badge: a keycap chip with a word-style label. Chords like
-/// `cmd-enter` render as `Cmd+Enter`. A leading `-` (transient switch keys
-/// such as `-a`) is kept verbatim, not treated as a chord.
-fn key_chip(key: &str, color: Hsla) -> AnyElement {
+/// The display label for a keystroke spec. A multi-keystroke *sequence* is
+/// space-separated (e.g. `g r`, `c c`) and rendered with the keys spaced inside
+/// one keycap. A *chord* joins modifiers to a key with `-` (e.g. `cmd-enter` →
+/// `Cmd+Enter`). A lone token is word-ified (`tab` → `Tab`).
+fn format_keys(key: &str) -> String {
+    if key.contains(' ') {
+        return key.split(' ').map(key_word).collect::<Vec<_>>().join(" ");
+    }
     let parts: Vec<&str> = key.split('-').collect();
     let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
-    let label = if is_chord {
+    if is_chord {
         parts
             .iter()
             .map(|p| key_word(p))
@@ -6582,9 +6573,26 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
             .join("+")
     } else {
         key_word(key)
-    };
+    }
+}
+
+/// A keyboard key badge: a keycap chip with a word-style label (see
+/// [`format_keys`]).
+fn key_chip(key: &str, color: Hsla) -> AnyElement {
     chip_box(color)
-        .child(SharedString::from(label))
+        .child(SharedString::from(format_keys(key)))
+        .into_any_element()
+}
+
+/// A compact keycap for dense lists (the `:` palette rows), so a bordered chip
+/// fits a short row without crowding its neighbors. Smaller text, tighter
+/// padding, no minimum width.
+fn key_chip_small(key: &str, color: Hsla) -> AnyElement {
+    chip_box(color)
+        .min_w(px(0.0))
+        .px(px(3.0))
+        .text_size(px(11.0))
+        .child(SharedString::from(format_keys(key)))
         .into_any_element()
 }
 
@@ -7005,8 +7013,8 @@ mod tests {
         assert!(StatusView::is_dispatch_key("s"));
         assert!(StatusView::is_dispatch_key("G"));
         assert!(!StatusView::is_dispatch_key("tab"));
-        assert!(!StatusView::is_dispatch_key("gg"));
-        assert!(!StatusView::is_dispatch_key("gr"));
+        assert!(!StatusView::is_dispatch_key("g g"));
+        assert!(!StatusView::is_dispatch_key("g r"));
         assert!(!StatusView::is_dispatch_key("z")); // not in the menu
     }
 
@@ -7026,8 +7034,8 @@ mod tests {
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "Z", "l", "p", "F", "f", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
-            "v", "tab", "gr", ":", // essential + command palette
-            "j", "k", "gg", "G", "gj", "gk", // navigation / motions
+            "v", "tab", "g r", ":", // essential + command palette
+            "j", "k", "g g", "G", "g j", "g k", // navigation / motions
         ];
         // Keys allowed to be on only one side of the check. Empty today; add a
         // key here (with a comment) when an exception is genuinely warranted.
