@@ -6226,12 +6226,12 @@ impl StatusView {
                     .into_any_element();
                 #[cfg(not(target_os = "macos"))]
                 let control = Input::new(&s.editor).into_any_element();
-                vec![field("editor", "External editor", control).child(self.info_icon(
-                    "editor-info".to_string(),
-                    "The editor used when opening a file (Return) or the config file. On macOS, \
-                     name an installed app; leave as \"System Default\" to open in the OS \
-                     default app.",
-                ))]
+                vec![
+                    field("editor", "External editor", control).child(self.info_icon(
+                        "editor-info".to_string(),
+                        "The editor used when opening a file",
+                    )),
+                ]
             }))
             .child(section("Commit editor", {
                 let mut rows = vec![field(
