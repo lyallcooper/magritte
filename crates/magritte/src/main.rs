@@ -6981,10 +6981,33 @@ fn open_with_os(path: &std::path::Path) {
 /// a temp `.command` script; elsewhere via `<terminal> -e …`.
 #[cfg(target_os = "macos")]
 fn launch_in_terminal(editor: &str, terminal: &str, path: &std::path::Path) {
+    let terminal = terminal.trim();
+
+    // iTerm pops an "OK to run …?" confirmation whenever it's handed a
+    // `.command` file to *open*. Drive it with AppleScript to run the command
+    // directly instead — no prompt (just a one-time macOS automation grant).
+    // Terminal.app and the generic `.command` handler run the script without
+    // complaint, so they keep the simpler path below.
+    if terminal.to_ascii_lowercase().contains("iterm") {
+        let cmd = format!("{} {}", editor, shell_quote(path));
+        let osa = format!(
+            "tell application \"iTerm\" to create window with default profile command {}",
+            applescript_quote(&cmd),
+        );
+        if std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&osa)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+    }
+
     // Run a `.command` script in a terminal app. `open -a <app>` targets the
-    // chosen terminal (e.g. iTerm); plain `open` uses the default handler for
-    // `.command` (Terminal.app unless reassigned). Either way the app must know
-    // how to run a `.command` file.
+    // chosen terminal; plain `open` uses the default handler for `.command`
+    // (Terminal.app unless reassigned). Either way the app must know how to run
+    // a `.command` file.
     let body = format!("#!/bin/sh\nexec {} {}\n", editor, shell_quote(path));
     let mut script = std::env::temp_dir();
     script.push(format!("magritte-open-{}.command", temp_suffix()));
@@ -6992,7 +7015,6 @@ fn launch_in_terminal(editor: &str, terminal: &str, path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
         let mut cmd = std::process::Command::new("open");
-        let terminal = terminal.trim();
         if !terminal.is_empty() {
             cmd.arg("-a").arg(terminal);
         }
@@ -7062,6 +7084,13 @@ fn path_has(program: &str) -> bool {
 #[cfg(target_os = "macos")]
 fn shell_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// Quote `s` as an AppleScript string literal (double-quoted, with `\` and `"`
+/// escaped) for embedding in an `osascript -e` program.
+#[cfg(target_os = "macos")]
+fn applescript_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// A unique-ish suffix for the temp script name.
