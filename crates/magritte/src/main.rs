@@ -5524,26 +5524,73 @@ impl StatusView {
 
     /// A dim tracking entry for the title bar: an optional direction glyph
     /// (`⇡` push / `⇣` pull), the ref name, and `↑ahead`/`↓behind` (each shown
-    /// only when non-zero).
-    fn track_chunk(&self, glyph: &str, name: &str, ahead: i64, behind: i64) -> gpui::Div {
-        let mut text = format!("{glyph}{name}");
-        if ahead > 0 {
-            text.push_str(&format!(" ↑{ahead}"));
-        }
-        if behind > 0 {
-            text.push_str(&format!(" ↓{behind}"));
-        }
-        div()
+    /// only when non-zero). The ahead/behind are clickable: `↑` opens the push
+    /// transient, `↓` the pull transient. `key` namespaces their element ids.
+    fn track_chunk(
+        &self,
+        view: &Entity<Self>,
+        key: &str,
+        glyph: &str,
+        name: &str,
+        ahead: i64,
+        behind: i64,
+    ) -> gpui::Div {
+        let mut chunk = div()
+            .flex()
+            .items_center()
+            .gap_1()
             .text_color(self.palette.dim)
             .font_family(self.font.clone())
-            .child(SharedString::from(text))
+            .child(SharedString::from(format!("{glyph}{name}")));
+        if ahead > 0 {
+            chunk = chunk.child(self.titlebar_action(
+                view,
+                format!("{key}-ahead"),
+                "push",
+                SharedString::from(format!("↑{ahead}")),
+            ));
+        }
+        if behind > 0 {
+            chunk = chunk.child(self.titlebar_action(
+                view,
+                format!("{key}-behind"),
+                "pull",
+                SharedString::from(format!("↓{behind}")),
+            ));
+        }
+        chunk
+    }
+
+    /// A clickable title-bar element that runs the registry command `command`
+    /// (the branch chip → "branch", an ahead count → "push", a behind count →
+    /// "pull"). Brightens on hover to signal it's actionable.
+    fn titlebar_action(
+        &self,
+        view: &Entity<Self>,
+        id: impl Into<SharedString>,
+        command: &'static str,
+        child: impl IntoElement,
+    ) -> impl IntoElement {
+        let view = view.clone();
+        let fg = self.palette.fg;
+        let id = id.into();
+        div()
+            .id(id.clone())
+            .relative()
+            .cursor_pointer()
+            .hover(move |s| s.text_color(fg))
+            .child(track_target(id))
+            .child(child)
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
+            })
     }
 
     /// The custom window title bar: the repo name, the current branch as a chip,
     /// its ahead/behind vs upstream, and a dirty marker — styled to match the
     /// app (so it reads as chrome, not the OS bar). The `TitleBar` component
     /// handles traffic-light spacing, dragging, and (off-macOS) window controls.
-    fn render_title_bar(&self) -> impl IntoElement {
+    fn render_title_bar(&self, view: &Entity<Self>) -> impl IntoElement {
         let repo_name = self
             .repo
             .as_ref()
@@ -5565,28 +5612,48 @@ impl StatusView {
                 .branch
                 .clone()
                 .unwrap_or_else(|| "detached".to_string());
-            info = info.child(self.branch_chip(&branch));
+            // The branch chip opens the branch transient on click.
+            info = info.child(self.titlebar_action(
+                view,
+                "titlebar-branch",
+                "branch",
+                self.branch_chip(&branch),
+            ));
 
             // Tracking: the upstream, plus a distinct push target when present
             // (a triangular workflow). When the push target equals the upstream,
             // the core leaves `head.push` unset, so we show a single entry.
             match (&head.push, &head.upstream) {
                 (Some(push), upstream) => {
-                    info =
-                        info.child(self.track_chunk("⇡", push, head.push_ahead, head.push_behind));
+                    info = info.child(self.track_chunk(
+                        view,
+                        "push",
+                        "⇡",
+                        push,
+                        head.push_ahead,
+                        head.push_behind,
+                    ));
                     if let Some(up) = upstream {
-                        info = info.child(self.track_chunk("⇣", up, head.ahead, head.behind));
+                        info = info.child(self.track_chunk(
+                            view,
+                            "up",
+                            "⇣",
+                            up,
+                            head.ahead,
+                            head.behind,
+                        ));
                     }
                 }
                 (None, Some(up)) => {
-                    info = info.child(self.track_chunk("", up, head.ahead, head.behind));
+                    info =
+                        info.child(self.track_chunk(view, "up", "", up, head.ahead, head.behind));
                 }
                 (None, None) => {}
             }
 
             if !status.is_clean() {
-                // A small dot in the "modified" hue: uncommitted changes present.
-                info = info.child(div().text_color(self.palette.modified).child("●"));
+                // Marks uncommitted changes in the working tree.
+                info = info.child(div().text_color(self.palette.modified).child("○"));
             }
         }
 
@@ -6792,7 +6859,7 @@ impl Render for StatusView {
             .flex_col();
 
         // The title bar sits above every view (status, settings, editor, …).
-        root = root.child(self.render_title_bar());
+        root = root.child(self.render_title_bar(&view));
 
         // The settings screen, commit editor, and git-log view each take over
         // the window.
