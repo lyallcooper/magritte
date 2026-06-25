@@ -139,6 +139,34 @@ impl Repo {
         }
     }
 
+    /// A `git` command rooted at the working tree, with the signal environment
+    /// of a shell. We spawn from a GPUI worker thread whose signal mask blocks
+    /// signals; git's children inherit it, so when one fails mid-transport
+    /// (e.g. a pull of a missing ref) git can't signal its stuck `upload-pack`
+    /// child during cleanup and `git pull` hangs forever instead of erroring.
+    /// Resetting the mask in the child fixes it. `GIT_TERMINAL_PROMPT=0` keeps
+    /// git from blocking on a credential prompt with no terminal.
+    fn git(&self) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(&self.workdir)
+            // Keep output stable and machine-readable regardless of user config.
+            .args(["-c", "core.quotepath=false"])
+            .env("GIT_TERMINAL_PROMPT", "0");
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                // Only async-signal-safe calls here (post-fork, pre-exec).
+                let mut empty: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty);
+                libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        cmd
+    }
+
     /// Run `git <args>` in the working tree, returning stdout as raw bytes so
     /// that NUL-delimited (`-z`) output is preserved.
     pub fn run<I, S>(&self, args: I) -> Result<GitOutput>
@@ -151,14 +179,8 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.workdir)
-            // Keep output stable and machine-readable regardless of user config.
-            .args(["-c", "core.quotepath=false"])
-            // Never block on an interactive credential/passphrase prompt: fail
-            // fast instead of hanging a background thread with no terminal.
-            .env("GIT_TERMINAL_PROMPT", "0")
+        let output = self
+            .git()
             .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
@@ -194,11 +216,8 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.workdir)
-            .args(["-c", "core.quotepath=false"])
-            .env("GIT_TERMINAL_PROMPT", "0")
+        let output = self
+            .git()
             .env(key, value)
             .args(&arg_vec)
             .output()
@@ -233,11 +252,8 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(&self.workdir)
-            .args(["-c", "core.quotepath=false"])
-            .env("GIT_TERMINAL_PROMPT", "0")
+        let mut child = self
+            .git()
             .args(&arg_vec)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -287,11 +303,8 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(&self.workdir)
-            .args(["-c", "core.quotepath=false"])
-            .env("GIT_TERMINAL_PROMPT", "0")
+        let status = self
+            .git()
             .args(&arg_vec)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -314,11 +327,8 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.workdir)
-            .args(["-c", "core.quotepath=false"])
-            .env("GIT_TERMINAL_PROMPT", "0")
+        let output = self
+            .git()
             .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
