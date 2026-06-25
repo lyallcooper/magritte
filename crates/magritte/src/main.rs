@@ -4965,42 +4965,41 @@ impl StatusView {
     ) -> gpui::Div {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
 
-        // Magit's row-driven layout: stack the groups vertically as labeled
-        // bands (Arguments above, then the command group, …). A tall group fans
-        // out into sub-columns *within its band* (capped at BAND_CAP rows each)
-        // so the stack stays compact without resorting to a column-per-group
-        // layout. Only when even the split stack would be too tall (the
-        // many-group `?` dispatch, where the bands themselves pile up) do we
-        // fall back to laying the groups out side by side as columns.
+        // Magit's layout, derived from content rather than hand-authored: an
+        // *argument* group (switches/options) is a full-width band, and bands
+        // stack vertically; the *command* groups (actions/`?`-menu info) sit
+        // side by side in a wrapping row beneath them. A tall argument band fans
+        // its rows into sub-columns (capped ~BAND_CAP each) so it stays compact.
+        // This reproduces magit's commit transient (Arguments band over a row of
+        // Create/Edit/… columns), the log transient (Arguments band over the Log
+        // command row), and the `?` dispatch (all command groups → one packed
+        // row), without a per-transient layout spec.
         const BAND_CAP: usize = 7;
-        const STACK_ROW_BUDGET: usize = 18;
-        let subcols = |n: usize| n.div_ceil(BAND_CAP).max(1);
-        let band_rows = |n: usize| n.div_ceil(subcols(n)); // rows in the tallest sub-column
-        let stacked_rows: usize = def
-            .groups
-            .iter()
-            .map(|g| 1 + band_rows(g.suffixes.len()))
-            .sum();
+        let has_args = |g: &&Group| {
+            g.suffixes
+                .iter()
+                .any(|s| matches!(s, Suffix::Switch(_) | Suffix::Option(_)))
+        };
 
-        let mut columns;
-        if stacked_rows <= STACK_ROW_BUDGET {
-            columns = div().flex().flex_col().items_start().gap_3();
-            for group in &def.groups {
-                let k = subcols(group.suffixes.len());
-                columns = columns.child(self.render_group(group, k, state, pending_dash, view));
-            }
-        } else {
-            // Too many bands to stack — one column per group, side by side.
-            columns = div()
-                .flex()
-                .flex_row()
-                .flex_wrap()
-                .items_start()
-                .gap_x_8()
-                .gap_y_3();
-            for group in &def.groups {
-                columns = columns.child(self.render_group(group, 1, state, pending_dash, view));
-            }
+        let mut body = div().flex().flex_col().items_start().gap_3();
+        for group in def.groups.iter().filter(has_args) {
+            let k = group.suffixes.len().div_ceil(BAND_CAP).max(1);
+            body = body.child(self.render_group(group, k, state, pending_dash, view));
+        }
+        let mut command_row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_start()
+            .gap_x_8()
+            .gap_y_3();
+        let mut any_command = false;
+        for group in def.groups.iter().filter(|g| !has_args(g)) {
+            any_command = true;
+            command_row = command_row.child(self.render_group(group, 1, state, pending_dash, view));
+        }
+        if any_command {
+            body = body.child(command_row);
         }
 
         div()
@@ -5014,7 +5013,7 @@ impl StatusView {
             .flex_col()
             .gap_2()
             .child(self.render_title(&def.title, self.palette.section))
-            .child(columns)
+            .child(body)
     }
 
     /// One transient group as a left-aligned band: its dim title above its
