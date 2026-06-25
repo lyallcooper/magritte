@@ -274,6 +274,8 @@ enum PickerAction {
         paths: Vec<String>,
         limit: usize,
     },
+    /// Run a registry [`Command`] chosen from the `:` palette (matched by title).
+    RunCommand,
 }
 
 impl PickerAction {
@@ -304,6 +306,7 @@ impl PickerAction {
                 transient::plain_title(description.clone())
             }
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
+            PickerAction::RunCommand => transient::plain_title("Run command"),
         }
     }
 
@@ -324,6 +327,7 @@ impl PickerAction {
             PickerAction::Stash(StashAction::Drop) => "drop",
             PickerAction::SetOption { .. } => "set",
             PickerAction::LogRef { .. } => "log",
+            PickerAction::RunCommand => "run",
         }
     }
 }
@@ -384,42 +388,261 @@ struct ScrollView {
     top: usize,
 }
 
-/// The `?` dispatch menu: a modal command transient (magit's dispatch). Each
-/// row is a command invoked by its key or a click.
+/// Groupings for the command registry — the `?` menu and `:` palette render in
+/// this order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Category {
+    /// Git porcelain (commit, branch, push, …).
+    Commands,
+    /// App/chrome commands that aren't git operations (settings, command log).
+    Application,
+    /// Working-tree edits (stage / unstage / discard).
+    Applying,
+    /// Always-available essentials (fold, refresh, visual selection).
+    Essential,
+}
+
+impl Category {
+    fn title(self) -> &'static str {
+        match self {
+            Category::Commands => "Commands",
+            Category::Application => "Application",
+            Category::Applying => "Applying changes",
+            Category::Essential => "Essential",
+        }
+    }
+}
+
+/// A user-invokable command: a stable identity decoupled from the key that
+/// triggers it. This is the single source of truth for *what a command does* —
+/// the keymap (`on_key` via [`StatusView::run_command`], the `?` dispatch menu,
+/// and the `:` command palette all resolve to one of these and call `run`.
+/// Argument-taking commands (commit, branch, …) open their own picker/transient
+/// from `run`; the registry deliberately doesn't model arguments.
+#[derive(Clone, Copy)]
+struct Command {
+    /// Stable id, e.g. "stage", "branch", "log". Used by the keymap, the
+    /// palette (resolving the chosen title), and tests.
+    id: &'static str,
+    /// Human label shown in the `?` menu and `:` palette.
+    title: &'static str,
+    /// Which `?`-menu group / palette category it belongs to.
+    category: Category,
+    /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "gr").
+    key: &'static str,
+    /// Whether it makes sense to offer right now — the palette filters on this.
+    /// (Permissive today; argument-gathering happens in `run`.)
+    enabled: fn(&StatusView) -> bool,
+    /// Perform the command. May open a transient/picker or act immediately.
+    run: fn(&mut StatusView, &mut Window, &mut Context<StatusView>),
+}
+
+/// The command registry: the one place commands are defined. Pure motions
+/// (j/k/gg/G/gj/gk) are not commands and stay in the keymap. Keep keys in sync
+/// with the modal handling in `on_key` (shift variants, the `g` prefix); the
+/// `dispatch_menu_covers_every_command` test guards menu/registry/dispatch
+/// against drift.
+fn commands() -> &'static [Command] {
+    const ALWAYS: fn(&StatusView) -> bool = |_| true;
+    const C: &[Command] = &[
+        Command {
+            id: "commit",
+            title: "Commit",
+            category: Category::Commands,
+            key: "c",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                t.open_transient(transient::commit_transient(), RemoteTargets::default(), cx)
+            },
+        },
+        Command {
+            id: "branch",
+            title: "Branch",
+            category: Category::Commands,
+            key: "b",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                let rt = t.remote_targets();
+                t.open_transient(transient::branch_transient(), rt, cx)
+            },
+        },
+        Command {
+            id: "stash",
+            title: "Stash",
+            category: Category::Commands,
+            key: "Z",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
+            },
+        },
+        Command {
+            id: "log",
+            title: "Log",
+            category: Category::Commands,
+            key: "l",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
+            },
+        },
+        Command {
+            id: "push",
+            title: "Push",
+            category: Category::Commands,
+            key: "p",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                let rt = t.remote_targets();
+                t.open_transient(transient::push_transient(&rt), rt, cx)
+            },
+        },
+        Command {
+            id: "pull",
+            title: "Pull",
+            category: Category::Commands,
+            key: "F",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                let rt = t.remote_targets();
+                t.open_transient(transient::pull_transient(&rt), rt, cx)
+            },
+        },
+        Command {
+            id: "fetch",
+            title: "Fetch",
+            category: Category::Commands,
+            key: "f",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                let rt = t.remote_targets();
+                t.open_transient(transient::fetch_transient(&rt), rt, cx)
+            },
+        },
+        Command {
+            id: "settings",
+            title: "Settings",
+            category: Category::Application,
+            key: ",",
+            enabled: ALWAYS,
+            run: |t, w, cx| t.open_settings(w, cx),
+        },
+        Command {
+            id: "git-log",
+            title: "Git command log",
+            category: Category::Application,
+            key: "$",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.open_git_log(cx),
+        },
+        Command {
+            id: "stage",
+            title: "Stage",
+            category: Category::Applying,
+            key: "s",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.act(Op::Stage, cx),
+        },
+        Command {
+            id: "unstage",
+            title: "Unstage",
+            category: Category::Applying,
+            key: "u",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.act(Op::Unstage, cx),
+        },
+        Command {
+            id: "stage-all",
+            title: "Stage all",
+            category: Category::Applying,
+            key: "S",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.run_action(Action::StageAll, cx),
+        },
+        Command {
+            id: "unstage-all",
+            title: "Unstage all",
+            category: Category::Applying,
+            key: "U",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.run_action(Action::UnstageAll, cx),
+        },
+        Command {
+            id: "discard",
+            title: "Discard",
+            category: Category::Applying,
+            key: "x",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.act(Op::Discard, cx),
+        },
+        Command {
+            id: "fold",
+            title: "Fold / unfold",
+            category: Category::Essential,
+            key: "tab",
+            enabled: ALWAYS,
+            run: |t, _w, cx| t.toggle_fold(cx),
+        },
+        Command {
+            id: "refresh",
+            title: "Refresh",
+            category: Category::Essential,
+            key: "gr",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                t.refresh(cx);
+                cx.notify();
+            },
+        },
+        Command {
+            id: "visual",
+            title: "Visual selection",
+            category: Category::Essential,
+            key: "v",
+            enabled: ALWAYS,
+            run: |t, _w, cx| {
+                t.visual = if t.visual.is_some() {
+                    None
+                } else {
+                    Some(t.selected)
+                };
+                cx.notify();
+            },
+        },
+    ];
+    C
+}
+
+/// The `?` dispatch menu: a modal command transient (magit's dispatch),
+/// generated from the [`commands`] registry (grouped by [`Category`]) plus a
+/// static Navigation group for the pure motions. Each row is invoked by its key
+/// or a click.
 ///
 /// This menu is the discoverable face of the keymap. The
 /// `dispatch_menu_covers_every_command` test cross-checks it against the keys
-/// `run_dispatch` actually handles, so a command can't be added to one without
-/// the other (the test carries an overrides list for intentional exceptions).
+/// `run_dispatch` actually handles, so a command can't be shown-but-dead or
+/// invocable-but-hidden.
 fn dispatch_menu() -> Transient {
     let info = |keys, description| Suffix::Info(transient::Info { keys, description });
+    let group = |cat: Category| Group {
+        title: transient::plain_title(cat.title()),
+        suffixes: commands()
+            .iter()
+            .filter(|c| c.category == cat)
+            .map(|c| {
+                Suffix::Info(transient::Info {
+                    keys: c.key,
+                    description: c.title,
+                })
+            })
+            .collect(),
+    };
     Transient {
         title: transient::plain_title("Dispatch"),
         groups: vec![
-            Group {
-                title: transient::plain_title("Commands"),
-                suffixes: vec![
-                    info("c", "Commit"),
-                    info("b", "Branch"),
-                    info("Z", "Stash"),
-                    info("l", "Log"),
-                    info("p", "Push"),
-                    info("F", "Pull"),
-                    info("f", "Fetch"),
-                    info(",", "Settings"),
-                    info("$", "Git command log"),
-                ],
-            },
-            Group {
-                title: transient::plain_title("Applying changes"),
-                suffixes: vec![
-                    info("s", "Stage"),
-                    info("u", "Unstage"),
-                    info("S", "Stage all"),
-                    info("U", "Unstage all"),
-                    info("x", "Discard"),
-                ],
-            },
+            group(Category::Commands),
+            group(Category::Application),
+            group(Category::Applying),
             Group {
                 title: transient::plain_title("Navigation"),
                 suffixes: vec![
@@ -431,14 +654,7 @@ fn dispatch_menu() -> Transient {
                     info("gk", "Previous section"),
                 ],
             },
-            Group {
-                title: transient::plain_title("Essential"),
-                suffixes: vec![
-                    info("tab", "Fold / unfold"),
-                    info("gr", "Refresh"),
-                    info("v", "Visual selection"),
-                ],
-            },
+            group(Category::Essential),
         ],
     }
 }
@@ -2830,6 +3046,12 @@ impl StatusView {
                         build_log_args(flags, LogScope::Ref(chosen.to_string()), paths, limit);
                     self.start_log(args, cx);
                 }
+                // Resolve the chosen title back to its command and run it.
+                PickerAction::RunCommand => {
+                    if let Some(cmd) = commands().iter().find(|c| c.title == chosen.as_ref()) {
+                        (cmd.run)(self, window, cx);
+                    }
+                }
             }
         }
     }
@@ -4009,83 +4231,36 @@ impl StatusView {
             // Tab is delivered via the ToggleFold action (Root binds tab), but
             // keep this as a fallback for any path that reaches on_key.
             "tab" => self.toggle_fold(cx),
-            // Visual (region) selection. `v`/`V` toggle; Escape cancels.
-            "v" => {
-                self.visual = if self.visual.is_some() {
-                    None
-                } else {
-                    Some(self.selected)
-                };
-                cx.notify();
-                return;
-            }
+            // Visual (region) selection; Escape cancels.
+            "v" => return self.invoke_command("visual", window, cx),
             "escape" => {
                 if self.visual.take().is_some() {
                     cx.notify();
                 }
                 return;
             }
-            // Staging. Shifted variants act on the whole working tree.
-            "s" if shift => return self.run_action(Action::StageAll, cx),
-            "s" => return self.act(Op::Stage, cx),
-            "u" if shift => return self.run_action(Action::UnstageAll, cx),
-            "u" => return self.act(Op::Unstage, cx),
-            "x" => return self.act(Op::Discard, cx),
-            // Commit transient.
-            "c" => {
-                return self.open_transient(
-                    transient::commit_transient(),
-                    RemoteTargets::default(),
-                    cx,
-                )
-            }
-            // Branch transient.
-            "b" => {
-                let t = self.remote_targets();
-                return self.open_transient(transient::branch_transient(), t, cx);
-            }
-            // Stash transient (Z), log view (l).
-            "z" if shift => {
-                return self.open_transient(
-                    transient::stash_transient(),
-                    RemoteTargets::default(),
-                    cx,
-                )
-            }
-            "l" => {
-                return self.open_transient(
-                    transient::log_transient(),
-                    RemoteTargets::default(),
-                    cx,
-                )
-            }
+            // Commands, dispatched through the registry so behavior lives in one
+            // place (see `commands`). The shift/`g`-prefix decoding stays here;
+            // the registry only sees the resolved command id.
+            "s" if shift => return self.invoke_command("stage-all", window, cx),
+            "s" => return self.invoke_command("stage", window, cx),
+            "u" if shift => return self.invoke_command("unstage-all", window, cx),
+            "u" => return self.invoke_command("unstage", window, cx),
+            "x" => return self.invoke_command("discard", window, cx),
+            "c" => return self.invoke_command("commit", window, cx),
+            "b" => return self.invoke_command("branch", window, cx),
+            "z" if shift => return self.invoke_command("stash", window, cx),
+            "l" => return self.invoke_command("log", window, cx),
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
-            "p" => {
-                let t = self.remote_targets();
-                return self.open_transient(transient::push_transient(&t), t, cx);
-            }
-            "f" if shift => {
-                let t = self.remote_targets();
-                return self.open_transient(transient::pull_transient(&t), t, cx);
-            }
-            "f" => {
-                let t = self.remote_targets();
-                return self.open_transient(transient::fetch_transient(&t), t, cx);
-            }
-            // Settings (theme + font), applied live.
-            "," => {
-                self.open_settings(window, cx);
-                return;
-            }
-            // Git command log (magit's `$` process buffer).
-            "$" => {
-                self.open_git_log(cx);
-                return;
-            }
-            "4" if shift => {
-                self.open_git_log(cx);
-                return;
-            }
+            "p" => return self.invoke_command("push", window, cx),
+            "f" if shift => return self.invoke_command("pull", window, cx),
+            "f" => return self.invoke_command("fetch", window, cx),
+            "," => return self.invoke_command("settings", window, cx),
+            "$" => return self.invoke_command("git-log", window, cx),
+            "4" if shift => return self.invoke_command("git-log", window, cx),
+            // The `:` command palette (M-x style). May arrive as ";" + shift.
+            ":" => return self.open_command_palette(window, cx),
+            ";" if shift => return self.open_command_palette(window, cx),
             // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
                 self.popup = Some(Popup::Dispatch(dispatch_menu()));
@@ -4146,78 +4321,60 @@ impl StatusView {
     /// dispatch menu and run the command, like magit's dispatch transient.
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
+        // A registry command (resolved by its key), or a pure motion.
+        if let Some(cmd) = commands().iter().find(|c| c.key == key) {
+            (cmd.run)(self, window, cx);
+            return;
+        }
         match key {
-            "c" => self.open_transient(transient::commit_transient(), RemoteTargets::default(), cx),
-            "b" => {
-                let t = self.remote_targets();
-                self.open_transient(transient::branch_transient(), t, cx);
-            }
-            "Z" => self.open_transient(transient::stash_transient(), RemoteTargets::default(), cx),
-            "l" => self.open_transient(transient::log_transient(), RemoteTargets::default(), cx),
-            "p" => {
-                let t = self.remote_targets();
-                self.open_transient(transient::push_transient(&t), t, cx);
-            }
-            "F" => {
-                let t = self.remote_targets();
-                self.open_transient(transient::pull_transient(&t), t, cx);
-            }
-            "f" => {
-                let t = self.remote_targets();
-                self.open_transient(transient::fetch_transient(&t), t, cx);
-            }
-            "," => self.open_settings(window, cx),
-            "$" => self.open_git_log(cx),
-            "s" => self.act(Op::Stage, cx),
-            "S" => self.run_action(Action::StageAll, cx),
-            "u" => self.act(Op::Unstage, cx),
-            "U" => self.run_action(Action::UnstageAll, cx),
-            "x" => self.act(Op::Discard, cx),
-            "v" => {
-                self.visual = if self.visual.is_some() {
-                    None
-                } else {
-                    Some(self.selected)
-                };
-                cx.notify();
-            }
-            "tab" => self.toggle_fold(cx),
-            "gr" => {
-                self.refresh(cx);
-                cx.notify();
-            }
-            // Motions: move the selection, then settle the scroll.
-            motion => {
-                match motion {
-                    "j" => self.move_selection(1),
-                    "k" => self.move_selection(-1),
-                    "gg" => self.select_edge(false),
-                    "G" => self.select_edge(true),
-                    "gj" => self.select_section(true),
-                    "gk" => self.select_section(false),
-                    _ => {}
-                }
-                self.scroll
-                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
-            }
+            "j" => self.move_selection(1),
+            "k" => self.move_selection(-1),
+            "gg" => self.select_edge(false),
+            "G" => self.select_edge(true),
+            "gj" => self.select_section(true),
+            "gk" => self.select_section(false),
+            _ => {}
+        }
+        self.scroll
+            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Invoke a registry [`Command`] by id — the keymap's bridge to the
+    /// registry, so the command's behavior lives in exactly one place.
+    fn invoke_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(cmd) = commands().iter().find(|c| c.id == id) {
+            (cmd.run)(self, window, cx);
         }
     }
 
-    /// Whether `key` is a single-key `?`-dispatch command. Derived from
-    /// `dispatch_menu` so the menu is the single source of truth: any row added
-    /// there becomes routable here (as long as `run_dispatch` handles it). The
-    /// multi-stroke entries are handled elsewhere — Tab via the ToggleFold
+    /// Open the `:` command palette: the vertico picker over the (enabled)
+    /// registry commands, matched by title. Enter runs the chosen command.
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let choices: Vec<String> = commands()
+            .iter()
+            .filter(|c| (c.enabled)(self))
+            .map(|c| c.title.to_string())
+            .collect();
+        self.open_picker(
+            PickerAction::RunCommand,
+            choices,
+            CreateMode::None,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    /// Whether `key` is a single-stroke `?`-dispatch key. Registry command keys
+    /// route to their command; the bare motions `j`/`k`/`G` move the selection.
+    /// Multi-stroke entries are handled elsewhere — Tab via the ToggleFold
     /// action, and `gr`/`gg`/`gj`/`gk` via the g-prefix — so they're excluded.
     fn is_dispatch_key(key: &str) -> bool {
         if matches!(key, "tab" | "gr" | "gg" | "gj" | "gk") {
             return false;
         }
-        dispatch_menu()
-            .groups
-            .iter()
-            .flat_map(|g| &g.suffixes)
-            .any(|s| matches!(s, Suffix::Info(i) if i.keys == key))
+        commands().iter().any(|c| c.key == key) || matches!(key, "j" | "k" | "G")
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -6599,6 +6756,41 @@ mod tests {
     }
 
     #[test]
+    fn command_registry_is_consistent() {
+        use std::collections::HashSet;
+        let (mut ids, mut keys, mut titles) = (HashSet::new(), HashSet::new(), HashSet::new());
+        for c in commands() {
+            assert!(ids.insert(c.id), "duplicate command id: {}", c.id);
+            assert!(keys.insert(c.key), "duplicate command key: {}", c.key);
+            // Titles must be unique — the `:` palette resolves the chosen title
+            // back to its command.
+            assert!(
+                titles.insert(c.title),
+                "duplicate command title: {}",
+                c.title
+            );
+        }
+        // Every registry command is reachable from the `?` dispatch menu.
+        let menu: HashSet<&str> = dispatch_menu()
+            .groups
+            .iter()
+            .flat_map(|g| &g.suffixes)
+            .filter_map(|s| match s {
+                Suffix::Info(i) => Some(i.keys),
+                _ => None,
+            })
+            .collect();
+        for c in commands() {
+            assert!(
+                menu.contains(c.key),
+                "command {:?} ({}) missing from dispatch menu",
+                c.id,
+                c.key
+            );
+        }
+    }
+
+    #[test]
     fn is_dispatch_key_matches_single_key_menu_rows() {
         // Single-key commands route; multi-stroke / g-prefix entries don't.
         assert!(StatusView::is_dispatch_key("c"));
@@ -6612,14 +6804,17 @@ mod tests {
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and
     /// the set of keys `run_dispatch` handles must agree, so a command can't be
-    /// invocable-but-hidden or shown-but-dead. When you add an arm to
-    /// `run_dispatch`, add its key to `DISPATCH_KEYS` here; the test then forces
-    /// it into `dispatch_menu` too (or into `OVERRIDES`, for genuine exceptions).
+    /// invocable-but-hidden or shown-but-dead. The menu is generated from the
+    /// `commands` registry; this pins the *motions* (handled inline in
+    /// `run_dispatch`) plus the registry keys to one explicit list, so adding a
+    /// command or motion without surfacing it fails here (or goes in `OVERRIDES`,
+    /// for genuine exceptions).
     #[test]
     fn dispatch_menu_covers_every_command() {
         use std::collections::HashSet;
 
-        // Mirror of the keys handled by `run_dispatch`'s match.
+        // The keys `run_dispatch` handles: every registry command key, plus the
+        // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "Z", "l", "p", "F", "f", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
