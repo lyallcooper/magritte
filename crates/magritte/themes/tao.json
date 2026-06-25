@@ -7,7 +7,7 @@
       "name": "Tao Yang",
       "mode": "light",
       "colors": {
-        "accent.background": "#d0d0d0",
+        "accent.background": "#dadada",
         "accent.foreground": "#3c3c3c",
         "accordion.background": "#f6f6f6",
         "background": "#f6f6f6",
@@ -35,11 +35,11 @@
         "link.active.foreground": "#0a0a0a",
         "link.hover.foreground": "#404040",
         "list.background": "#f6f6f6",
-        "list.active.background": "#d0d0d0",
+        "list.active.background": "#dadada",
         "list.active.border": "#454545",
         "list.even.background": "#fafafa",
         "list.head.background": "#fafafa",
-        "list.hover.background": "#f5f5f5",
+        "list.hover.background": "#e8e8e8",
         "muted.background": "neutral-100",
         "muted.foreground": "#616161",
         "popover.background": "#e8e8e8",
@@ -57,7 +57,7 @@
         "secondary.active.background": "neutral-300",
         "secondary.foreground": "#3c3c3c",
         "secondary.hover.background": "neutral-200",
-        "selection.background": "#454545",
+        "selection.background": "#45454552",
         "sidebar.background": "#e8e8e8",
         "sidebar.accent.background": "#e5e5e5",
         "sidebar.accent.foreground": "#171717",
@@ -118,30 +118,36 @@
         "created": "#1642FF",
         "hidden": "#6D6D6D",
         "hint": "#9e5dff",
-        "modified": "#9e7008",
+        "modified": "#c93400",
         "predictive": "#A4ABB6",
-        "warning": "#C99401",
+        "success": "#525252",
+        "error": "#9e9e9e",
+        "info": "#5c5c5c",
+        "warning": "#707070",
+        "success.background": "#5252521f",
+        "error.background": "#9e9e9e1f",
+        "warning.background": "#7070702e",
         "syntax": {
           "attribute": {
-            "color": "#957931"
+            "color": "#3c3c3c"
           },
           "boolean": {
-            "color": "#C5060B"
+            "color": "#3c3c3c"
           },
           "comment": {
-            "color": "#007fff"
+            "color": "#616161"
           },
           "comment.doc": {
-            "color": "#007fff"
+            "color": "#616161"
           },
           "constant": {
-            "color": "#C5060B"
+            "color": "#3c3c3c"
           },
           "constructor": {
-            "color": "#0433ff"
+            "color": "#3c3c3c"
           },
           "embedded": {
-            "color": "#333333"
+            "color": "#3c3c3c"
           },
           "emphasis": {
             "font_style": "italic"
@@ -150,60 +156,60 @@
             "font_weight": 700
           },
           "function": {
-            "color": "#0000A2"
+            "color": "#3c3c3c"
           },
           "keyword": {
-            "color": "#0433ff"
+            "color": "#3c3c3c"
           },
           "link_text": {
-            "color": "#0000A2",
+            "color": "#3c3c3c",
             "font_style": "normal"
           },
           "link_uri": {
-            "color": "#6A7293",
+            "color": "#3c3c3c",
             "font_style": "italic"
           },
           "number": {
-            "color": "#0433ff"
+            "color": "#3c3c3c"
           },
           "string": {
-            "color": "#036A07"
+            "color": "#3c3c3c"
           },
           "string.escape": {
-            "color": "#036A07"
+            "color": "#3c3c3c"
           },
           "string.regex": {
-            "color": "#036A07"
+            "color": "#3c3c3c"
           },
           "string.special": {
-            "color": "#d21f07"
+            "color": "#3c3c3c"
           },
           "string.special.symbol": {
-            "color": "#d21f07"
+            "color": "#3c3c3c"
           },
           "tag": {
-            "color": "#0433ff"
+            "color": "#3c3c3c"
           },
           "text.literal": {
-            "color": "#6F42C1"
+            "color": "#3c3c3c"
           },
           "text.code.span": {
-            "color": "#6F42C1"
+            "color": "#3c3c3c"
           },
           "title": {
-            "color": "#0433FF"
+            "color": "#3c3c3c"
           },
           "type": {
-            "color": "#6f42c1"
+            "color": "#3c3c3c"
           },
           "property": {
-            "color": "#333333"
+            "color": "#3c3c3c"
           },
           "variable": {
-            "color": "#333333"
+            "color": "#3c3c3c"
           },
           "variable.special": {
-            "color": "#C5060B"
+            "color": "#3c3c3c"
           }
         }
       }
@@ -213,7 +219,7 @@
       "name": "Tao Yin",
       "mode": "dark",
       "colors": {
-        "accent.background": "#515151",
+        "accent.background": "#303030",
         "accent.foreground": "#c3c3c3",
         "accordion.background": "#171717",
         "background": "#171717",
@@ -242,17 +248,18 @@
         "link.active.foreground": "#d4d4d4",
         "link.hover.foreground": "#ffffff",
         "list.background": "#171717",
-        "list.active.background": "#515151",
+        "list.active.background": "#303030",
         "list.active.border": "#c3c3c3",
         "list.even.background": "#17171766",
         "list.head.background": "#17171766",
+        "list.hover.background": "#252525",
         "muted.background": "neutral-800",
         "muted.foreground": "#9e9e9e",
         "popover.background": "#252525",
         "popover.foreground": "#c3c3c3",
         "primary.background": "#c3c3c3",
         "primary.active.background": "neutral-200",
-        "primary.foreground": "#111111",
+        "primary.foreground": "#171717",
         "primary.hover.background": "neutral-100",
         "progress_bar.background": "#f5f5f5",
         "ring": "#c3c3c3",
@@ -263,7 +270,7 @@
         "secondary.active.background": "#212121",
         "secondary.foreground": "#c3c3c3",
         "secondary.hover.background": "#292929",
-        "selection.background": "#c3c3c3",
+        "selection.background": "#c3c3c352",
         "sidebar.background": "#252525",
         "sidebar.accent.background": "#262626",
         "sidebar.accent.foreground": "#f5f5f5",
@@ -295,14 +302,14 @@
         "warning.foreground": "yellow-600",
         "overlay": "#00000033",
         "window.border": "#3c3c3c",
-        "base.red": "#616161",
-        "base.red.light": "#616161",
+        "base.red": "#858585",
+        "base.red.light": "#858585",
         "base.green": "#dadada",
         "base.green.light": "#dadada",
         "base.blue": "#c3c3c3",
         "base.blue.light": "#c3c3c3",
-        "base.yellow": "#9e9e9e",
-        "base.yellow.light": "#9e9e9e",
+        "base.yellow": "#a8a8a8",
+        "base.yellow.light": "#a8a8a8",
         "base.magenta": "#b0b0b0",
         "base.magenta.light": "#b0b0b0",
         "base.cyan": "#cccccc",
@@ -320,41 +327,45 @@
         "created": "#3f72e2",
         "created.background": "#0C4619",
         "deleted.background": "#46190C",
-        "error.background": "#46190C",
         "error.border": "#802207",
         "hidden": "#9E9E9E",
         "hint": "#b283f8",
         "hint.background": "#250c4b",
         "hint.border": "#3f0891",
-        "info.background": "#0059D1",
         "info.border": "#0059D1",
         "modified": "#B0A878",
         "modified.background": "#3A310E",
         "predictive": "#5D5945",
-        "success.background": "#0C4619",
-        "warning.background": "#3A310E",
+        "success": "#dadada",
+        "error": "#858585",
+        "info": "#c3c3c3",
+        "warning": "#a8a8a8",
+        "success.background": "#dadada1f",
+        "error.background": "#8585851f",
+        "info.background": "#0a84ff2e",
+        "warning.background": "#a8a8a82e",
         "warning.border": "#7B6508",
         "syntax": {
           "attribute": {
-            "color": "#e7cb8f"
+            "color": "#c3c3c3"
           },
           "boolean": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "comment": {
-            "color": "#9E9E9E"
+            "color": "#9e9e9e"
           },
           "comment.doc": {
-            "color": "#9E9E9E"
+            "color": "#9e9e9e"
           },
           "constant": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "constructor": {
-            "color": "#b5af9a"
+            "color": "#c3c3c3"
           },
           "embedded": {
-            "color": "#CACCCA"
+            "color": "#c3c3c3"
           },
           "emphasis": {
             "font_style": "italic"
@@ -363,58 +374,58 @@
             "font_weight": 700
           },
           "function": {
-            "color": "#fdd888"
+            "color": "#c3c3c3"
           },
           "keyword": {
-            "color": "#c28b12"
+            "color": "#c3c3c3"
           },
           "link_text": {
-            "color": "#307BF6",
+            "color": "#c3c3c3",
             "font_style": "normal"
           },
           "link_uri": {
-            "color": "#7faef9",
+            "color": "#c3c3c3",
             "font_style": "italic"
           },
           "number": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "string": {
-            "color": "#62BA46"
+            "color": "#c3c3c3"
           },
           "string.escape": {
-            "color": "#62BA46"
+            "color": "#c3c3c3"
           },
           "string.regex": {
-            "color": "#62BA46"
+            "color": "#c3c3c3"
           },
           "string.special": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "string.special.symbol": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "tag": {
-            "color": "#b5af9a"
+            "color": "#c3c3c3"
           },
           "text.literal": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "text.code.span": {
-            "color": "#E1D797"
+            "color": "#c3c3c3"
           },
           "title": {
-            "color": "#fdd888",
+            "color": "#c3c3c3",
             "font_weight": 600
           },
           "type": {
-            "color": "#c75828"
+            "color": "#c3c3c3"
           },
           "property": {
-            "color": "#CACCCA"
+            "color": "#c3c3c3"
           },
           "variable.special": {
-            "color": "#E19773"
+            "color": "#c3c3c3"
           }
         }
       }

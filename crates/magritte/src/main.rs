@@ -452,6 +452,7 @@ struct Palette {
     dim: Hsla,
     border: Hsla,
     selection: Hsla,
+    hover: Hsla,
     visual: Hsla,
     section: Hsla,
     hunk: Hsla,
@@ -477,36 +478,28 @@ impl Palette {
         // semantic tokens: many themes (e.g. Solarized) leave the base tokens
         // muted and put the vivid git colors in the highlight block. These
         // accessors fall back to the base tokens when a theme omits them.
+        // Every face is read directly from the theme — the app never blends
+        // colors at runtime. Translucent overlays (the visual-mode region, the
+        // diff line bands, the warning banner) carry their alpha in the theme's
+        // hex (`#rrggbbaa`), so they're read verbatim too.
         let status = &t.highlight_theme.style.status;
-        let added = status.success(cx);
-        let removed = status.error(cx);
-        let modified = status.warning(cx);
-        let hunk = status.info(cx);
-        // The bottom panel wants a surface elevated above the background. Most
-        // themes' `popover` is already lifted, but some (e.g. Solarized) map it
-        // to the background itself — then fall back to `secondary` so the panel
-        // isn't a flat continuation of the (very dark) background.
-        let panel = if t.popover == t.background {
-            t.secondary
-        } else {
-            t.popover
-        };
         Palette {
             bg: t.background,
             fg: t.foreground,
             dim: t.muted_foreground,
             border: t.border,
-            selection: t.accent,
-            visual: with_alpha(t.selection, 0.32),
+            selection: t.accent, // accent.background — selected row
+            hover: t.list_hover, // list.hover.background
+            visual: t.selection, // selection.background (translucent)
             section: t.primary,
-            hunk,
-            panel,
-            modified,
-            added,
-            removed,
-            added_bg: with_alpha(added, 0.12),
-            removed_bg: with_alpha(removed, 0.12),
-            banner: with_alpha(modified, 0.18),
+            hunk: status.info(cx),
+            panel: t.secondary, // elevated surface for the panel
+            modified: status.warning(cx),
+            added: status.success(cx),
+            removed: status.error(cx),
+            added_bg: status.success_background(cx),
+            removed_bg: status.error_background(cx),
+            banner: status.warning_background(cx),
         }
     }
 }
@@ -514,22 +507,24 @@ impl Palette {
 impl Default for Palette {
     fn default() -> Self {
         let g = |v: u32| gpui::rgb(v).into();
+        let ga = |v: u32| gpui::rgba(v).into();
         Palette {
             bg: g(0xffffff),
             fg: g(0x1a1a1a),
             dim: g(0x8a8a8a),
             border: g(0xe2e2e2),
             selection: g(0xeaeaea),
-            visual: g(0xdbe7ff),
+            hover: g(0xf5f5f5),
+            visual: ga(0x007aff52),
             section: g(0x2f6feb),
             hunk: g(0x6f42c1),
             panel: g(0xf6f6f6),
             modified: g(0xb08800),
             added: g(0x1a7f37),
             removed: g(0xcf222e),
-            added_bg: with_alpha(g(0x1a7f37), 0.12),
-            removed_bg: with_alpha(g(0xcf222e), 0.12),
-            banner: with_alpha(g(0xb08800), 0.18),
+            added_bg: ga(0x1a7f371f),
+            removed_bg: ga(0xcf222e1f),
+            banner: ga(0xb088002e),
         }
     }
 }
@@ -4383,7 +4378,7 @@ impl StatusView {
         if selected {
             el = el.bg(self.palette.selection);
         } else {
-            el = el.hover(|s| s.bg(self.palette.visual));
+            el = el.hover(|s| s.bg(self.palette.hover));
         }
         let label_el = if is_create {
             div()
@@ -4613,7 +4608,7 @@ impl StatusView {
                     div()
                         .px(px(5.0))
                         .rounded(px(4.0))
-                        .bg(with_alpha(self.palette.section, 0.16))
+                        .bg(self.palette.selection)
                         .text_color(self.palette.fg)
                         .font_weight(FontWeight::MEDIUM)
                         .child(SharedString::from(b.clone())),
@@ -5073,7 +5068,7 @@ impl StatusView {
         if selected {
             row = row.bg(self.palette.selection);
         } else {
-            row = row.hover(|s| s.bg(self.palette.visual));
+            row = row.hover(|s| s.bg(self.palette.hover));
         }
         row = row.child(
             div()
@@ -5469,10 +5464,9 @@ impl StatusView {
             el = el.bg(self.palette.selection);
         } else if clickable {
             // A subtle hover on rows you can act on (not the current line or a
-            // visual selection, which already have a background) — a faded
-            // selection accent, so it reads as a preview of selecting.
-            let hover = with_alpha(self.palette.selection, 0.4);
-            el = el.hover(move |s| s.bg(hover));
+            // visual selection, which already have a background) — the theme's
+            // explicit hover wash, so it reads as a preview of selecting.
+            el = el.hover(|s| s.bg(self.palette.hover));
         }
 
         let content = match &row.kind {
@@ -6440,6 +6434,65 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every face `Palette::from_theme` (and the chrome) reads. If a bundled
+    /// theme omits one, gpui-component silently falls back to a default color
+    /// and the theme looks subtly wrong — this catches that at build time.
+    #[test]
+    fn bundled_themes_cover_every_face() {
+        // Keys read out of the `colors` block.
+        const COLORS: &[&str] = &[
+            "background",
+            "foreground",
+            "muted.foreground",
+            "border",
+            "accent.background",     // selected row
+            "list.hover.background", // hover wash
+            "selection.background",  // visual-mode region
+            "primary.background",    // section headings
+            "secondary.background",  // elevated panel
+            "base.red",
+            "base.green",
+            "base.yellow",
+            "base.blue",
+        ];
+        // Keys read out of the `highlight` block (git status faces). `warning`
+        // is the "modified" text color, which OVERRIDES base.yellow when set,
+        // so it must be present and deliberate (not inherited).
+        const HIGHLIGHT: &[&str] = &[
+            "warning",
+            "success.background", // added line band
+            "error.background",   // removed line band
+            "warning.background", // banner
+        ];
+        for set in BUNDLED_THEMES {
+            let v: serde_json::Value =
+                serde_json::from_str(set).expect("bundled theme is valid JSON");
+            let themes = v["themes"].as_array().expect("theme set has `themes`");
+            assert!(!themes.is_empty(), "theme set has no themes");
+            for theme in themes {
+                let name = theme["name"].as_str().unwrap_or("<unnamed>");
+                let colors = theme["colors"]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{name}: no `colors` block"));
+                for key in COLORS {
+                    assert!(
+                        colors.contains_key(*key),
+                        "theme {name:?} is missing colors.{key}"
+                    );
+                }
+                let highlight = theme["highlight"]
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{name}: no `highlight` block"));
+                for key in HIGHLIGHT {
+                    assert!(
+                        highlight.contains_key(*key),
+                        "theme {name:?} is missing highlight.{key}"
+                    );
+                }
+            }
+        }
+    }
 
     fn entry(kind: EntryKind, index: Change, worktree: Change) -> FileEntry {
         FileEntry {
