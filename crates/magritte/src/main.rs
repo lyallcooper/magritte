@@ -861,10 +861,6 @@ impl Default for Palette {
 
 /// Fixed row height (points) so `uniform_list` can virtualize every row.
 const ROW_HEIGHT: f32 = 18.0;
-/// Taller row height for the picker/palette list, so a keycap (bordered, a
-/// touch taller than a text line) sits comfortably without colliding with its
-/// neighbors.
-const PICKER_ROW_HEIGHT: f32 = 20.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -4566,7 +4562,7 @@ impl StatusView {
         // Show up to a screenful of candidates; the rest scroll.
         const MAX_VISIBLE: usize = 8;
         let rows = state.list.row_count();
-        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * PICKER_ROW_HEIGHT);
+        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
 
         let body = if rows == 0 {
             // Value entry has nothing to match — collapse the candidate area
@@ -4608,7 +4604,7 @@ impl StatusView {
                                         &view,
                                     )
                                 }
-                                None => div().h(px(PICKER_ROW_HEIGHT)).into_any_element(),
+                                None => div().h(px(ROW_HEIGHT)).into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }
@@ -4698,7 +4694,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(PICKER_ROW_HEIGHT))
+            .h(px(ROW_HEIGHT))
             .w_full()
             .pl(px(ROW_PAD_LEFT))
             .cursor_pointer()
@@ -4713,7 +4709,12 @@ impl StatusView {
         if selected {
             el = el.bg(self.palette.selection);
         } else {
-            el = el.hover(|s| s.bg(self.palette.hover));
+            // The picker sits on the elevated panel, where the neutral
+            // `list.hover.background` can equal the panel itself (e.g. Selenized
+            // White) and vanish. The translucent accent (also used for the
+            // transient menu's hover) stays visible on any surface, and reads
+            // distinctly from the neutral keyboard-selected row.
+            el = el.hover(|s| s.bg(self.palette.visual));
         }
         let label_el = if is_create {
             div()
@@ -4730,11 +4731,16 @@ impl StatusView {
             div().text_color(self.palette.fg).child(label)
         };
         el = el.child(label_el);
-        // The command's binding (palette only) as one compact keycap right after
-        // the name: a single key for top-level commands, or the full
-        // prefix→suffix sequence for leaves (e.g. `c c` for "Create commit").
+        // The command's binding (palette only) as subtle text right after the
+        // name: a single key for top-level commands, or the full prefix→suffix
+        // sequence for leaves (e.g. `c c` for "Create commit"). Plain text keeps
+        // the rows at their normal height (a keycap would be too tall here).
         if let Some(seq) = hint {
-            el = el.child(key_chip_small(&seq, self.palette.dim));
+            el = el.child(
+                div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(format_keys(&seq))),
+            );
         }
         el.into_any_element()
     }
@@ -6580,18 +6586,6 @@ fn format_keys(key: &str) -> String {
 /// [`format_keys`]).
 fn key_chip(key: &str, color: Hsla) -> AnyElement {
     chip_box(color)
-        .child(SharedString::from(format_keys(key)))
-        .into_any_element()
-}
-
-/// A compact keycap for dense lists (the `:` palette rows), so a bordered chip
-/// fits a short row without crowding its neighbors. Smaller text, tighter
-/// padding, no minimum width.
-fn key_chip_small(key: &str, color: Hsla) -> AnyElement {
-    chip_box(color)
-        .min_w(px(0.0))
-        .px(px(3.0))
-        .text_size(px(11.0))
         .child(SharedString::from(format_keys(key)))
         .into_any_element()
 }
