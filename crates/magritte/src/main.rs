@@ -4691,13 +4691,10 @@ impl StatusView {
             div().text_color(self.palette.fg).child(label)
         };
         el = el.child(label_el);
-        // A right-aligned keycap showing the command's binding (palette only).
+        // The command's binding (palette only): dim text right after the name,
+        // so it reads as a hint without a keycap overlapping the tight rows.
         if let Some(key) = hint {
-            el = el.child(div().flex_grow(1.0)).child(
-                div()
-                    .pr(px(ROW_PAD_LEFT))
-                    .child(key_chip(&key, self.palette.dim)),
-            );
+            el = el.child(div().text_color(self.palette.dim).child(key));
         }
         el.into_any_element()
     }
