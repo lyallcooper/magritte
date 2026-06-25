@@ -1339,8 +1339,7 @@ fn text_editors() -> Vec<(SharedString, SharedString)> {
 }
 
 /// Bundle ids that register as plain-text editors but aren't general text
-/// editors — office/productivity suites that over-claim the role, plus a couple
-/// of duplicate front-ends for an editor already listed under its own id.
+/// editors — office/productivity suites that over-claim the role.
 #[cfg(target_os = "macos")]
 fn is_bogus_editor(bundle_id: &str) -> bool {
     const DENY_PREFIXES: &[&str] = &[
@@ -1354,8 +1353,7 @@ fn is_bogus_editor(bundle_id: &str) -> bool {
         "com.microsoft.Powerpoint",
         "org.libreoffice",
     ];
-    const DENY_EXACT: &[&str] = &["org.gnu.EmacsClient"];
-    DENY_EXACT.contains(&bundle_id) || DENY_PREFIXES.iter().any(|p| bundle_id.starts_with(p))
+    DENY_PREFIXES.iter().any(|p| bundle_id.starts_with(p))
 }
 
 #[cfg(not(target_os = "macos"))]
