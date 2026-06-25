@@ -22,8 +22,12 @@ pub struct Config {
     pub light_theme: String,
     /// Theme used in dark mode (registry name). Empty = default.
     pub dark_theme: String,
-    /// Monospace font family. Empty = platform default.
+    /// Monospace font family (code, diffs, tabular columns). Empty = platform
+    /// default.
     pub font: String,
+    /// Proportional UI font for prose chrome (menus, headings, labels). Empty =
+    /// use the monospace `font` everywhere, as before.
+    pub ui_font: String,
     /// Highlight commit-summary characters past 50 columns in the editor.
     pub commit_title_ruler: bool,
     /// Auto-hard-wrap the commit body at 72 columns as you type.
@@ -40,6 +44,7 @@ impl Default for Config {
             light_theme: String::new(),
             dark_theme: String::new(),
             font: String::new(),
+            ui_font: String::new(),
             commit_title_ruler: true,
             commit_body_wrap: true,
         }
