@@ -3797,6 +3797,9 @@ impl StatusView {
     /// configured command is used verbatim — the user supplies a blocking
     /// `--wait`-style flag as their editor requires.
     fn external_commit_editor(&self) -> Option<String> {
+        if !self.config.commit_in_editor {
+            return None;
+        }
         let cmd = self.config.commit_editor.trim();
         (!cmd.is_empty()).then(|| cmd.to_string())
     }
@@ -6223,42 +6226,60 @@ impl StatusView {
                     .into_any_element();
                 #[cfg(not(target_os = "macos"))]
                 let control = Input::new(&s.editor).into_any_element();
-                vec![field("editor", "External editor", control)]
+                vec![field("editor", "External editor", control).child(self.info_icon(
+                    "editor-info".to_string(),
+                    "The editor used when opening a file (Return) or the config file. On macOS, \
+                     name an installed app; leave as \"System Default\" to open in the OS \
+                     default app.",
+                ))]
             }))
-            .child(section(
-                "Commit editor",
-                vec![
-                    field(
+            .child(section("Commit editor", {
+                let mut rows = vec![field(
+                    "commit-in-editor",
+                    "Use external editor",
+                    self.toggle_control(
+                        "commit-in-editor",
+                        self.config.commit_in_editor,
+                        "Write commit messages with the editor command below (an interactive \
+                         `git commit`) instead of the built-in editor.",
+                        view,
+                        |cfg, on| cfg.commit_in_editor = on,
+                    ),
+                )];
+                // The command only matters (and only shows) when the toggle is on.
+                if self.config.commit_in_editor {
+                    rows.push(field(
                         "commit-editor",
                         "Editor command",
                         Input::new(&s.commit_editor).into_any_element(),
-                    ),
-                    field(
+                    ));
+                }
+                rows.push(field(
+                    "commit-title-ruler",
+                    "Summary ruler",
+                    self.toggle_control(
                         "commit-title-ruler",
-                        "Summary ruler",
-                        self.toggle_control(
-                            "commit-title-ruler",
-                            self.config.commit_title_ruler,
-                            "Underlines characters past column 50 on the commit summary (first) \
-                             line.",
-                            view,
-                            |cfg, on| cfg.commit_title_ruler = on,
-                        ),
+                        self.config.commit_title_ruler,
+                        "Underlines characters past column 50 on the commit summary (first) \
+                         line.",
+                        view,
+                        |cfg, on| cfg.commit_title_ruler = on,
                     ),
-                    field(
+                ));
+                rows.push(field(
+                    "commit-body-wrap",
+                    "Body auto-wrap",
+                    self.toggle_control(
                         "commit-body-wrap",
-                        "Body auto-wrap",
-                        self.toggle_control(
-                            "commit-body-wrap",
-                            self.config.commit_body_wrap,
-                            "Hard-wraps the commit body at 72 columns as you type at the end of \
-                             a line (the summary line is never wrapped).",
-                            view,
-                            |cfg, on| cfg.commit_body_wrap = on,
-                        ),
+                        self.config.commit_body_wrap,
+                        "Hard-wraps the commit body at 72 columns as you type at the end of a \
+                         line (the summary line is never wrapped).",
+                        view,
+                        |cfg, on| cfg.commit_body_wrap = on,
                     ),
-                ],
-            ))
+                ));
+                rows
+            }))
     }
 
     /// The settings "Open config file" control: a split button whose main half
@@ -6364,40 +6385,40 @@ impl StatusView {
                 });
             }
         });
-        let info = div()
-            .id(SharedString::from(format!("{id}-info")))
-            .relative()
-            .child(track_target(format!("{id}-info")))
-            .child(
-                Icon::new(IconName::Info)
-                    .xsmall()
-                    .text_color(self.palette.dim),
-            )
-            // gpui's native tooltip (not the library's managed one) so we can
-            // drop the show-delay to zero and bound the width so it wraps. The
-            // library tooltip forces the theme's UI font; override it back to
-            // our monospace chrome font so it matches the rest of the app.
-            .tooltip({
-                let font = self.font.clone();
-                move |window, cx| {
-                    let font = font.clone();
-                    Tooltip::element(move |_, _| {
-                        div()
-                            .max_w(px(280.0))
-                            .font_family(font.clone())
-                            .child(SharedString::from(explanation))
-                    })
-                    .build(window, cx)
-                }
-            })
-            .tooltip_show_delay(Duration::ZERO);
         div()
             .flex()
             .items_center()
             .gap_2()
             .child(switch)
-            .child(info)
+            .child(self.info_icon(format!("{id}-info"), explanation))
             .into_any_element()
+    }
+
+    /// A small dimmed `(i)` icon that reveals `explanation` in a tooltip on
+    /// hover — for clarifying what a settings control does.
+    fn info_icon(&self, id: String, explanation: &'static str) -> impl IntoElement {
+        let font = self.font.clone();
+        let dim = self.palette.dim;
+        div()
+            .id(SharedString::from(id.clone()))
+            .relative()
+            .child(track_target(id))
+            .child(Icon::new(IconName::Info).xsmall().text_color(dim))
+            // gpui's native tooltip (not the library's managed one) so we can
+            // drop the show-delay to zero and bound the width so it wraps. The
+            // library tooltip forces the theme's UI font; override it back to
+            // our monospace chrome font so it matches the rest of the app.
+            .tooltip(move |window, cx| {
+                let font = font.clone();
+                Tooltip::element(move |_, _| {
+                    div()
+                        .max_w(px(280.0))
+                        .font_family(font.clone())
+                        .child(SharedString::from(explanation))
+                })
+                .build(window, cx)
+            })
+            .tooltip_show_delay(Duration::ZERO)
     }
 
     fn render_row(&self, ix: usize, view: &Entity<Self>) -> AnyElement {
