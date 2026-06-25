@@ -4660,7 +4660,6 @@ impl StatusView {
         self.popup = None;
         // A registry command (resolved by its key), the `:` palette, or a motion.
         if let Some(cmd) = commands().iter().find(|c| c.key == Some(key)) {
-            self.record_use(cmd.id);
             (cmd.run)(self, window, cx);
             return;
         }
@@ -4686,12 +4685,13 @@ impl StatusView {
     /// registry, so the command's behavior lives in exactly one place.
     fn invoke_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(cmd) = commands().iter().find(|c| c.id == id) {
-            self.record_use(cmd.id);
             (cmd.run)(self, window, cx);
         }
     }
 
-    /// Note a command run for the palette's frecency ranking, and persist it.
+    /// Note a command run *from the palette* for its frecency ranking, and
+    /// persist it. Only palette runs count: a command you already invoke by key
+    /// doesn't need surfacing at the top of the palette.
     fn record_use(&mut self, id: &str) {
         self.usage.record(id);
         config::save_usage(&self.usage);
