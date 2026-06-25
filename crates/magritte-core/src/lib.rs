@@ -7,6 +7,7 @@
 
 pub mod branch;
 pub mod commit;
+pub mod conflict;
 pub mod diff;
 pub mod error;
 pub mod files;
@@ -24,6 +25,7 @@ pub mod status;
 pub mod transient;
 
 pub use commit::CommitMode;
+pub use conflict::ConflictSide;
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use log::LogEntry;

@@ -45,7 +45,10 @@ actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 // Right-click context-menu actions; dispatched by the PopupMenu and handled on
 // the status view, which applies them to the row at point (selected on
 // right-click) or the active visual selection.
-actions!(magritte, [CtxStage, CtxUnstage, CtxDiscard]);
+actions!(
+    magritte,
+    [CtxStage, CtxUnstage, CtxDiscard, CtxTakeOurs, CtxTakeTheirs]
+);
 // Settings "Open config file" dropdown actions: copy the path, or open the
 // config with a specific editor (carries the editor's app path). `no_json`
 // avoids the serde/schemars requirement of keymap-loadable actions.
@@ -65,8 +68,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
-    Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, RemoteTargets, Repo,
-    ResetMode, Sequence, SequenceKind, Status,
+    Change, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, LineKind,
+    RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -2669,15 +2672,62 @@ impl StatusView {
         open_with_os(path);
     }
 
+    /// Resolve the conflicted file at point by keeping one side (`git checkout
+    /// --ours|--theirs` + stage), then refresh.
+    fn resolve_at_point(&mut self, side: ConflictSide, cx: &mut Context<Self>) {
+        let Some(path) = self.conflicted_in_selection() else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some(format!("Resolving {path}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.resolve_conflict(&path, side).map(|()| String::new()) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Resolved", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the worktree file at `path` still contains conflict markers, so
+    /// staging it wouldn't silently mark an unresolved conflict resolved.
+    fn has_conflict_markers(&self, path: &str) -> bool {
+        let Some(repo) = self.repo.as_ref() else {
+            return false;
+        };
+        std::fs::read_to_string(repo.workdir().join(path))
+            .map(|c| {
+                c.lines()
+                    .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
+            })
+            .unwrap_or(false)
+    }
+
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     fn act(&mut self, op: Op, cx: &mut Context<Self>) {
-        // Refuse the whole action if the selection (point or region) touches a
-        // conflicted file — rather than silently acting on a subset — and say
-        // why. Conflict resolution isn't supported in-app yet.
+        // A conflicted file in the selection: staging it marks it resolved, so
+        // allow that once its markers are gone (manual resolution); otherwise
+        // refuse the whole action rather than act on a subset, and say why.
         if let Some(path) = self.conflicted_in_selection() {
-            self.status_message = Some(format!("{path} is conflicted — resolve it before staging"));
-            cx.notify();
-            return;
+            let resolvable = op == Op::Stage && !self.has_conflict_markers(&path);
+            if !resolvable {
+                let msg = if op == Op::Stage {
+                    format!("{path} still has conflict markers — resolve them first")
+                } else {
+                    format!("{path} is conflicted — resolve it first")
+                };
+                self.status_message = Some(msg);
+                cx.notify();
+                return;
+            }
         }
         let resolved = if self.visual.is_some() {
             self.resolve_region_action(op)
@@ -7279,6 +7329,7 @@ impl StatusView {
             match &row.target {
                 Some(target) => {
                     let (can_stage, can_unstage, can_discard) = target_ops(target);
+                    let conflicted = self.is_conflicted(target_path(target));
                     let view = view.clone();
                     el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
@@ -7289,6 +7340,13 @@ impl StatusView {
                         });
                     })
                     .context_menu(move |mut menu, _window, _cx| {
+                        // A conflicted file resolves by taking a whole side.
+                        if conflicted {
+                            menu = menu
+                                .menu("Take ours", Box::new(CtxTakeOurs))
+                                .menu("Take theirs", Box::new(CtxTakeTheirs))
+                                .separator();
+                        }
                         if can_stage {
                             menu = menu.menu("Stage", Box::new(CtxStage));
                         }
@@ -7379,6 +7437,12 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxStage, _window, cx| this.act(Op::Stage, cx)))
             .on_action(cx.listener(|this, _: &CtxUnstage, _window, cx| this.act(Op::Unstage, cx)))
             .on_action(cx.listener(|this, _: &CtxDiscard, _window, cx| this.act(Op::Discard, cx)))
+            .on_action(cx.listener(|this, _: &CtxTakeOurs, _window, cx| {
+                this.resolve_at_point(ConflictSide::Ours, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CtxTakeTheirs, _window, cx| {
+                this.resolve_at_point(ConflictSide::Theirs, cx)
+            }))
             // Settings "Open config file" dropdown actions.
             .on_action(
                 cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),
