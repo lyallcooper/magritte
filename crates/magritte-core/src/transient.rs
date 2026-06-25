@@ -74,6 +74,12 @@ pub enum Command {
     MergeNoCommit,
     /// Squash-merge (`--squash`): stage the result without a merge commit.
     MergeSquash,
+    /// Rebase the current branch onto its upstream.
+    RebaseOntoUpstream,
+    /// Rebase onto the push-remote's same-named branch.
+    RebaseOntoPushRemote,
+    /// Rebase onto a branch/ref the frontend prompts for.
+    RebaseElsewhere,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -619,6 +625,53 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
                         key: "e",
                         description: "elsewhere".to_string(),
                         command: Command::FetchElsewhere,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn rebase_transient(t: &RemoteTargets) -> Transient {
+    let push_remote = match (&t.branch, &t.push_remote) {
+        (Some(b), Some(r)) => format!("{r}/{b}"),
+        _ => "push-remote".to_string(),
+    };
+    Transient {
+        title: plain_title("Rebase"),
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![
+                    Suffix::Switch(Switch {
+                        key: "-a",
+                        arg: "--autostash",
+                        description: "Stash uncommitted changes around the rebase",
+                    }),
+                    Suffix::Switch(Switch {
+                        key: "-s",
+                        arg: "--autosquash",
+                        description: "Honor fixup!/squash! commits",
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Rebase onto"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "p",
+                        description: push_remote,
+                        command: Command::RebaseOntoPushRemote,
+                    }),
+                    Suffix::Action(Action {
+                        key: "u",
+                        description: upstream_label(t),
+                        command: Command::RebaseOntoUpstream,
+                    }),
+                    Suffix::Action(Action {
+                        key: "e",
+                        description: "elsewhere".to_string(),
+                        command: Command::RebaseElsewhere,
                     }),
                 ],
             },

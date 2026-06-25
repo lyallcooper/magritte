@@ -280,6 +280,8 @@ enum PickerAction {
     Reset(magritte_core::ResetMode),
     /// Merge the chosen branch/ref into HEAD, with the carried args.
     Merge,
+    /// Rebase the current branch onto the chosen ref, with the carried args.
+    Rebase,
 }
 
 impl PickerAction {
@@ -313,6 +315,7 @@ impl PickerAction {
             PickerAction::RunCommand => transient::plain_title("Run command"),
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
             PickerAction::Merge => transient::plain_title("Merge"),
+            PickerAction::Rebase => transient::plain_title("Rebase onto"),
         }
     }
 
@@ -336,6 +339,7 @@ impl PickerAction {
             PickerAction::RunCommand => "run",
             PickerAction::Reset(_) => "reset",
             PickerAction::Merge => "merge",
+            PickerAction::Rebase => "rebase",
         }
     }
 }
@@ -552,6 +556,20 @@ fn commands() -> &'static [Command] {
         }),
         top!("reset", "Reset", Category::Commands, "X", |t, _w, cx| {
             t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
+            // A paused rebase is driven from the banner (continue/skip/abort).
+            if matches!(
+                t.sequence.as_ref().map(|s| s.kind),
+                Some(SequenceKind::Rebase)
+            ) {
+                t.status_message =
+                    Some("Rebase in progress — continue/skip/abort from the banner".to_string());
+                cx.notify();
+            } else {
+                let rt = t.remote_targets();
+                t.open_transient(transient::rebase_transient(&rt), rt, cx);
+            }
         }),
         top!("merge", "Merge", Category::Commands, "m", |t, _w, cx| {
             // A merge already in progress is driven from the banner (commit or
@@ -2859,6 +2877,9 @@ impl StatusView {
             MergePlain | MergeNoCommit | MergeSquash => {
                 self.dispatch_merge(command, args, window, cx)
             }
+            RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => {
+                self.dispatch_rebase(command, args, &targets, window, cx)
+            }
             StashPush => self.run_stash_push(false, cx),
             StashPushAll => self.run_stash_push(true, cx),
             StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
@@ -3161,6 +3182,69 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 this.report("Merged", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Rebase transient suffix: resolve the target to rebase onto (the upstream
+    /// or push-remote when known, else prompt), then rebase.
+    fn dispatch_rebase(
+        &mut self,
+        command: transient::Command,
+        args: Vec<String>,
+        targets: &RemoteTargets,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        let onto = match command {
+            RebaseOntoUpstream => targets.upstream.as_ref().map(|u| u.display()),
+            RebaseOntoPushRemote => match (&targets.branch, &targets.push_remote) {
+                (Some(b), Some(r)) => Some(format!("{r}/{b}")),
+                _ => None,
+            },
+            RebaseElsewhere => None,
+            _ => return,
+        };
+        match onto {
+            Some(onto) => self.run_rebase(onto, args, cx),
+            // Unknown target (or "elsewhere") — pick a branch/ref to rebase onto.
+            None => {
+                let Some(repo) = self.repo.clone() else {
+                    return;
+                };
+                let mut choices = repo.local_branches().unwrap_or_default();
+                choices.extend(repo.remote_branches().unwrap_or_default());
+                self.open_picker(
+                    PickerAction::Rebase,
+                    choices,
+                    CreateMode::Value,
+                    args,
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
+    /// Run the rebase on the background executor, then refresh — a conflict
+    /// pauses it, which the in-progress banner then drives.
+    fn run_rebase(&mut self, onto: String, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Rebasing…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.rebase(&onto, &args) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Rebased", result, cx);
                 this.refresh(cx);
             })
             .ok();
@@ -3611,6 +3695,7 @@ impl StatusView {
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
                 PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
+                PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -5120,6 +5205,7 @@ impl StatusView {
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
             "m" => return self.invoke_command("merge", window, cx),
+            "r" => return self.invoke_command("rebase", window, cx),
             "z" if shift => return self.invoke_command("stash", window, cx),
             "l" => return self.invoke_command("log", window, cx),
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
@@ -7511,6 +7597,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebasing",
     }
 }
 
@@ -7529,6 +7616,7 @@ fn command_done(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebased",
     }
 }
 
@@ -8251,7 +8339,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "X", "m", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "X", "m", "r", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
