@@ -5522,6 +5522,59 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
+    /// The title-bar branch as a divided pill sharing one highlight: the name
+    /// (click opens the branch transient) and a copy-name button.
+    fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> gpui::Div {
+        let view = view.clone();
+        let copy = branch.to_string();
+        let fg = self.palette.fg;
+        let tip_font = self.font.clone();
+        div()
+            .flex()
+            .items_center()
+            .rounded(px(4.0))
+            .bg(self.palette.selection)
+            .text_color(fg)
+            .font_family(self.font.clone())
+            .font_weight(FontWeight::MEDIUM)
+            .child(
+                div()
+                    .id("titlebar-branch")
+                    .relative()
+                    .cursor_pointer()
+                    .px(px(5.0))
+                    .child(track_target("titlebar-branch"))
+                    .child(SharedString::from(branch.to_string()))
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
+                    }),
+            )
+            // Divider between the two halves of the split chip.
+            .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
+            .child(
+                div()
+                    .id("titlebar-branch-copy")
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .px(px(4.0))
+                    .child(track_target("titlebar-branch-copy"))
+                    .child(Icon::new(IconName::Copy).xsmall().text_color(fg))
+                    .tooltip(move |window, cx| {
+                        let font = tip_font.clone();
+                        Tooltip::element(move |_, _| {
+                            div().font_family(font.clone()).child("Copy branch name")
+                        })
+                        .build(window, cx)
+                    })
+                    .tooltip_show_delay(Duration::ZERO)
+                    .on_click(move |_, _window, cx: &mut App| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                    }),
+            )
+    }
+
     /// A dim tracking entry for the title bar: an optional direction glyph
     /// (`⇡` push / `⇣` pull), the ref name, and `↑ahead`/`↓behind` (each shown
     /// only when non-zero). The ahead/behind are clickable: `↑` opens the push
@@ -5608,17 +5661,19 @@ impl StatusView {
 
         if let Some(status) = &self.status {
             let head = &status.head;
-            let branch = head
-                .branch
-                .clone()
-                .unwrap_or_else(|| "detached".to_string());
-            // The branch chip opens the branch transient on click.
-            info = info.child(self.titlebar_action(
-                view,
-                "titlebar-branch",
-                "branch",
-                self.branch_chip(&branch),
-            ));
+            // A real branch: a divided chip (name opens the branch transient,
+            // the button copies the name). Detached: a plain clickable chip.
+            info = info.child(match &head.branch {
+                Some(branch) => self.render_branch_chip(view, branch).into_any_element(),
+                None => self
+                    .titlebar_action(
+                        view,
+                        "titlebar-branch",
+                        "branch",
+                        self.branch_chip("detached"),
+                    )
+                    .into_any_element(),
+            });
 
             // Tracking: the upstream, plus a distinct push target when present
             // (a triangular workflow). When the push target equals the upstream,
