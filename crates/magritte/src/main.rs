@@ -388,6 +388,28 @@ struct ScrollView {
     top: usize,
 }
 
+/// The arguments a leaf command runs with: the toggled switches/options, any
+/// pathspec limits, the resolved remote targets, and the log commit limit.
+/// Gathered from a transient's state, or [`ActionArgs::defaults`] for a
+/// palette-fired command (no switches).
+struct ActionArgs {
+    args: Vec<String>,
+    paths: Vec<String>,
+    targets: RemoteTargets,
+    limit: usize,
+}
+
+impl ActionArgs {
+    fn defaults(targets: RemoteTargets, limit: usize) -> Self {
+        Self {
+            args: Vec::new(),
+            paths: Vec::new(),
+            targets,
+            limit,
+        }
+    }
+}
+
 /// Groupings for the command registry — the `?` menu and `:` palette render in
 /// this order.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -421,15 +443,23 @@ impl Category {
 /// from `run`; the registry deliberately doesn't model arguments.
 #[derive(Clone, Copy)]
 struct Command {
-    /// Stable id, e.g. "stage", "branch", "log". Used by the keymap, the
-    /// palette (resolving the chosen title), and tests.
+    /// Stable id, e.g. "stage", "branch", "push-upstream". Used by the keymap,
+    /// the palette (resolving the chosen title), and tests.
     id: &'static str,
     /// Human label shown in the `?` menu and `:` palette.
     title: &'static str,
     /// Which `?`-menu group / palette category it belongs to.
     category: Category,
     /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "gr").
-    key: &'static str,
+    /// `None` for leaf subcommands reached via a transient or the palette, not a
+    /// top-level key.
+    key: Option<&'static str>,
+    /// Show in the `?` dispatch menu. Mirrors magit's curated dispatch: the
+    /// top-level prefixes and direct actions, not every leaf.
+    menu: bool,
+    /// Offer in the `:` command palette. Mirrors magit's `M-x`: prefixes *and*
+    /// the leaf subcommands (e.g. "Push current to upstream").
+    palette: bool,
     /// Whether it makes sense to offer right now — the palette filters on this.
     /// (Permissive today; argument-gathering happens in `run`.)
     enabled: fn(&StatusView) -> bool,
@@ -443,172 +473,210 @@ struct Command {
 /// `dispatch_menu_covers_every_command` test guards menu/registry/dispatch
 /// against drift.
 fn commands() -> &'static [Command] {
+    use transient::Command as Leaf;
     const ALWAYS: fn(&StatusView) -> bool = |_| true;
+
+    // A top-level prefix or direct action: bound to a key, in the `?` menu and
+    // the palette.
+    macro_rules! top {
+        ($id:literal, $title:literal, $cat:expr, $key:literal, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                category: $cat,
+                key: Some($key),
+                menu: true,
+                palette: true,
+                enabled: ALWAYS,
+                run: $run,
+            }
+        };
+    }
+    // A leaf subcommand (a transient suffix): no top-level key, palette-only —
+    // it's surfaced in the `?` menu through its prefix's transient. Firing it
+    // runs the action directly with default arguments.
+    macro_rules! leaf {
+        ($id:literal, $title:literal, $cmd:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                category: Category::Commands,
+                key: None,
+                menu: false,
+                palette: true,
+                enabled: ALWAYS,
+                run: |t, w, cx| t.fire_command_default($cmd, w, cx),
+            }
+        };
+    }
+
     const C: &[Command] = &[
-        Command {
-            id: "commit",
-            title: "Commit",
-            category: Category::Commands,
-            key: "c",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                t.open_transient(transient::commit_transient(), RemoteTargets::default(), cx)
-            },
-        },
-        Command {
-            id: "branch",
-            title: "Branch",
-            category: Category::Commands,
-            key: "b",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                let rt = t.remote_targets();
-                t.open_transient(transient::branch_transient(), rt, cx)
-            },
-        },
-        Command {
-            id: "stash",
-            title: "Stash",
-            category: Category::Commands,
-            key: "Z",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
-            },
-        },
-        Command {
-            id: "log",
-            title: "Log",
-            category: Category::Commands,
-            key: "l",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
-            },
-        },
-        Command {
-            id: "push",
-            title: "Push",
-            category: Category::Commands,
-            key: "p",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                let rt = t.remote_targets();
-                t.open_transient(transient::push_transient(&rt), rt, cx)
-            },
-        },
-        Command {
-            id: "pull",
-            title: "Pull",
-            category: Category::Commands,
-            key: "F",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                let rt = t.remote_targets();
-                t.open_transient(transient::pull_transient(&rt), rt, cx)
-            },
-        },
-        Command {
-            id: "fetch",
-            title: "Fetch",
-            category: Category::Commands,
-            key: "f",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
-                let rt = t.remote_targets();
-                t.open_transient(transient::fetch_transient(&rt), rt, cx)
-            },
-        },
-        Command {
-            id: "settings",
-            title: "Settings",
-            category: Category::Application,
-            key: ",",
-            enabled: ALWAYS,
-            run: |t, w, cx| t.open_settings(w, cx),
-        },
-        Command {
-            id: "git-log",
-            title: "Git command log",
-            category: Category::Application,
-            key: "$",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.open_git_log(cx),
-        },
-        Command {
-            id: "stage",
-            title: "Stage",
-            category: Category::Applying,
-            key: "s",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.act(Op::Stage, cx),
-        },
-        Command {
-            id: "unstage",
-            title: "Unstage",
-            category: Category::Applying,
-            key: "u",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.act(Op::Unstage, cx),
-        },
-        Command {
-            id: "stage-all",
-            title: "Stage all",
-            category: Category::Applying,
-            key: "S",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.run_action(Action::StageAll, cx),
-        },
-        Command {
-            id: "unstage-all",
-            title: "Unstage all",
-            category: Category::Applying,
-            key: "U",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.run_action(Action::UnstageAll, cx),
-        },
-        Command {
-            id: "discard",
-            title: "Discard",
-            category: Category::Applying,
-            key: "x",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.act(Op::Discard, cx),
-        },
-        Command {
-            id: "fold",
-            title: "Fold / unfold",
-            category: Category::Essential,
-            key: "tab",
-            enabled: ALWAYS,
-            run: |t, _w, cx| t.toggle_fold(cx),
-        },
-        Command {
-            id: "refresh",
-            title: "Refresh",
-            category: Category::Essential,
-            key: "gr",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
+        // Prefixes (open a transient).
+        top!("commit", "Commit", Category::Commands, "c", |t, _w, cx| {
+            t.open_transient(transient::commit_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("branch", "Branch", Category::Commands, "b", |t, _w, cx| {
+            let rt = t.remote_targets();
+            t.open_transient(transient::branch_transient(), rt, cx)
+        }),
+        top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
+            t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
+            t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("push", "Push", Category::Commands, "p", |t, _w, cx| {
+            let rt = t.remote_targets();
+            t.open_transient(transient::push_transient(&rt), rt, cx)
+        }),
+        top!("pull", "Pull", Category::Commands, "F", |t, _w, cx| {
+            let rt = t.remote_targets();
+            t.open_transient(transient::pull_transient(&rt), rt, cx)
+        }),
+        top!("fetch", "Fetch", Category::Commands, "f", |t, _w, cx| {
+            let rt = t.remote_targets();
+            t.open_transient(transient::fetch_transient(&rt), rt, cx)
+        }),
+        // Leaf subcommands (palette-only; reached in the `?` menu via their
+        // prefix's transient).
+        leaf!("commit-create", "Create commit", Leaf::CommitCreate),
+        leaf!("commit-amend", "Amend commit", Leaf::CommitAmend),
+        leaf!("commit-reword", "Reword commit", Leaf::CommitReword),
+        leaf!(
+            "commit-extend",
+            "Extend commit (keep message)",
+            Leaf::CommitExtend
+        ),
+        leaf!(
+            "push-pushremote",
+            "Push current to push-remote",
+            Leaf::PushPushRemote
+        ),
+        leaf!(
+            "push-upstream",
+            "Push current to upstream",
+            Leaf::PushUpstream
+        ),
+        leaf!("push-elsewhere", "Push elsewhere", Leaf::PushElsewhere),
+        leaf!(
+            "pull-pushremote",
+            "Pull from push-remote",
+            Leaf::PullPushRemote
+        ),
+        leaf!("pull-upstream", "Pull from upstream", Leaf::PullUpstream),
+        leaf!("pull-elsewhere", "Pull elsewhere", Leaf::PullElsewhere),
+        leaf!(
+            "fetch-pushremote",
+            "Fetch push-remote",
+            Leaf::FetchPushRemote
+        ),
+        leaf!("fetch-upstream", "Fetch upstream", Leaf::FetchUpstream),
+        leaf!("fetch-all", "Fetch all remotes", Leaf::FetchAll),
+        leaf!("fetch-elsewhere", "Fetch elsewhere", Leaf::FetchElsewhere),
+        leaf!(
+            "branch-checkout",
+            "Checkout branch/revision",
+            Leaf::BranchCheckout
+        ),
+        leaf!(
+            "branch-create-checkout",
+            "Create and checkout branch",
+            Leaf::BranchCreateCheckout
+        ),
+        leaf!("branch-create", "Create branch", Leaf::BranchCreate),
+        leaf!("branch-rename", "Rename branch", Leaf::BranchRename),
+        leaf!("branch-delete", "Delete branch", Leaf::BranchDelete),
+        leaf!("stash-push", "Stash worktree and index", Leaf::StashPush),
+        leaf!(
+            "stash-push-all",
+            "Stash including untracked",
+            Leaf::StashPushAll
+        ),
+        leaf!("stash-apply", "Apply stash", Leaf::StashApply),
+        leaf!("stash-pop", "Pop stash", Leaf::StashPop),
+        leaf!("stash-drop", "Drop stash", Leaf::StashDrop),
+        leaf!("log-current", "Log current", Leaf::LogCurrent),
+        leaf!("log-all", "Log all branches", Leaf::LogAll),
+        leaf!("log-other", "Log other ref", Leaf::LogOther),
+        leaf!("log-reflog", "Reflog", Leaf::LogReflog),
+        // Application commands.
+        top!(
+            "settings",
+            "Settings",
+            Category::Application,
+            ",",
+            |t, w, cx| { t.open_settings(w, cx) }
+        ),
+        top!(
+            "git-log",
+            "Git command log",
+            Category::Application,
+            "$",
+            |t, _w, cx| { t.open_git_log(cx) }
+        ),
+        // Applying changes.
+        top!("stage", "Stage", Category::Applying, "s", |t, _w, cx| t
+            .act(Op::Stage, cx)),
+        top!(
+            "unstage",
+            "Unstage",
+            Category::Applying,
+            "u",
+            |t, _w, cx| t.act(Op::Unstage, cx)
+        ),
+        top!(
+            "stage-all",
+            "Stage all",
+            Category::Applying,
+            "S",
+            |t, _w, cx| { t.run_action(Action::StageAll, cx) }
+        ),
+        top!(
+            "unstage-all",
+            "Unstage all",
+            Category::Applying,
+            "U",
+            |t, _w, cx| { t.run_action(Action::UnstageAll, cx) }
+        ),
+        top!(
+            "discard",
+            "Discard",
+            Category::Applying,
+            "x",
+            |t, _w, cx| t.act(Op::Discard, cx)
+        ),
+        // Essentials.
+        top!(
+            "fold",
+            "Fold / unfold",
+            Category::Essential,
+            "tab",
+            |t, _w, cx| { t.toggle_fold(cx) }
+        ),
+        top!(
+            "refresh",
+            "Refresh",
+            Category::Essential,
+            "gr",
+            |t, _w, cx| {
                 t.refresh(cx);
                 cx.notify();
-            },
-        },
-        Command {
-            id: "visual",
-            title: "Visual selection",
-            category: Category::Essential,
-            key: "v",
-            enabled: ALWAYS,
-            run: |t, _w, cx| {
+            }
+        ),
+        top!(
+            "visual",
+            "Visual selection",
+            Category::Essential,
+            "v",
+            |t, _w, cx| {
                 t.visual = if t.visual.is_some() {
                     None
                 } else {
                     Some(t.selected)
                 };
                 cx.notify();
-            },
-        },
+            }
+        ),
     ];
     C
 }
@@ -628,10 +696,10 @@ fn dispatch_menu() -> Transient {
         title: transient::plain_title(cat.title()),
         suffixes: commands()
             .iter()
-            .filter(|c| c.category == cat)
+            .filter(|c| c.menu && c.category == cat)
             .map(|c| {
                 Suffix::Info(transient::Info {
-                    keys: c.key,
+                    keys: c.key.expect("a `?`-menu command has a key"),
                     description: c.title,
                 })
             })
@@ -2464,35 +2532,75 @@ impl StatusView {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(Self::LOG_LIMIT);
         if let Some(action) = action {
-            self.popup = None;
-            use transient::Command::*;
-            match action.command {
-                CommitCreate => self.start_commit(args, window, cx),
-                // Amend/reword/extend rewrite HEAD: warn first if it's published.
-                CommitAmend | CommitReword | CommitExtend => {
-                    self.begin_history_rewrite(action.command, args, window, cx)
-                }
-                // Push/pull/fetch resolve a remote (prompting if needed) then run.
-                PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
-                | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
-                    self.dispatch_transfer(action.command, &targets, args, window, cx)
-                }
-                BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename
-                | BranchDelete => self.dispatch_branch(action.command, window, cx),
-                StashPush => self.run_stash_push(false, cx),
-                StashPushAll => self.run_stash_push(true, cx),
-                StashApply | StashPop | StashDrop => {
-                    self.dispatch_stash(action.command, window, cx)
-                }
-                // Log: assemble flags + scope + pathspecs in the order git needs.
-                LogCurrent => {
-                    self.start_log(build_log_args(args, LogScope::Current, paths, limit), cx)
-                }
-                LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
-                LogOther => self.prompt_log_ref(args, paths, limit, window, cx),
-                LogReflog => self.start_reflog(limit, cx),
-            }
+            let fired = ActionArgs {
+                args,
+                paths,
+                targets,
+                limit,
+            };
+            self.fire_action(action.command, fired, window, cx);
         }
+    }
+
+    /// Fire a leaf command (a transient suffix) with already-gathered arguments.
+    /// Shared by the transient (which passes its toggled switches/options) and
+    /// the `:` palette (which fires with defaults via [`Self::fire_command_default`]).
+    fn fire_action(
+        &mut self,
+        command: transient::Command,
+        fired: ActionArgs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ActionArgs {
+            args,
+            paths,
+            targets,
+            limit,
+        } = fired;
+        self.popup = None;
+        use transient::Command::*;
+        match command {
+            CommitCreate => self.start_commit(args, window, cx),
+            // Amend/reword/extend rewrite HEAD: warn first if it's published.
+            CommitAmend | CommitReword | CommitExtend => {
+                self.begin_history_rewrite(command, args, window, cx)
+            }
+            // Push/pull/fetch resolve a remote (prompting if needed) then run.
+            PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
+            | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
+                self.dispatch_transfer(command, &targets, args, window, cx)
+            }
+            BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
+                self.dispatch_branch(command, window, cx)
+            }
+            StashPush => self.run_stash_push(false, cx),
+            StashPushAll => self.run_stash_push(true, cx),
+            StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
+            // Log: assemble flags + scope + pathspecs in the order git needs.
+            LogCurrent => self.start_log(build_log_args(args, LogScope::Current, paths, limit), cx),
+            LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
+            LogOther => self.prompt_log_ref(args, paths, limit, window, cx),
+            LogReflog => self.start_reflog(limit, cx),
+        }
+    }
+
+    /// Fire a leaf command from the palette: no transient was open, so use
+    /// default arguments (no switches/options, current targets, default log
+    /// limit). The command still opens its own picker/editor when it needs one.
+    fn fire_command_default(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let targets = self.remote_targets();
+        self.fire_action(
+            command,
+            ActionArgs::defaults(targets, Self::LOG_LIMIT),
+            window,
+            cx,
+        );
     }
 
     /// Open the stash picker for an apply/pop/drop command.
@@ -4327,7 +4435,7 @@ impl StatusView {
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
         // A registry command (resolved by its key), the `:` palette, or a motion.
-        if let Some(cmd) = commands().iter().find(|c| c.key == key) {
+        if let Some(cmd) = commands().iter().find(|c| c.key == Some(key)) {
             (cmd.run)(self, window, cx);
             return;
         }
@@ -4362,7 +4470,7 @@ impl StatusView {
     fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let choices: Vec<String> = commands()
             .iter()
-            .filter(|c| (c.enabled)(self))
+            .filter(|c| c.palette && (c.enabled)(self))
             .map(|c| c.title.to_string())
             .collect();
         self.open_picker(
@@ -4383,7 +4491,7 @@ impl StatusView {
         if matches!(key, "tab" | "gr" | "gg" | "gj" | "gk") {
             return false;
         }
-        commands().iter().any(|c| c.key == key) || matches!(key, "j" | "k" | "G" | ":")
+        commands().iter().any(|c| c.key == Some(key)) || matches!(key, "j" | "k" | "G" | ":")
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -6770,7 +6878,6 @@ mod tests {
         let (mut ids, mut keys, mut titles) = (HashSet::new(), HashSet::new(), HashSet::new());
         for c in commands() {
             assert!(ids.insert(c.id), "duplicate command id: {}", c.id);
-            assert!(keys.insert(c.key), "duplicate command key: {}", c.key);
             // Titles must be unique — the `:` palette resolves the chosen title
             // back to its command.
             assert!(
@@ -6778,8 +6885,28 @@ mod tests {
                 "duplicate command title: {}",
                 c.title
             );
+            // Keys (when bound) must be unique; leaves carry no top-level key.
+            if let Some(key) = c.key {
+                assert!(keys.insert(key), "duplicate command key: {key}");
+            }
+            // Surface invariants: a `?`-menu command needs a key; a leaf (no key)
+            // must be palette-only.
+            assert_eq!(
+                c.menu,
+                c.menu && c.key.is_some(),
+                "menu command {:?} has no key",
+                c.id
+            );
+            if c.key.is_none() {
+                assert!(!c.menu, "keyless command {:?} can't be in the menu", c.id);
+                assert!(
+                    c.palette,
+                    "keyless command {:?} should be in the palette",
+                    c.id
+                );
+            }
         }
-        // Every registry command is reachable from the `?` dispatch menu.
+        // Every menu command is actually reachable from the `?` dispatch menu.
         let menu: HashSet<&str> = dispatch_menu()
             .groups
             .iter()
@@ -6789,12 +6916,12 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for c in commands() {
+        for c in commands().iter().filter(|c| c.menu) {
+            let key = c.key.unwrap();
             assert!(
-                menu.contains(c.key),
-                "command {:?} ({}) missing from dispatch menu",
-                c.id,
-                c.key
+                menu.contains(key),
+                "menu command {:?} ({key}) missing from dispatch menu",
+                c.id
             );
         }
     }
