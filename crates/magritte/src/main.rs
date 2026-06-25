@@ -3217,6 +3217,11 @@ impl StatusView {
     ) {
         let prompt = action.prompt();
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
+        // Reserve the candidate area only when there's actually a list to match
+        // against. A picker with no choices (e.g. creating a branch — you type a
+        // new name) is pure entry: no candidate area, no "No match". The async
+        // completion prompts start empty but opt back in via `open_option_prompt`.
+        let has_candidates = !items.is_empty();
         let input = cx.new(|cx| InputState::new(window, cx));
         // Re-filter as the query changes (Up/Down/Enter/Esc are handled in the
         // capture phase, so the input only ever sees text edits here).
@@ -3242,9 +3247,7 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             action,
             switches,
-            // Default to reserving the candidate area; the only exception is a
-            // pure value prompt, which opts out in `open_option_prompt`.
-            reserve_candidates: true,
+            reserve_candidates: has_candidates,
             resume: None,
             _sub: sub,
         }));
@@ -4816,14 +4819,19 @@ impl StatusView {
             div().into_any_element()
         } else if rows == 0 {
             // Candidates exist, but none match the query: a quiet "No match"
-            // line, keeping the reserved height so nothing shifts.
+            // line in the first row, keeping the reserved height so nothing
+            // shifts (the line stays at the top rather than floating mid-panel).
             div()
                 .h(list_height)
-                .pl(px(ROW_PAD_LEFT))
-                .flex()
-                .items_center()
-                .text_color(self.palette.dim)
-                .child(SharedString::from("No match"))
+                .child(
+                    div()
+                        .h(px(ROW_HEIGHT))
+                        .pl(px(ROW_PAD_LEFT))
+                        .flex()
+                        .items_center()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("No match")),
+                )
                 .into_any_element()
         } else {
             uniform_list("picker-rows", rows, {
