@@ -637,11 +637,15 @@ fn dispatch_menu() -> Transient {
             })
             .collect(),
     };
+    // Essential gathers the always-available registry commands plus the `:`
+    // palette — itself a meta-affordance (reach any command), not a registry
+    // entry, so it's appended here rather than living in `commands()`.
+    let mut essential = group(Category::Essential);
+    essential.suffixes.push(info(":", "Command palette"));
     Transient {
         title: transient::plain_title("Dispatch"),
         groups: vec![
             group(Category::Commands),
-            group(Category::Application),
             group(Category::Applying),
             Group {
                 title: transient::plain_title("Navigation"),
@@ -654,7 +658,8 @@ fn dispatch_menu() -> Transient {
                     info("gk", "Previous section"),
                 ],
             },
-            group(Category::Essential),
+            essential,
+            group(Category::Application),
         ],
     }
 }
@@ -4321,9 +4326,13 @@ impl StatusView {
     /// dispatch menu and run the command, like magit's dispatch transient.
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
-        // A registry command (resolved by its key), or a pure motion.
+        // A registry command (resolved by its key), the `:` palette, or a motion.
         if let Some(cmd) = commands().iter().find(|c| c.key == key) {
             (cmd.run)(self, window, cx);
+            return;
+        }
+        if key == ":" {
+            self.open_command_palette(window, cx);
             return;
         }
         match key {
@@ -4374,7 +4383,7 @@ impl StatusView {
         if matches!(key, "tab" | "gr" | "gg" | "gj" | "gk") {
             return false;
         }
-        commands().iter().any(|c| c.key == key) || matches!(key, "j" | "k" | "G")
+        commands().iter().any(|c| c.key == key) || matches!(key, "j" | "k" | "G" | ":")
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -6818,7 +6827,7 @@ mod tests {
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "Z", "l", "p", "F", "f", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
-            "v", "tab", "gr", // essential
+            "v", "tab", "gr", ":", // essential + command palette
             "j", "k", "gg", "G", "gj", "gk", // navigation / motions
         ];
         // Keys allowed to be on only one side of the check. Empty today; add a
