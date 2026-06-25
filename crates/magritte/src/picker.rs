@@ -133,6 +133,15 @@ impl PickerList {
         self.matched.len() + usize::from(self.create_row())
     }
 
+    /// The most rows this list could ever show — every choice plus a possible
+    /// create row. Used to reserve a stable panel height so filtering (which
+    /// only shrinks the visible rows) doesn't make the picker resize. Zero for a
+    /// pure value-entry picker, which has no candidate area at all.
+    pub fn capacity(&self) -> usize {
+        let can_create = matches!(self.create, CreateMode::Any | CreateMode::RemoteBranch);
+        self.choices.len() + usize::from(can_create)
+    }
+
     /// The highlighted row index.
     pub fn selected(&self) -> usize {
         self.selected
