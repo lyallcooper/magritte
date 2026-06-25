@@ -38,11 +38,14 @@ pub struct Config {
     /// name opened via `open -a` (`Zed`, `Visual Studio Code`). Empty = open in
     /// the OS default app.
     pub editor: String,
+    /// Write commit messages in the external `commit_editor` command (an
+    /// interactive `git commit`) instead of Magritte's in-app commit editor.
+    pub commit_in_editor: bool,
     /// Command for writing commit messages in an external editor (used as
     /// `GIT_EDITOR` for an interactive `git commit`), e.g. `zed --wait`,
     /// `code --wait`, or `nvim`. Must block until the message is saved/closed —
-    /// the user supplies the appropriate wait flag. Empty = use Magritte's
-    /// in-app commit editor (the default).
+    /// the user supplies the appropriate wait flag. Used only when
+    /// `commit_in_editor` is set; empty falls back to the in-app editor.
     pub commit_editor: String,
 }
 
@@ -60,6 +63,7 @@ impl Default for Config {
             commit_title_ruler: true,
             commit_body_wrap: true,
             editor: String::new(),
+            commit_in_editor: false,
             commit_editor: String::new(),
         }
     }
