@@ -278,6 +278,8 @@ enum PickerAction {
     RunCommand,
     /// Reset HEAD to the chosen commit, in the carried mode (hard is confirmed).
     Reset(magritte_core::ResetMode),
+    /// Merge the chosen branch/ref into HEAD, with the carried args.
+    Merge,
 }
 
 impl PickerAction {
@@ -310,6 +312,7 @@ impl PickerAction {
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
             PickerAction::RunCommand => transient::plain_title("Run command"),
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
+            PickerAction::Merge => transient::plain_title("Merge"),
         }
     }
 
@@ -332,6 +335,7 @@ impl PickerAction {
             PickerAction::LogRef { .. } => "log",
             PickerAction::RunCommand => "run",
             PickerAction::Reset(_) => "reset",
+            PickerAction::Merge => "merge",
         }
     }
 }
@@ -548,6 +552,20 @@ fn commands() -> &'static [Command] {
         }),
         top!("reset", "Reset", Category::Commands, "X", |t, _w, cx| {
             t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("merge", "Merge", Category::Commands, "m", |t, _w, cx| {
+            // A merge already in progress is driven from the banner (commit or
+            // abort), not by starting another.
+            if matches!(
+                t.sequence.as_ref().map(|s| s.kind),
+                Some(SequenceKind::Merge)
+            ) {
+                t.status_message =
+                    Some("Merge in progress — commit or abort it from the banner".to_string());
+                cx.notify();
+            } else {
+                t.open_transient(transient::merge_transient(), RemoteTargets::default(), cx);
+            }
         }),
         top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
             t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
@@ -2838,6 +2856,9 @@ impl StatusView {
             ResetSoft | ResetMixed | ResetHard | ResetKeep => {
                 self.dispatch_reset(command, window, cx)
             }
+            MergePlain | MergeNoCommit | MergeSquash => {
+                self.dispatch_merge(command, args, window, cx)
+            }
             StashPush => self.run_stash_push(false, cx),
             StashPushAll => self.run_stash_push(true, cx),
             StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
@@ -3092,6 +3113,59 @@ impl StatusView {
         } else {
             self.do_reset(mode, target, cx);
         }
+    }
+
+    /// Merge transient suffix: fold the action's mode into the toggled
+    /// switches, then pick the branch/ref to merge.
+    fn dispatch_merge(
+        &mut self,
+        command: transient::Command,
+        mut args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        match command {
+            MergeNoCommit => args.push("--no-commit".to_string()),
+            MergeSquash => args.push("--squash".to_string()),
+            MergePlain => {}
+            _ => return,
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let mut choices = repo.local_branches().unwrap_or_default();
+        choices.extend(repo.remote_branches().unwrap_or_default());
+        self.open_picker(
+            PickerAction::Merge,
+            choices,
+            CreateMode::Value,
+            args,
+            window,
+            cx,
+        );
+    }
+
+    /// Run the merge on the background executor, then refresh — a conflict pauses
+    /// it, which the in-progress banner then surfaces.
+    fn run_merge(&mut self, target: String, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Merging…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.merge(&target, &args) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Merged", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Run the reset on the background executor, then refresh.
@@ -3536,6 +3610,7 @@ impl StatusView {
                 }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
+                PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -5044,6 +5119,7 @@ impl StatusView {
             "x" => return self.invoke_command("discard", window, cx),
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
+            "m" => return self.invoke_command("merge", window, cx),
             "z" if shift => return self.invoke_command("stash", window, cx),
             "l" => return self.invoke_command("log", window, cx),
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
@@ -7434,6 +7510,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
+        MergePlain | MergeNoCommit | MergeSquash => "Merging",
     }
 }
 
@@ -7451,6 +7528,7 @@ fn command_done(command: transient::Command) -> &'static str {
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
+        MergePlain | MergeNoCommit | MergeSquash => "Merged",
     }
 }
 
@@ -8173,7 +8251,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "X", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "X", "m", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
