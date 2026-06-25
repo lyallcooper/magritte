@@ -97,6 +97,13 @@ pub struct HeadInfo {
     pub ahead: i64,
     pub behind: i64,
     pub detached: bool,
+    /// The push target (`@{push}`, from `pushRemote`/`pushDefault`), set only
+    /// when it differs from `upstream` — a triangular workflow. `None` when
+    /// there's no push target or it's the same ref as the upstream.
+    pub push: Option<String>,
+    /// Ahead/behind the push target (only meaningful when `push` is set).
+    pub push_ahead: i64,
+    pub push_behind: i64,
 }
 
 /// The full parsed status of a working tree.
@@ -138,7 +145,51 @@ impl Repo {
             "--untracked-files=normal",
             "-z",
         ])?;
-        parse_porcelain_v2(&out.stdout)
+        let mut status = parse_porcelain_v2(&out.stdout)?;
+        self.resolve_push_target(&mut status.head);
+        Ok(status)
+    }
+
+    /// Resolve the branch's push target (`@{push}`) and its ahead/behind, but
+    /// only record it when it differs from the upstream (`branch.ab` already
+    /// covers the upstream). `git status` reports `@{upstream}` only, so the
+    /// push target — which can differ in triangular workflows — needs its own
+    /// queries. Best-effort: a branch with no push target leaves `head.push`
+    /// `None`.
+    fn resolve_push_target(&self, head: &mut HeadInfo) {
+        let Some(branch) = head.branch.clone() else {
+            return;
+        };
+        // The config-derived push ref name (e.g. `origin/main`), if any.
+        let Ok(Some(out)) = self.run_optional([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            &format!("{branch}@{{push}}"),
+        ]) else {
+            return;
+        };
+        let push = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // Nothing configured, or the same ref the upstream line already shows.
+        if push.is_empty() || head.upstream.as_deref() == Some(push.as_str()) {
+            return;
+        }
+        // Ahead/behind vs the push target: left = HEAD-only (to push),
+        // right = push-only (to pull). Counts stay 0 if the ref doesn't exist.
+        if let Ok(Some(rl)) = self.run_optional([
+            "rev-list",
+            "--count",
+            "--left-right",
+            &format!("HEAD...{push}"),
+        ]) {
+            let text = String::from_utf8_lossy(&rl.stdout);
+            let mut nums = text.split_whitespace();
+            if let (Some(a), Some(b)) = (nums.next(), nums.next()) {
+                head.push_ahead = a.parse().unwrap_or(0);
+                head.push_behind = b.parse().unwrap_or(0);
+            }
+        }
+        head.push = Some(push);
     }
 }
 

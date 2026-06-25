@@ -875,9 +875,6 @@ impl Default for Palette {
 const ROW_HEIGHT: f32 = 18.0;
 /// How long a success notice lingers before auto-dismissing (seconds).
 const STATUS_FADE_SECS: u64 = 4;
-/// Width (points) of the repo header label column ("Head:", "Push:"), so their
-/// values line up like a description list.
-const HEADER_LABEL_WIDTH: f32 = 40.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -1149,15 +1146,6 @@ enum RowKind {
     Plain {
         text: String,
         color: Hsla,
-    },
-    /// A repository header line (Head:/Push:): a dim fixed-width label, the
-    /// value (a branch/ref rendered as the stylized chip used in dialogs, or
-    /// plain text), and an optional dim detail (e.g. ahead/behind).
-    Header {
-        label: String,
-        value: String,
-        chip: bool,
-        detail: Option<String>,
     },
     Section {
         title: String,
@@ -1899,20 +1887,8 @@ impl StatusView {
             return;
         };
 
-        let head = &status.head;
-        match &head.branch {
-            // A real branch: the name as the stylized chip.
-            Some(branch) => rows.push(header_row("Head:", branch.clone(), true, None)),
-            // Detached HEAD: plain text, no chip (it isn't a branch).
-            None => rows.push(header_row("Head:", "detached".to_string(), false, None)),
-        }
-        if let Some(upstream) = &head.upstream {
-            // Only note ahead/behind when actually diverged.
-            let detail = (head.ahead > 0 || head.behind > 0)
-                .then(|| format!("+{} -{}", head.ahead, head.behind));
-            rows.push(header_row("Push:", upstream.clone(), true, detail));
-        }
-
+        // The branch and its upstream/push tracking now live in the title bar
+        // (see `render_title_bar`), not in header rows here.
         self.push_section(
             &mut rows,
             SectionId::Untracked,
@@ -5546,6 +5522,23 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
+    /// A dim tracking entry for the title bar: an optional direction glyph
+    /// (`⇡` push / `⇣` pull), the ref name, and `↑ahead`/`↓behind` (each shown
+    /// only when non-zero).
+    fn track_chunk(&self, glyph: &str, name: &str, ahead: i64, behind: i64) -> gpui::Div {
+        let mut text = format!("{glyph}{name}");
+        if ahead > 0 {
+            text.push_str(&format!(" ↑{ahead}"));
+        }
+        if behind > 0 {
+            text.push_str(&format!(" ↓{behind}"));
+        }
+        div()
+            .text_color(self.palette.dim)
+            .font_family(self.font.clone())
+            .child(SharedString::from(text))
+    }
+
     /// The custom window title bar: the repo name, the current branch as a chip,
     /// its ahead/behind vs upstream, and a dirty marker — styled to match the
     /// app (so it reads as chrome, not the OS bar). The `TitleBar` component
@@ -5574,23 +5567,21 @@ impl StatusView {
                 .unwrap_or_else(|| "detached".to_string());
             info = info.child(self.branch_chip(&branch));
 
-            if head.ahead > 0 || head.behind > 0 {
-                let mut ab = String::new();
-                if head.ahead > 0 {
-                    ab.push_str(&format!("↑{}", head.ahead));
-                }
-                if head.behind > 0 {
-                    if !ab.is_empty() {
-                        ab.push(' ');
+            // Tracking: the upstream, plus a distinct push target when present
+            // (a triangular workflow). When the push target equals the upstream,
+            // the core leaves `head.push` unset, so we show a single entry.
+            match (&head.push, &head.upstream) {
+                (Some(push), upstream) => {
+                    info =
+                        info.child(self.track_chunk("⇡", push, head.push_ahead, head.push_behind));
+                    if let Some(up) = upstream {
+                        info = info.child(self.track_chunk("⇣", up, head.ahead, head.behind));
                     }
-                    ab.push_str(&format!("↓{}", head.behind));
                 }
-                info = info.child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .font_family(self.font.clone())
-                        .child(SharedString::from(ab)),
-                );
+                (None, Some(up)) => {
+                    info = info.child(self.track_chunk("", up, head.ahead, head.behind));
+                }
+                (None, None) => {}
             }
 
             if !status.is_clean() {
@@ -6529,36 +6520,6 @@ impl StatusView {
             RowKind::Plain { text, color } => el
                 .text_color(*color)
                 .child(SharedString::from(text.clone())),
-            RowKind::Header {
-                label,
-                value,
-                chip,
-                detail,
-            } => {
-                let mut el = el.child(
-                    div()
-                        .min_w(px(HEADER_LABEL_WIDTH))
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(label.clone())),
-                );
-                el = if *chip {
-                    el.child(self.branch_chip(value))
-                } else {
-                    el.child(
-                        div()
-                            .text_color(self.palette.fg)
-                            .child(SharedString::from(value.clone())),
-                    )
-                };
-                if let Some(detail) = detail {
-                    el = el.child(
-                        div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from(detail.clone())),
-                    );
-                }
-                el
-            }
             RowKind::Section {
                 title,
                 count,
@@ -7018,22 +6979,6 @@ fn plain(text: impl Into<String>, color: Hsla) -> Row {
         kind: RowKind::Plain {
             text: text.into(),
             color,
-        },
-    }
-}
-
-/// A non-selectable repository header line (Head:/Push:).
-fn header_row(label: &str, value: String, chip: bool, detail: Option<String>) -> Row {
-    Row {
-        indent: 0,
-        selectable: false,
-        fold: None,
-        target: None,
-        kind: RowKind::Header {
-            label: label.to_string(),
-            value,
-            chip,
-            detail,
         },
     }
 }
