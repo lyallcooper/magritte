@@ -33,8 +33,10 @@ pub struct Config {
     pub commit_title_ruler: bool,
     /// Auto-hard-wrap the commit body at 72 columns as you type.
     pub commit_body_wrap: bool,
-    /// External GUI editor command for "open file" (Return) and the config
-    /// button, e.g. `code -w` or `zed`. Empty = open in the OS default app.
+    /// External GUI editor for "open file" (Return) and the config button.
+    /// Either a CLI command (`code -w`, `zed`) or, on macOS, an application
+    /// name opened via `open -a` (`Zed`, `Visual Studio Code`). Empty = open in
+    /// the OS default app.
     pub editor: String,
 }
 
