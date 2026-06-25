@@ -99,9 +99,13 @@ This is requirement #5 and the main thing that differentiates Magritte.
   50k-line diff costs the same to render as a 50-line one.
 - **Cancellation.** Navigating or refreshing again cancels in-flight git work
   (generation counter / dropped results).
-- **Incremental refresh.** A filesystem watcher (FSEvents via the `notify`
-  crate) on the worktree and `.git`, debounced, drives targeted refreshes rather
-  than re-running everything.
+- **Refresh model.** Like magit, we refresh after our own commands and on
+  demand (`gr`) — *not* via a worktree filesystem watcher. Watching a large
+  worktree means event/refresh storms (build output, `.git` churn) that would
+  reintroduce the very UI-blocking failure mode we avoid; magit doesn't do it
+  either. git's own `fsmonitor` (which we get for free via the CLI) keeps each
+  `git status` cheap. An opt-in auto-refresh (on focus, or a relaxed timer) is
+  tracked as a TODO.
 - **No silent caps.** If we ever bound output (e.g. log pagination), the UI says
   so rather than pretending it showed everything.
 
@@ -231,8 +235,8 @@ reusable widgets) will be split out if and when they earn their keep.
 | M3 | Staging                  | Stage/unstage/discard at file → hunk → region (patch construction + `git apply --cached`) | ✅ done |
 | M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | ✅ done |
 | M5 | Breadth                  | Log view; branch transient; stash transient                                 | ✅ done |
-| M6 | Robustness               | FS watcher + debounced incremental refresh; cancellation hardening; error surfacing | next |
-| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert (interactive rebase as a stretch)        |        |
+| M6 | Robustness               | Cancellation hardening; error surfacing. (Filesystem-watcher auto-refresh dropped — magit has none and it's a large-repo hazard; an opt-in auto-refresh is a TODO instead.) | ✅ done |
+| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert (interactive rebase as a stretch)        | next |
 
 Each milestone ends in a buildable, demoable state.
 

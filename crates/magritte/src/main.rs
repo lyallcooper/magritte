@@ -373,6 +373,15 @@ struct LogState {
     entries: Vec<magritte_core::LogEntry>,
     selected: usize,
     scroll: UniformListScrollHandle,
+    load: LogLoad,
+}
+
+/// Load state of the log view, so the body can distinguish still-loading from a
+/// load error from a genuinely empty history.
+enum LogLoad {
+    Loading,
+    Loaded,
+    Failed(String),
 }
 
 /// A single commit's detail (opened from the log): its header and diff, as the
@@ -4457,11 +4466,11 @@ impl StatusView {
         };
         self.show_log_loading(cx);
         cx.spawn(async move |this, cx| {
-            let entries = cx
+            let result = cx
                 .background_executor()
-                .spawn(async move { repo.log_with(&args).unwrap_or_default() })
+                .spawn(async move { repo.log_with(&args) })
                 .await;
-            this.update(cx, |this, cx| this.fill_log(entries, cx)).ok();
+            this.update(cx, |this, cx| this.fill_log(result, cx)).ok();
         })
         .detach();
     }
@@ -4473,11 +4482,11 @@ impl StatusView {
         };
         self.show_log_loading(cx);
         cx.spawn(async move |this, cx| {
-            let entries = cx
+            let result = cx
                 .background_executor()
-                .spawn(async move { repo.reflog(limit).unwrap_or_default() })
+                .spawn(async move { repo.reflog(limit) })
                 .await;
-            this.update(cx, |this, cx| this.fill_log(entries, cx)).ok();
+            this.update(cx, |this, cx| this.fill_log(result, cx)).ok();
         })
         .detach();
     }
@@ -4488,14 +4497,26 @@ impl StatusView {
             entries: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
+            load: LogLoad::Loading,
         });
         cx.notify();
     }
 
-    /// Fill the open log view with loaded entries.
-    fn fill_log(&mut self, entries: Vec<magritte_core::LogEntry>, cx: &mut Context<Self>) {
+    /// Fill the open log view with the load result: entries on success, the
+    /// error otherwise (so the view shows it rather than an endless "Loading…").
+    fn fill_log(
+        &mut self,
+        result: magritte_core::Result<Vec<magritte_core::LogEntry>>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(log) = self.log.as_mut() {
-            log.entries = entries;
+            match result {
+                Ok(entries) => {
+                    log.entries = entries;
+                    log.load = LogLoad::Loaded;
+                }
+                Err(e) => log.load = LogLoad::Failed(e.to_string()),
+            }
         }
         cx.notify();
     }
@@ -6104,13 +6125,17 @@ impl StatusView {
         // Note when the listing is capped, rather than pretending it's complete.
         let capped = count >= Self::LOG_LIMIT;
 
-        let body = if count == 0 {
+        let note = |text: String, color: Hsla| {
             div()
-                .text_color(self.palette.dim)
-                .child(SharedString::from("Loading…"))
+                .text_color(color)
+                .child(SharedString::from(text))
                 .into_any_element()
-        } else {
-            uniform_list("log-rows", count, {
+        };
+        let body = match &log.load {
+            LogLoad::Loading => note("Loading…".to_string(), self.palette.dim),
+            LogLoad::Failed(e) => note(format!("log failed: {e}"), self.palette.dim),
+            LogLoad::Loaded if count == 0 => note("No commits".to_string(), self.palette.dim),
+            LogLoad::Loaded => uniform_list("log-rows", count, {
                 let view = view.clone();
                 move |range, _window, cx| {
                     let this = view.read(cx);
@@ -6126,7 +6151,7 @@ impl StatusView {
             })
             .track_scroll(&log.scroll)
             .flex_grow(1.0)
-            .into_any_element()
+            .into_any_element(),
         };
 
         let mut header = div().flex().items_center().gap_3().child(
