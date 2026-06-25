@@ -4283,7 +4283,7 @@ impl StatusView {
         });
         let commit_editor = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("e.g. zed --wait (blank = built-in editor)")
+                .placeholder("e.g. zed --wait")
                 .default_value(self.config.commit_editor.clone())
         });
 
