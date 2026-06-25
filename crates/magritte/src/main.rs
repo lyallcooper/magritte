@@ -1534,6 +1534,13 @@ enum SeqOp {
     Abort,
 }
 
+/// Applying a commit selected in the log to the current branch.
+#[derive(Clone, Copy)]
+enum PickOp {
+    CherryPick,
+    Revert,
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -4863,6 +4870,47 @@ impl StatusView {
 
     /// Open the selected commit's diff in a [`CommitView`], loaded off the UI
     /// thread.
+    /// Cherry-pick or revert the commit selected in the log, then return to the
+    /// status view (so a conflict shows in the in-progress banner). Runs on the
+    /// background executor.
+    fn pick_selected(&mut self, op: PickOp, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let Some(rev) = self
+            .log
+            .as_ref()
+            .and_then(|l| l.entries.get(l.selected))
+            .map(|e| e.short_hash.clone())
+        else {
+            return;
+        };
+        let (verb, done) = match op {
+            PickOp::CherryPick => ("Cherry-picking", "Cherry-picked"),
+            PickOp::Revert => ("Reverting", "Reverted"),
+        };
+        self.close_log(window, cx);
+        self.status_message = Some(format!("{verb} {rev}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match op {
+                        PickOp::CherryPick => repo.cherry_pick(&rev),
+                        PickOp::Revert => repo.revert(&rev),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report(done, result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn open_commit_view(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
@@ -5079,6 +5127,11 @@ impl StatusView {
                 "b" if ctrl => self.log_move(-page, cx),
                 "g" if shift => self.log_move(isize::MAX / 2, cx), // G → bottom
                 "g" => self.log_move(isize::MIN / 2, cx),          // g → top
+                // Apply the selected commit to the current branch (magit's `A`),
+                // or revert it (`V`). Both return to the status view, where a
+                // conflict surfaces as the in-progress banner.
+                "a" if shift => self.pick_selected(PickOp::CherryPick, window, cx),
+                "v" if shift => self.pick_selected(PickOp::Revert, window, cx),
                 _ => {}
             }
             return;

@@ -12,6 +12,7 @@ pub mod error;
 pub mod files;
 pub mod log;
 pub mod merge;
+pub mod pick;
 pub mod rebase;
 pub mod remote;
 pub mod repo;
