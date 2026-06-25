@@ -2522,27 +2522,46 @@ impl StatusView {
         self.set_status(format!("Opening {path}"), true, cx);
     }
 
-    /// Open `path` in the user's configured editor: an empty `editor` opens the
-    /// OS default app, otherwise the editor (a GUI editor like `code -w` or
-    /// `zed`) is spawned directly. Best-effort and non-blocking.
+    /// Open `path` in the user's configured editor. An empty `editor` opens the
+    /// OS default app; otherwise `editor` is run as a command (`code -w`, `zed`)
+    /// and, failing that on macOS, treated as an application name to `open -a`
+    /// (so "Zed" or "Visual Studio Code" work too). Best-effort, non-blocking.
     fn launch_editor(&self, path: &std::path::Path) {
         let editor = self.config.editor.trim();
         if editor.is_empty() {
             open_with_os(path);
-        } else {
-            // Program + optional args, then the file.
-            let mut parts = editor.split_whitespace();
-            let program = parts.next().unwrap_or(editor);
-            let args: Vec<&str> = parts.collect();
-            if std::process::Command::new(program)
-                .args(args)
-                .arg(path)
-                .spawn()
-                .is_err()
-            {
-                open_with_os(path);
-            }
+            return;
         }
+        // First try `editor` as a command: program + optional flags, then the
+        // file. This is how CLI launchers are written (`code -w`, `zed`,
+        // `subl -n`, `/abs/path/to/bin`).
+        let mut parts = editor.split_whitespace();
+        let program = parts.next().unwrap_or(editor);
+        let args: Vec<&str> = parts.collect();
+        if std::process::Command::new(program)
+            .args(args)
+            .arg(path)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+        // The command wasn't on PATH. On macOS the user likely typed an
+        // application *name* ("Zed", "Visual Studio Code") rather than a CLI
+        // command — open the file with that app via `open -a`. (`open` always
+        // spawns; a bad app name just surfaces its own error.)
+        #[cfg(target_os = "macos")]
+        if std::process::Command::new("open")
+            .arg("-a")
+            .arg(editor)
+            .arg(path)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+        // Nothing launched — fall back to the OS default handler.
+        open_with_os(path);
     }
 
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
@@ -4121,9 +4140,14 @@ impl StatusView {
             )
             .searchable(true)
         });
+        let editor_placeholder = if cfg!(target_os = "macos") {
+            "e.g. Zed, code -w (OS default if empty)"
+        } else {
+            "e.g. code -w, zed (OS default if empty)"
+        };
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("e.g. code -w, zed -w (OS default if empty)")
+                .placeholder(editor_placeholder)
                 .default_value(self.config.editor.clone())
         });
 
