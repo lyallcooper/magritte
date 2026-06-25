@@ -1200,6 +1200,9 @@ struct SettingsState {
     ui_font: Entity<SelectState<SearchableVec<SharedString>>>,
     /// External-editor command (free text, e.g. `code -w` / `nvim`).
     editor: Entity<InputState>,
+    /// Terminal to launch a terminal editor in (free text; macOS app name like
+    /// `iTerm`, Linux command like `alacritty`).
+    terminal: Entity<InputState>,
     /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
     /// 4=ui_font).
     focus_ix: usize,
@@ -4128,11 +4131,27 @@ impl StatusView {
                 .placeholder("e.g. code -w, zed -w, nvim")
                 .default_value(self.config.editor.clone())
         });
+        let terminal_placeholder = if cfg!(target_os = "macos") {
+            "Default terminal (e.g. iTerm)"
+        } else {
+            "Auto-detect (e.g. alacritty)"
+        };
+        let terminal = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(terminal_placeholder)
+                .default_value(self.config.terminal.clone())
+        });
 
         let subs = vec![
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.config.editor = input.read(cx).value().trim().to_string();
+                    config::save(&this.config);
+                }
+            }),
+            cx.subscribe_in(&terminal, window, |this, input, ev: &InputEvent, _w, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.config.terminal = input.read(cx).value().trim().to_string();
                     config::save(&this.config);
                 }
             }),
@@ -4216,6 +4235,7 @@ impl StatusView {
             font,
             ui_font,
             editor,
+            terminal,
             focus_ix: 0,
             _subs: subs,
         });
@@ -6034,9 +6054,8 @@ impl StatusView {
                     ),
                 ],
             ))
-            .child(section(
-                "Editor",
-                vec![
+            .child(section("Editor", {
+                let mut rows = vec![
                     field(
                         "editor",
                         "External editor",
@@ -6055,8 +6074,17 @@ impl StatusView {
                             |cfg, on| cfg.editor_in_terminal = on,
                         ),
                     ),
-                ],
-            ))
+                ];
+                // The terminal to launch in only matters when running in one.
+                if self.config.editor_in_terminal {
+                    rows.push(field(
+                        "terminal",
+                        "Terminal",
+                        Input::new(&s.terminal).into_any_element(),
+                    ));
+                }
+                rows
+            }))
             .child(section(
                 "Commit editor",
                 vec![
@@ -6952,16 +6980,23 @@ fn open_with_os(path: &std::path::Path) {
 /// inside a terminal window. macOS runs it through the default terminal app via
 /// a temp `.command` script; elsewhere via `<terminal> -e …`.
 #[cfg(target_os = "macos")]
-fn launch_in_terminal(editor: &str, _terminal: &str, path: &std::path::Path) {
-    // `open`-ing a `.command` honors the user's default terminal handler
-    // (Terminal.app unless they've changed the association).
+fn launch_in_terminal(editor: &str, terminal: &str, path: &std::path::Path) {
+    // Run a `.command` script in a terminal app. `open -a <app>` targets the
+    // chosen terminal (e.g. iTerm); plain `open` uses the default handler for
+    // `.command` (Terminal.app unless reassigned). Either way the app must know
+    // how to run a `.command` file.
     let body = format!("#!/bin/sh\nexec {} {}\n", editor, shell_quote(path));
     let mut script = std::env::temp_dir();
     script.push(format!("magritte-open-{}.command", temp_suffix()));
     if std::fs::write(&script, body).is_ok() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
-        let _ = std::process::Command::new("open").arg(&script).spawn();
+        let mut cmd = std::process::Command::new("open");
+        let terminal = terminal.trim();
+        if !terminal.is_empty() {
+            cmd.arg("-a").arg(terminal);
+        }
+        let _ = cmd.arg(&script).spawn();
     }
 }
 
