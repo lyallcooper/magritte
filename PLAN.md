@@ -269,3 +269,7 @@ Each milestone ends in a buildable, demoable state.
   problem of its own; scoped to Tier 3.
 - **App packaging / signing.** macOS `.app` bundling, notarization, updates —
   deferred until there's something worth shipping.
+- **Vendored magit source (license).** `.reference/magit/` is a copy of magit's
+  GPL-licensed Emacs Lisp, kept as the behavior reference. Fine while the repo is
+  private, but **before going public** it must be removed (and stripped from
+  history) or the GPL implications of bundling it addressed deliberately.
