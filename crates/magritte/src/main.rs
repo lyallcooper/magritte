@@ -4965,41 +4965,20 @@ impl StatusView {
     ) -> gpui::Div {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
 
-        // Pack groups into balanced columns: fill a column up to ~a target
-        // height, then start the next, so short groups stack together and the
-        // menu fills vertical space instead of sprawling across the full width.
-        // Heights are in rows (title + suffixes + a trailing gap). Sequential
-        // fill keeps the authored order readable column by column.
-        const TARGET_COL_ROWS: usize = 7;
-        const MAX_TRANSIENT_COLS: usize = 4;
-        let heights: Vec<usize> = def.groups.iter().map(|g| g.suffixes.len() + 2).collect();
-        let total: usize = heights.iter().sum();
-        let ncols = total
-            .div_ceil(TARGET_COL_ROWS)
-            .clamp(1, MAX_TRANSIENT_COLS.min(def.groups.len().max(1)));
-        let per_col = total.div_ceil(ncols);
-        let mut col_groups: Vec<Vec<usize>> = Vec::new();
-        let mut cur: Vec<usize> = Vec::new();
-        let mut cur_h = 0usize;
-        for (i, h) in heights.iter().enumerate() {
-            // Break to a new column once this one is full — but never leave fewer
-            // columns than planned (the last column takes whatever remains).
-            if cur_h > 0 && cur_h + h > per_col && col_groups.len() + 1 < ncols {
-                col_groups.push(std::mem::take(&mut cur));
-                cur_h = 0;
-            }
-            cur.push(i);
-            cur_h += h;
-        }
-        col_groups.push(cur);
-
-        let mut columns = div().flex().flex_row().items_start().gap_x_8();
-        for group_ixs in col_groups {
-            let mut col = div().flex().flex_col().items_start().gap_3();
-            for gi in group_ixs {
-                col = col.child(self.render_group(&def.groups[gi], state, pending_dash, view));
-            }
-            columns = columns.child(col);
+        // Magit's group-oriented, row-driven layout: lay the groups out as a
+        // wrapping row of blocks, each group kept whole (never merged with
+        // another into a shared column). A tall group splits internally into
+        // sub-columns (see `render_group`). On a bottom panel — full width but
+        // scarce height — this minimizes height while filling the width.
+        let mut columns = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_start()
+            .gap_x_8()
+            .gap_y_3();
+        for group in &def.groups {
+            columns = columns.child(self.render_group(group, state, pending_dash, view));
         }
 
         div()
@@ -5020,7 +4999,9 @@ impl StatusView {
     /// its suffix rows (switches, value options, actions, or `?`-menu info).
     /// `items_start` so each row's clickable hitbox hugs its content width
     /// rather than stretching across the column (which makes clicks land on the
-    /// wrong row).
+    /// wrong row). A tall group splits its suffixes across several sub-columns
+    /// (magit's `[[col][col]]`) so it doesn't dominate the panel height — e.g.
+    /// the log transient's 8 arguments become two columns of four.
     fn render_group(
         &self,
         group: &Group,
@@ -5028,162 +5009,185 @@ impl StatusView {
         pending_dash: bool,
         view: &Entity<Self>,
     ) -> gpui::Div {
-        let mut col = div()
+        // Split into ceil(n / target) sub-columns of ~equal height; only groups
+        // taller than the target (currently > 7 rows) split at all.
+        const TARGET_GROUP_ROWS: usize = 7;
+        let n = group.suffixes.len();
+        let subcol_count = n.div_ceil(TARGET_GROUP_ROWS).max(1);
+        let per_subcol = n.div_ceil(subcol_count).max(1);
+        let mut buckets: Vec<Vec<AnyElement>> = (0..subcol_count).map(|_| Vec::new()).collect();
+        for (i, suffix) in group.suffixes.iter().enumerate() {
+            let bucket = (i / per_subcol).min(subcol_count - 1);
+            buckets[bucket].push(self.render_suffix(suffix, state, pending_dash, view));
+        }
+        let mut subcols = div().flex().flex_row().items_start().gap_x_6();
+        for bucket in buckets {
+            let mut sc = div().flex().flex_col().items_start().gap_1();
+            for el in bucket {
+                sc = sc.child(el);
+            }
+            subcols = subcols.child(sc);
+        }
+        div()
             .flex()
             .flex_col()
             .items_start()
             .gap_1()
-            .child(self.render_title(&group.title, self.palette.dim));
-        for suffix in &group.suffixes {
-            let row = match suffix {
-                Suffix::Switch(sw) => {
-                    let on = state.is_some_and(|s| s.active.contains(sw.key));
-                    // magit layout: key, description, then the literal git flag
-                    // in parens. Only the flag itself dims (off) or highlights
-                    // bold in the `modified` accent (on) — the parens stay a
-                    // constant neutral color.
-                    let flag_color = if on {
-                        self.palette.modified
-                    } else {
-                        self.palette.dim
-                    };
-                    let flag = if on {
-                        div().text_color(flag_color).font_weight(FontWeight::BOLD)
-                    } else {
-                        div().text_color(flag_color)
-                    };
-                    let paren = || div().text_color(self.palette.fg);
-                    let view = view.clone();
-                    let key = SharedString::from(sw.key);
-                    div()
-                        .id(sw.key)
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_1()
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .group(KBD_ROW_GROUP)
-                        .child(track_target(sw.key))
-                        .child(switch_chip(
-                            sw.key,
-                            self.palette.dim,
-                            self.palette.removed,
-                            pending_dash,
-                            &self.font,
-                        ))
-                        .child(self.hover_label(sw.description, self.palette.fg))
-                        .child(
+            .child(self.render_title(&group.title, self.palette.dim))
+            .child(subcols)
+    }
+
+    /// One transient suffix as a clickable row (switch, value option, action,
+    /// or `?`-menu info).
+    fn render_suffix(
+        &self,
+        suffix: &Suffix,
+        state: Option<&TransientState>,
+        pending_dash: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        match suffix {
+            Suffix::Switch(sw) => {
+                let on = state.is_some_and(|s| s.active.contains(sw.key));
+                // magit layout: key, description, then the literal git flag
+                // in parens. Only the flag itself dims (off) or highlights
+                // bold in the `modified` accent (on) — the parens stay a
+                // constant neutral color.
+                let flag_color = if on {
+                    self.palette.modified
+                } else {
+                    self.palette.dim
+                };
+                let flag = if on {
+                    div().text_color(flag_color).font_weight(FontWeight::BOLD)
+                } else {
+                    div().text_color(flag_color)
+                };
+                let paren = || div().text_color(self.palette.fg);
+                let view = view.clone();
+                let key = SharedString::from(sw.key);
+                div()
+                    .id(sw.key)
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(sw.key))
+                    .child(switch_chip(
+                        sw.key,
+                        self.palette.dim,
+                        self.palette.removed,
+                        pending_dash,
+                        &self.font,
+                    ))
+                    .child(self.hover_label(sw.description, self.palette.fg))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(paren().child(SharedString::from("(")))
+                            .child(flag.child(SharedString::from(sw.arg)))
+                            .child(paren().child(SharedString::from(")"))),
+                    )
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), true, window, vcx));
+                    })
+                    .into_any_element()
+            }
+            // A value-reading option: like a switch, but the parens show the
+            // current value (or the bare flag when unset). The parens are
+            // omitted when there'd be nothing in them (an option whose value
+            // *is* the flag, e.g. commit order, when unset).
+            Suffix::Option(o) => {
+                let value = state.and_then(|s| s.values.get(o.key).cloned());
+                let set = value.is_some();
+                let inner = format!("{}{}", o.arg, value.as_deref().unwrap_or_default());
+                let color = if set {
+                    self.palette.modified
+                } else {
+                    self.palette.dim
+                };
+                let view = view.clone();
+                let okey = o.key.to_string();
+                div()
+                    .id(o.key)
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(o.key))
+                    .child(switch_chip(
+                        o.key,
+                        self.palette.dim,
+                        self.palette.removed,
+                        pending_dash,
+                        &self.font,
+                    ))
+                    .child(self.hover_label(o.description, self.palette.fg))
+                    .when(!inner.is_empty(), |row| {
+                        row.child(
                             div()
-                                .flex()
-                                .items_center()
-                                .child(paren().child(SharedString::from("(")))
-                                .child(flag.child(SharedString::from(sw.arg)))
-                                .child(paren().child(SharedString::from(")"))),
+                                .text_color(color)
+                                .child(SharedString::from(format!("({inner})"))),
                         )
-                        .on_click(move |_, window, cx: &mut App| {
-                            view.update(cx, |v, vcx| {
-                                v.click_suffix(key.clone(), true, window, vcx)
-                            });
-                        })
-                        .into_any_element()
-                }
-                // A value-reading option: like a switch, but the parens show the
-                // current value (or the bare flag when unset). The parens are
-                // omitted when there'd be nothing in them (an option whose value
-                // *is* the flag, e.g. commit order, when unset).
-                Suffix::Option(o) => {
-                    let value = state.and_then(|s| s.values.get(o.key).cloned());
-                    let set = value.is_some();
-                    let inner = format!("{}{}", o.arg, value.as_deref().unwrap_or_default());
-                    let color = if set {
-                        self.palette.modified
-                    } else {
-                        self.palette.dim
-                    };
-                    let view = view.clone();
-                    let okey = o.key.to_string();
-                    div()
-                        .id(o.key)
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_1()
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .group(KBD_ROW_GROUP)
-                        .child(track_target(o.key))
-                        .child(switch_chip(
-                            o.key,
-                            self.palette.dim,
-                            self.palette.removed,
-                            pending_dash,
-                            &self.font,
-                        ))
-                        .child(self.hover_label(o.description, self.palette.fg))
-                        .when(!inner.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .text_color(color)
-                                    .child(SharedString::from(format!("({inner})"))),
-                            )
-                        })
-                        .on_click(move |_, window, cx: &mut App| {
-                            view.update(cx, |v, vcx| v.click_option(okey.clone(), window, vcx));
-                        })
-                        .into_any_element()
-                }
-                Suffix::Action(a) => {
-                    let view = view.clone();
-                    let key = SharedString::from(a.key);
-                    div()
-                        .id(a.key)
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_1()
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .group(KBD_ROW_GROUP)
-                        .child(track_target(a.key))
-                        .child(key_chip(a.key, self.palette.dim, &self.font))
-                        .child(self.hover_label(&a.description, self.palette.fg))
-                        .on_click(move |_, window, cx: &mut App| {
-                            view.update(cx, |v, vcx| {
-                                v.click_suffix(key.clone(), false, window, vcx)
-                            });
-                        })
-                        .into_any_element()
-                }
-                // A dispatch command row: keycap + label, clickable to run.
-                Suffix::Info(i) => {
-                    let view = view.clone();
-                    let key = SharedString::from(i.keys);
-                    div()
-                        .id(i.keys)
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_1()
-                        .rounded(px(4.0))
-                        .cursor_pointer()
-                        .group(KBD_ROW_GROUP)
-                        .child(track_target(i.keys))
-                        .child(self.key_tokens(i.keys))
-                        .child(self.hover_label(i.description, self.palette.fg))
-                        .on_click(move |_, window, cx: &mut App| {
-                            view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
-                        })
-                        .into_any_element()
-                }
-            };
-            col = col.child(row);
+                    })
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.click_option(okey.clone(), window, vcx));
+                    })
+                    .into_any_element()
+            }
+            Suffix::Action(a) => {
+                let view = view.clone();
+                let key = SharedString::from(a.key);
+                div()
+                    .id(a.key)
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(a.key))
+                    .child(key_chip(a.key, self.palette.dim, &self.font))
+                    .child(self.hover_label(&a.description, self.palette.fg))
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
+                    })
+                    .into_any_element()
+            }
+            // A dispatch command row: keycap + label, clickable to run.
+            Suffix::Info(i) => {
+                let view = view.clone();
+                let key = SharedString::from(i.keys);
+                div()
+                    .id(i.keys)
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(i.keys))
+                    .child(self.key_tokens(i.keys))
+                    .child(self.hover_label(i.description, self.palette.fg))
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
+                    })
+                    .into_any_element()
+            }
         }
-        col
     }
 
     /// Render a dialog heading from styled spans, with branch/ref names set off
