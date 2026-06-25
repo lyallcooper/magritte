@@ -220,6 +220,7 @@ reusable widgets) will be split out if and when they earn their keep.
 ### Tier 3 — high value, higher effort (likely post-v1)
 - Merge (with conflict surfacing).
 - Rebase (non-interactive), cherry-pick, revert.
+- Reset (soft / mixed / hard / keep).
 - Interactive rebase (magit's beloved UI — disproportionate effort; deferred).
 - Blame, bisect, reflog, submodules, worktrees.
 
@@ -236,7 +237,7 @@ reusable widgets) will be split out if and when they earn their keep.
 | M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | ✅ done |
 | M5 | Breadth                  | Log view; branch transient; stash transient                                 | ✅ done |
 | M6 | Robustness               | Cancellation hardening; error surfacing. (Filesystem-watcher auto-refresh dropped — magit has none and it's a large-repo hazard; an opt-in auto-refresh is a TODO instead.) | ✅ done |
-| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert (interactive rebase as a stretch)        | next |
+| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert, reset (interactive rebase as a stretch) | next |
 
 Each milestone ends in a buildable, demoable state.
 
