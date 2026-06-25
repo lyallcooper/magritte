@@ -4559,27 +4559,31 @@ impl StatusView {
     fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
         let confirm_label = state.action.confirm_label();
 
-        // Show up to a screenful of candidates; the rest scroll.
+        // Show up to a screenful of candidates; the rest scroll. Reserve the
+        // height from the *unfiltered* capacity, not the current match count, so
+        // filtering (which only shrinks the matches) doesn't resize this
+        // bottom-anchored panel and make the prompt drift down. Zero capacity is
+        // a pure value-entry picker, which has no candidate area at all.
         const MAX_VISIBLE: usize = 8;
         let rows = state.list.row_count();
-        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
+        let capacity = state.list.capacity();
+        let list_height = px(capacity.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
 
-        let body = if rows == 0 {
+        let body = if capacity == 0 {
             // Value entry has nothing to match — collapse the candidate area
-            // entirely so the hints sit right under the input. A selection
-            // picker instead shows a quiet "No match" line.
-            if state.list.is_value_entry() {
-                div().into_any_element()
-            } else {
-                div()
-                    .h(list_height)
-                    .pl(px(ROW_PAD_LEFT))
-                    .flex()
-                    .items_center()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from("No match"))
-                    .into_any_element()
-            }
+            // entirely so the hints sit right under the input.
+            div().into_any_element()
+        } else if rows == 0 {
+            // Candidates exist, but none match the query: a quiet "No match"
+            // line, keeping the reserved height so nothing shifts.
+            div()
+                .h(list_height)
+                .pl(px(ROW_PAD_LEFT))
+                .flex()
+                .items_center()
+                .text_color(self.palette.dim)
+                .child(SharedString::from("No match"))
+                .into_any_element()
         } else {
             uniform_list("picker-rows", rows, {
                 let view = view.clone();
