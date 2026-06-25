@@ -1198,7 +1198,11 @@ struct SettingsState {
     dark_theme: Entity<SelectState<SearchableVec<SharedString>>>,
     font: Entity<SelectState<SearchableVec<SharedString>>>,
     ui_font: Entity<SelectState<SearchableVec<SharedString>>>,
-    /// External-editor command (free text, e.g. `code -w` / `zed`).
+    /// External editor. macOS picks from a dropdown of detected editor apps
+    /// (plus "System Default"); elsewhere it's a free-text command.
+    #[cfg(target_os = "macos")]
+    editor: Entity<SelectState<SearchableVec<SharedString>>>,
+    #[cfg(not(target_os = "macos"))]
     editor: Entity<InputState>,
     /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
     /// 4=ui_font).
@@ -1261,52 +1265,97 @@ fn is_monospace_font(_name: &str) -> bool {
 }
 
 /// Installed text editors as (display name, `.app` path), for the settings
-/// "Open in" menu. A curated list of known editors checked against the standard
-/// application directories.
+/// editor picker and the "Open config in" menu.
 ///
-/// We deliberately *don't* use LaunchServices here: querying the `.toml` file's
-/// handlers returns generic apps (macOS doesn't type `.toml` as text), and
-/// querying the plain-text / source-code editor handlers returns a noisy set —
-/// browsers, media players, and productivity apps all over-claim the editor
-/// role, while TextEdit doesn't even appear. macOS has no reliable "is a text
-/// editor" signal, so an allow-list gives a cleaner, more useful menu.
+/// We ask LaunchServices which installed apps register to *edit* plain text or
+/// source code (`kLSRolesEditor`) and union the two sets — that's macOS's own
+/// notion of "apps that report as text editors", and it picks up whatever the
+/// user actually has (VS Code, Zed, BBEdit, TextEdit, …) with no hand-kept
+/// allow-list. The catch is that office suites and a few system apps over-claim
+/// the editor role for plain text, so [`is_bogus_editor`] drops the known
+/// offenders. Names/paths come from resolving each bundle id to its app URL.
 #[cfg(target_os = "macos")]
 fn text_editors() -> Vec<(SharedString, SharedString)> {
-    const APPS: &[&str] = &[
-        "Visual Studio Code",
-        "VSCodium",
-        "Cursor",
-        "Zed",
-        "Sublime Text",
-        "Nova",
-        "BBEdit",
-        "TextMate",
-        "CotEditor",
-        "MacVim",
-        "Neovide",
-        "Emacs",
-        "TextEdit",
-    ];
-    let mut dirs = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Applications"));
+    use core_foundation::array::{CFArray, CFArrayRef};
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+    use core_foundation::url::CFURL;
+    use std::os::raw::c_void;
+
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSCopyAllRoleHandlersForContentType(content_type: CFStringRef, role: u32) -> CFArrayRef;
+        fn LSCopyApplicationURLsForBundleIdentifier(
+            bundle_id: CFStringRef,
+            out_error: *mut c_void,
+        ) -> CFArrayRef;
     }
-    APPS.iter()
-        .filter_map(|name| {
-            dirs.iter()
-                .map(|dir| dir.join(format!("{name}.app")))
-                .find(|p| p.exists())
-                .map(|p| {
-                    (
-                        SharedString::from(name.to_string()),
-                        SharedString::from(p.to_string_lossy().into_owned()),
-                    )
-                })
-        })
-        .collect()
+    // kLSRolesEditor — handlers that can *edit* the type, not merely view it
+    // (kLSRolesViewer, 0x2, which would pull in browsers and media players).
+    const K_LS_ROLES_EDITOR: u32 = 0x0000_0004;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut editors: Vec<(SharedString, SharedString)> = Vec::new();
+    for content_type in ["public.plain-text", "public.source-code"] {
+        let ct = CFString::new(content_type);
+        let handlers = unsafe {
+            let r =
+                LSCopyAllRoleHandlersForContentType(ct.as_concrete_TypeRef(), K_LS_ROLES_EDITOR);
+            if r.is_null() {
+                continue;
+            }
+            CFArray::<CFString>::wrap_under_create_rule(r)
+        };
+        for bundle in handlers.iter() {
+            let id = bundle.to_string();
+            if is_bogus_editor(&id) || !seen.insert(id.clone()) {
+                continue;
+            }
+            // Resolve the bundle id to its installed app URL(s); take the first.
+            let urls = unsafe {
+                let r = LSCopyApplicationURLsForBundleIdentifier(
+                    bundle.as_concrete_TypeRef(),
+                    std::ptr::null_mut(),
+                );
+                if r.is_null() {
+                    continue;
+                }
+                CFArray::<CFURL>::wrap_under_create_rule(r)
+            };
+            if let Some(path) = urls.iter().next().and_then(|u| u.to_path()) {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| id.clone());
+                editors.push((
+                    SharedString::from(name),
+                    SharedString::from(path.to_string_lossy().into_owned()),
+                ));
+            }
+        }
+    }
+    editors.sort_by_key(|(name, _)| name.to_lowercase());
+    editors
+}
+
+/// Bundle ids that register as plain-text editors but aren't general text
+/// editors — office/productivity suites that over-claim the role, plus a couple
+/// of duplicate front-ends for an editor already listed under its own id.
+#[cfg(target_os = "macos")]
+fn is_bogus_editor(bundle_id: &str) -> bool {
+    const DENY_PREFIXES: &[&str] = &[
+        "com.apple.iWork",
+        "com.apple.Numbers",
+        "com.apple.Pages",
+        "com.apple.Keynote",
+        "com.apple.Notes",
+        "com.microsoft.Word",
+        "com.microsoft.Excel",
+        "com.microsoft.Powerpoint",
+        "org.libreoffice",
+    ];
+    const DENY_EXACT: &[&str] = &["org.gnu.EmacsClient"];
+    DENY_EXACT.contains(&bundle_id) || DENY_PREFIXES.iter().any(|p| bundle_id.starts_with(p))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1369,6 +1418,10 @@ const UI_FONT_DEFAULT_LABEL: &str = "Same as monospace";
 /// Config sentinel (and the "System Default" UI-font entry) for the platform's
 /// proportional system UI font, distinct from an empty value (= monospace).
 const SYSTEM_UI_FONT: &str = "system-ui";
+/// Label for the editor-picker entry that opens files in the OS default app
+/// (an empty `editor` config).
+#[cfg(target_os = "macos")]
+const EDITOR_OS_DEFAULT_LABEL: &str = "System Default";
 
 /// The platform's system monospace UI font. On macOS this is the SF Mono-based
 /// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
@@ -4140,18 +4193,60 @@ impl StatusView {
             )
             .searchable(true)
         });
-        let editor_placeholder = if cfg!(target_os = "macos") {
-            "e.g. Zed, code -w (OS default if empty)"
-        } else {
-            "e.g. code -w, zed (OS default if empty)"
+        // macOS: a dropdown of detected editor apps, led by "System Default"
+        // (open in the OS default app). A command set via the config file that
+        // isn't a detected app is injected so it stays selectable, not lost.
+        #[cfg(target_os = "macos")]
+        let editor = {
+            let cur = self.config.editor.trim().to_string();
+            let mut editor_items: Vec<SharedString> =
+                vec![SharedString::from(EDITOR_OS_DEFAULT_LABEL)];
+            if !cur.is_empty() && !self.editors.iter().any(|(n, _)| n.as_ref() == cur) {
+                editor_items.push(SharedString::from(cur.clone()));
+            }
+            editor_items.extend(self.editors.iter().map(|(n, _)| n.clone()));
+            let editor_ix = if cur.is_empty() {
+                0
+            } else {
+                editor_items
+                    .iter()
+                    .position(|n| n.as_ref() == cur)
+                    .unwrap_or(0)
+            };
+            cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(editor_items),
+                    row(editor_ix),
+                    &mut *window,
+                    cx,
+                )
+                .searchable(true)
+            })
         };
+        #[cfg(not(target_os = "macos"))]
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(editor_placeholder)
+                .placeholder("e.g. code -w, zed (OS default if empty)")
                 .default_value(self.config.editor.clone())
         });
 
         let subs = vec![
+            #[cfg(target_os = "macos")]
+            cx.subscribe_in(
+                &editor,
+                window,
+                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, _cx| {
+                    if let SelectEvent::Confirm(Some(name)) = ev {
+                        this.config.editor = if name.as_ref() == EDITOR_OS_DEFAULT_LABEL {
+                            String::new()
+                        } else {
+                            name.to_string()
+                        };
+                        config::save(&this.config);
+                    }
+                },
+            ),
+            #[cfg(not(target_os = "macos"))]
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.config.editor = input.read(cx).value().trim().to_string();
@@ -6056,14 +6151,15 @@ impl StatusView {
                     ),
                 ],
             ))
-            .child(section(
-                "Editor",
-                vec![field(
-                    "editor",
-                    "External editor",
-                    Input::new(&s.editor).into_any_element(),
-                )],
-            ))
+            .child(section("Editor", {
+                #[cfg(target_os = "macos")]
+                let control = Select::new(&s.editor)
+                    .search_placeholder("Search editors")
+                    .into_any_element();
+                #[cfg(not(target_os = "macos"))]
+                let control = Input::new(&s.editor).into_any_element();
+                vec![field("editor", "External editor", control)]
+            }))
             .child(section(
                 "Commit editor",
                 vec![
