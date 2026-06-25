@@ -1485,6 +1485,9 @@ struct StatusView {
     /// Bumped each time the status message changes, so an auto-dismiss timer
     /// only clears the message it was scheduled for (not a newer one).
     status_seq: u64,
+    /// In the `$` command-log view, whether to also show the UI's own read-only
+    /// queries (status/diff/ref lookups), which are hidden by default.
+    git_log_show_all: bool,
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
     focus: FocusHandle,
@@ -1547,6 +1550,7 @@ impl StatusView {
             editors: Vec::new(),
             status_message: startup_warning,
             status_seq: 0,
+            git_log_show_all: false,
             confirm: None,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -4208,6 +4212,12 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Toggle whether the command log also lists the UI's own read-only queries.
+    fn toggle_git_log_all(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.git_log_show_all = !self.git_log_show_all;
+        cx.notify();
+    }
+
     /// How many recent commits the log loads. Bounded so opening the log in a
     /// huge repo stays cheap; the bar notes when it's capped.
     const LOG_LIMIT: usize = 256;
@@ -4453,6 +4463,11 @@ impl StatusView {
         if self.git_log.is_some() {
             if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
                 self.close_git_log(window, cx);
+                return;
+            }
+            // `a` toggles showing the UI's own read-only queries.
+            if key == "a" {
+                self.toggle_git_log_all(window, cx);
                 return;
             }
             let page = page_rows(window);
@@ -5537,13 +5552,30 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(SharedString::from("Git command log")),
                     )
-                    .child(self.key_action(
-                        "git-log-close",
-                        "esc",
-                        "close",
-                        view,
-                        Self::close_git_log,
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(self.key_action(
+                                "git-log-all",
+                                "a",
+                                if self.git_log_show_all {
+                                    "hide queries"
+                                } else {
+                                    "show all"
+                                },
+                                view,
+                                Self::toggle_git_log_all,
+                            ))
+                            .child(self.key_action(
+                                "git-log-close",
+                                "esc",
+                                "close",
+                                view,
+                                Self::close_git_log,
+                            )),
+                    ),
             )
             .child(body)
     }
@@ -5557,6 +5589,10 @@ impl StatusView {
         };
         let mut rows = Vec::new();
         for c in repo.command_log() {
+            // Hide the UI's own read-only queries unless asked to show all.
+            if !self.git_log_show_all && c.is_query() {
+                continue;
+            }
             rows.push(GitLogRow::Command {
                 args: c.args.join(" "),
                 ok: c.ok,

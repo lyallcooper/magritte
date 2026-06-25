@@ -47,6 +47,22 @@ impl GitCommand {
     pub fn display(&self) -> String {
         format!("git {}", self.args.join(" "))
     }
+
+    /// Whether this is a read-only query the UI issues on its own — the status
+    /// refresh, diffs, and ref lookups — rather than something the user invoked.
+    /// These are noise in the command log, so it hides them by default.
+    pub fn is_query(&self) -> bool {
+        match self.args.first().map(String::as_str) {
+            Some(
+                "status" | "diff" | "rev-parse" | "for-each-ref" | "show-ref" | "ls-files"
+                | "symbolic-ref",
+            ) => true,
+            // Config *reads* (e.g. resolving the push-remote) are queries; a
+            // config write (setting one) is a user action, so keep it visible.
+            Some("config") => self.args.iter().any(|a| a == "--get" || a == "--get-all"),
+            _ => false,
+        }
+    }
 }
 
 /// The raw result of a git invocation.
