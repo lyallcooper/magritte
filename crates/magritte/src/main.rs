@@ -66,7 +66,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, RemoteTargets, Repo,
-    Sequence, SequenceKind, Status,
+    ResetMode, Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -276,6 +276,8 @@ enum PickerAction {
     },
     /// Run a registry [`Command`] chosen from the `:` palette (matched by title).
     RunCommand,
+    /// Reset HEAD to the chosen commit, in the carried mode (hard is confirmed).
+    Reset(magritte_core::ResetMode),
 }
 
 impl PickerAction {
@@ -307,6 +309,7 @@ impl PickerAction {
             }
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
             PickerAction::RunCommand => transient::plain_title("Run command"),
+            PickerAction::Reset(_) => transient::plain_title("Reset to"),
         }
     }
 
@@ -328,6 +331,7 @@ impl PickerAction {
             PickerAction::SetOption { .. } => "set",
             PickerAction::LogRef { .. } => "log",
             PickerAction::RunCommand => "run",
+            PickerAction::Reset(_) => "reset",
         }
     }
 }
@@ -541,6 +545,9 @@ fn commands() -> &'static [Command] {
         }),
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
             t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
+        }),
+        top!("reset", "Reset", Category::Commands, "X", |t, _w, cx| {
+            t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
         }),
         top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
             t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
@@ -1479,6 +1486,8 @@ enum Confirm {
     /// Abort the in-progress sequence (discards its progress): on `y`, run the
     /// abort for the carried kind.
     AbortSequence(SequenceKind),
+    /// Hard reset (discards uncommitted changes): on `y`, reset to the target.
+    ResetHard(String),
 }
 
 /// The three controls for an in-progress sequence.
@@ -2685,6 +2694,7 @@ impl StatusView {
                 self.proceed_history_rewrite(command, switches, window, cx);
             }
             Some((_, Confirm::AbortSequence(kind))) => self.run_sequence(SeqOp::Abort, kind, cx),
+            Some((_, Confirm::ResetHard(target))) => self.do_reset(ResetMode::Hard, target, cx),
             None => {}
         }
         cx.notify();
@@ -2824,6 +2834,9 @@ impl StatusView {
             }
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
                 self.dispatch_branch(command, window, cx)
+            }
+            ResetSoft | ResetMixed | ResetHard | ResetKeep => {
+                self.dispatch_reset(command, window, cx)
             }
             StashPush => self.run_stash_push(false, cx),
             StashPushAll => self.run_stash_push(true, cx),
@@ -3033,6 +3046,73 @@ impl StatusView {
             window,
             cx,
         );
+    }
+
+    /// Reset transient suffix: pick the target commit (a branch/ref, or type any
+    /// revision), then reset HEAD to it in the chosen mode.
+    fn dispatch_reset(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        let mode = match command {
+            ResetSoft => ResetMode::Soft,
+            ResetMixed => ResetMode::Mixed,
+            ResetHard => ResetMode::Hard,
+            ResetKeep => ResetMode::Keep,
+            _ => return,
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let mut choices = repo.local_branches().unwrap_or_default();
+        choices.extend(repo.remote_branches().unwrap_or_default());
+        // `Value`: the typed text is itself a valid target (any revision/sha),
+        // with the branches as suggestions.
+        self.open_picker(
+            PickerAction::Reset(mode),
+            choices,
+            CreateMode::Value,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    /// Reset to `target`; a hard reset confirms first (it discards work).
+    fn run_reset(&mut self, mode: ResetMode, target: String, cx: &mut Context<Self>) {
+        if mode.is_destructive() {
+            self.confirm = Some((
+                format!("Hard reset to {target}? (y/n)"),
+                Confirm::ResetHard(target),
+            ));
+            cx.notify();
+        } else {
+            self.do_reset(mode, target, cx);
+        }
+    }
+
+    /// Run the reset on the background executor, then refresh.
+    fn do_reset(&mut self, mode: ResetMode, target: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Resetting…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.reset(mode, &target) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Reset", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Begin an amend/reword/extend, first checking (off the UI thread) whether
@@ -3455,6 +3535,7 @@ impl StatusView {
                     self.run_branch_action(b, chosen.to_string(), window, cx)
                 }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
+                PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -4959,6 +5040,7 @@ impl StatusView {
             "u" => return self.invoke_command("unstage", window, cx),
             // M-x (Alt-x) opens the palette too, alongside `:`.
             "x" if alt => return self.open_command_palette(window, cx),
+            "x" if shift => return self.invoke_command("reset", window, cx),
             "x" => return self.invoke_command("discard", window, cx),
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
@@ -7351,6 +7433,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
+        ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
     }
 }
 
@@ -7367,6 +7450,7 @@ fn command_done(command: transient::Command) -> &'static str {
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
+        ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
     }
 }
 
@@ -8089,7 +8173,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "X", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
