@@ -237,7 +237,7 @@ reusable widgets) will be split out if and when they earn their keep.
 | M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | ✅ done |
 | M5 | Breadth                  | Log view; branch transient; stash transient                                 | ✅ done |
 | M6 | Robustness               | Cancellation hardening; error surfacing. (Filesystem-watcher auto-refresh dropped — magit has none and it's a large-repo hazard; an opt-in auto-refresh is a TODO instead.) | ✅ done |
-| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert, reset (interactive rebase as a stretch) | next |
+| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert, reset + in-progress sequence surfacing and conflict resolution. Interactive rebase deferred (as planned). | ✅ done |
 
 Each milestone ends in a buildable, demoable state.
 
