@@ -3,7 +3,7 @@
   "author": "magritte",
   "themes": [
     {
-      "is_default": true,
+      "is_default": false,
       "name": "GitHub Light",
       "mode": "light",
       "colors": {
@@ -215,7 +215,7 @@
       }
     },
     {
-      "is_default": true,
+      "is_default": false,
       "name": "GitHub Dark",
       "mode": "dark",
       "colors": {

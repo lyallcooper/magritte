@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).
-pub const DEFAULT_LIGHT_THEME: &str = "GitHub Light";
-pub const DEFAULT_DARK_THEME: &str = "GitHub Dark";
+pub const DEFAULT_LIGHT_THEME: &str = "Selenized White";
+pub const DEFAULT_DARK_THEME: &str = "Selenized Black";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

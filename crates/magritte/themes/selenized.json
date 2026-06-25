@@ -3,7 +3,7 @@
   "author": "magritte",
   "themes": [
     {
-      "is_default": false,
+      "is_default": true,
       "name": "Selenized White",
       "mode": "light",
       "colors": {
@@ -643,7 +643,7 @@
       }
     },
     {
-      "is_default": false,
+      "is_default": true,
       "name": "Selenized Black",
       "mode": "dark",
       "colors": {
