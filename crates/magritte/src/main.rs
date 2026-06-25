@@ -2497,6 +2497,21 @@ impl StatusView {
         }
     }
 
+    /// Open the file at point (its row, or the file a hunk/line belongs to) in
+    /// the external editor. Bound to Return.
+    fn open_at_point(&mut self, cx: &mut Context<Self>) {
+        let path = match self.rows.get(self.selected).and_then(|r| r.target.as_ref()) {
+            Some(Target::File(f)) => f.path.clone(),
+            Some(Target::Hunk { file, .. } | Target::Line { file, .. }) => file.path.clone(),
+            _ => return,
+        };
+        let Some(repo) = self.repo.as_ref() else {
+            return;
+        };
+        open_in_editor(&repo.workdir().join(&path));
+        self.set_status(format!("Opening {path}"), true, cx);
+    }
+
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     fn act(&mut self, op: Op, cx: &mut Context<Self>) {
         // Refuse the whole action if the selection (point or region) touches a
@@ -4625,6 +4640,8 @@ impl StatusView {
                 }
                 return;
             }
+            // Open the file at point in the external editor.
+            "enter" => return self.open_at_point(cx),
             // Commands, dispatched through the registry so behavior lives in one
             // place (see `commands`). The shift/`g`-prefix decoding stays here;
             // the registry only sees the resolved command id.
@@ -6858,6 +6875,29 @@ fn apply_scroll_key(
 
 /// The remote a bare (unqualified) branch name targets: the conventional
 /// `origin` if present, else the first configured remote, else `origin`.
+/// Open `path` in the user's editor: `$VISUAL` then `$EDITOR` (which may carry
+/// arguments, e.g. `code -w`), falling back to the OS default opener when
+/// neither is set. Best-effort and non-blocking — a terminal editor (vim) won't
+/// attach without a TTY, so a GUI editor is what this is for.
+fn open_in_editor(path: &std::path::Path) {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_default();
+    let mut parts = editor.split_whitespace();
+    if let Some(program) = parts.next() {
+        let args: Vec<&str> = parts.collect();
+        let _ = std::process::Command::new(program)
+            .args(args)
+            .arg(path)
+            .spawn();
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
 fn default_remote(repo: &Repo) -> String {
     let remotes = repo.remotes().unwrap_or_default();
     if remotes.iter().any(|r| r == "origin") {
