@@ -33,6 +33,11 @@ impl SequenceKind {
         }
     }
 
+    /// Human label for the operation (also the git subcommand).
+    pub fn label(self) -> &'static str {
+        self.verb()
+    }
+
     /// A merge has no `--continue`/`--skip`: it's finished by committing the
     /// resolved index. The others advance through their plan.
     pub fn can_continue(self) -> bool {

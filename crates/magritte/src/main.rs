@@ -66,7 +66,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     Change, CommitMode, DiffSource, EntryKind, FileDiff, FileEntry, LineKind, RemoteTargets, Repo,
-    Status,
+    Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -1476,6 +1476,17 @@ enum Confirm {
     /// Amend/reword/extend of an already-published HEAD: on `y`, proceed with
     /// the carried command + switches (rewriting pushed history).
     AmendPushed(transient::Command, Vec<String>),
+    /// Abort the in-progress sequence (discards its progress): on `y`, run the
+    /// abort for the carried kind.
+    AbortSequence(SequenceKind),
+}
+
+/// The three controls for an in-progress sequence.
+#[derive(Clone, Copy)]
+enum SeqOp {
+    Continue,
+    Skip,
+    Abort,
 }
 
 struct StatusView {
@@ -1483,6 +1494,8 @@ struct StatusView {
     root: PathBuf,
     repo: Option<Repo>,
     status: Option<Status>,
+    /// The in-progress merge/rebase/cherry-pick/revert/am, surfaced as a banner.
+    sequence: Option<Sequence>,
     error: Option<String>,
     expanded: HashSet<FoldKey>,
     /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
@@ -1580,6 +1593,7 @@ impl StatusView {
             root,
             repo,
             status: None,
+            sequence: None,
             error: None,
             expanded,
             collapsed_hunks: HashSet::new(),
@@ -1730,14 +1744,15 @@ impl StatusView {
         };
 
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let (result, sequence) = cx
                 .background_executor()
-                .spawn(async move { repo.status() })
+                .spawn(async move { (repo.status(), repo.sequence()) })
                 .await;
             this.update(cx, |this, cx| {
                 if this.generation != generation {
                     return;
                 }
+                this.sequence = sequence;
                 match result {
                     Ok(status) => {
                         this.status = Some(status);
@@ -2669,6 +2684,7 @@ impl StatusView {
             Some((_, Confirm::AmendPushed(command, switches))) => {
                 self.proceed_history_rewrite(command, switches, window, cx);
             }
+            Some((_, Confirm::AbortSequence(kind))) => self.run_sequence(SeqOp::Abort, kind, cx),
             None => {}
         }
         cx.notify();
@@ -3102,6 +3118,69 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 this.report(command_done(command), result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // --- In-progress sequence (merge/rebase/cherry-pick/revert/am) -------
+
+    fn sequence_kind(&self) -> Option<SequenceKind> {
+        self.sequence.as_ref().map(|s| s.kind)
+    }
+
+    /// Continue past a resolved stop.
+    fn sequence_continue(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(kind) = self.sequence_kind() {
+            self.run_sequence(SeqOp::Continue, kind, cx);
+        }
+    }
+
+    /// Skip the current step.
+    fn sequence_skip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(kind) = self.sequence_kind() {
+            self.run_sequence(SeqOp::Skip, kind, cx);
+        }
+    }
+
+    /// Abort — discards the operation's progress, so confirm first (like magit).
+    fn sequence_abort(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(kind) = self.sequence_kind() {
+            self.confirm = Some((
+                format!("Abort {}? (y/n)", kind.label()),
+                Confirm::AbortSequence(kind),
+            ));
+            cx.notify();
+        }
+    }
+
+    /// Run a sequence control on the background executor, then refresh.
+    fn run_sequence(&mut self, op: SeqOp, kind: SequenceKind, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (verb, done) = match op {
+            SeqOp::Continue => ("Continuing", "Continued"),
+            SeqOp::Skip => ("Skipping", "Skipped"),
+            SeqOp::Abort => ("Aborting", "Aborted"),
+        };
+        self.status_message = Some(format!("{verb}…"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match op {
+                        SeqOp::Continue => repo.sequence_continue(kind),
+                        SeqOp::Skip => repo.sequence_skip(kind),
+                        SeqOp::Abort => repo.sequence_abort(kind),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report(done, result, cx);
                 this.refresh(cx);
             })
             .ok();
@@ -5596,6 +5675,92 @@ impl StatusView {
             )
     }
 
+    /// The in-progress sequence banner (merge/rebase/cherry-pick/revert/am):
+    /// a heading, the plan steps, and the available continue/skip/abort
+    /// controls. Sits above the status list so it's visible while resolving.
+    fn render_sequence_banner(&self, seq: &Sequence, view: &Entity<Self>) -> gpui::Div {
+        // The plan steps (capped so a long rebase todo can't dominate).
+        const MAX_STEPS: usize = 8;
+        let mut steps = div().flex().flex_col().gap_0().pl(px(2.0));
+        for step in seq.steps.iter().take(MAX_STEPS) {
+            let mut line = format!("{} ", step.action);
+            if let Some(oid) = &step.oid {
+                line.push_str(oid);
+                line.push(' ');
+            }
+            line.push_str(&step.subject);
+            steps = steps.child(
+                div()
+                    .text_color(self.palette.dim)
+                    .font_family(self.font.clone())
+                    .child(SharedString::from(line)),
+            );
+        }
+        if seq.steps.len() > MAX_STEPS {
+            steps = steps.child(div().text_color(self.palette.dim).child(SharedString::from(
+                format!("… +{} more", seq.steps.len() - MAX_STEPS),
+            )));
+        }
+
+        // Continue / skip / abort, per what the operation supports.
+        let mut actions = div().flex().items_center().gap_2();
+        if seq.kind.can_continue() {
+            actions = actions.child(self.seq_button(
+                "seq-continue",
+                "Continue",
+                view,
+                Self::sequence_continue,
+            ));
+        }
+        if seq.kind.can_skip() {
+            actions = actions.child(self.seq_button("seq-skip", "Skip", view, Self::sequence_skip));
+        }
+        actions = actions.child(self.seq_button("seq-abort", "Abort", view, Self::sequence_abort));
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .px_3()
+            .py_2()
+            .bg(self.palette.banner)
+            .border_b_1()
+            .border_color(self.palette.border)
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.palette.section)
+                    .child(SharedString::from(seq.heading.clone())),
+            )
+            .child(steps)
+            .child(actions)
+    }
+
+    /// A clickable text button for the sequence banner that runs `action`.
+    fn seq_button(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        view: &Entity<Self>,
+        action: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> impl IntoElement {
+        let view = view.clone();
+        div()
+            .id(id)
+            .px_2()
+            .py(px(2.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(self.palette.border)
+            .cursor_pointer()
+            .hover(|s| s.bg(self.palette.hover))
+            .child(SharedString::from(label))
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| action(v, window, vcx));
+            })
+    }
+
     /// A dim tracking entry for the title bar: an optional direction glyph
     /// (`⇡` push / `⇣` pull), the ref name, and `↑ahead`/`↓behind` (each shown
     /// only when non-zero). The ahead/behind are clickable: `↑` opens the push
@@ -6958,6 +7123,12 @@ impl Render for StatusView {
         }
         if let Some(log) = &self.log {
             return root.child(self.render_log(log, &view));
+        }
+
+        // An in-progress merge/rebase/cherry-pick/revert sits above the list,
+        // visible while the user resolves it.
+        if let Some(seq) = &self.sequence {
+            root = root.child(self.render_sequence_banner(seq, &view));
         }
 
         // The list takes the flexible space; the status bar (added below)
