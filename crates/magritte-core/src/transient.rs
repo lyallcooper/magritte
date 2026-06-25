@@ -68,6 +68,12 @@ pub enum Command {
     ResetMixed,
     ResetHard,
     ResetKeep,
+    /// Merge a branch/ref into HEAD (the frontend prompts for it).
+    MergePlain,
+    /// Merge but don't commit (`--no-commit`).
+    MergeNoCommit,
+    /// Squash-merge (`--squash`): stage the result without a merge commit.
+    MergeSquash,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -613,6 +619,49 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
                         key: "e",
                         description: "elsewhere".to_string(),
                         command: Command::FetchElsewhere,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn merge_transient() -> Transient {
+    Transient {
+        title: plain_title("Merge"),
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![
+                    Suffix::Switch(Switch {
+                        key: "-n",
+                        arg: "--no-ff",
+                        description: "Always create a merge commit",
+                    }),
+                    Suffix::Switch(Switch {
+                        key: "-f",
+                        arg: "--ff-only",
+                        description: "Fast-forward only",
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Merge"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "m",
+                        description: "merge".to_string(),
+                        command: Command::MergePlain,
+                    }),
+                    Suffix::Action(Action {
+                        key: "n",
+                        description: "merge, don't commit".to_string(),
+                        command: Command::MergeNoCommit,
+                    }),
+                    Suffix::Action(Action {
+                        key: "s",
+                        description: "squash merge".to_string(),
+                        command: Command::MergeSquash,
                     }),
                 ],
             },

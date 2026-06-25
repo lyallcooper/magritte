@@ -11,6 +11,7 @@ pub mod diff;
 pub mod error;
 pub mod files;
 pub mod log;
+pub mod merge;
 pub mod remote;
 pub mod repo;
 pub mod reset;
