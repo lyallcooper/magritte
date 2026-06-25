@@ -864,7 +864,7 @@ const ROW_HEIGHT: f32 = 18.0;
 /// Taller row height for the picker/palette list, so a keycap (bordered, a
 /// touch taller than a text line) sits comfortably without colliding with its
 /// neighbors.
-const PICKER_ROW_HEIGHT: f32 = 22.0;
+const PICKER_ROW_HEIGHT: f32 = 26.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
