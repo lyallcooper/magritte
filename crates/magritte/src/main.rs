@@ -967,8 +967,18 @@ fn effective_mode(cfg: &config::Config, cx: &App) -> gpui_component::ThemeMode {
 /// to the effective mode (following the system when appearance is "auto").
 fn apply_appearance(cfg: &config::Config, cx: &mut App) {
     let registry = gpui_component::ThemeRegistry::global(cx);
-    let light = registry.themes().get(cfg.light_theme()).cloned();
-    let dark = registry.themes().get(cfg.dark_theme()).cloned();
+    // Fall back to our default theme when the configured name isn't found —
+    // e.g. a config referencing a theme we've since dropped — rather than
+    // leaving gpui-component's built-in default.
+    let pick = |name: &str, fallback: &str| {
+        registry
+            .themes()
+            .get(name)
+            .or_else(|| registry.themes().get(fallback))
+            .cloned()
+    };
+    let light = pick(cfg.light_theme(), config::DEFAULT_LIGHT_THEME);
+    let dark = pick(cfg.dark_theme(), config::DEFAULT_DARK_THEME);
     {
         let theme = gpui_component::Theme::global_mut(cx);
         if let Some(t) = light {
@@ -3461,6 +3471,10 @@ impl StatusView {
             .sorted_themes()
             .iter()
             .map(|t| t.name.clone())
+            // gpui-component always seeds its built-in "Default Light/Dark", which
+            // we can't remove from the registry — hide them so only our authored
+            // themes are offered.
+            .filter(|n| n.as_ref() != "Default Light" && n.as_ref() != "Default Dark")
             .collect();
         theme_names.sort_by_key(|n| n.to_lowercase());
 
@@ -6317,33 +6331,11 @@ fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
     }
 }
 
-/// gpui-component's bundled theme sets, embedded at compile time. Each file is
-/// a `ThemeSet` containing one or more light/dark `ThemeConfig`s; loading them
-/// makes every theme selectable from the registry by name.
-const BUNDLED_THEMES: &[&str] = &[
-    include_str!("../themes/adventure.json"),
-    include_str!("../themes/alduin.json"),
-    include_str!("../themes/asciinema.json"),
-    include_str!("../themes/aurora.json"),
-    include_str!("../themes/ayu.json"),
-    include_str!("../themes/catppuccin.json"),
-    include_str!("../themes/everforest.json"),
-    include_str!("../themes/fahrenheit.json"),
-    include_str!("../themes/flexoki.json"),
-    include_str!("../themes/gruvbox.json"),
-    include_str!("../themes/harper.json"),
-    include_str!("../themes/hybrid.json"),
-    include_str!("../themes/jellybeans.json"),
-    include_str!("../themes/kibble.json"),
-    include_str!("../themes/macos-classic.json"),
-    include_str!("../themes/matrix.json"),
-    include_str!("../themes/mellifluous.json"),
-    include_str!("../themes/molokai.json"),
-    include_str!("../themes/solarized.json"),
-    include_str!("../themes/spaceduck.json"),
-    include_str!("../themes/tokyonight.json"),
-    include_str!("../themes/twilight.json"),
-];
+/// Our own theme sets, embedded at compile time. Each file is a `ThemeSet` of
+/// light/dark `ThemeConfig`s authored against the official palettes (replacing
+/// gpui-component's bundled themes, which were loose ports). More land here as
+/// they're authored; see `docs/` for the curated list.
+const BUNDLED_THEMES: &[&str] = &[include_str!("../themes/macos.json")];
 
 /// Load every bundled theme set into the registry so all themes are available.
 fn register_bundled_themes(cx: &mut App) {
