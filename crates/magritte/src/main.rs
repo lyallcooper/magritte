@@ -1400,6 +1400,9 @@ struct StatusView {
     shift_click: bool,
     generation: u64,
     pending_g: bool,
+    /// Whether the Emacs `C-x` prefix is pending (next key resolves it, e.g.
+    /// `C-x C-c` to quit).
+    pending_cx: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The commit message editor, when open (takes over the window).
@@ -1470,6 +1473,7 @@ impl StatusView {
             shift_click: false,
             generation: 0,
             pending_g: false,
+            pending_cx: false,
             popup: None,
             editor: None,
             settings: None,
@@ -3775,7 +3779,15 @@ impl StatusView {
         // confirm / cancel keys before the input consumes them; everything else
         // (text, backspace) falls through to filter the list.
         if matches!(self.popup, Some(Popup::RemotePicker(_))) {
-            match event.keystroke.key.as_str() {
+            let ctrl = event.keystroke.modifiers.control;
+            // Emacs minibuffer aliases: C-g cancels, C-n/C-p move the selection.
+            let key = match event.keystroke.key.as_str() {
+                "g" if ctrl => "escape",
+                "n" if ctrl => "down",
+                "p" if ctrl => "up",
+                k => k,
+            };
+            match key {
                 "up" => {
                     cx.stop_propagation();
                     self.picker_move(-1, cx);
@@ -3800,7 +3812,11 @@ impl StatusView {
         if self.editor.is_none() {
             return;
         }
-        let key = event.keystroke.key.as_str();
+        // C-g cancels here too; C-n/C-p are left to the Input for cursor motion.
+        let key = match event.keystroke.key.as_str() {
+            "g" if event.keystroke.modifiers.control => "escape",
+            k => k,
+        };
         // While the "discard message?" confirmation is up, capture y / n / esc.
         if self.editor.as_ref().is_some_and(|e| e.confirming_cancel) {
             match key {
@@ -4248,8 +4264,42 @@ impl StatusView {
 
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
-        let ctrl = event.keystroke.modifiers.control;
+        let mut ctrl = event.keystroke.modifiers.control;
         let alt = event.keystroke.modifiers.alt;
+
+        // Emacs aliases, normalized up front so every downstream handler gets
+        // them for free: C-g is the universal cancel (= Escape), and C-n/C-p
+        // move down/up (= j/k) wherever those motions apply.
+        let key = match key.as_str() {
+            "g" if ctrl => {
+                ctrl = false;
+                "escape".to_string()
+            }
+            "n" if ctrl => {
+                ctrl = false;
+                "j".to_string()
+            }
+            "p" if ctrl => {
+                ctrl = false;
+                "k".to_string()
+            }
+            _ => key,
+        };
+
+        // Emacs C-x C-c quits. C-x starts a prefix (like the `g` prefix); the
+        // next key resolves or cancels it. Handled before the modal branches so
+        // it works from any view.
+        if self.pending_cx {
+            self.pending_cx = false;
+            if ctrl && key == "c" {
+                cx.quit();
+            }
+            return;
+        }
+        if ctrl && key == "x" {
+            self.pending_cx = true;
+            return;
+        }
 
         // While settings is open the focused Select handles keys; we only watch
         // for Esc (when no dropdown menu is open) to close the screen. Tab is
