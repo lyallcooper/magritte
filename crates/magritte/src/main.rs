@@ -4937,6 +4937,9 @@ impl StatusView {
                 div()
                     .ml_1()
                     .text_color(self.palette.dim)
+                    // Keys are monospace, like keycaps elsewhere, even under a
+                    // proportional UI font.
+                    .font_family(self.font.clone())
                     .child(SharedString::from(format_keys(&seq))),
             );
         }
