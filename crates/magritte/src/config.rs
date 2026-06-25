@@ -38,6 +38,10 @@ pub struct Config {
     /// name opened via `open -a` (`Zed`, `Visual Studio Code`). Empty = open in
     /// the OS default app.
     pub editor: String,
+    /// Write commit messages in the external `editor` (an interactive
+    /// `git commit`) instead of Magritte's in-app commit editor. Requires
+    /// `editor` to be set; ignored otherwise.
+    pub commit_in_editor: bool,
 }
 
 impl Default for Config {
@@ -54,6 +58,7 @@ impl Default for Config {
             commit_title_ruler: true,
             commit_body_wrap: true,
             editor: String::new(),
+            commit_in_editor: false,
         }
     }
 }

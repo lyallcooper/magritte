@@ -3790,6 +3790,66 @@ impl StatusView {
         self.on_editor_changed(window, cx);
     }
 
+    /// The `GIT_EDITOR` command for writing commit messages in the user's
+    /// external editor, or `None` when that's off (or, on non-macOS, when no
+    /// command is configured). On macOS `open -W -n` makes git block until the
+    /// freshly launched instance is closed: an empty `editor` opens the message
+    /// in the OS default app, a named one targets it with `-a`. Elsewhere the
+    /// configured command is used verbatim (the user adds a `--wait` flag).
+    fn external_commit_editor(&self) -> Option<String> {
+        if !self.config.commit_in_editor {
+            return None;
+        }
+        let editor = self.config.editor.trim();
+        #[cfg(target_os = "macos")]
+        {
+            Some(match editor {
+                "" => "open -W -n".to_string(),
+                app => format!("open -W -n -a {}", shell_single_quote(app)),
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // No portable blocking default launcher, so fall back to the in-app
+            // editor when there's no explicit command to run.
+            (!editor.is_empty()).then(|| editor.to_string())
+        }
+    }
+
+    /// Make a commit by launching the external editor on its message (an
+    /// interactive `git commit` on the background executor). The editor blocks
+    /// git until it's closed; we show a waiting notice meanwhile, then report
+    /// the outcome and refresh — an empty/aborted message surfaces as an error.
+    fn commit_via_external_editor(
+        &mut self,
+        mode: CommitMode,
+        args: Vec<String>,
+        git_editor: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (waiting, done) = match mode {
+            CommitMode::Create => ("Waiting for commit message…", "Committed"),
+            CommitMode::Amend => ("Waiting for amended message…", "Amended"),
+            CommitMode::Reword => ("Waiting for reworded message…", "Reworded"),
+        };
+        self.set_status(waiting.to_string(), false, cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.commit_with_editor(mode, &args, &git_editor) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report(done, result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn open_editor(
         &mut self,
         mode: CommitMode,
@@ -3797,6 +3857,12 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // If the user opted to write commit messages in their external editor,
+        // hand off to an interactive `git commit` instead of the in-app editor.
+        if let Some(git_editor) = self.external_commit_editor() {
+            self.commit_via_external_editor(mode, args, git_editor, cx);
+            return;
+        }
         // Return inserts a newline; Cmd/Ctrl+Return submits (reported as a
         // PressEnter with secondary=true). We use code-editor mode (with the
         // grammar-less "text" language, so no syntax coloring) purely to get its
@@ -6162,13 +6228,27 @@ impl StatusView {
                 "Commit editor",
                 vec![
                     field(
+                        "commit-in-editor",
+                        "Use external editor",
+                        self.toggle_control(
+                            "commit-in-editor",
+                            self.config.commit_in_editor,
+                            "Write commit messages in your external editor (an interactive \
+                             `git commit`) instead of the built-in one — the editor set above, \
+                             or the OS default app when that's \"System Default\". The summary \
+                             ruler and auto-wrap below apply only to the built-in editor.",
+                            view,
+                            |cfg, on| cfg.commit_in_editor = on,
+                        ),
+                    ),
+                    field(
                         "commit-title-ruler",
                         "Summary ruler",
                         self.toggle_control(
                             "commit-title-ruler",
                             self.config.commit_title_ruler,
-                            "Underlines characters past column 50 on the commit summary \
-                             (first) line.",
+                            "Underlines characters past column 50 on the commit summary (first) \
+                             line.",
                             view,
                             |cfg, on| cfg.commit_title_ruler = on,
                         ),
@@ -6179,8 +6259,8 @@ impl StatusView {
                         self.toggle_control(
                             "commit-body-wrap",
                             self.config.commit_body_wrap,
-                            "Hard-wraps the commit body at 72 columns as you type at the \
-                             end of a line (the summary line is never wrapped).",
+                            "Hard-wraps the commit body at 72 columns as you type at the end of \
+                             a line (the summary line is never wrapped).",
                             view,
                             |cfg, on| cfg.commit_body_wrap = on,
                         ),
@@ -7039,6 +7119,13 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
+}
+
+/// Single-quote `s` as one argument in a `/bin/sh` command line (git runs
+/// `GIT_EDITOR` through the shell), escaping any embedded single quotes.
+#[cfg(target_os = "macos")]
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Open `path` with the OS default application for its type.

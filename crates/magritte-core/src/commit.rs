@@ -49,6 +49,34 @@ impl Repo {
         Ok(summary(&out.stdout, &out.stderr))
     }
 
+    /// Commit according to `mode` by launching the user's external editor on the
+    /// commit message (an interactive `git commit` with `GIT_EDITOR` set to
+    /// `git_editor`), rather than supplying the message directly. git pre-fills
+    /// `COMMIT_EDITMSG` (the template for a create, HEAD's message for an
+    /// amend/reword) and blocks until the editor exits. An empty message aborts
+    /// the commit (git's own behavior), surfaced as an error. Returns git's
+    /// summary line.
+    pub fn commit_with_editor(
+        &self,
+        mode: CommitMode,
+        args: &[String],
+        git_editor: &str,
+    ) -> Result<String> {
+        let mut argv: Vec<String> = vec!["commit".into()];
+        match mode {
+            CommitMode::Create => {}
+            CommitMode::Amend => argv.push("--amend".into()),
+            CommitMode::Reword => {
+                argv.push("--amend".into());
+                argv.push("--only".into());
+                argv.push("--allow-empty".into());
+            }
+        }
+        argv.extend(args.iter().cloned());
+        let out = self.run_with_env(&argv, "GIT_EDITOR", git_editor)?;
+        Ok(summary(&out.stdout, &out.stderr))
+    }
+
     /// Remote-tracking branches that contain `rev` — i.e. where it's already
     /// been published. Empty means unpushed. Used to warn (naming the branch)
     /// before amending/rewording a pushed commit (rewriting published history).

@@ -180,6 +180,47 @@ impl Repo {
         })
     }
 
+    /// Like [`run`](Self::run) but with one extra environment variable set.
+    /// Used to point `GIT_EDITOR` at the user's editor for an interactive
+    /// `git commit` (which blocks until the editor exits), without disturbing
+    /// the rest of git's environment.
+    pub fn run_with_env<I, S>(&self, args: I, key: &str, value: &str) -> Result<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let arg_vec: Vec<String> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect();
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.workdir)
+            .args(["-c", "core.quotepath=false"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env(key, value)
+            .args(&arg_vec)
+            .output()
+            .map_err(|source| Error::Spawn { source })?;
+
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        self.record(&arg_vec, output.status.code(), &stderr);
+
+        if !output.status.success() {
+            return Err(Error::Git {
+                args: arg_vec,
+                status: output.status.code(),
+                stderr,
+            });
+        }
+
+        Ok(GitOutput {
+            stdout: output.stdout,
+            stderr,
+        })
+    }
+
     /// Like [`run`](Self::run) but feeds `input` to git's stdin. Used to pipe
     /// patches to `git apply`.
     pub fn run_with_input<I, S>(&self, args: I, input: &[u8]) -> Result<GitOutput>
