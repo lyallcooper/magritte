@@ -1352,9 +1352,12 @@ fn apply_appearance(cfg: &config::Config, cx: &mut App) {
 
 /// Label for the font-picker entry that follows the OS default monospace.
 const SYSTEM_FONT_LABEL: &str = "System Default";
-/// Label for the UI-font entry that reuses the editor (monospace) font — the
-/// default, so the UI stays all-monospace until you opt into a proportional UI.
-const UI_FONT_DEFAULT_LABEL: &str = "Same as editor";
+/// Label for the UI-font entry that reuses the monospace font — the default, so
+/// the UI stays all-monospace until you opt into a proportional UI.
+const UI_FONT_DEFAULT_LABEL: &str = "Same as monospace";
+/// Config sentinel (and the "System Default" UI-font entry) for the platform's
+/// proportional system UI font, distinct from an empty value (= monospace).
+const SYSTEM_UI_FONT: &str = "system-ui";
 
 /// The platform's system monospace UI font. On macOS this is the SF Mono-based
 /// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
@@ -1368,6 +1371,17 @@ fn system_mono_font(cx: &App) -> SharedString {
     cx.theme().mono_font_family.clone()
 }
 
+/// The platform's system proportional UI font (the analog of
+/// [`system_mono_font`]): `.AppleSystemUIFont` on macOS, else the theme's.
+#[cfg(target_os = "macos")]
+fn system_ui_font(_cx: &App) -> SharedString {
+    SharedString::from(".AppleSystemUIFont")
+}
+#[cfg(not(target_os = "macos"))]
+fn system_ui_font(cx: &App) -> SharedString {
+    cx.theme().font_family.clone()
+}
+
 /// The monospace font family to render with: the user's configured choice, or
 /// the platform's system monospace UI font when unset (the "System Default"
 /// font-picker entry, stored as an empty config value so it stays adaptive).
@@ -1379,14 +1393,15 @@ fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
     }
 }
 
-/// The proportional UI font for prose chrome (menus, headings, labels). When
-/// unset, falls back to the monospace [`resolve_font`] so the UI looks exactly
-/// as it did before opting in.
+/// The UI font for prose chrome (menus, headings, labels): empty reuses the
+/// monospace [`resolve_font`] (the default, so nothing changes until opted in),
+/// the [`SYSTEM_UI_FONT`] sentinel uses the platform proportional font, and any
+/// other value is a chosen family.
 fn resolve_ui_font(cfg: &config::Config, cx: &App) -> SharedString {
-    if cfg.ui_font.is_empty() {
-        resolve_font(cfg, cx)
-    } else {
-        SharedString::from(cfg.ui_font.clone())
+    match cfg.ui_font.as_str() {
+        "" => resolve_font(cfg, cx),
+        SYSTEM_UI_FONT => system_ui_font(cx),
+        name => SharedString::from(name.to_string()),
     }
 }
 
@@ -3960,14 +3975,18 @@ impl StatusView {
         if self.ui_fonts.is_empty() {
             self.ui_fonts = all_font_names(cx);
         }
-        // Lead with "Same as editor" (empty config = the monospace UI we had
-        // before opting in); the rest are concrete families.
-        let mut ui_font_items: Vec<SharedString> = vec![SharedString::from(UI_FONT_DEFAULT_LABEL)];
+        // Lead with "Same as monospace" (empty config = the monospace UI we had
+        // before opting in) and "System Default" (the platform proportional
+        // font); the rest are concrete families.
+        let mut ui_font_items: Vec<SharedString> = vec![
+            SharedString::from(UI_FONT_DEFAULT_LABEL),
+            SharedString::from(SYSTEM_FONT_LABEL),
+        ];
         ui_font_items.extend(self.ui_fonts.iter().cloned());
-        let ui_font_ix = if self.config.ui_font.is_empty() {
-            0
-        } else {
-            pos(&ui_font_items, self.config.ui_font.as_str())
+        let ui_font_ix = match self.config.ui_font.as_str() {
+            "" => 0,
+            SYSTEM_UI_FONT => 1,
+            name => pos(&ui_font_items, name),
         };
 
         let appearance_items: Vec<SharedString> = APPEARANCE_OPTIONS
@@ -4073,11 +4092,12 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        // "Same as editor" → empty config (reuse the monospace font).
-                        this.config.ui_font = if name.as_ref() == UI_FONT_DEFAULT_LABEL {
-                            String::new()
-                        } else {
-                            name.to_string()
+                        this.config.ui_font = match name.as_ref() {
+                            // Reuse the monospace font (no proportional UI).
+                            UI_FONT_DEFAULT_LABEL => String::new(),
+                            // Platform proportional UI font.
+                            SYSTEM_FONT_LABEL => SYSTEM_UI_FONT.to_string(),
+                            other => other.to_string(),
                         };
                         this.ui_font = resolve_ui_font(&this.config, cx);
                         this.apply_and_save(cx);
@@ -5048,6 +5068,7 @@ impl StatusView {
                             self.palette.dim,
                             self.palette.removed,
                             pending_dash,
+                            &self.font,
                         ))
                         .child(self.hover_label(sw.description, self.palette.fg))
                         .child(
@@ -5096,6 +5117,7 @@ impl StatusView {
                             self.palette.dim,
                             self.palette.removed,
                             pending_dash,
+                            &self.font,
                         ))
                         .child(self.hover_label(o.description, self.palette.fg))
                         .when(!inner.is_empty(), |row| {
@@ -5124,7 +5146,7 @@ impl StatusView {
                         .cursor_pointer()
                         .group(KBD_ROW_GROUP)
                         .child(track_target(a.key))
-                        .child(key_chip(a.key, self.palette.dim))
+                        .child(key_chip(a.key, self.palette.dim, &self.font))
                         .child(self.hover_label(&a.description, self.palette.fg))
                         .on_click(move |_, window, cx: &mut App| {
                             view.update(cx, |v, vcx| {
@@ -5186,6 +5208,9 @@ impl StatusView {
             .rounded(px(4.0))
             .bg(self.palette.selection)
             .text_color(self.palette.fg)
+            // Branch/ref names are identifiers — keep them monospace even when
+            // the surrounding chrome uses a proportional UI font.
+            .font_family(self.font.clone())
             .font_weight(FontWeight::MEDIUM)
             .child(SharedString::from(name.to_string()))
     }
@@ -5196,7 +5221,7 @@ impl StatusView {
         div()
             .flex()
             .items_center()
-            .child(key_chip(keys, self.palette.dim))
+            .child(key_chip(keys, self.palette.dim, &self.font))
     }
 
     /// A clickable key hint: a keycap + label that runs `action` (the same
@@ -5222,7 +5247,7 @@ impl StatusView {
             .cursor_pointer()
             .group(KBD_ROW_GROUP)
             .child(track_target(id))
-            .child(key_chip(key, self.palette.dim))
+            .child(key_chip(key, self.palette.dim, &self.font))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| action(v, window, vcx));
@@ -5828,7 +5853,7 @@ impl StatusView {
                     ),
                     field(
                         "font",
-                        "Editor font",
+                        "Monospace font",
                         Select::new(&s.font)
                             .search_placeholder("Search fonts")
                             .into_any_element(),
@@ -6846,8 +6871,9 @@ fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
 
 /// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
 /// label (or, for switches, a multi-span label). The border makes adjacent
-/// chips read as distinct keys rather than blending together.
-fn chip_box(color: Hsla) -> gpui::Div {
+/// chips read as distinct keys rather than blending together. `font` is the
+/// monospace family — keys read as keys, never the proportional UI font.
+fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
     div()
         .px(px(5.0))
         .min_w(px(18.0))
@@ -6858,6 +6884,7 @@ fn chip_box(color: Hsla) -> gpui::Div {
         .border_1()
         .border_color(with_alpha(color, 0.45))
         .text_color(color)
+        .font_family(font.clone())
         .bg(with_alpha(color, 0.12))
 }
 
@@ -6883,9 +6910,9 @@ fn format_keys(key: &str) -> String {
 }
 
 /// A keyboard key badge: a keycap chip with a word-style label (see
-/// [`format_keys`]).
-fn key_chip(key: &str, color: Hsla) -> AnyElement {
-    chip_box(color)
+/// [`format_keys`]). `font` is the monospace family.
+fn key_chip(key: &str, color: Hsla, font: &SharedString) -> AnyElement {
+    chip_box(color, font)
         .child(SharedString::from(format_keys(key)))
         .into_any_element()
 }
@@ -6893,10 +6920,16 @@ fn key_chip(key: &str, color: Hsla) -> AnyElement {
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
 /// switch letter), only the dash *inside* the keycap changes color to the
 /// accent, while the keycap itself stays neutral (magit's prefix feedback).
-fn switch_chip(key: &str, color: Hsla, accent: Hsla, pending: bool) -> AnyElement {
+fn switch_chip(
+    key: &str,
+    color: Hsla,
+    accent: Hsla,
+    pending: bool,
+    font: &SharedString,
+) -> AnyElement {
     let rest = key.strip_prefix('-').unwrap_or(key);
     let dash_color = if pending { accent } else { color };
-    chip_box(color)
+    chip_box(color, font)
         .child(div().text_color(dash_color).child(SharedString::from("-")))
         .child(
             div()
