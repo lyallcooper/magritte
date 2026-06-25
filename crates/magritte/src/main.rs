@@ -4569,7 +4569,9 @@ impl StatusView {
             // Visual (region) selection; Escape cancels.
             "v" => return self.invoke_command("visual", window, cx),
             "escape" => {
-                if self.visual.take().is_some() {
+                // Cancel a visual selection, else dismiss the status/error
+                // banner if one is showing.
+                if self.visual.take().is_some() || self.status_message.take().is_some() {
                     cx.notify();
                 }
                 return;
@@ -6538,12 +6540,21 @@ impl Render for StatusView {
                     )),
             );
         } else if let Some(msg) = &self.status_message {
-            root = root.child(status_bar(
-                msg.clone(),
-                self.palette.panel,
-                self.palette.fg,
-                self.palette.border,
-            ));
+            // The status/error banner: click it (or press Esc) to dismiss.
+            root = root.child(
+                status_bar(
+                    msg.clone(),
+                    self.palette.panel,
+                    self.palette.fg,
+                    self.palette.border,
+                )
+                .id("status-bar")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.status_message = None;
+                    cx.notify();
+                })),
+            );
         }
 
         // A floating "?" button (bottom-right) opens the dispatch menu — a
