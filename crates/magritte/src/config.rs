@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// Default theme names for the light and dark slots (gpui-component's built-in
 /// neutral themes).
-pub const DEFAULT_LIGHT_THEME: &str = "Default Light";
-pub const DEFAULT_DARK_THEME: &str = "Default Dark";
+pub const DEFAULT_LIGHT_THEME: &str = "macOS Light";
+pub const DEFAULT_DARK_THEME: &str = "macOS Dark";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

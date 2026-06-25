@@ -44,3 +44,4 @@
 - [x] The background in solarized dark theme feels a little dark. Why might that be? — base03 is the canonical (intentionally dark) Solarized bg; the panel now elevates to base02 so the UI isn't uniformly the darkest shade
 - [ ] Allow users to set a UI font that is used to render non-tabular or code-type text. So something that would be ok for proportional fonts
 - [ ] I think I prefer how magit orders the transient window contents. We seem to only allow a basic column layout, but magit's layout is more flexible and makes more efficient use of screen space
+- [ ] '$' and ',' feel like they don't belong in the commands section, since they're not git commands but app-related commands. Maybe we need a new section
