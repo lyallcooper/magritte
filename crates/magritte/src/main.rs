@@ -6335,7 +6335,17 @@ fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
 /// light/dark `ThemeConfig`s authored against the official palettes (replacing
 /// gpui-component's bundled themes, which were loose ports). More land here as
 /// they're authored; see `docs/` for the curated list.
-const BUNDLED_THEMES: &[&str] = &[include_str!("../themes/macos.json")];
+const BUNDLED_THEMES: &[&str] = &[
+    include_str!("../themes/macos.json"),
+    include_str!("../themes/github.json"),
+    include_str!("../themes/solarized.json"),
+    include_str!("../themes/selenized.json"),
+    include_str!("../themes/gruvbox.json"),
+    include_str!("../themes/catppuccin.json"),
+    include_str!("../themes/nord.json"),
+    include_str!("../themes/dracula.json"),
+    include_str!("../themes/tao.json"),
+];
 
 /// Load every bundled theme set into the registry so all themes are available.
 fn register_bundled_themes(cx: &mut App) {
