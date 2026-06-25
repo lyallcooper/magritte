@@ -681,6 +681,15 @@ fn commands() -> &'static [Command] {
     C
 }
 
+/// The keybinding for the command with this palette title, if it has one.
+/// Used to annotate `:` palette rows so they double as a keymap reference.
+fn command_key_for_title(title: &str) -> Option<&'static str> {
+    commands()
+        .iter()
+        .find(|c| c.title == title)
+        .and_then(|c| c.key)
+}
+
 /// The `?` dispatch menu: a modal command transient (magit's dispatch),
 /// generated from the [`commands`] registry (grouped by [`Category`]) plus a
 /// static Navigation group for the pure motions. Each row is invoked by its key
@@ -4540,18 +4549,30 @@ impl StatusView {
             uniform_list("picker-rows", rows, {
                 let view = view.clone();
                 move |range, _window, cx| match &view.read(cx).popup {
-                    Some(Popup::RemotePicker(p)) => range
-                        .map(|ix| match p.list.row(ix) {
-                            Some(r) => view.read(cx).render_picker_row(
-                                ix,
-                                r.label,
-                                r.is_create,
-                                ix == p.list.selected(),
-                                &view,
-                            ),
-                            None => div().h(px(ROW_HEIGHT)).into_any_element(),
-                        })
-                        .collect::<Vec<_>>(),
+                    Some(Popup::RemotePicker(p)) => {
+                        // In the command palette, show each command's keybinding
+                        // (when it has one) on the right, so it doubles as help.
+                        let palette = matches!(p.action, PickerAction::RunCommand);
+                        range
+                            .map(|ix| match p.list.row(ix) {
+                                Some(r) => {
+                                    let hint = palette
+                                        .then(|| command_key_for_title(&r.label))
+                                        .flatten()
+                                        .map(SharedString::from);
+                                    view.read(cx).render_picker_row(
+                                        ix,
+                                        r.label,
+                                        r.is_create,
+                                        ix == p.list.selected(),
+                                        hint,
+                                        &view,
+                                    )
+                                }
+                                None => div().h(px(ROW_HEIGHT)).into_any_element(),
+                            })
+                            .collect::<Vec<_>>()
+                    }
                     _ => Vec::new(),
                 }
             })
@@ -4629,6 +4650,7 @@ impl StatusView {
         label: SharedString,
         is_create: bool,
         selected: bool,
+        hint: Option<SharedString>,
         view: &Entity<Self>,
     ) -> AnyElement {
         let view = view.clone();
@@ -4668,7 +4690,16 @@ impl StatusView {
         } else {
             div().text_color(self.palette.fg).child(label)
         };
-        el.child(label_el).into_any_element()
+        el = el.child(label_el);
+        // A right-aligned keycap showing the command's binding (palette only).
+        if let Some(key) = hint {
+            el = el.child(div().flex_grow(1.0)).child(
+                div()
+                    .pr(px(ROW_PAD_LEFT))
+                    .child(key_chip(&key, self.palette.dim)),
+            );
+        }
+        el.into_any_element()
     }
 
     /// Close the open picker. If it was prompting for a transient option value,
