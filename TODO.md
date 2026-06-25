@@ -63,3 +63,4 @@
   - **Conflict resolution depth**: interactive (ediff-style) per-hunk resolution and `--merge` (restore conflict markers). We offer take-ours/take-theirs + stage-to-resolve.
   - **Rebase niceties**: subset rebase (`magit-rebase-subset`), choosing a non-HEAD start point, and `--autostash` defaulting on (it's an off-by-default switch today; our transient model has no default-on switches yet).
   - **`git am`**: we detect/surface a paused `am` (continue/skip/abort via the banner) but there's no command to *start* one (apply a patch/mailbox) — rare.
+- [ ] Open file should open to where the diff starts
