@@ -1188,7 +1188,9 @@ struct SettingsState {
     light_theme: Entity<SelectState<SearchableVec<SharedString>>>,
     dark_theme: Entity<SelectState<SearchableVec<SharedString>>>,
     font: Entity<SelectState<SearchableVec<SharedString>>>,
-    /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font).
+    ui_font: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
+    /// 4=ui_font).
     focus_ix: usize,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
@@ -1209,6 +1211,21 @@ fn monospace_font_names(cx: &App) -> Vec<SharedString> {
         // ".ZedMono", …). They aren't user-selectable families, and probing them
         // by name makes CoreText log "should use CTFontCreateUIFontForLanguage".
         .filter(|name| !name.starts_with('.') && is_monospace_font(name))
+        .map(SharedString::from)
+        .collect();
+    names.sort_by_key(|f| f.to_lowercase());
+    names.dedup();
+    names
+}
+
+/// All selectable font families (for the proportional UI-font picker), sorted.
+/// Unlike [`monospace_font_names`] this keeps proportional families too.
+fn all_font_names(cx: &App) -> Vec<SharedString> {
+    let mut names: Vec<SharedString> = cx
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .filter(|name| !name.starts_with('.'))
         .map(SharedString::from)
         .collect();
     names.sort_by_key(|f| f.to_lowercase());
@@ -1335,6 +1352,9 @@ fn apply_appearance(cfg: &config::Config, cx: &mut App) {
 
 /// Label for the font-picker entry that follows the OS default monospace.
 const SYSTEM_FONT_LABEL: &str = "System Default";
+/// Label for the UI-font entry that reuses the editor (monospace) font — the
+/// default, so the UI stays all-monospace until you opt into a proportional UI.
+const UI_FONT_DEFAULT_LABEL: &str = "Same as editor";
 
 /// The platform's system monospace UI font. On macOS this is the SF Mono-based
 /// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
@@ -1356,6 +1376,17 @@ fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
         system_mono_font(cx)
     } else {
         SharedString::from(cfg.font.clone())
+    }
+}
+
+/// The proportional UI font for prose chrome (menus, headings, labels). When
+/// unset, falls back to the monospace [`resolve_font`] so the UI looks exactly
+/// as it did before opting in.
+fn resolve_ui_font(cfg: &config::Config, cx: &App) -> SharedString {
+    if cfg.ui_font.is_empty() {
+        resolve_font(cfg, cx)
+    } else {
+        SharedString::from(cfg.ui_font.clone())
     }
 }
 
@@ -1416,13 +1447,17 @@ struct StatusView {
     log: Option<LogState>,
     /// A commit's diff detail (opened from the log with Enter), when open.
     commit_view: Option<CommitView>,
-    /// The monospace font family used for all chrome, set via settings.
+    /// The monospace font family for code, diffs, and tabular columns.
     font: SharedString,
+    /// The proportional UI font for prose chrome; equals `font` when unset.
+    ui_font: SharedString,
     /// The loaded user config (theme/appearance/font), kept so we can re-apply
     /// on config-file edits or system appearance changes.
     config: config::Config,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
+    /// Cached list of all font families, for the UI-font picker.
+    ui_fonts: Vec<SharedString>,
     /// Installed GUI editors, as (display name, .app path), for the settings
     /// "Open config file" dropdown. Refreshed each time settings opens.
     editors: Vec<(SharedString, SharedString)>,
@@ -1448,6 +1483,7 @@ impl StatusView {
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
         let font = resolve_font(&config, cx);
+        let ui_font = resolve_ui_font(&config, cx);
 
         // Sections are expanded by default; individual files start collapsed,
         // so opening a large repo loads no diffs until a file is expanded.
@@ -1481,8 +1517,10 @@ impl StatusView {
             log: None,
             commit_view: None,
             font,
+            ui_font,
             config,
             mono_fonts: Vec::new(),
+            ui_fonts: Vec::new(),
             editors: Vec::new(),
             status_message: startup_warning,
             confirm: None,
@@ -1541,6 +1579,7 @@ impl StatusView {
     fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         self.config = cfg;
         self.font = resolve_font(&self.config, cx);
+        self.ui_font = resolve_ui_font(&self.config, cx);
         self.reapply_theme(cx);
     }
 
@@ -3914,6 +3953,19 @@ impl StatusView {
             pos(&font_items, self.config.font.as_str())
         };
 
+        if self.ui_fonts.is_empty() {
+            self.ui_fonts = all_font_names(cx);
+        }
+        // Lead with "Same as editor" (empty config = the monospace UI we had
+        // before opting in); the rest are concrete families.
+        let mut ui_font_items: Vec<SharedString> = vec![SharedString::from(UI_FONT_DEFAULT_LABEL)];
+        ui_font_items.extend(self.ui_fonts.iter().cloned());
+        let ui_font_ix = if self.config.ui_font.is_empty() {
+            0
+        } else {
+            pos(&ui_font_items, self.config.ui_font.as_str())
+        };
+
         let appearance_items: Vec<SharedString> = APPEARANCE_OPTIONS
             .iter()
             .map(|(label, _)| SharedString::from(*label))
@@ -3943,6 +3995,15 @@ impl StatusView {
             SelectState::new(
                 SearchableVec::new(font_items),
                 row(font_ix),
+                &mut *window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let ui_font = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(ui_font_items),
+                row(ui_font_ix),
                 &mut *window,
                 cx,
             )
@@ -3996,6 +4057,25 @@ impl StatusView {
                             name.to_string()
                         };
                         this.font = resolve_font(&this.config, cx);
+                        // The UI font may track the editor font ("Same as
+                        // editor"), so re-resolve it too.
+                        this.ui_font = resolve_ui_font(&this.config, cx);
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &ui_font,
+                window,
+                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(name)) = ev {
+                        // "Same as editor" → empty config (reuse the monospace font).
+                        this.config.ui_font = if name.as_ref() == UI_FONT_DEFAULT_LABEL {
+                            String::new()
+                        } else {
+                            name.to_string()
+                        };
+                        this.ui_font = resolve_ui_font(&this.config, cx);
                         this.apply_and_save(cx);
                     }
                 },
@@ -4008,6 +4088,7 @@ impl StatusView {
             light_theme,
             dark_theme,
             font,
+            ui_font,
             focus_ix: 0,
             _subs: subs,
         });
@@ -4026,7 +4107,7 @@ impl StatusView {
         let Some(s) = self.settings.as_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + 1) % 4;
+        s.focus_ix = (s.focus_ix + 1) % 5;
         match s.focus_ix {
             0 => s
                 .appearance
@@ -4040,7 +4121,8 @@ impl StatusView {
                 .dark_theme
                 .clone()
                 .update(cx, |st, cx| st.focus(window, cx)),
-            _ => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
+            3 => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
+            _ => s.ui_font.clone().update(cx, |st, cx| st.focus(window, cx)),
         }
     }
 
@@ -5100,6 +5182,9 @@ impl StatusView {
             .flex_col()
             .flex_grow(1.0)
             .w_full()
+            // The message editor and diff preview are monospace (the 50/72
+            // ruler depends on column alignment).
+            .font_family(self.font.clone())
             .p_3()
             .gap_2()
             .child(
@@ -5292,6 +5377,8 @@ impl StatusView {
             .flex_col()
             .w_full()
             .h_full()
+            // Commands and their output are code — monospace.
+            .font_family(self.font.clone())
             .p_4()
             .gap_3()
             .child(
@@ -5452,6 +5539,8 @@ impl StatusView {
             .flex_col()
             .w_full()
             .h_full()
+            // Commit rows are columnar (hash / subject / date) — monospace.
+            .font_family(self.font.clone())
             .p_4()
             .gap_3()
             .child(header)
@@ -5543,6 +5632,8 @@ impl StatusView {
             .flex_col()
             .w_full()
             .h_full()
+            // A commit's header + diff is code — monospace.
+            .font_family(self.font.clone())
             .p_4()
             .gap_3()
             .child(
@@ -5676,8 +5767,15 @@ impl StatusView {
                     ),
                     field(
                         "font",
-                        "Font",
+                        "Editor font",
                         Select::new(&s.font)
+                            .search_placeholder("Search fonts")
+                            .into_any_element(),
+                    ),
+                    field(
+                        "ui-font",
+                        "UI font",
+                        Select::new(&s.ui_font)
                             .search_placeholder("Search fonts")
                             .into_any_element(),
                     ),
@@ -5887,6 +5985,16 @@ impl StatusView {
             // visual selection, which already have a background) — the theme's
             // explicit hover wash, so it reads as a preview of selecting.
             el = el.hover(|s| s.bg(self.palette.hover));
+        }
+
+        // Code-, diff-, and path-bearing rows render monospace (alignment and
+        // code legibility); prose rows (sections, headers, messages) inherit the
+        // UI font from the root.
+        if matches!(
+            row.kind,
+            RowKind::Diff { .. } | RowKind::HunkHeader { .. } | RowKind::File { .. }
+        ) {
+            el = el.font_family(self.font.clone());
         }
 
         let content = match &row.kind {
@@ -6186,7 +6294,11 @@ impl Render for StatusView {
             .bg(self.palette.bg)
             .text_color(self.palette.fg)
             .text_size(px(13.0))
-            .font_family(self.font.clone())
+            // Proportional UI font is the base for prose chrome; code/diff/
+            // tabular rows and the code views override back to monospace. When
+            // no UI font is configured, `ui_font` equals `font`, so this is the
+            // old all-monospace behavior.
+            .font_family(self.ui_font.clone())
             .flex()
             .flex_col();
 
