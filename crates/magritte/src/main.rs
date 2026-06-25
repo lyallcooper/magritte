@@ -4738,6 +4738,7 @@ impl StatusView {
         if let Some(seq) = hint {
             el = el.child(
                 div()
+                    .ml_1()
                     .text_color(self.palette.dim)
                     .child(SharedString::from(format_keys(&seq))),
             );
