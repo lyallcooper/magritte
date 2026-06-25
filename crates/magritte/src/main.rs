@@ -463,6 +463,10 @@ struct Command {
     /// Whether it makes sense to offer right now — the palette filters on this.
     /// (Permissive today; argument-gathering happens in `run`.)
     enabled: fn(&StatusView) -> bool,
+    /// For a leaf, the transient suffix it fires — used to show its full key
+    /// sequence (prefix + suffix, e.g. `c c`) in the palette. `None` for
+    /// top-level prefixes/actions, which advertise their own `key`.
+    leaf: Option<transient::Command>,
     /// Perform the command. May open a transient/picker or act immediately.
     run: fn(&mut StatusView, &mut Window, &mut Context<StatusView>),
 }
@@ -488,6 +492,7 @@ fn commands() -> &'static [Command] {
                 menu: true,
                 palette: true,
                 enabled: ALWAYS,
+                leaf: None,
                 run: $run,
             }
         };
@@ -505,6 +510,7 @@ fn commands() -> &'static [Command] {
                 menu: false,
                 palette: true,
                 enabled: ALWAYS,
+                leaf: Some($cmd),
                 run: |t, w, cx| t.fire_command_default($cmd, w, cx),
             }
         };
@@ -681,13 +687,39 @@ fn commands() -> &'static [Command] {
     C
 }
 
-/// The keybinding for the command with this palette title, if it has one.
-/// Used to annotate `:` palette rows so they double as a keymap reference.
-fn command_key_for_title(title: &str) -> Option<&'static str> {
-    commands()
-        .iter()
-        .find(|c| c.title == title)
-        .and_then(|c| c.key)
+/// The keystroke sequence to reach the command with this palette title, as
+/// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
+/// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
+/// has no binding. Lets the `:` palette double as a keymap reference.
+fn command_keys(title: &str) -> Option<String> {
+    let cmd = commands().iter().find(|c| c.title == title)?;
+    if let Some(key) = cmd.key {
+        return Some(key.to_string());
+    }
+    // A leaf: locate its suffix in the transients and prepend the prefix key.
+    let leaf = cmd.leaf?;
+    let rt = RemoteTargets::default();
+    let prefixes: [(&str, Transient); 7] = [
+        ("c", transient::commit_transient()),
+        ("b", transient::branch_transient()),
+        ("Z", transient::stash_transient()),
+        ("l", transient::log_transient()),
+        ("p", transient::push_transient(&rt)),
+        ("F", transient::pull_transient(&rt)),
+        ("f", transient::fetch_transient(&rt)),
+    ];
+    for (prefix_key, t) in &prefixes {
+        for group in &t.groups {
+            for suffix in &group.suffixes {
+                if let Suffix::Action(a) = suffix {
+                    if a.command == leaf {
+                        return Some(format!("{prefix_key} {}", a.key));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The `?` dispatch menu: a modal command transient (magit's dispatch),
@@ -829,6 +861,10 @@ impl Default for Palette {
 
 /// Fixed row height (points) so `uniform_list` can virtualize every row.
 const ROW_HEIGHT: f32 = 18.0;
+/// Taller row height for the picker/palette list, so a keycap (bordered, a
+/// touch taller than a text line) sits comfortably without colliding with its
+/// neighbors.
+const PICKER_ROW_HEIGHT: f32 = 22.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -4193,6 +4229,7 @@ impl StatusView {
         let key = event.keystroke.key.to_lowercase();
         let shift = event.keystroke.modifiers.shift;
         let ctrl = event.keystroke.modifiers.control;
+        let alt = event.keystroke.modifiers.alt;
 
         // While settings is open the focused Select handles keys; we only watch
         // for Esc (when no dropdown menu is open) to close the screen. Tab is
@@ -4368,6 +4405,8 @@ impl StatusView {
             "s" => return self.invoke_command("stage", window, cx),
             "u" if shift => return self.invoke_command("unstage-all", window, cx),
             "u" => return self.invoke_command("unstage", window, cx),
+            // M-x (Alt-x) opens the palette too, alongside `:`.
+            "x" if alt => return self.open_command_palette(window, cx),
             "x" => return self.invoke_command("discard", window, cx),
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
@@ -4527,7 +4566,7 @@ impl StatusView {
         // Show up to a screenful of candidates; the rest scroll.
         const MAX_VISIBLE: usize = 8;
         let rows = state.list.row_count();
-        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
+        let list_height = px(rows.clamp(1, MAX_VISIBLE) as f32 * PICKER_ROW_HEIGHT);
 
         let body = if rows == 0 {
             // Value entry has nothing to match — collapse the candidate area
@@ -4557,7 +4596,7 @@ impl StatusView {
                             .map(|ix| match p.list.row(ix) {
                                 Some(r) => {
                                     let hint = palette
-                                        .then(|| command_key_for_title(&r.label))
+                                        .then(|| command_keys(&r.label))
                                         .flatten()
                                         .map(SharedString::from);
                                     view.read(cx).render_picker_row(
@@ -4569,7 +4608,7 @@ impl StatusView {
                                         &view,
                                     )
                                 }
-                                None => div().h(px(ROW_HEIGHT)).into_any_element(),
+                                None => div().h(px(PICKER_ROW_HEIGHT)).into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }
@@ -4659,7 +4698,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(PICKER_ROW_HEIGHT))
             .w_full()
             .pl(px(ROW_PAD_LEFT))
             .cursor_pointer()
@@ -4691,10 +4730,15 @@ impl StatusView {
             div().text_color(self.palette.fg).child(label)
         };
         el = el.child(label_el);
-        // The command's binding (palette only): dim text right after the name,
-        // so it reads as a hint without a keycap overlapping the tight rows.
-        if let Some(key) = hint {
-            el = el.child(div().text_color(self.palette.dim).child(key));
+        // The command's binding (palette only), as keycaps right after the name:
+        // a single key for top-level commands, the full prefix→suffix sequence
+        // for leaves (e.g. `c c` for "Create commit").
+        if let Some(seq) = hint {
+            let mut keys = div().flex().items_center().gap_1();
+            for k in seq.split(' ') {
+                keys = keys.child(key_chip(k, self.palette.dim));
+            }
+            el = el.child(keys);
         }
         el.into_any_element()
     }
