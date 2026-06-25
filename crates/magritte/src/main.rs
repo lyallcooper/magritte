@@ -866,6 +866,9 @@ impl Default for Palette {
 
 /// Fixed row height (points) so `uniform_list` can virtualize every row.
 const ROW_HEIGHT: f32 = 18.0;
+/// Width (points) of the repo header label column ("Head:", "Push:"), so their
+/// values line up like a description list.
+const HEADER_LABEL_WIDTH: f32 = 40.0;
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -1137,6 +1140,15 @@ enum RowKind {
     Plain {
         text: String,
         color: Hsla,
+    },
+    /// A repository header line (Head:/Push:): a dim fixed-width label, the
+    /// value (a branch/ref rendered as the stylized chip used in dialogs, or
+    /// plain text), and an optional dim detail (e.g. ahead/behind).
+    Header {
+        label: String,
+        value: String,
+        chip: bool,
+        detail: Option<String>,
     },
     Section {
         title: String,
@@ -1755,16 +1767,17 @@ impl StatusView {
         };
 
         let head = &status.head;
-        let branch = head
-            .branch
-            .clone()
-            .unwrap_or_else(|| "HEAD (detached)".to_string());
-        rows.push(plain(format!("Head:    {branch}"), self.palette.fg));
+        match &head.branch {
+            // A real branch: the name as the stylized chip.
+            Some(branch) => rows.push(header_row("Head:", branch.clone(), true, None)),
+            // Detached HEAD: plain text, no chip (it isn't a branch).
+            None => rows.push(header_row("Head:", "detached".to_string(), false, None)),
+        }
         if let Some(upstream) = &head.upstream {
-            rows.push(plain(
-                format!("Push:    {upstream}  (+{} -{})", head.ahead, head.behind),
-                self.palette.dim,
-            ));
+            // Only note ahead/behind when actually diverged.
+            let detail = (head.ahead > 0 || head.behind > 0)
+                .then(|| format!("+{} -{}", head.ahead, head.behind));
+            rows.push(header_row("Push:", upstream.clone(), true, detail));
         }
 
         self.push_section(
@@ -4966,18 +4979,22 @@ impl StatusView {
                 TitleSpan::Text(t) => {
                     row.child(div().text_color(base).child(SharedString::from(t.clone())))
                 }
-                TitleSpan::Branch(b) => row.child(
-                    div()
-                        .px(px(5.0))
-                        .rounded(px(4.0))
-                        .bg(self.palette.selection)
-                        .text_color(self.palette.fg)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(SharedString::from(b.clone())),
-                ),
+                TitleSpan::Branch(b) => row.child(self.branch_chip(b)),
             };
         }
         row
+    }
+
+    /// A branch/ref name as a subtly tinted, medium-weight chip — set off from
+    /// surrounding text. Used in dialog titles and the repo header lines.
+    fn branch_chip(&self, name: &str) -> gpui::Div {
+        div()
+            .px(px(5.0))
+            .rounded(px(4.0))
+            .bg(self.palette.selection)
+            .text_color(self.palette.fg)
+            .font_weight(FontWeight::MEDIUM)
+            .child(SharedString::from(name.to_string()))
     }
 
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
@@ -5826,6 +5843,36 @@ impl StatusView {
             RowKind::Plain { text, color } => el
                 .text_color(*color)
                 .child(SharedString::from(text.clone())),
+            RowKind::Header {
+                label,
+                value,
+                chip,
+                detail,
+            } => {
+                let mut el = el.child(
+                    div()
+                        .min_w(px(HEADER_LABEL_WIDTH))
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(label.clone())),
+                );
+                el = if *chip {
+                    el.child(self.branch_chip(value))
+                } else {
+                    el.child(
+                        div()
+                            .text_color(self.palette.fg)
+                            .child(SharedString::from(value.clone())),
+                    )
+                };
+                if let Some(detail) = detail {
+                    el = el.child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(detail.clone())),
+                    );
+                }
+                el
+            }
             RowKind::Section {
                 title,
                 count,
@@ -6269,6 +6316,22 @@ fn plain(text: impl Into<String>, color: Hsla) -> Row {
         kind: RowKind::Plain {
             text: text.into(),
             color,
+        },
+    }
+}
+
+/// A non-selectable repository header line (Head:/Push:).
+fn header_row(label: &str, value: String, chip: bool, detail: Option<String>) -> Row {
+    Row {
+        indent: 0,
+        selectable: false,
+        fold: None,
+        target: None,
+        kind: RowKind::Header {
+            label: label.to_string(),
+            value,
+            chip,
+            detail,
         },
     }
 }

@@ -45,7 +45,7 @@
 - [ ] Allow users to set a UI font that is used to render non-tabular or code-type text. So something that would be ok for proportional fonts
 - [ ] I think I prefer how magit orders the transient window contents. We seem to only allow a basic column layout, but magit's layout is more flexible and makes more efficient use of screen space
 - [x] '$' and ',' feel like they don't belong in the commands section, since they're not git commands but app-related commands. Maybe we need a new section — done: registry commands carry a `Category`, and Settings/Git command log now render in their own "Application" group in the `?` menu.
-- [ ] The "Head:" and "Push:" lines at the top shouldn't be rendered the same as the diff lines. Maybe they should be in a DescriptionList? Or something that makes sense. And I like our stylized rendering of the branch that we use elsewhere, let's use that there too.
+- [x] The "Head:" and "Push:" lines at the top shouldn't be rendered the same as the diff lines. Maybe they should be in a DescriptionList? Or something that makes sense. And I like our stylized rendering of the branch that we use elsewhere, let's use that there too. — done: a `RowKind::Header` renders a dim fixed-width label + the value as the stylized branch chip (shared with dialog titles) + optional dim ahead/behind; the header rows are non-selectable chrome now.
 - [ ] How might we support text selection for copy and paste? It ok if it's mouse only if that's easier
 - [ ] And some basic emacs key bindings, such as C-x C-c
 - [ ] Have some type of frecency ranking for e.g. command palette commands. Anywhere else this might be appropriate?
