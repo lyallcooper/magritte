@@ -6330,7 +6330,6 @@ fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
 /// gpui-component's bundled themes, which were loose ports). More land here as
 /// they're authored; see `docs/` for the curated list.
 const BUNDLED_THEMES: &[&str] = &[
-    include_str!("../themes/macos.json"),
     include_str!("../themes/github.json"),
     include_str!("../themes/solarized.json"),
     include_str!("../themes/selenized.json"),
