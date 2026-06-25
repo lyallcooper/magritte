@@ -347,6 +347,11 @@ struct RemotePickerState {
     scroll: UniformListScrollHandle,
     action: PickerAction,
     switches: Vec<String>,
+    /// Whether to reserve the fixed candidate-list area. True for every picker
+    /// with candidates (so its height stays stable while filtering, and doesn't
+    /// jump when async candidates load); false only for a pure free-text value
+    /// prompt (e.g. `-n`), which collapses to just the input + hints.
+    reserve_candidates: bool,
     /// A transient to reopen when this picker confirms or cancels — used when a
     /// transient option prompts for its value, so the menu comes back after.
     /// Boxed to keep the (already large) picker state from dominating `Popup`.
@@ -2712,6 +2717,9 @@ impl StatusView {
         );
         if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
             p.resume = Some(Box::new(resume));
+            // A free-text value with no completion candidates (e.g. `-n`) has no
+            // candidate list — collapse it to just the input + hints.
+            p.reserve_candidates = !matches!(completion, transient::Completion::None);
         }
 
         // Load git-backed candidates (authors, tracked files) asynchronously and
@@ -3155,6 +3163,9 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             action,
             switches,
+            // Default to reserving the candidate area; the only exception is a
+            // pure value prompt, which opts out in `open_option_prompt`.
+            reserve_candidates: true,
             resume: None,
             _sub: sub,
         }));
@@ -4559,17 +4570,15 @@ impl StatusView {
     fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
         let confirm_label = state.action.confirm_label();
 
-        // Show up to a screenful of candidates; the rest scroll. Reserve the
-        // height from the *unfiltered* capacity, not the current match count, so
-        // filtering (which only shrinks the matches) doesn't resize this
-        // bottom-anchored panel and make the prompt drift down. Zero capacity is
-        // a pure value-entry picker, which has no candidate area at all.
+        // Reserve a fixed screenful for the candidate area, so the
+        // bottom-anchored panel never resizes — neither while filtering (which
+        // only shrinks the matches) nor when async candidates load. A pure
+        // value-entry prompt has no candidates and collapses instead.
         const MAX_VISIBLE: usize = 8;
         let rows = state.list.row_count();
-        let capacity = state.list.capacity();
-        let list_height = px(capacity.clamp(1, MAX_VISIBLE) as f32 * ROW_HEIGHT);
+        let list_height = px(MAX_VISIBLE as f32 * ROW_HEIGHT);
 
-        let body = if capacity == 0 {
+        let body = if !state.reserve_candidates {
             // Value entry has nothing to match — collapse the candidate area
             // entirely so the hints sit right under the input.
             div().into_any_element()
