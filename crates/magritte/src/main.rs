@@ -866,6 +866,8 @@ impl Default for Palette {
 
 /// Fixed row height (points) so `uniform_list` can virtualize every row.
 const ROW_HEIGHT: f32 = 18.0;
+/// How long a success notice lingers before auto-dismissing (seconds).
+const STATUS_FADE_SECS: u64 = 4;
 /// Width (points) of the repo header label column ("Head:", "Push:"), so their
 /// values line up like a description list.
 const HEADER_LABEL_WIDTH: f32 = 40.0;
@@ -1480,6 +1482,9 @@ struct StatusView {
     editors: Vec<(SharedString, SharedString)>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
+    /// Bumped each time the status message changes, so an auto-dismiss timer
+    /// only clears the message it was scheduled for (not a newer one).
+    status_seq: u64,
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
     focus: FocusHandle,
@@ -1541,6 +1546,7 @@ impl StatusView {
             ui_fonts: Vec::new(),
             editors: Vec::new(),
             status_message: startup_warning,
+            status_seq: 0,
             confirm: None,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -2986,13 +2992,8 @@ impl StatusView {
                 .spawn(async move { repo.execute(command, &switches) })
                 .await;
             this.update(cx, |this, cx| {
-                this.status_message = Some(match result {
-                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
-                    Ok(msg) => last_line(&msg),
-                    Err(e) => format!("error: {e}"),
-                });
+                this.report(command_done(command), result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -3306,14 +3307,45 @@ impl StatusView {
         }
     }
 
-    /// Set the status bar from a git operation's result: its last output line,
-    /// "Done" when silent, or the error.
-    fn report_result(&mut self, result: magritte_core::Result<String>) {
-        self.status_message = Some(match result {
-            Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
-            Ok(msg) => last_line(&msg),
-            Err(e) => format!("error: {e}"),
-        });
+    /// Show a status-bar message. A `transient` one (a success notice) fades on
+    /// its own after a moment; a sticky one (an error) stays until dismissed
+    /// (Esc / click). Either way it can always be dismissed manually.
+    fn set_status(&mut self, msg: String, transient: bool, cx: &mut Context<Self>) {
+        self.status_seq = self.status_seq.wrapping_add(1);
+        let seq = self.status_seq;
+        self.status_message = Some(msg);
+        cx.notify();
+        if transient {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(STATUS_FADE_SECS))
+                    .await;
+                this.update(cx, |this, cx| {
+                    // Only clear if no newer message has replaced it.
+                    if this.status_seq == seq {
+                        this.status_message = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Report a git operation's outcome: on success a brief `success` notice
+    /// that auto-dismisses (we don't echo git's stderr); on failure the error,
+    /// which sticks until dismissed.
+    fn report(
+        &mut self,
+        success: &str,
+        result: magritte_core::Result<String>,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(_) => self.set_status(success.to_string(), true, cx),
+            Err(e) => self.set_status(format!("error: {e}"), false, cx),
+        }
     }
 
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
@@ -3330,6 +3362,11 @@ impl StatusView {
             return;
         };
         self.status_message = Some(format!("{}…", transfer.verb()));
+        let done = match &transfer {
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushed",
+            Transfer::Pull { .. } | Transfer::PullRef => "Pulled",
+            Transfer::Fetch => "Fetched",
+        };
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -3360,13 +3397,8 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.status_message = Some(match result {
-                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
-                    Ok(msg) => last_line(&msg),
-                    Err(e) => format!("error: {e}"),
-                });
+                this.report(done, result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -3379,6 +3411,7 @@ impl StatusView {
             return;
         };
         self.status_message = Some("Fetching…".to_string());
+        let done = "Fetched";
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -3386,13 +3419,8 @@ impl StatusView {
                 .spawn(async move { repo.fetch_all(&switches) })
                 .await;
             this.update(cx, |this, cx| {
-                this.status_message = Some(match result {
-                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
-                    Ok(msg) => last_line(&msg),
-                    Err(e) => format!("error: {e}"),
-                });
+                this.report(done, result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -3433,6 +3461,13 @@ impl StatusView {
             BranchAction::Delete => "Deleting branch",
             BranchAction::RenameFrom => unreachable!("handled above"),
         };
+        let done = match &action {
+            BranchAction::Checkout => "Checked out",
+            BranchAction::Create { .. } => "Created branch",
+            BranchAction::RenameTo { .. } => "Renamed branch",
+            BranchAction::Delete => "Deleted branch",
+            BranchAction::RenameFrom => "Done",
+        };
         self.status_message = Some(format!("{verb}…"));
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -3454,13 +3489,8 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.status_message = Some(match result {
-                    Ok(msg) if msg.trim().is_empty() => "Done".to_string(),
-                    Ok(msg) => last_line(&msg),
-                    Err(e) => format!("error: {e}"),
-                });
+                this.report(done, result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -3474,6 +3504,7 @@ impl StatusView {
             return;
         };
         self.status_message = Some("Stashing…".to_string());
+        let done = "Stashed";
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -3481,9 +3512,8 @@ impl StatusView {
                 .spawn(async move { repo.stash_push(None, include_untracked) })
                 .await;
             this.update(cx, |this, cx| {
-                this.report_result(result);
+                this.report(done, result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -3506,6 +3536,11 @@ impl StatusView {
             StashAction::Pop => "Popping stash",
             StashAction::Drop => "Dropping stash",
         };
+        let done = match action {
+            StashAction::Apply => "Applied stash",
+            StashAction::Pop => "Popped stash",
+            StashAction::Drop => "Dropped stash",
+        };
         self.status_message = Some(format!("{verb}…"));
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -3520,9 +3555,8 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.report_result(result);
+                this.report(done, result, cx);
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -4349,10 +4383,7 @@ impl StatusView {
                 .spawn(async move { repo.commit(&message, mode, &args) })
                 .await;
             this.update(cx, |this, cx| {
-                this.status_message = Some(match result {
-                    Ok(msg) => last_line(&msg),
-                    Err(e) => format!("error: {e}"),
-                });
+                this.report("Committed", result, cx);
                 this.refresh(cx);
                 cx.notify();
             })
@@ -6674,6 +6705,22 @@ fn describe_command(command: transient::Command) -> &'static str {
     }
 }
 
+/// Past-tense success notice for a command (shown briefly when it succeeds).
+fn command_done(command: transient::Command) -> &'static str {
+    use transient::Command::*;
+    match command {
+        PushPushRemote | PushUpstream | PushElsewhere => "Pushed",
+        PullPushRemote | PullUpstream | PullElsewhere => "Pulled",
+        FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetched",
+        CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committed",
+        BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
+            "Done"
+        }
+        StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
+        LogCurrent | LogAll | LogOther | LogReflog => "Done",
+    }
+}
+
 /// The revision scope for a `git log` invocation.
 enum LogScope {
     /// HEAD / the current branch.
@@ -6763,16 +6810,6 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
-}
-
-/// The last non-empty line of git output, for a concise status summary.
-fn last_line(text: &str) -> String {
-    text.lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string()
 }
 
 /// The remote a bare (unqualified) branch name targets: the conventional
