@@ -33,16 +33,9 @@ pub struct Config {
     pub commit_title_ruler: bool,
     /// Auto-hard-wrap the commit body at 72 columns as you type.
     pub commit_body_wrap: bool,
-    /// External editor command for "open file" (Return) and the config button,
-    /// e.g. `code -w`, `zed -w`, or `nvim`. Empty = open in the OS default app.
+    /// External GUI editor command for "open file" (Return) and the config
+    /// button, e.g. `code -w` or `zed`. Empty = open in the OS default app.
     pub editor: String,
-    /// Whether `editor` is a terminal/TUI editor (vim, `emacs -nw`, …) and so
-    /// must be launched inside a terminal window rather than directly.
-    pub editor_in_terminal: bool,
-    /// The terminal to launch a terminal editor in (Linux only; macOS uses
-    /// Terminal.app). Empty = auto-detect ($TERMINAL, x-terminal-emulator, then
-    /// common terminals).
-    pub terminal: String,
 }
 
 impl Default for Config {
@@ -59,8 +52,6 @@ impl Default for Config {
             commit_title_ruler: true,
             commit_body_wrap: true,
             editor: String::new(),
-            editor_in_terminal: false,
-            terminal: String::new(),
         }
     }
 }

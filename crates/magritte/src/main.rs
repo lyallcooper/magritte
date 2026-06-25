@@ -1198,11 +1198,8 @@ struct SettingsState {
     dark_theme: Entity<SelectState<SearchableVec<SharedString>>>,
     font: Entity<SelectState<SearchableVec<SharedString>>>,
     ui_font: Entity<SelectState<SearchableVec<SharedString>>>,
-    /// External-editor command (free text, e.g. `code -w` / `nvim`).
+    /// External-editor command (free text, e.g. `code -w` / `zed`).
     editor: Entity<InputState>,
-    /// Terminal to launch a terminal editor in (free text; macOS app name like
-    /// `iTerm`, Linux command like `alacritty`).
-    terminal: Entity<InputState>,
     /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
     /// 4=ui_font).
     focus_ix: usize,
@@ -2525,17 +2522,15 @@ impl StatusView {
         self.set_status(format!("Opening {path}"), true, cx);
     }
 
-    /// Open `path` in the user's configured editor: empty `editor` opens the OS
-    /// default app; a terminal editor is launched inside a terminal; otherwise
-    /// the editor is spawned directly. Best-effort and non-blocking.
+    /// Open `path` in the user's configured editor: an empty `editor` opens the
+    /// OS default app, otherwise the editor (a GUI editor like `code -w` or
+    /// `zed`) is spawned directly. Best-effort and non-blocking.
     fn launch_editor(&self, path: &std::path::Path) {
         let editor = self.config.editor.trim();
         if editor.is_empty() {
             open_with_os(path);
-        } else if self.config.editor_in_terminal {
-            launch_in_terminal(editor, &self.config.terminal, path);
         } else {
-            // GUI editor: program + optional args, then the file.
+            // Program + optional args, then the file.
             let mut parts = editor.split_whitespace();
             let program = parts.next().unwrap_or(editor);
             let args: Vec<&str> = parts.collect();
@@ -4128,30 +4123,14 @@ impl StatusView {
         });
         let editor = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("e.g. code -w, zed -w, nvim")
+                .placeholder("e.g. code -w, zed -w (OS default if empty)")
                 .default_value(self.config.editor.clone())
-        });
-        let terminal_placeholder = if cfg!(target_os = "macos") {
-            "Default terminal (e.g. iTerm)"
-        } else {
-            "Auto-detect (e.g. alacritty)"
-        };
-        let terminal = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(terminal_placeholder)
-                .default_value(self.config.terminal.clone())
         });
 
         let subs = vec![
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
                 if matches!(ev, InputEvent::Change) {
                     this.config.editor = input.read(cx).value().trim().to_string();
-                    config::save(&this.config);
-                }
-            }),
-            cx.subscribe_in(&terminal, window, |this, input, ev: &InputEvent, _w, cx| {
-                if matches!(ev, InputEvent::Change) {
-                    this.config.terminal = input.read(cx).value().trim().to_string();
                     config::save(&this.config);
                 }
             }),
@@ -4235,7 +4214,6 @@ impl StatusView {
             font,
             ui_font,
             editor,
-            terminal,
             focus_ix: 0,
             _subs: subs,
         });
@@ -6054,37 +6032,14 @@ impl StatusView {
                     ),
                 ],
             ))
-            .child(section("Editor", {
-                let mut rows = vec![
-                    field(
-                        "editor",
-                        "External editor",
-                        Input::new(&s.editor).into_any_element(),
-                    ),
-                    field(
-                        "editor-terminal",
-                        "Runs in a terminal",
-                        self.toggle_control(
-                            "editor-terminal",
-                            self.config.editor_in_terminal,
-                            "Launch the editor inside a terminal window — for TUI editors like \
-                             vim or `emacs -nw`. Leave off for GUI editors (VS Code, Zed). When \
-                             the editor is empty, files open in the OS default app.",
-                            view,
-                            |cfg, on| cfg.editor_in_terminal = on,
-                        ),
-                    ),
-                ];
-                // The terminal to launch in only matters when running in one.
-                if self.config.editor_in_terminal {
-                    rows.push(field(
-                        "terminal",
-                        "Terminal",
-                        Input::new(&s.terminal).into_any_element(),
-                    ));
-                }
-                rows
-            }))
+            .child(section(
+                "Editor",
+                vec![field(
+                    "editor",
+                    "External editor",
+                    Input::new(&s.editor).into_any_element(),
+                )],
+            ))
             .child(section(
                 "Commit editor",
                 vec![
@@ -6154,9 +6109,9 @@ impl StatusView {
     }
 
     /// Write the current config (so the file exists even if untouched) and open
-    /// it in the user's editor — the same `$VISUAL`/`$EDITOR` path as opening a
-    /// file at point, falling back to the OS default app when unset or a
-    /// terminal editor. (The split button's dropdown still opens a chosen app.)
+    /// it via the same path as opening a file at point: the configured editor,
+    /// falling back to the OS default app when it's unset. (The split button's
+    /// dropdown still opens a chosen app.)
     fn open_config_file(&self) {
         if let Some(path) = self.saved_config_path() {
             self.launch_editor(&path);
@@ -6974,132 +6929,6 @@ fn open_with_os(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(not(target_os = "macos"))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-}
-
-/// Launch a terminal editor (`editor`, e.g. `nvim` or `emacs -nw`) on `path`
-/// inside a terminal window. macOS runs it through the default terminal app via
-/// a temp `.command` script; elsewhere via `<terminal> -e …`.
-#[cfg(target_os = "macos")]
-fn launch_in_terminal(editor: &str, terminal: &str, path: &std::path::Path) {
-    let terminal = terminal.trim();
-
-    // iTerm pops an "OK to run …?" confirmation whenever it's handed a
-    // `.command` file to *open*. Drive it with AppleScript to run the command
-    // directly instead — no prompt (just a one-time macOS automation grant).
-    // Terminal.app and the generic `.command` handler run the script without
-    // complaint, so they keep the simpler path below.
-    if terminal.to_ascii_lowercase().contains("iterm") {
-        let cmd = format!("{} {}", editor, shell_quote(path));
-        let osa = format!(
-            "tell application \"iTerm\" to create window with default profile command {}",
-            applescript_quote(&cmd),
-        );
-        if std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&osa)
-            .spawn()
-            .is_ok()
-        {
-            return;
-        }
-    }
-
-    // Run a `.command` script in a terminal app. `open -a <app>` targets the
-    // chosen terminal; plain `open` uses the default handler for `.command`
-    // (Terminal.app unless reassigned). Either way the app must know how to run
-    // a `.command` file.
-    let body = format!("#!/bin/sh\nexec {} {}\n", editor, shell_quote(path));
-    let mut script = std::env::temp_dir();
-    script.push(format!("magritte-open-{}.command", temp_suffix()));
-    if std::fs::write(&script, body).is_ok() {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
-        let mut cmd = std::process::Command::new("open");
-        if !terminal.is_empty() {
-            cmd.arg("-a").arg(terminal);
-        }
-        let _ = cmd.arg(&script).spawn();
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn launch_in_terminal(editor: &str, terminal: &str, path: &std::path::Path) {
-    let term = resolve_terminal(terminal);
-    // gnome-terminal takes `-- cmd …`; most others take `-e cmd …`.
-    let stem = std::path::Path::new(&term)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(term.as_str());
-    let sep = if stem == "gnome-terminal" { "--" } else { "-e" };
-    let mut cmd = std::process::Command::new(&term);
-    cmd.arg(sep);
-    for part in editor.split_whitespace() {
-        cmd.arg(part);
-    }
-    cmd.arg(path);
-    if cmd.spawn().is_err() {
-        open_with_os(path);
-    }
-}
-
-/// The terminal to launch on Linux: the configured override, else `$TERMINAL`,
-/// else the first installed of the usual emulators.
-#[cfg(not(target_os = "macos"))]
-fn resolve_terminal(configured: &str) -> String {
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return configured.to_string();
-    }
-    if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.trim().is_empty() {
-            return t;
-        }
-    }
-    for cand in [
-        "x-terminal-emulator",
-        "gnome-terminal",
-        "konsole",
-        "alacritty",
-        "kitty",
-        "wezterm",
-        "foot",
-        "xterm",
-    ] {
-        if path_has(cand) {
-            return cand.to_string();
-        }
-    }
-    "xterm".to_string()
-}
-
-/// Whether `program` is found on `$PATH`.
-#[cfg(not(target_os = "macos"))]
-fn path_has(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-        .unwrap_or(false)
-}
-
-/// Single-quote `path` for embedding in a `/bin/sh` script.
-#[cfg(target_os = "macos")]
-fn shell_quote(path: &std::path::Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
-}
-
-/// Quote `s` as an AppleScript string literal (double-quoted, with `\` and `"`
-/// escaped) for embedding in an `osascript -e` program.
-#[cfg(target_os = "macos")]
-fn applescript_quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-/// A unique-ish suffix for the temp script name.
-#[cfg(target_os = "macos")]
-fn temp_suffix() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
 }
 
 /// The remote a bare (unqualified) branch name targets: the conventional
