@@ -1204,6 +1204,8 @@ struct SettingsState {
     editor: Entity<SelectState<SearchableVec<SharedString>>>,
     #[cfg(not(target_os = "macos"))]
     editor: Entity<InputState>,
+    /// External commit-message editor command (free text, e.g. `zed --wait`).
+    commit_editor: Entity<InputState>,
     /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
     /// 4=ui_font).
     focus_ix: usize,
@@ -3790,30 +3792,13 @@ impl StatusView {
         self.on_editor_changed(window, cx);
     }
 
-    /// The `GIT_EDITOR` command for writing commit messages in the user's
-    /// external editor, or `None` when that's off (or, on non-macOS, when no
-    /// command is configured). On macOS `open -W -n` makes git block until the
-    /// freshly launched instance is closed: an empty `editor` opens the message
-    /// in the OS default app, a named one targets it with `-a`. Elsewhere the
-    /// configured command is used verbatim (the user adds a `--wait` flag).
+    /// The `GIT_EDITOR` command for writing commit messages in an external
+    /// editor, or `None` (use the in-app editor) when none is configured. The
+    /// configured command is used verbatim — the user supplies a blocking
+    /// `--wait`-style flag as their editor requires.
     fn external_commit_editor(&self) -> Option<String> {
-        if !self.config.commit_in_editor {
-            return None;
-        }
-        let editor = self.config.editor.trim();
-        #[cfg(target_os = "macos")]
-        {
-            Some(match editor {
-                "" => "open -W -n".to_string(),
-                app => format!("open -W -n -a {}", shell_single_quote(app)),
-            })
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            // No portable blocking default launcher, so fall back to the in-app
-            // editor when there's no explicit command to run.
-            (!editor.is_empty()).then(|| editor.to_string())
-        }
+        let cmd = self.config.commit_editor.trim();
+        (!cmd.is_empty()).then(|| cmd.to_string())
     }
 
     /// Make a commit by launching the external editor on its message (an
@@ -4293,8 +4278,23 @@ impl StatusView {
                 .placeholder("e.g. code -w, zed (OS default if empty)")
                 .default_value(self.config.editor.clone())
         });
+        let commit_editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("e.g. zed --wait (blank = built-in editor)")
+                .default_value(self.config.commit_editor.clone())
+        });
 
         let subs = vec![
+            cx.subscribe_in(
+                &commit_editor,
+                window,
+                |this, input, ev: &InputEvent, _w, cx| {
+                    if matches!(ev, InputEvent::Change) {
+                        this.config.commit_editor = input.read(cx).value().trim().to_string();
+                        config::save(&this.config);
+                    }
+                },
+            ),
             #[cfg(target_os = "macos")]
             cx.subscribe_in(
                 &editor,
@@ -4397,6 +4397,7 @@ impl StatusView {
             font,
             ui_font,
             editor,
+            commit_editor,
             focus_ix: 0,
             _subs: subs,
         });
@@ -6228,18 +6229,9 @@ impl StatusView {
                 "Commit editor",
                 vec![
                     field(
-                        "commit-in-editor",
-                        "Use external editor",
-                        self.toggle_control(
-                            "commit-in-editor",
-                            self.config.commit_in_editor,
-                            "Write commit messages in your external editor (an interactive \
-                             `git commit`) instead of the built-in one — the editor set above, \
-                             or the OS default app when that's \"System Default\". The summary \
-                             ruler and auto-wrap below apply only to the built-in editor.",
-                            view,
-                            |cfg, on| cfg.commit_in_editor = on,
-                        ),
+                        "commit-editor",
+                        "Editor command",
+                        Input::new(&s.commit_editor).into_any_element(),
                     ),
                     field(
                         "commit-title-ruler",
@@ -7119,13 +7111,6 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
-}
-
-/// Single-quote `s` as one argument in a `/bin/sh` command line (git runs
-/// `GIT_EDITOR` through the shell), escaping any embedded single quotes.
-#[cfg(target_os = "macos")]
-fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Open `path` with the OS default application for its type.
