@@ -557,7 +557,7 @@ fn commands() -> &'static [Command] {
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
             t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
         }),
-        top!("reset", "Reset", Category::Commands, "X", |t, _w, cx| {
+        top!("reset", "Reset", Category::Commands, "O", |t, _w, cx| {
             t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
         }),
         top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
@@ -5168,8 +5168,8 @@ impl StatusView {
             match key.as_str() {
                 "escape" | "q" => self.close_log(window, cx),
                 "enter" => self.open_commit_view(cx),
-                "j" => self.log_move(1, cx),
-                "k" => self.log_move(-1, cx),
+                "j" | "down" => self.log_move(1, cx),
+                "k" | "up" => self.log_move(-1, cx),
                 "d" if ctrl => self.log_move(half, cx),
                 "u" if ctrl => self.log_move(-half, cx),
                 "space" => self.log_move(page, cx),
@@ -5267,8 +5267,8 @@ impl StatusView {
         let page = page_rows(window) as isize;
         let half = (page / 2).max(1);
         match key.as_str() {
-            "j" => self.move_selection(1),
-            "k" => self.move_selection(-1),
+            "j" | "down" => self.move_selection(1),
+            "k" | "up" => self.move_selection(-1),
             // Vi-style paging (kept off the `?` menu — a scroll convenience).
             "d" if ctrl => self.page_selection(half),
             "u" if ctrl => self.page_selection(-half),
@@ -5303,8 +5303,9 @@ impl StatusView {
             "u" => return self.invoke_command("unstage", window, cx),
             // M-x (Alt-x) opens the palette too, alongside `:`.
             "x" if alt => return self.open_command_palette(window, cx),
-            "x" if shift => return self.invoke_command("reset", window, cx),
             "x" => return self.invoke_command("discard", window, cx),
+            // Reset is `O` (the evil-collection-magit binding).
+            "o" if shift => return self.invoke_command("reset", window, cx),
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
             "m" => return self.invoke_command("merge", window, cx),
@@ -8456,7 +8457,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "X", "m", "r", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
