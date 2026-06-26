@@ -2615,30 +2615,71 @@ impl StatusView {
     }
 
     /// Open the file at point (its row, or the file a hunk/line belongs to) in
-    /// the external editor. Bound to Return.
+    /// the external editor, at the diff's line when one is known. Bound to Return.
     fn open_at_point(&mut self, cx: &mut Context<Self>) {
-        let path = match self.rows.get(self.selected).and_then(|r| r.target.as_ref()) {
-            Some(Target::File(f)) => f.path.clone(),
-            Some(Target::Hunk { file, .. } | Target::Line { file, .. }) => file.path.clone(),
-            _ => return,
+        let Some(target) = self.rows.get(self.selected).and_then(|r| r.target.clone()) else {
+            return;
         };
+        let path = match &target {
+            Target::File(f) => f.path.clone(),
+            Target::Hunk { file, .. } | Target::Line { file, .. } => file.path.clone(),
+        };
+        let line = self.diff_target_line(&target);
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
         let full = repo.workdir().join(&path);
-        self.launch_editor(&full);
+        self.launch_editor(&full, line);
         self.set_status(format!("Opening {path}"), true, cx);
     }
 
-    /// Open `path` in the user's configured editor. An empty `editor` opens the
-    /// OS default app; otherwise `editor` is run as a command (`code -w`, `zed`)
-    /// and, failing that on macOS, treated as an application name to `open -a`
-    /// (so "Zed" or "Visual Studio Code" work too). Best-effort, non-blocking.
-    fn launch_editor(&self, path: &std::path::Path) {
+    /// The new-side line number to open at for a target: the line at point, the
+    /// hunk's first line, or the file's first hunk (where its diff starts).
+    /// `None` when the diff isn't loaded (a collapsed file) — open without a line.
+    fn diff_target_line(&self, target: &Target) -> Option<u32> {
+        match target {
+            Target::File(f) => self.diff_for(f)?.hunks.first().map(|h| h.new_start),
+            Target::Hunk { file, hunk } => {
+                self.diff_for(file)?.hunks.get(*hunk).map(|h| h.new_start)
+            }
+            Target::Line { file, hunk, line } => {
+                let diff = self.diff_for(file)?;
+                let h = diff.hunks.get(*hunk)?;
+                // A deleted line has no new-side number; fall back to the hunk.
+                Some(
+                    h.lines
+                        .get(*line)
+                        .and_then(|l| l.new_lineno)
+                        .unwrap_or(h.new_start),
+                )
+            }
+        }
+    }
+
+    /// Open `path` in the user's configured editor, at `line` when given and the
+    /// editor's goto convention is known (see [`editor_goto`]). An empty `editor`
+    /// opens the OS default app; otherwise `editor` is run as a command
+    /// (`code -w`, `zed`) and, failing that on macOS, treated as an application
+    /// name to `open -a` (so "Zed" or "Visual Studio Code" work too).
+    /// Best-effort, non-blocking.
+    fn launch_editor(&self, path: &std::path::Path, line: Option<u32>) {
         let editor = self.config.editor.trim();
         if editor.is_empty() {
             open_with_os(path);
             return;
+        }
+        // Open at the line when we have one and recognize how this editor takes
+        // a goto target; otherwise fall through to a plain open.
+        if let Some(line) = line {
+            if let Some((program, args)) = editor_goto(editor, &path.to_string_lossy(), line) {
+                if std::process::Command::new(program)
+                    .args(args)
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+            }
         }
         // First try `editor` as a command: program + optional flags, then the
         // file. This is how CLI launchers are written (`code -w`, `zed`,
@@ -7037,7 +7078,7 @@ impl StatusView {
     /// dropdown still opens a chosen app.)
     fn open_config_file(&self) {
         if let Some(path) = self.saved_config_path() {
-            self.launch_editor(&path);
+            self.launch_editor(&path, None);
         }
     }
 
@@ -7827,6 +7868,117 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
+}
+
+/// Build the `(program, args)` to open `path` at `line` (1-based) with the
+/// configured editor, per its goto convention, or `None` if we don't know how
+/// (the caller then opens without a line). Editors fall into three families:
+/// `+N file` (vim/emacs/nano/…), `--goto file:line` (VS Code family), and
+/// `file:line` (Zed/Sublime/Helix). On macOS an app *name* (e.g. "Zed") is
+/// resolved to the matching CLI inside its bundle.
+fn editor_goto(editor: &str, path: &str, line: u32) -> Option<(String, Vec<String>)> {
+    let first = editor.split_whitespace().next().unwrap_or(editor);
+    let extra: Vec<String> = editor
+        .split_whitespace()
+        .skip(1)
+        .map(String::from)
+        .collect();
+    let stem = std::path::Path::new(first)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(first)
+        .to_ascii_lowercase();
+
+    // `+N file` — vim family, emacs, and the common terminal editors.
+    let plus = || {
+        let mut a = extra.clone();
+        a.push(format!("+{line}"));
+        a.push(path.to_string());
+        Some((first.to_string(), a))
+    };
+    // `[goto] file:line` — `goto` is e.g. `--goto` for VS Code, absent for Zed.
+    let colon = |goto: Option<&str>| {
+        let mut a = extra.clone();
+        if let Some(g) = goto {
+            a.push(g.to_string());
+        }
+        a.push(format!("{path}:{line}"));
+        Some((first.to_string(), a))
+    };
+
+    match stem.as_str() {
+        "vim" | "nvim" | "vi" | "view" | "mvim" | "gvim" | "nano" | "pico" | "micro" | "emacs"
+        | "emacsclient" | "kak" | "joe" => plus(),
+        "code" | "codium" | "cursor" | "code-insiders" => colon(Some("--goto")),
+        "zed" | "subl" | "hx" | "helix" => colon(None),
+        // On macOS the editor may be an app *name* (the Settings dropdown stores
+        // these); resolve it to its bundle CLI.
+        _ => {
+            #[cfg(target_os = "macos")]
+            {
+                editor_app_goto(editor, path, line)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                None
+            }
+        }
+    }
+}
+
+/// macOS: open at a line for a known GUI editor named by its *app* (e.g. "Zed"),
+/// via the CLI inside its `.app` bundle.
+#[cfg(target_os = "macos")]
+fn editor_app_goto(editor: &str, path: &str, line: u32) -> Option<(String, Vec<String>)> {
+    // (app name, CLI path within the bundle, goto flag — None means `file:line`).
+    const APPS: &[(&str, &str, Option<&str>)] = &[
+        ("Zed", "Contents/MacOS/cli", None),
+        (
+            "Visual Studio Code",
+            "Contents/Resources/app/bin/code",
+            Some("--goto"),
+        ),
+        (
+            "VSCodium",
+            "Contents/Resources/app/bin/codium",
+            Some("--goto"),
+        ),
+        (
+            "Cursor",
+            "Contents/Resources/app/bin/cursor",
+            Some("--goto"),
+        ),
+        ("Sublime Text", "Contents/SharedSupport/bin/subl", None),
+    ];
+    let (rel, goto) = APPS
+        .iter()
+        .find(|(name, _, _)| name.eq_ignore_ascii_case(editor))
+        .map(|(_, rel, goto)| (*rel, *goto))?;
+    let cli = find_app_bundle(editor)?.join(rel);
+    if !cli.exists() {
+        return None;
+    }
+    let mut args = Vec::new();
+    if let Some(g) = goto {
+        args.push(g.to_string());
+    }
+    args.push(format!("{path}:{line}"));
+    Some((cli.to_string_lossy().into_owned(), args))
+}
+
+/// The path to `<name>.app` in the standard application directories, if present.
+#[cfg(target_os = "macos")]
+fn find_app_bundle(name: &str) -> Option<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join("Applications"));
+    }
+    dirs.into_iter()
+        .map(|d| d.join(format!("{name}.app")))
+        .find(|p| p.exists())
 }
 
 /// Open `path` with the OS default application for its type.
