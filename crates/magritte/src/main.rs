@@ -5222,7 +5222,9 @@ impl StatusView {
                 // or revert it (`V`). Both return to the status view, where a
                 // conflict surfaces as the in-progress banner.
                 "a" if shift => self.pick_selected(PickOp::CherryPick, window, cx),
-                "v" if shift => self.pick_selected(PickOp::Revert, window, cx),
+                // Revert is `_` (evil-collection-magit); `V` is visual-line there.
+                "_" => self.pick_selected(PickOp::Revert, window, cx),
+                "-" if shift => self.pick_selected(PickOp::Revert, window, cx),
                 _ => {}
             }
             return;

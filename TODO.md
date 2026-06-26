@@ -67,3 +67,4 @@
 - [x] Arrow keys should work for nav — done: Up/Down move the selection in the status list and the log view (alongside k/j).
 - [x] Why is reset 'X' instead of 'O'? 'O' is the binding I see in magit — done: reset is now `O` (the evil-collection-magit binding); `X` is freed.
 - [ ] '!' to run command like magit
+- [ ] Other low-hanging magit commands, like 'i' ignore
