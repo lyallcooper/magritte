@@ -5310,6 +5310,12 @@ impl StatusView {
         let page = page_rows(window) as isize;
         let half = (page / 2).max(1);
         match key.as_str() {
+            // Section nav: `g j`/`g k` (below) plus evil-collection-magit's
+            // `C-j`/`C-k` and `]`/`[` aliases.
+            "j" if ctrl => self.select_section(true),
+            "k" if ctrl => self.select_section(false),
+            "]" => self.select_section(true),
+            "[" => self.select_section(false),
             "j" | "down" => self.move_selection(1),
             "k" | "up" => self.move_selection(-1),
             // Vi-style paging (kept off the `?` menu — a scroll convenience).
