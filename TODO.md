@@ -63,7 +63,7 @@
   - **Conflict resolution depth**: interactive (ediff-style) per-hunk resolution and `--merge` (restore conflict markers). We offer take-ours/take-theirs + stage-to-resolve.
   - **Rebase niceties**: subset rebase (`magit-rebase-subset`), choosing a non-HEAD start point, and `--autostash` defaulting on (it's an off-by-default switch today; our transient model has no default-on switches yet).
   - **`git am`**: we detect/surface a paused `am` (continue/skip/abort via the banner) but there's no command to *start* one (apply a patch/mailbox) — rare.
-- [ ] Open file should open to where the diff starts
+- [x] Open file should open to where the diff starts — done: Return opens the file at the new-side line of the hunk/line at point (or, on a file row, its first hunk). Line targeting works for recognized editors via their goto convention — `+N file` (vim/nvim/emacs/nano/…), `--goto file:line` (VS Code family), `file:line` (Zed/Sublime/Helix) — resolved from a CLI command or, on macOS, an app name → its bundle CLI. Unknown editors / the OS-default opener still open the file (no line).
 - [x] Arrow keys should work for nav — done: Up/Down move the selection in the status list and the log view (alongside k/j).
 - [x] Why is reset 'X' instead of 'O'? 'O' is the binding I see in magit — done: reset is now `O` (the evil-collection-magit binding); `X` is freed.
 - [ ] '!' to run command like magit
