@@ -66,5 +66,5 @@
 - [x] Open file should open to where the diff starts — done: Return opens the file at the new-side line of the hunk/line at point (or, on a file row, its first hunk). Line targeting works for recognized editors via their goto convention — `+N file` (vim/nvim/emacs/nano/…), `--goto file:line` (VS Code family), `file:line` (Zed/Sublime/Helix) — resolved from a CLI command or, on macOS, an app name → its bundle CLI. Unknown editors / the OS-default opener still open the file (no line).
 - [x] Arrow keys should work for nav — done: Up/Down move the selection in the status list and the log view (alongside k/j).
 - [x] Why is reset 'X' instead of 'O'? 'O' is the binding I see in magit — done: reset is now `O` (the evil-collection-magit binding); `X` is freed.
-- [ ] '!' to run command like magit
+- [x] '!' to run command like magit — done: `!` (and evil-collection's `|`) opens a free-text "git:" prompt; the typed args run as `git …` (a leading "git" is stripped), recorded in the `$` log, with the first output line shown and a refresh after. Output beyond the first line isn't surfaced yet (the `$` log records the invocation + stderr); a full process-output view is a future enhancement.
 - [ ] Other low-hanging magit commands, like 'i' ignore

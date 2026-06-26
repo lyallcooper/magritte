@@ -285,6 +285,8 @@ enum PickerAction {
     Merge,
     /// Rebase the current branch onto the chosen ref, with the carried args.
     Rebase,
+    /// Run an arbitrary git command typed by the user (magit's `!`).
+    RunGit,
 }
 
 impl PickerAction {
@@ -319,6 +321,8 @@ impl PickerAction {
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
             PickerAction::Merge => transient::plain_title("Merge"),
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
+            // Reads like magit's "git " prompt: the typed text follows "git".
+            PickerAction::RunGit => transient::plain_title("git"),
         }
     }
 
@@ -343,6 +347,7 @@ impl PickerAction {
             PickerAction::Reset(_) => "reset",
             PickerAction::Merge => "merge",
             PickerAction::Rebase => "rebase",
+            PickerAction::RunGit => "run",
         }
     }
 }
@@ -560,6 +565,13 @@ fn commands() -> &'static [Command] {
         top!("reset", "Reset", Category::Commands, "O", |t, _w, cx| {
             t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
         }),
+        top!(
+            "git-command",
+            "Run git command",
+            Category::Commands,
+            "!",
+            |t, w, cx| { t.open_run_git(w, cx) }
+        ),
         top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
             // A paused rebase is driven from the banner (continue/skip/abort).
             if matches!(
@@ -3328,6 +3340,68 @@ impl StatusView {
         }
     }
 
+    /// Open the free-text prompt for an arbitrary git command (magit's `!`).
+    fn open_run_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker(
+            PickerAction::RunGit,
+            Vec::new(),
+            CreateMode::Value,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    /// Run a user-typed git command on the background executor, then refresh.
+    /// Shows the first line of output (the command is also recorded in the `$`
+    /// log). A leading "git" is stripped so both "git stash list" and
+    /// "stash list" work.
+    fn run_git_command(&mut self, input: String, cx: &mut Context<Self>) {
+        let mut args: Vec<String> = input.split_whitespace().map(String::from).collect();
+        if args.first().map(String::as_str) == Some("git") {
+            args.remove(0);
+        }
+        if args.is_empty() {
+            return;
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some(format!("git {}…", args.join(" ")));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            // The first non-empty output line (stdout, else stderr) as a summary.
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    repo.run(&args).map(|o| {
+                        let out = String::from_utf8_lossy(&o.stdout);
+                        let line = out.trim().lines().next().unwrap_or("").to_string();
+                        if !line.is_empty() {
+                            line
+                        } else {
+                            o.stderr
+                                .trim()
+                                .lines()
+                                .next()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| "done".to_string())
+                        }
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(msg) => this.set_status(msg, true, cx),
+                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Run the rebase on the background executor, then refresh — a conflict
     /// pauses it, which the in-progress banner then drives.
     fn run_rebase(&mut self, onto: String, args: Vec<String>, cx: &mut Context<Self>) {
@@ -3794,6 +3868,7 @@ impl StatusView {
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
                 PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
+                PickerAction::RunGit => self.run_git_command(chosen.to_string(), cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -5355,6 +5430,10 @@ impl StatusView {
             "x" => return self.invoke_command("discard", window, cx),
             // Reset is `O` (the evil-collection-magit binding).
             "o" if shift => return self.invoke_command("reset", window, cx),
+            // Run an arbitrary git command: `!` (magit) or `|` (evil-collection).
+            // Each may arrive as the symbol or as its base key + shift.
+            "!" | "|" => return self.invoke_command("git-command", window, cx),
+            "1" | "\\" if shift => return self.invoke_command("git-command", window, cx),
             "c" => return self.invoke_command("commit", window, cx),
             "b" => return self.invoke_command("branch", window, cx),
             "m" => return self.invoke_command("merge", window, cx),
@@ -8617,7 +8696,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", "!", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
