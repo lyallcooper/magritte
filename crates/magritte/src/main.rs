@@ -1855,12 +1855,18 @@ impl StatusView {
         .detach();
     }
 
-    /// Adopt a freshly-loaded config: store it, re-apply theme/appearance, and
-    /// update the font.
+    /// Adopt a freshly-loaded config: store it, re-apply theme/appearance,
+    /// update the font, and rebuild the effective keymap — so a `[keymap]` edit
+    /// takes effect on save, like the other settings (any unknown id re-warns).
     fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         self.config = cfg;
         self.font = resolve_font(&self.config, cx);
         self.ui_font = resolve_ui_font(&self.config, cx);
+        let (keymap, warnings) = build_keymap(&self.config);
+        self.keymap = keymap;
+        if !warnings.is_empty() {
+            self.set_status(warnings.join("; "), false, cx);
+        }
         self.reapply_theme(cx);
     }
 
