@@ -107,19 +107,19 @@ impl Repo {
     /// prepared message rather than blocking on an editor we can't show.
     pub fn sequence_continue(&self, kind: SequenceKind) -> Result<String> {
         let out = self.run_with_env([kind.verb(), "--continue"], "GIT_EDITOR", "true")?;
-        Ok(summary(&out.stdout, &out.stderr))
+        Ok(out.status_line())
     }
 
     /// Skip the current step.
     pub fn sequence_skip(&self, kind: SequenceKind) -> Result<String> {
         let out = self.run([kind.verb(), "--skip"])?;
-        Ok(summary(&out.stdout, &out.stderr))
+        Ok(out.status_line())
     }
 
     /// Abort the sequence, restoring the pre-operation state.
     pub fn sequence_abort(&self, kind: SequenceKind) -> Result<String> {
         let out = self.run([kind.verb(), "--abort"])?;
-        Ok(summary(&out.stdout, &out.stderr))
+        Ok(out.status_line())
     }
 
     fn rebase_sequence(&self, dir: &Path) -> Sequence {
@@ -273,14 +273,4 @@ fn read_trim(path: PathBuf) -> Option<String> {
         .ok()
         .map(|s| s.trim_end().to_string())
         .filter(|s| !s.is_empty())
-}
-
-/// git reports operation progress on stderr; prefer it, else stdout.
-fn summary(stdout: &[u8], stderr: &str) -> String {
-    let stderr = stderr.trim();
-    if stderr.is_empty() {
-        String::from_utf8_lossy(stdout).trim().to_string()
-    } else {
-        stderr.lines().next_back().unwrap_or("").to_string()
-    }
 }

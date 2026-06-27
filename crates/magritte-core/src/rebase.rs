@@ -2,15 +2,8 @@
 //! conflict, it's driven by the in-progress sequence controls
 //! (continue/skip/abort) in [`crate::sequence`].
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use crate::error::{Error, Result};
 use crate::repo::Repo;
-
-/// Distinguishes concurrent todo temp files (parallel tests, or two rebases),
-/// since the pid alone isn't unique across threads.
-static TODO_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// What to do with a commit in an interactive-rebase todo (git's instructions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,13 +55,7 @@ impl Repo {
         let mut argv = vec!["rebase".to_string()];
         argv.extend(args.iter().cloned());
         argv.push(onto.to_string());
-        let out = self.run(&argv)?;
-        let stderr = out.stderr.trim();
-        Ok(if stderr.is_empty() {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        } else {
-            stderr.lines().next_back().unwrap_or("").to_string()
-        })
+        Ok(self.run(&argv)?.status_line())
     }
 
     /// The default interactive-rebase todo for `base..HEAD`: every commit as a
@@ -114,40 +101,14 @@ impl Repo {
                 "nothing to do — every commit is dropped".into(),
             ));
         }
+        // Build the todo; the sequence-editor runner handles feeding it to git.
         let todo: String = steps
             .iter()
             .map(|s| format!("{} {}\n", s.action.keyword(), s.oid))
             .collect();
-
-        // A unique temp file (space-free path) holds our todo; the sequence
-        // editor copies it over git's generated todo. The pid+counter keeps
-        // concurrent rebases (and parallel tests) from sharing one file.
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            TODO_SEQ.fetch_add(1, Ordering::Relaxed)
-        );
-        let path: PathBuf = std::env::temp_dir().join(format!("magritte-rebase-todo-{unique}"));
-        std::fs::write(&path, todo)
-            .map_err(|e| Error::Message(format!("{}: {e}", path.display())))?;
-
-        let mut argv = vec![
-            "-c".to_string(),
-            format!("sequence.editor=cp '{}'", path.display()),
-            "rebase".to_string(),
-            "-i".to_string(),
-        ];
+        let mut argv = vec!["rebase".to_string(), "-i".to_string()];
         argv.extend(args.iter().cloned());
         argv.push(base.to_string());
-
-        let result = self.run_with_env(&argv, "GIT_EDITOR", "true");
-        let _ = std::fs::remove_file(&path);
-        let out = result?;
-        let stderr = out.stderr.trim();
-        Ok(if stderr.is_empty() {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        } else {
-            stderr.lines().next_back().unwrap_or("").to_string()
-        })
+        Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
     }
 }

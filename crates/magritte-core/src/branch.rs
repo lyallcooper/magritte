@@ -2,7 +2,6 @@
 //! rename, delete), mirroring magit's `magit-branch`.
 
 use crate::error::Result;
-use crate::remote::summary;
 use crate::repo::Repo;
 
 impl Repo {
@@ -30,7 +29,7 @@ impl Repo {
     /// anything else (a tag or commit) is checked out verbatim (detaching HEAD).
     pub fn checkout(&self, target: &str) -> Result<String> {
         let arg = self.checkout_arg(target)?;
-        Ok(summary(self.run(["checkout", &arg])?))
+        Ok(self.run(["checkout", &arg])?.report())
     }
 
     fn checkout_arg(&self, target: &str) -> Result<String> {
@@ -58,25 +57,25 @@ impl Repo {
     pub fn create_branch(&self, name: &str, start: Option<&str>) -> Result<String> {
         let mut args = vec!["branch".to_string(), name.to_string()];
         args.extend(start.map(str::to_string));
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git checkout -b <name> [start]` — create a branch and check it out.
     pub fn create_and_checkout(&self, name: &str, start: Option<&str>) -> Result<String> {
         let mut args = vec!["checkout".to_string(), "-b".to_string(), name.to_string()];
         args.extend(start.map(str::to_string));
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git branch -m <old> <new>` — rename a branch.
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<String> {
-        Ok(summary(self.run(["branch", "-m", old, new])?))
+        Ok(self.run(["branch", "-m", old, new])?.report())
     }
 
     /// `git branch -d/-D <name>` — delete a branch (`-D` to force, for an
     /// unmerged branch).
     pub fn delete_branch(&self, name: &str, force: bool) -> Result<String> {
         let flag = if force { "-D" } else { "-d" };
-        Ok(summary(self.run(["branch", flag, name])?))
+        Ok(self.run(["branch", flag, name])?.report())
     }
 }

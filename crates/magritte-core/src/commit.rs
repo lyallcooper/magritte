@@ -46,7 +46,7 @@ impl Repo {
         argv.extend(args.iter().cloned());
 
         let out = self.run_with_input(&argv, message.as_bytes())?;
-        Ok(summary(&out.stdout, &out.stderr))
+        Ok(out.first_line())
     }
 
     /// Commit according to `mode` by launching the user's external editor on the
@@ -74,7 +74,7 @@ impl Repo {
         }
         argv.extend(args.iter().cloned());
         let out = self.run_with_env(&argv, "GIT_EDITOR", git_editor)?;
-        Ok(summary(&out.stdout, &out.stderr))
+        Ok(out.first_line())
     }
 
     /// Remote-tracking branches that contain `rev` — i.e. where it's already
@@ -96,16 +96,6 @@ impl Repo {
         let mut argv: Vec<String> = vec!["commit".into(), "--amend".into(), "--no-edit".into()];
         argv.extend(args.iter().cloned());
         let out = self.run(&argv)?;
-        Ok(summary(&out.stdout, &out.stderr))
-    }
-}
-
-fn summary(stdout: &[u8], stderr: &str) -> String {
-    let out = String::from_utf8_lossy(stdout);
-    let out = out.trim();
-    if out.is_empty() {
-        stderr.trim().to_string()
-    } else {
-        out.lines().next().unwrap_or("").to_string()
+        Ok(out.first_line())
     }
 }

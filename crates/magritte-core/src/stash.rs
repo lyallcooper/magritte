@@ -2,7 +2,6 @@
 //! drop, list), mirroring magit's `magit-stash`.
 
 use crate::error::Result;
-use crate::remote::summary;
 use crate::repo::Repo;
 
 /// One entry from `git stash list`.
@@ -53,21 +52,21 @@ impl Repo {
             args.push("--message".into());
             args.push(m.to_string());
         }
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git stash apply <reference>` — apply a stash, keeping it in the list.
     pub fn stash_apply(&self, reference: &str) -> Result<String> {
-        Ok(summary(self.run(["stash", "apply", reference])?))
+        Ok(self.run(["stash", "apply", reference])?.report())
     }
 
     /// `git stash pop <reference>` — apply a stash and drop it on success.
     pub fn stash_pop(&self, reference: &str) -> Result<String> {
-        Ok(summary(self.run(["stash", "pop", reference])?))
+        Ok(self.run(["stash", "pop", reference])?.report())
     }
 
     /// `git stash drop <reference>` — delete a stash without applying it.
     pub fn stash_drop(&self, reference: &str) -> Result<String> {
-        Ok(summary(self.run(["stash", "drop", reference])?))
+        Ok(self.run(["stash", "drop", reference])?.report())
     }
 }
