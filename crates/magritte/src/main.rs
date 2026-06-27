@@ -20,7 +20,7 @@ use gpui::{
     Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, UniformListScrollHandle, Window,
-    WindowAppearance, WindowBounds, WindowOptions,
+    WindowBounds, WindowOptions,
 };
 
 use gpui::prelude::FluentBuilder;
@@ -30,10 +30,12 @@ mod config;
 #[cfg(feature = "debug")]
 mod debug;
 mod editor_launch;
+mod editors;
 mod git_action;
 mod highlight;
 mod picker;
 mod status_label;
+mod theme;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
 use picker::{CreateMode, PickerList};
@@ -1237,262 +1239,6 @@ struct SettingsState {
     _subs: Vec<Subscription>,
 }
 
-/// All monospace font families available to the text system, sorted.
-/// Membership is decided by the font's own monospace trait as reported by the
-/// OS (CoreText's `kCTFontMonoSpaceTrait`) rather than by measuring glyph
-/// widths — the trait reliably excludes symbol fonts (e.g. Webdings) and
-/// proportional CJK fonts whose Latin glyphs happen to be equal-width, both of
-/// which fooled the old width heuristic.
-fn monospace_font_names(cx: &App) -> Vec<SharedString> {
-    let mut names: Vec<SharedString> = cx
-        .text_system()
-        .all_font_names()
-        .into_iter()
-        // Skip dot-prefixed system/fallback tokens (".SystemUIFont", ".ZedSans",
-        // ".ZedMono", …). They aren't user-selectable families, and probing them
-        // by name makes CoreText log "should use CTFontCreateUIFontForLanguage".
-        .filter(|name| !name.starts_with('.') && is_monospace_font(name))
-        .map(SharedString::from)
-        .collect();
-    names.sort_by_key(|f| f.to_lowercase());
-    names.dedup();
-    names
-}
-
-/// All selectable font families (for the proportional UI-font picker), sorted.
-/// Unlike [`monospace_font_names`] this keeps proportional families too.
-fn all_font_names(cx: &App) -> Vec<SharedString> {
-    let mut names: Vec<SharedString> = cx
-        .text_system()
-        .all_font_names()
-        .into_iter()
-        .filter(|name| !name.starts_with('.'))
-        .map(SharedString::from)
-        .collect();
-    names.sort_by_key(|f| f.to_lowercase());
-    names.dedup();
-    names
-}
-
-/// Whether a font family declares the monospace trait to the OS font system.
-#[cfg(target_os = "macos")]
-fn is_monospace_font(name: &str) -> bool {
-    use core_text::font::new_from_name;
-    use core_text::font_descriptor::SymbolicTraitAccessors;
-    new_from_name(name, 12.0)
-        .map(|font| font.symbolic_traits().is_monospace())
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn is_monospace_font(_name: &str) -> bool {
-    // No OS trait query wired up off macOS (not a current target).
-    true
-}
-
-/// Installed text editors as (display name, `.app` path), for the settings
-/// editor picker and the "Open config in" menu.
-///
-/// We ask LaunchServices which installed apps register to *edit* plain text or
-/// source code (`kLSRolesEditor`) and union the two sets — that's macOS's own
-/// notion of "apps that report as text editors", and it picks up whatever the
-/// user actually has (VS Code, Zed, BBEdit, TextEdit, …) with no hand-kept
-/// allow-list. The catch is that office suites and a few system apps over-claim
-/// the editor role for plain text, so [`is_bogus_editor`] drops the known
-/// offenders. Names/paths come from resolving each bundle id to its app URL.
-#[cfg(target_os = "macos")]
-fn text_editors() -> Vec<(SharedString, SharedString)> {
-    use core_foundation::array::{CFArray, CFArrayRef};
-    use core_foundation::base::TCFType;
-    use core_foundation::string::{CFString, CFStringRef};
-    use core_foundation::url::CFURL;
-    use std::os::raw::c_void;
-
-    #[link(name = "CoreServices", kind = "framework")]
-    extern "C" {
-        fn LSCopyAllRoleHandlersForContentType(content_type: CFStringRef, role: u32) -> CFArrayRef;
-        fn LSCopyApplicationURLsForBundleIdentifier(
-            bundle_id: CFStringRef,
-            out_error: *mut c_void,
-        ) -> CFArrayRef;
-    }
-    // kLSRolesEditor — handlers that can *edit* the type, not merely view it
-    // (kLSRolesViewer, 0x2, which would pull in browsers and media players).
-    const K_LS_ROLES_EDITOR: u32 = 0x0000_0004;
-
-    let mut seen = std::collections::HashSet::new();
-    let mut editors: Vec<(SharedString, SharedString)> = Vec::new();
-    for content_type in ["public.plain-text", "public.source-code"] {
-        let ct = CFString::new(content_type);
-        let handlers = unsafe {
-            let r =
-                LSCopyAllRoleHandlersForContentType(ct.as_concrete_TypeRef(), K_LS_ROLES_EDITOR);
-            if r.is_null() {
-                continue;
-            }
-            CFArray::<CFString>::wrap_under_create_rule(r)
-        };
-        for bundle in handlers.iter() {
-            let id = bundle.to_string();
-            if is_bogus_editor(&id) || !seen.insert(id.clone()) {
-                continue;
-            }
-            // Resolve the bundle id to its installed app URL(s); take the first.
-            let urls = unsafe {
-                let r = LSCopyApplicationURLsForBundleIdentifier(
-                    bundle.as_concrete_TypeRef(),
-                    std::ptr::null_mut(),
-                );
-                if r.is_null() {
-                    continue;
-                }
-                CFArray::<CFURL>::wrap_under_create_rule(r)
-            };
-            if let Some(path) = urls.iter().next().and_then(|u| u.to_path()) {
-                let name = path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| id.clone());
-                editors.push((
-                    SharedString::from(name),
-                    SharedString::from(path.to_string_lossy().into_owned()),
-                ));
-            }
-        }
-    }
-    editors.sort_by_key(|(name, _)| name.to_lowercase());
-    editors
-}
-
-/// Bundle ids that register as plain-text editors but aren't general text
-/// editors — office/productivity suites that over-claim the role.
-#[cfg(target_os = "macos")]
-fn is_bogus_editor(bundle_id: &str) -> bool {
-    const DENY_PREFIXES: &[&str] = &[
-        "com.apple.iWork",
-        "com.apple.Numbers",
-        "com.apple.Pages",
-        "com.apple.Keynote",
-        "com.apple.Notes",
-        "com.microsoft.Word",
-        "com.microsoft.Excel",
-        "com.microsoft.Powerpoint",
-        "org.libreoffice",
-    ];
-    DENY_PREFIXES.iter().any(|p| bundle_id.starts_with(p))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn text_editors() -> Vec<(SharedString, SharedString)> {
-    Vec::new()
-}
-
-/// Whether the system appearance is currently dark.
-fn system_is_dark(cx: &App) -> bool {
-    matches!(
-        cx.window_appearance(),
-        WindowAppearance::Dark | WindowAppearance::VibrantDark
-    )
-}
-
-/// The effective theme mode for a config: forced light/dark, or the system's
-/// appearance when set to "auto".
-fn effective_mode(cfg: &config::Config, cx: &App) -> gpui_component::ThemeMode {
-    match cfg.appearance.as_str() {
-        "light" => gpui_component::ThemeMode::Light,
-        "dark" => gpui_component::ThemeMode::Dark,
-        _ if system_is_dark(cx) => gpui_component::ThemeMode::Dark,
-        _ => gpui_component::ThemeMode::Light,
-    }
-}
-
-/// Point the theme's light/dark slots at the config's chosen themes and switch
-/// to the effective mode (following the system when appearance is "auto").
-fn apply_appearance(cfg: &config::Config, cx: &mut App) {
-    let registry = gpui_component::ThemeRegistry::global(cx);
-    // Fall back to our default theme when the configured name isn't found —
-    // e.g. a config referencing a theme we've since dropped — rather than
-    // leaving gpui-component's built-in default.
-    let pick = |name: &str, fallback: &str| {
-        registry
-            .themes()
-            .get(name)
-            .or_else(|| registry.themes().get(fallback))
-            .cloned()
-    };
-    let light = pick(cfg.light_theme(), config::DEFAULT_LIGHT_THEME);
-    let dark = pick(cfg.dark_theme(), config::DEFAULT_DARK_THEME);
-    {
-        let theme = gpui_component::Theme::global_mut(cx);
-        if let Some(t) = light {
-            theme.light_theme = t;
-        }
-        if let Some(t) = dark {
-            theme.dark_theme = t;
-        }
-    }
-    gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
-}
-
-/// Label for the font-picker entry that follows the OS default monospace.
-const SYSTEM_FONT_LABEL: &str = "System Default";
-/// Label for the UI-font entry that reuses the monospace font — the default, so
-/// the UI stays all-monospace until you opt into a proportional UI.
-const UI_FONT_DEFAULT_LABEL: &str = "Same as monospace";
-/// Config sentinel (and the "System Default" UI-font entry) for the platform's
-/// proportional system UI font, distinct from an empty value (= monospace).
-const SYSTEM_UI_FONT: &str = "system-ui";
-/// Label for the editor-picker entry that opens files in the OS default app
-/// (an empty `editor` config).
-#[cfg(target_os = "macos")]
-const EDITOR_OS_DEFAULT_LABEL: &str = "System Default";
-
-/// The platform's system monospace UI font. On macOS this is the SF Mono-based
-/// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
-/// which Apple does not expose as a normal selectable font family.
-#[cfg(target_os = "macos")]
-fn system_mono_font(_cx: &App) -> SharedString {
-    SharedString::from(".AppleSystemUIFontMonospaced")
-}
-#[cfg(not(target_os = "macos"))]
-fn system_mono_font(cx: &App) -> SharedString {
-    cx.theme().mono_font_family.clone()
-}
-
-/// The platform's system proportional UI font (the analog of
-/// [`system_mono_font`]): `.AppleSystemUIFont` on macOS, else the theme's.
-#[cfg(target_os = "macos")]
-fn system_ui_font(_cx: &App) -> SharedString {
-    SharedString::from(".AppleSystemUIFont")
-}
-#[cfg(not(target_os = "macos"))]
-fn system_ui_font(cx: &App) -> SharedString {
-    cx.theme().font_family.clone()
-}
-
-/// The monospace font family to render with: the user's configured choice, or
-/// the platform's system monospace UI font when unset (the "System Default"
-/// font-picker entry, stored as an empty config value so it stays adaptive).
-fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
-    if cfg.font.is_empty() {
-        system_mono_font(cx)
-    } else {
-        SharedString::from(cfg.font.clone())
-    }
-}
-
-/// The UI font for prose chrome (menus, headings, labels): empty reuses the
-/// monospace [`resolve_font`] (the default, so nothing changes until opted in),
-/// the [`SYSTEM_UI_FONT`] sentinel uses the platform proportional font, and any
-/// other value is a chosen family.
-fn resolve_ui_font(cfg: &config::Config, cx: &App) -> SharedString {
-    match cfg.ui_font.as_str() {
-        "" => resolve_font(cfg, cx),
-        SYSTEM_UI_FONT => system_ui_font(cx),
-        name => SharedString::from(name.to_string()),
-    }
-}
-
 /// A pending yes/no confirmation shown in the bottom bar.
 enum Confirm {
     /// A destructive staging action awaiting `y`.
@@ -1650,8 +1396,8 @@ impl StatusView {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
-        let font = resolve_font(&config, cx);
-        let ui_font = resolve_ui_font(&config, cx);
+        let font = theme::resolve_font(&config, cx);
+        let ui_font = theme::resolve_ui_font(&config, cx);
 
         // Resolve the effective keymap; fold any unknown-id warnings into the
         // startup notice so the user learns their binding was ignored.
@@ -1879,8 +1625,8 @@ impl StatusView {
     /// takes effect on save, like the other settings (any unknown id re-warns).
     fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
         self.config = cfg;
-        self.font = resolve_font(&self.config, cx);
-        self.ui_font = resolve_ui_font(&self.config, cx);
+        self.font = theme::resolve_font(&self.config, cx);
+        self.ui_font = theme::resolve_ui_font(&self.config, cx);
         let (keymap, warnings) = build_keymap(&self.config);
         self.keymap = keymap;
         if !warnings.is_empty() {
@@ -1894,7 +1640,7 @@ impl StatusView {
     /// and the syntax-highlight cache is theme-derived, so a live theme switch
     /// must rebuild both — otherwise the screen keeps the old theme's colors.
     fn reapply_theme(&mut self, cx: &mut Context<Self>) {
-        apply_appearance(&self.config, cx);
+        theme::apply_appearance(&self.config, cx);
         self.palette = Palette::from_theme(cx);
         self.recompute_highlights(cx);
         self.rebuild_rows();
@@ -5098,12 +4844,12 @@ impl StatusView {
         let dark_ix = pos(&theme_names, self.config.dark_theme());
 
         if self.mono_fonts.is_empty() {
-            self.mono_fonts = monospace_font_names(cx);
+            self.mono_fonts = theme::monospace_font_names(cx);
         }
-        self.editors = text_editors();
+        self.editors = editors::text_editors();
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
-        let mut font_items: Vec<SharedString> = vec![SharedString::from(SYSTEM_FONT_LABEL)];
+        let mut font_items: Vec<SharedString> = vec![SharedString::from(theme::SYSTEM_FONT_LABEL)];
         font_items.extend(self.mono_fonts.iter().cloned());
         let font_ix = if self.config.font.is_empty() {
             0
@@ -5112,19 +4858,19 @@ impl StatusView {
         };
 
         if self.ui_fonts.is_empty() {
-            self.ui_fonts = all_font_names(cx);
+            self.ui_fonts = theme::all_font_names(cx);
         }
         // Lead with "Same as monospace" (empty config = the monospace UI we had
         // before opting in) and "System Default" (the platform proportional
         // font); the rest are concrete families.
         let mut ui_font_items: Vec<SharedString> = vec![
-            SharedString::from(UI_FONT_DEFAULT_LABEL),
-            SharedString::from(SYSTEM_FONT_LABEL),
+            SharedString::from(theme::UI_FONT_DEFAULT_LABEL),
+            SharedString::from(theme::SYSTEM_FONT_LABEL),
         ];
         ui_font_items.extend(self.ui_fonts.iter().cloned());
         let ui_font_ix = match self.config.ui_font.as_str() {
             "" => 0,
-            SYSTEM_UI_FONT => 1,
+            theme::SYSTEM_UI_FONT => 1,
             name => pos(&ui_font_items, name),
         };
 
@@ -5178,7 +4924,7 @@ impl StatusView {
         let editor = {
             let cur = self.config.editor.trim().to_string();
             let mut editor_items: Vec<SharedString> =
-                vec![SharedString::from(EDITOR_OS_DEFAULT_LABEL)];
+                vec![SharedString::from(editors::EDITOR_OS_DEFAULT_LABEL)];
             if !cur.is_empty() && !self.editors.iter().any(|(n, _)| n.as_ref() == cur) {
                 editor_items.push(SharedString::from(cur.clone()));
             }
@@ -5230,7 +4976,7 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, _cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.config.editor = if name.as_ref() == EDITOR_OS_DEFAULT_LABEL {
+                        this.config.editor = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
                             String::new()
                         } else {
                             name.to_string()
@@ -5286,15 +5032,15 @@ impl StatusView {
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
                         // "System Default" → empty config (adaptive system mono).
-                        this.config.font = if name.as_ref() == SYSTEM_FONT_LABEL {
+                        this.config.font = if name.as_ref() == theme::SYSTEM_FONT_LABEL {
                             String::new()
                         } else {
                             name.to_string()
                         };
-                        this.font = resolve_font(&this.config, cx);
+                        this.font = theme::resolve_font(&this.config, cx);
                         // The UI font may track the editor font ("Same as
                         // editor"), so re-resolve it too.
-                        this.ui_font = resolve_ui_font(&this.config, cx);
+                        this.ui_font = theme::resolve_ui_font(&this.config, cx);
                         this.apply_and_save(cx);
                     }
                 },
@@ -5306,12 +5052,12 @@ impl StatusView {
                     if let SelectEvent::Confirm(Some(name)) = ev {
                         this.config.ui_font = match name.as_ref() {
                             // Reuse the monospace font (no proportional UI).
-                            UI_FONT_DEFAULT_LABEL => String::new(),
+                            theme::UI_FONT_DEFAULT_LABEL => String::new(),
                             // Platform proportional UI font.
-                            SYSTEM_FONT_LABEL => SYSTEM_UI_FONT.to_string(),
+                            theme::SYSTEM_FONT_LABEL => theme::SYSTEM_UI_FONT.to_string(),
                             other => other.to_string(),
                         };
-                        this.ui_font = resolve_ui_font(&this.config, cx);
+                        this.ui_font = theme::resolve_ui_font(&this.config, cx);
                         this.apply_and_save(cx);
                     }
                 },
@@ -8989,31 +8735,6 @@ fn switch_chip(
         .into_any_element()
 }
 
-/// Our own theme sets, embedded at compile time. Each file is a `ThemeSet` of
-/// light/dark `ThemeConfig`s authored against the official palettes (replacing
-/// gpui-component's bundled themes, which were loose ports). More land here as
-/// they're authored; see `docs/` for the curated list.
-const BUNDLED_THEMES: &[&str] = &[
-    include_str!("../themes/github.json"),
-    include_str!("../themes/solarized.json"),
-    include_str!("../themes/selenized.json"),
-    include_str!("../themes/gruvbox.json"),
-    include_str!("../themes/catppuccin.json"),
-    include_str!("../themes/nord.json"),
-    include_str!("../themes/dracula.json"),
-    include_str!("../themes/tao.json"),
-];
-
-/// Load every bundled theme set into the registry so all themes are available.
-fn register_bundled_themes(cx: &mut App) {
-    let registry = gpui_component::ThemeRegistry::global_mut(cx);
-    for set in BUNDLED_THEMES {
-        if let Err(e) = registry.load_themes_from_str(set) {
-            eprintln!("magritte: failed to load a bundled theme set: {e}");
-        }
-    }
-}
-
 fn main() {
     // Optional positional arg: a path inside the repo to open (defaults to cwd).
     let arg = std::env::args().nth(1);
@@ -9027,12 +8748,12 @@ fn main() {
     app.run(move |cx: &mut App| {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
-        register_bundled_themes(cx);
+        theme::register_bundled_themes(cx);
         // Apply the saved appearance/themes. Theme::change first ensures the
         // Theme global exists so apply_appearance can set its slots.
         let (cfg, cfg_warning) = config::load_reporting();
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
-        apply_appearance(&cfg, cx);
+        theme::apply_appearance(&cfg, cx);
         // Standard macOS app shortcuts. Quit is global; Close Window runs on
         // the focused view (so it has a Window to remove).
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
@@ -9099,65 +8820,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every face `Palette::from_theme` (and the chrome) reads. If a bundled
-    /// theme omits one, gpui-component silently falls back to a default color
-    /// and the theme looks subtly wrong — this catches that at build time.
-    #[test]
-    fn bundled_themes_cover_every_face() {
-        // Keys read out of the `colors` block.
-        const COLORS: &[&str] = &[
-            "background",
-            "foreground",
-            "muted.foreground",
-            "border",
-            "accent.background",     // selected row
-            "list.hover.background", // hover wash
-            "selection.background",  // visual-mode region
-            "primary.background",    // section headings
-            "secondary.background",  // elevated panel
-            "base.red",
-            "base.green",
-            "base.yellow",
-            "base.blue",
-        ];
-        // Keys read out of the `highlight` block (git status faces). `warning`
-        // is the "modified" text color, which OVERRIDES base.yellow when set,
-        // so it must be present and deliberate (not inherited).
-        const HIGHLIGHT: &[&str] = &[
-            "warning",
-            "success.background", // added line band
-            "error.background",   // removed line band
-            "warning.background", // banner
-        ];
-        for set in BUNDLED_THEMES {
-            let v: serde_json::Value =
-                serde_json::from_str(set).expect("bundled theme is valid JSON");
-            let themes = v["themes"].as_array().expect("theme set has `themes`");
-            assert!(!themes.is_empty(), "theme set has no themes");
-            for theme in themes {
-                let name = theme["name"].as_str().unwrap_or("<unnamed>");
-                let colors = theme["colors"]
-                    .as_object()
-                    .unwrap_or_else(|| panic!("{name}: no `colors` block"));
-                for key in COLORS {
-                    assert!(
-                        colors.contains_key(*key),
-                        "theme {name:?} is missing colors.{key}"
-                    );
-                }
-                let highlight = theme["highlight"]
-                    .as_object()
-                    .unwrap_or_else(|| panic!("{name}: no `highlight` block"));
-                for key in HIGHLIGHT {
-                    assert!(
-                        highlight.contains_key(*key),
-                        "theme {name:?} is missing highlight.{key}"
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn command_registry_is_consistent() {
