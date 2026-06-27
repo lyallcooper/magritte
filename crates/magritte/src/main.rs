@@ -809,6 +809,29 @@ fn commands() -> &'static [Command] {
     C
 }
 
+/// The effective keystroke → command-id map: the built-in defaults (every
+/// registry command that has a key) overlaid with the user's `[keymap]`. A value
+/// of `"unbound"` removes a default binding; an unknown id is skipped with a
+/// warning rather than dropped silently. Only command keys live here — motions
+/// and prefixes (`j`/`k`/`g …`) stay hardwired in `on_key`/`run_dispatch`.
+fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String>) {
+    let mut map: HashMap<String, String> = commands()
+        .iter()
+        .filter_map(|c| c.key.map(|key| (key.to_string(), c.id.to_string())))
+        .collect();
+    let mut warnings = Vec::new();
+    for (keystroke, id) in &config.keymap {
+        if id == "unbound" {
+            map.remove(keystroke);
+        } else if commands().iter().any(|c| c.id == id) {
+            map.insert(keystroke.clone(), id.clone());
+        } else {
+            warnings.push(format!("keymap: unknown command id \"{id}\""));
+        }
+    }
+    (map, warnings)
+}
+
 /// The keystroke sequence to reach the command with this palette title, as
 /// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
 /// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
@@ -1656,6 +1679,9 @@ struct StatusView {
     /// The loaded user config (theme/appearance/font), kept so we can re-apply
     /// on config-file edits or system appearance changes.
     config: config::Config,
+    /// The effective keystroke → command-id map (registry defaults overlaid with
+    /// the user's `[keymap]`), resolved by `on_key`/`run_dispatch`.
+    keymap: HashMap<String, String>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
     /// Cached list of monospace font families (computed on first settings open).
@@ -1703,6 +1729,15 @@ impl StatusView {
         let font = resolve_font(&config, cx);
         let ui_font = resolve_ui_font(&config, cx);
 
+        // Resolve the effective keymap; fold any unknown-id warnings into the
+        // startup notice so the user learns their binding was ignored.
+        let (keymap, keymap_warnings) = build_keymap(&config);
+        let startup_warning = match (startup_warning, keymap_warnings.is_empty()) {
+            (warning, true) => warning,
+            (Some(warning), false) => Some(format!("{warning}; {}", keymap_warnings.join("; "))),
+            (None, false) => Some(keymap_warnings.join("; ")),
+        };
+
         // Sections are expanded by default; individual files start collapsed,
         // so opening a large repo loads no diffs until a file is expanded.
         let mut expanded = HashSet::new();
@@ -1738,6 +1773,7 @@ impl StatusView {
             font,
             ui_font,
             config,
+            keymap,
             usage: config::load_usage(),
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
@@ -5725,7 +5761,9 @@ impl StatusView {
                     cx.notify();
                 }
                 "g" => self.pending_g = true,
-                k if Self::is_dispatch_key(k) => self.run_dispatch(&cased, window, cx),
+                k if Self::is_dispatch_key(&self.keymap, k) => {
+                    self.run_dispatch(&cased, window, cx)
+                }
                 _ => {}
             }
             return;
@@ -5774,8 +5812,10 @@ impl StatusView {
             "k" if ctrl => self.select_section(false),
             "]" => self.select_section(true),
             "[" => self.select_section(false),
-            "j" | "down" => self.move_selection(1),
-            "k" | "up" => self.move_selection(-1),
+            // `!shift` so a shifted letter (e.g. a remapped `J`/`K`) falls through
+            // to the keymap below instead of being eaten as a motion.
+            "j" | "down" if !shift => self.move_selection(1),
+            "k" | "up" if !shift => self.move_selection(-1),
             // Vi-style paging (kept off the `?` menu — a scroll convenience).
             "d" if ctrl => self.page_selection(half),
             "u" if ctrl => self.page_selection(-half),
@@ -5786,11 +5826,9 @@ impl StatusView {
                 self.pending_g = true;
                 return;
             }
-            // Tab is delivered via the ToggleFold action (Root binds tab), but
-            // keep this as a fallback for any path that reaches on_key.
+            // Tab toggles a fold (also delivered via the ToggleFold action, since
+            // Root binds tab). Kept explicit — and out of the remappable keymap.
             "tab" => self.toggle_fold(cx),
-            // Visual (region) selection; Escape cancels.
-            "v" => return self.invoke_command("visual", window, cx),
             "escape" => {
                 // Cancel a visual selection, else dismiss the status/error
                 // banner if one is showing.
@@ -5799,46 +5837,17 @@ impl StatusView {
                 }
                 return;
             }
-            // Open the file at point in the external editor.
-            "enter" => return self.invoke_command("open-file", window, cx),
-            // Commands, dispatched through the registry so behavior lives in one
-            // place (see `commands`). The shift/`g`-prefix decoding stays here;
-            // the registry only sees the resolved command id.
-            "s" if shift => return self.invoke_command("stage-all", window, cx),
-            "s" => return self.invoke_command("stage", window, cx),
-            "u" if shift => return self.invoke_command("unstage-all", window, cx),
-            "u" => return self.invoke_command("unstage", window, cx),
-            // Yank: copy the selection (or the line at point). `y` (evil) and
-            // Cmd-C both work; `Cmd-C` must precede the `c` commit binding.
-            "y" => return self.invoke_command("yank", window, cx),
+            // Modifier/symbol aliases that aren't plain registry keys, so they
+            // can't ride the keymap below: Cmd-C yanks (before any `c` binding);
+            // M-x / `:` / `;`+shift open the palette; `!`/`|` (and base-key+shift
+            // fallbacks) run a git command; `?` / `/`+shift open Help.
             "c" if cmd => return self.invoke_command("yank", window, cx),
-            // M-x (Alt-x) opens the palette too, alongside `:`.
             "x" if alt => return self.open_command_palette(window, cx),
-            "x" => return self.invoke_command("discard", window, cx),
-            // Reset is `O` (the evil-collection-magit binding).
-            "o" if shift => return self.invoke_command("reset", window, cx),
-            // Run an arbitrary git command: `!` (magit) or `|` (evil-collection).
-            // Each may arrive as the symbol or as its base key + shift.
             "!" | "|" => return self.invoke_command("git-command", window, cx),
             "1" | "\\" if shift => return self.invoke_command("git-command", window, cx),
-            "c" => return self.invoke_command("commit", window, cx),
-            "b" => return self.invoke_command("branch", window, cx),
-            "m" => return self.invoke_command("merge", window, cx),
-            "r" => return self.invoke_command("rebase", window, cx),
-            "z" if shift => return self.invoke_command("stash", window, cx),
-            "i" => return self.invoke_command("ignore", window, cx),
-            "l" => return self.invoke_command("log", window, cx),
-            // Sync transients (evil-collection magit): p push, F pull, f fetch.
-            "p" => return self.invoke_command("push", window, cx),
-            "f" if shift => return self.invoke_command("pull", window, cx),
-            "f" => return self.invoke_command("fetch", window, cx),
-            "," => return self.invoke_command("settings", window, cx),
-            "$" => return self.invoke_command("git-log", window, cx),
             "4" if shift => return self.invoke_command("git-log", window, cx),
-            // The `:` command palette (M-x style). May arrive as ";" + shift.
             ":" => return self.open_command_palette(window, cx),
             ";" if shift => return self.open_command_palette(window, cx),
-            // Help / dispatch menu. "?" may arrive as "/" + shift.
             "?" => {
                 self.popup = Some(Popup::Dispatch(dispatch_menu()));
                 cx.notify();
@@ -5849,7 +5858,16 @@ impl StatusView {
                 cx.notify();
                 return;
             }
-            _ => return,
+            // Everything else resolves through the effective keymap (the
+            // shift-cased keystroke → command id), so remap/unbind take effect.
+            // The plain command keys (`c`, `s`/`S`, `O`, `F`, `enter`, `v`, …)
+            // live there now, not as arms above — the single source of dispatch.
+            _ => {
+                if Self::is_dispatch_key(&self.keymap, &cased) {
+                    return self.run_dispatch(&cased, window, cx);
+                }
+                return;
+            }
         }
         self.scroll
             .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
@@ -5898,9 +5916,12 @@ impl StatusView {
     /// dispatch menu and run the command, like magit's dispatch transient.
     fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
-        // A registry command (resolved by its key), the `:` palette, or a motion.
-        if let Some(cmd) = commands().iter().find(|c| c.key == Some(key)) {
-            (cmd.run)(self, window, cx);
+        // A keymap-bound command (default or user-remapped), the `:` palette, or
+        // a motion. Resolving through the effective keymap is what makes
+        // remap/unbind take effect — and binding *any* command id (even a leaf
+        // like `branch.delete`) to a key Just Works via `invoke_command`.
+        if let Some(id) = self.keymap.get(key).cloned() {
+            self.invoke_command(&id, window, cx);
             return;
         }
         if key == ":" {
@@ -5962,15 +5983,16 @@ impl StatusView {
         );
     }
 
-    /// Whether `key` is a single-stroke `?`-dispatch key. Registry command keys
-    /// route to their command; the bare motions `j`/`k`/`G` move the selection.
-    /// Multi-stroke entries are handled elsewhere — Tab via the ToggleFold
-    /// action, and `g r`/`g g`/`g j`/`g k` via the g-prefix — so they're excluded.
-    fn is_dispatch_key(key: &str) -> bool {
+    /// Whether `key` is a single-stroke dispatch key: bound in the effective
+    /// keymap (a command), or one of the bare motions `j`/`k`/`G` and the `:`
+    /// palette. Multi-stroke entries are handled elsewhere — Tab via the
+    /// ToggleFold action, `g r`/`g g`/`g j`/`g k` via the g-prefix — so they're
+    /// excluded even if a key like `g r` is bound.
+    fn is_dispatch_key(keymap: &HashMap<String, String>, key: &str) -> bool {
         if matches!(key, "tab" | "g r" | "g g" | "g j" | "g k") {
             return false;
         }
-        commands().iter().any(|c| c.key == Some(key)) || matches!(key, "j" | "k" | "G" | ":")
+        keymap.contains_key(key) || matches!(key, "j" | "k" | "G" | ":")
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -9190,14 +9212,32 @@ mod tests {
 
     #[test]
     fn is_dispatch_key_matches_single_key_menu_rows() {
-        // Single-key commands route; multi-stroke / g-prefix entries don't.
-        assert!(StatusView::is_dispatch_key("c"));
-        assert!(StatusView::is_dispatch_key("s"));
-        assert!(StatusView::is_dispatch_key("G"));
-        assert!(!StatusView::is_dispatch_key("tab"));
-        assert!(!StatusView::is_dispatch_key("g g"));
-        assert!(!StatusView::is_dispatch_key("g r"));
-        assert!(!StatusView::is_dispatch_key("z")); // not in the menu
+        // Against the default keymap: single-key commands route; multi-stroke /
+        // g-prefix entries don't.
+        let (km, warnings) = build_keymap(&config::Config::default());
+        assert!(warnings.is_empty(), "default config has no keymap warnings");
+        assert!(StatusView::is_dispatch_key(&km, "c"));
+        assert!(StatusView::is_dispatch_key(&km, "s"));
+        assert!(StatusView::is_dispatch_key(&km, "G"));
+        assert!(!StatusView::is_dispatch_key(&km, "tab"));
+        assert!(!StatusView::is_dispatch_key(&km, "g g"));
+        assert!(!StatusView::is_dispatch_key(&km, "g r"));
+        assert!(!StatusView::is_dispatch_key(&km, "z")); // not bound by default
+    }
+
+    #[test]
+    fn keymap_remap_unbind_and_unknown_id() {
+        let mut config = config::Config::default();
+        config.keymap.insert("K".into(), "branch-delete".into()); // remap
+        config.keymap.insert("x".into(), "unbound".into()); // unbind
+        config.keymap.insert("Q".into(), "no-such-command".into()); // unknown
+        let (km, warnings) = build_keymap(&config);
+        assert_eq!(km.get("K").map(String::as_str), Some("branch-delete"));
+        assert!(!km.contains_key("x"), "x was unbound");
+        assert!(!km.contains_key("Q"), "unknown id isn't bound");
+        assert_eq!(warnings.len(), 1, "the unknown id warns: {warnings:?}");
+        // Defaults the user didn't touch survive.
+        assert_eq!(km.get("c").map(String::as_str), Some("commit"));
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and

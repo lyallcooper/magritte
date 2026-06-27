@@ -1,8 +1,9 @@
 # Sketch: customizable commands & the `:` command palette
 
-> Status: **design sketch**, not implemented. Covers TODO #42 (user-customizable
+> Status: registry, `:` palette (#43), and `[keymap]` remap/unbind (#42a) are
+> **implemented**; `[[command]]` custom commands (#42b) and the `:if`-style
+> `enabled` predicates remain a design sketch. Covers TODO #42 (user-customizable
 > actions — remap/unbind/add) and #43 (an `M-x`-style command palette on `:`).
-> The two share one foundation, so they're designed together.
 
 ## The shared foundation: a command registry
 
