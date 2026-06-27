@@ -123,6 +123,22 @@ impl Repo {
         parse_diff(&out.stdout)
     }
 
+    /// Every tracked change vs. HEAD (`git diff HEAD`): staged and unstaged
+    /// modifications/deletions combined, excluding untracked files. This is
+    /// exactly the tree `git commit --all` records, so it's the preview for an
+    /// all-commit (where the staged-only diff would hide tracked unstaged work).
+    pub fn diff_tracked_vs_head(&self) -> Result<Vec<FileDiff>> {
+        let out = self.run([
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--default-prefix",
+            "--find-renames",
+            "HEAD",
+        ])?;
+        parse_diff(&out.stdout)
+    }
+
     /// The diff a single commit introduced (its changes vs. its first parent),
     /// for previewing the commit being reworded. Root commits (no parent) are
     /// diffed against the empty tree.

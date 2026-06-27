@@ -2794,18 +2794,41 @@ impl StatusView {
         .detach();
     }
 
+    /// Labels for the take-ours / take-theirs conflict actions. git's `--ours`
+    /// and `--theirs` swap meaning across operations: in a merge "ours" is the
+    /// current branch and "theirs" the branch merged in, but a rebase/cherry-
+    /// pick replays your commits onto the other side, so "ours" is the side
+    /// already applied and "theirs" is the commit being replayed — the opposite
+    /// of what intuition says. Name each side by what it actually is.
+    fn conflict_side_labels(&self) -> (&'static str, &'static str) {
+        match self.sequence.as_ref().map(|s| &s.kind) {
+            Some(SequenceKind::Rebase) => ("Take ours (rebased onto)", "Take theirs (your commit)"),
+            Some(SequenceKind::CherryPick) => {
+                ("Take ours (HEAD)", "Take theirs (cherry-picked commit)")
+            }
+            Some(SequenceKind::Revert) => ("Take ours (HEAD)", "Take theirs (reverted commit)"),
+            Some(SequenceKind::Am) => ("Take ours (HEAD)", "Take theirs (patch)"),
+            Some(SequenceKind::Merge) | None => ("Take ours (current)", "Take theirs (incoming)"),
+        }
+    }
+
     /// Whether the worktree file at `path` still contains conflict markers, so
     /// staging it wouldn't silently mark an unresolved conflict resolved.
     fn has_conflict_markers(&self, path: &str) -> bool {
         let Some(repo) = self.repo.as_ref() else {
             return false;
         };
+        // A read failure (unreadable, binary, gone) means we can't prove the
+        // file is clean — be conservative and treat it as still-conflicted, so
+        // staging can't silently mark an unresolved conflict resolved. (We match
+        // only the `<<<<<<<`/`>>>>>>>` pair, not a bare `=======`, which occurs
+        // in ordinary text and would false-positive.)
         std::fs::read_to_string(repo.workdir().join(path))
             .map(|c| {
                 c.lines()
                     .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
             })
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
 
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
@@ -3399,9 +3422,16 @@ impl StatusView {
     /// Run a user-typed git command on the background executor, then refresh.
     /// Shows the first line of output (the command is also recorded in the `$`
     /// log). A leading "git" is stripped so both "git stash list" and
-    /// "stash list" work.
+    /// "stash list" work. Split with POSIX quoting (no shell) so quoted args
+    /// like `commit -m "two words"` stay a single argv entry.
     fn run_git_command(&mut self, input: String, cx: &mut Context<Self>) {
-        let mut args: Vec<String> = input.split_whitespace().map(String::from).collect();
+        let mut args = match shell_words::split(&input) {
+            Ok(args) => args,
+            Err(e) => {
+                self.set_status(format!("parse error: {e}"), false, cx);
+                return;
+            }
+        };
         if args.first().map(String::as_str) == Some("git") {
             args.remove(0);
         }
@@ -4042,10 +4072,15 @@ impl StatusView {
                             set_upstream,
                             save_push_remote,
                         } => {
-                            if save_push_remote {
-                                let _ = repo.set_push_remote(&branch, &chosen);
+                            // Save the push remote only after the push lands, so
+                            // a rejected/offline push doesn't leave config
+                            // pointing at a remote we never pushed to. A failure
+                            // to record it surfaces rather than being swallowed.
+                            let pushed = repo.push_to(&chosen, &branch, set_upstream, &switches);
+                            if pushed.is_ok() && save_push_remote {
+                                repo.set_push_remote(&branch, &chosen)?;
                             }
-                            repo.push_to(&chosen, &branch, set_upstream, &switches)
+                            pushed
                         }
                         Transfer::PushRef { branch } => {
                             let (remote, target) = split_ref(&repo, &chosen);
@@ -4219,7 +4254,17 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.report(done, result, cx);
+                // A dropped stash isn't gone: git echoes the commit it pointed
+                // at ("Dropped refs/stash@{0} (<sha>)"), recoverable via `git
+                // stash store`. Surface that line so the id is visible — like
+                // magit, which echoes it too and (for a single drop) doesn't
+                // prompt; the explicit pick is the safeguard.
+                match (&action, &result) {
+                    (StashAction::Drop, Ok(line)) if !line.is_empty() => {
+                        this.set_status(line.clone(), true, cx);
+                    }
+                    _ => this.report(done, result, cx),
+                }
                 this.refresh(cx);
             })
             .ok();
@@ -4259,7 +4304,9 @@ impl StatusView {
             return;
         }
         self.confirm = Some((
-            "Nothing staged. Commit all uncommitted changes?".to_string(),
+            // `--all` stages tracked modifications/deletions only — untracked
+            // files are never included, so don't promise "all changes".
+            "Nothing staged. Commit all tracked changes?".to_string(),
             Confirm::CommitAll(switches),
         ));
         cx.notify();
@@ -4464,8 +4511,8 @@ impl StatusView {
 
     /// Load the diff to preview in the open editor, in the background, and
     /// flatten it (with syntax highlighting) for read-only display. Create/amend
-    /// show the staged diff being committed (or, with `--all` and nothing
-    /// staged, the unstaged changes that will be); reword shows the diff of the
+    /// show the staged diff being committed (or, with `--all`, every tracked
+    /// change vs HEAD that the commit will include); reword shows the diff of the
     /// commit it's renaming (HEAD's own changes), since it makes no tree change.
     fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
@@ -4482,14 +4529,13 @@ impl StatusView {
                 .spawn(async move {
                     let loaded = if reword {
                         repo.diff_commit("HEAD")
+                    } else if also_unstaged {
+                        // `--all` records every tracked change vs HEAD, so
+                        // preview that — not just the staged side, which would
+                        // hide tracked unstaged work the commit will include.
+                        repo.diff_tracked_vs_head()
                     } else {
-                        repo.diff_all(DiffSource::Staged).and_then(|staged| {
-                            if staged.is_empty() && also_unstaged {
-                                repo.diff_all(DiffSource::Unstaged)
-                            } else {
-                                Ok(staged)
-                            }
-                        })
+                        repo.diff_all(DiffSource::Staged)
                     };
                     match loaded {
                         Ok(diffs) => {
@@ -7655,6 +7701,7 @@ impl StatusView {
                 Some(target) => {
                     let (can_stage, can_unstage, can_discard) = target_ops(target);
                     let conflicted = self.is_conflicted(target_path(target));
+                    let (ours_label, theirs_label) = self.conflict_side_labels();
                     let view = view.clone();
                     el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
@@ -7668,8 +7715,8 @@ impl StatusView {
                         // A conflicted file resolves by taking a whole side.
                         if conflicted {
                             menu = menu
-                                .menu("Take ours", Box::new(CtxTakeOurs))
-                                .menu("Take theirs", Box::new(CtxTakeTheirs))
+                                .menu(ours_label, Box::new(CtxTakeOurs))
+                                .menu(theirs_label, Box::new(CtxTakeTheirs))
                                 .separator();
                         }
                         if can_stage {

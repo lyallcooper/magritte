@@ -105,8 +105,11 @@ impl Action {
                 RegionKind::DiscardStaged => repo.discard_staged_file_lines(&file, &selections),
             }),
             Action::Batch(actions) => {
-                // Verify every part applies before mutating anything, so a
-                // multi-file region (one confirmation) can't half-apply.
+                // Pre-verify the parts that can be dry-run (region applies, via
+                // `check_patch`) so a bad patch aborts before anything mutates.
+                // Whole-file ops (stage/unstage/discard of an entire file) can't
+                // be dry-run, so they run in sequence and a later failure leaves
+                // the earlier ones applied — not fully atomic for a mixed batch.
                 for action in &actions {
                     action.check(repo)?;
                 }
@@ -118,9 +121,10 @@ impl Action {
         }
     }
 
-    /// Dry-run an action without mutating the repo. Only region applies (the
-    /// members of a `Batch`) are checkable; other actions report `Ok` (they're
-    /// only ever issued singly, not batched).
+    /// Dry-run an action without mutating the repo. Only region applies are
+    /// checkable (via `check_patch`); whole-file ops can't be dry-run and report
+    /// `Ok` here, so a `Batch` mixing them is not fully precheckable — see the
+    /// atomicity note in `run`.
     pub fn check(&self, repo: &Repo) -> Result<(), String> {
         match self {
             Action::ApplyRegion {

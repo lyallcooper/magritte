@@ -33,6 +33,9 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
 magritte-core = { path = "../magritte-core" }
 serde = { version = "1", features = ["derive"] }
+# POSIX-style word splitting for the `!` run-git prompt — honors quoting and
+# escapes without invoking a shell.
+shell-words = "1"
 toml = "0.8"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
