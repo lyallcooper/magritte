@@ -35,6 +35,7 @@ mod git_action;
 mod highlight;
 mod picker;
 mod status_label;
+mod targets;
 mod theme;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
@@ -3074,7 +3075,7 @@ impl StatusView {
             },
             CreateMode::Any,
             Vec::new(),
-            all_branches,
+            targets::all_branches,
             window,
             cx,
         );
@@ -3109,7 +3110,13 @@ impl StatusView {
             );
         };
         match command {
-            BranchCheckout => listed(self, BranchAction::Checkout, all_branches, window, cx),
+            BranchCheckout => listed(
+                self,
+                BranchAction::Checkout,
+                targets::all_branches,
+                window,
+                cx,
+            ),
             BranchRename => listed(
                 self,
                 BranchAction::RenameFrom,
@@ -3160,7 +3167,7 @@ impl StatusView {
             PickerAction::Reset(mode),
             CreateMode::Value,
             Vec::new(),
-            all_branches,
+            targets::all_branches,
             window,
             cx,
         );
@@ -3199,7 +3206,7 @@ impl StatusView {
             PickerAction::Merge,
             CreateMode::Value,
             args,
-            all_branches,
+            targets::all_branches,
             window,
             cx,
         );
@@ -3410,7 +3417,7 @@ impl StatusView {
                 PickerAction::RebaseInteractive,
                 CreateMode::Value,
                 args,
-                all_branches,
+                targets::all_branches,
                 window,
                 cx,
             );
@@ -3432,7 +3439,7 @@ impl StatusView {
                 PickerAction::Rebase,
                 CreateMode::Value,
                 args,
-                all_branches,
+                targets::all_branches,
                 window,
                 cx,
             ),
@@ -3849,7 +3856,7 @@ impl StatusView {
         // so `origin/<current>` is always a normal candidate, existing or not.
         let choices = match &transfer {
             Transfer::PushRef { branch } if create => {
-                seed_push_branches(repo, &remotes, branch, existing)
+                targets::seed_push_branches(repo, &remotes, branch, existing)
             }
             _ => existing,
         };
@@ -4181,12 +4188,12 @@ impl StatusView {
                     pushed
                 }
                 Transfer::PushRef { branch } => {
-                    let (remote, target) = split_ref(&repo, &chosen);
+                    let (remote, target) = targets::split_ref(&repo, &chosen);
                     repo.push_ref(&remote, &branch, &target, &switches)
                 }
                 Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
                 Transfer::PullRef => {
-                    let (remote, branch) = split_ref(&repo, &chosen);
+                    let (remote, branch) = targets::split_ref(&repo, &chosen);
                     repo.pull_from(&remote, &branch, &switches)
                 }
                 Transfer::Fetch => repo.fetch_from(&chosen, &switches),
@@ -8524,73 +8531,6 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
-}
-
-/// The remote a bare (unqualified) branch name targets: the conventional
-/// `origin` if present, else the first configured remote, else `origin`.
-fn default_remote(repo: &Repo) -> String {
-    let remotes = repo.remotes().unwrap_or_default();
-    if remotes.iter().any(|r| r == "origin") {
-        "origin".to_string()
-    } else {
-        remotes
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "origin".to_string())
-    }
-}
-
-/// Local + remote branch names — the candidate set shared by the branch, log,
-/// reset, merge, and rebase pickers.
-fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {
-    let mut names = repo.local_branches()?;
-    names.extend(repo.remote_branches()?);
-    Ok(names)
-}
-
-/// The push "elsewhere" candidate list, magit-style: seed `<remote>/<current>`
-/// for every remote (existing or not) so the same-named push target is always a
-/// normal candidate, then append the existing remote branches. The preferred
-/// remote (push-remote if set, else [`default_remote`]) comes first, so the most
-/// likely target is the default selection.
-fn seed_push_branches(
-    repo: &Repo,
-    remotes: &[String],
-    current: &str,
-    existing: Vec<String>,
-) -> Vec<String> {
-    if current.is_empty() {
-        return existing;
-    }
-    let preferred = repo
-        .remote_targets()
-        .ok()
-        .and_then(|t| t.push_remote)
-        .unwrap_or_else(|| default_remote(repo));
-    let mut ordered: Vec<&String> = remotes.iter().collect();
-    ordered.sort_by_key(|r| **r != preferred);
-
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(remotes.len() + existing.len());
-    for cand in ordered
-        .into_iter()
-        .map(|r| format!("{r}/{current}"))
-        .chain(existing)
-    {
-        if seen.insert(cand.clone()) {
-            out.push(cand);
-        }
-    }
-    out
-}
-
-/// Split a chosen `remote/branch` ref into its parts. A bare value (no `/`,
-/// from a freshly-typed branch) defaults to [`default_remote`].
-fn split_ref(repo: &Repo, chosen: &str) -> (String, String) {
-    match chosen.split_once('/') {
-        Some((remote, branch)) => (remote.to_string(), branch.to_string()),
-        None => (default_remote(repo), chosen.to_string()),
-    }
 }
 
 /// Read the first and last ~1 KB of a file (lossy UTF-8) for modeline/shebang
