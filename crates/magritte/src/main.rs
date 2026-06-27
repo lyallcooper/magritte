@@ -47,7 +47,14 @@ actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
 // right-click) or the active visual selection.
 actions!(
     magritte,
-    [CtxStage, CtxUnstage, CtxDiscard, CtxTakeOurs, CtxTakeTheirs]
+    [
+        CtxStage,
+        CtxUnstage,
+        CtxDiscard,
+        CtxTakeOurs,
+        CtxTakeTheirs,
+        CtxCopy
+    ]
 );
 // Settings "Open config file" dropdown actions: copy the path, or open the
 // config with a specific editor (carries the editor's app path). `no_json`
@@ -407,6 +414,8 @@ enum LogLoad {
 /// A single commit's detail (opened from the log): its header and diff, as the
 /// same flattened rows the commit editor renders.
 struct CommitView {
+    /// The commit's short hash (for the header's copy button).
+    rev: String,
     /// `<short-hash> <subject>`, shown in the header.
     title: SharedString,
     rows: Vec<CommitDiffRow>,
@@ -2511,6 +2520,27 @@ impl StatusView {
             .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
     }
 
+    /// Copy the visual selection (rows joined by newlines), or the row at point
+    /// when there's no selection, and flash a confirmation. Yanks the displayed
+    /// text — for a diff line that's its content, without the `+`/`-` prefix.
+    /// Exits visual mode (like an evil yank).
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        let text = if let Some((lo, hi)) = self.visual_range() {
+            let hi = hi.min(self.rows.len().saturating_sub(1));
+            self.rows[lo..=hi]
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else if let Some(row) = self.rows.get(self.selected) {
+            row_text(row)
+        } else {
+            return;
+        };
+        self.visual = None;
+        self.copy_to_clipboard(text, cx);
+    }
+
     /// Resolve a region (visual) selection into actions. Each file in the
     /// selection acts at the coarsest granularity it was selected with: a
     /// file-name row stages the whole file (even when its diff is collapsed),
@@ -3953,6 +3983,19 @@ impl StatusView {
         }
     }
 
+    /// Copy `text` to the clipboard and flash a brief confirmation. The notice
+    /// echoes a short single-line value (a path, a hash) but stays generic for
+    /// multi-line or long copies.
+    fn copy_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        let notice = if text.contains('\n') || text.chars().count() > 40 {
+            "Copied".to_string()
+        } else {
+            format!("Copied {text}")
+        };
+        self.set_status(notice, true, cx);
+    }
+
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
     /// `chosen` is a remote name for the remote-level transfers, or a
     /// `remote/branch` ref (possibly newly typed) for the `*Ref` ones.
@@ -5090,6 +5133,7 @@ impl StatusView {
         };
         let rev = entry.short_hash.clone();
         self.commit_view = Some(CommitView {
+            rev: rev.clone(),
             title: SharedString::from(format!("{}  {}", entry.short_hash, entry.subject)),
             rows: vec![CommitDiffRow::Note("Loading…".to_string())],
             scroll: UniformListScrollHandle::new(),
@@ -5194,6 +5238,7 @@ impl StatusView {
         let shift = event.keystroke.modifiers.shift;
         let mut ctrl = event.keystroke.modifiers.control;
         let alt = event.keystroke.modifiers.alt;
+        let cmd = event.keystroke.modifiers.platform;
 
         // Emacs aliases, normalized up front so every downstream handler gets
         // them for free: C-g is the universal cancel (= Escape), and C-n/C-p
@@ -5426,6 +5471,10 @@ impl StatusView {
             "u" if shift => return self.invoke_command("unstage-all", window, cx),
             "u" => return self.invoke_command("unstage", window, cx),
             // M-x (Alt-x) opens the palette too, alongside `:`.
+            // Yank: copy the selection (or the line at point). `y` (evil) and
+            // Cmd-C both work; `Cmd-C` must precede the `c` commit binding.
+            "y" => return self.copy_selection(cx),
+            "c" if cmd => return self.copy_selection(cx),
             "x" if alt => return self.open_command_palette(window, cx),
             "x" => return self.invoke_command("discard", window, cx),
             // Reset is `O` (the evil-collection-magit binding).
@@ -6098,19 +6147,52 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
+    /// A small copy-to-clipboard icon button: copies `text` and flashes the
+    /// "Copied" confirmation; `tooltip` names what it copies.
+    fn copy_icon_button(
+        &self,
+        view: &Entity<Self>,
+        id: &'static str,
+        text: String,
+        tooltip: &'static str,
+    ) -> impl IntoElement {
+        let view = view.clone();
+        let tip_font = self.font.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .px(px(4.0))
+            .child(track_target(id))
+            .child(
+                Icon::new(IconName::Copy)
+                    .xsmall()
+                    .text_color(self.palette.fg),
+            )
+            .tooltip(move |window, cx| {
+                let font = tip_font.clone();
+                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tooltip))
+                    .build(window, cx)
+            })
+            .tooltip_show_delay(Duration::ZERO)
+            .on_click(move |_, _window, cx: &mut App| {
+                let text = text.clone();
+                view.update(cx, |v, vcx| v.copy_to_clipboard(text, vcx));
+            })
+    }
+
     /// The title-bar branch as a divided pill sharing one highlight: the name
     /// (click opens the branch transient) and a copy-name button.
     fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> gpui::Div {
-        let view = view.clone();
-        let copy = branch.to_string();
-        let fg = self.palette.fg;
-        let tip_font = self.font.clone();
+        let branch_click = view.clone();
         div()
             .flex()
             .items_center()
             .rounded(px(4.0))
             .bg(self.palette.selection)
-            .text_color(fg)
+            .text_color(self.palette.fg)
             .font_family(self.font.clone())
             .font_weight(FontWeight::MEDIUM)
             .child(
@@ -6122,33 +6204,17 @@ impl StatusView {
                     .child(track_target("titlebar-branch"))
                     .child(SharedString::from(branch.to_string()))
                     .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
+                        branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
                     }),
             )
             // Divider between the two halves of the split chip.
             .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
-            .child(
-                div()
-                    .id("titlebar-branch-copy")
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .px(px(4.0))
-                    .child(track_target("titlebar-branch-copy"))
-                    .child(Icon::new(IconName::Copy).xsmall().text_color(fg))
-                    .tooltip(move |window, cx| {
-                        let font = tip_font.clone();
-                        Tooltip::element(move |_, _| {
-                            div().font_family(font.clone()).child("Copy branch name")
-                        })
-                        .build(window, cx)
-                    })
-                    .tooltip_show_delay(Duration::ZERO)
-                    .on_click(move |_, _window, cx: &mut App| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                    }),
-            )
+            .child(self.copy_icon_button(
+                view,
+                "titlebar-branch-copy",
+                branch.to_string(),
+                "Copy branch name",
+            ))
     }
 
     /// The in-progress sequence banner (merge/rebase/cherry-pick/revert/am):
@@ -6923,6 +6989,12 @@ impl StatusView {
                             .text_color(self.palette.section)
                             .child(cv.title.clone()),
                     )
+                    .child(self.copy_icon_button(
+                        view,
+                        "commit-sha-copy",
+                        cv.rev.clone(),
+                        "Copy commit hash",
+                    ))
                     .child(self.key_action(
                         "commit-view-close",
                         "esc",
@@ -7185,11 +7257,9 @@ impl StatusView {
     }
 
     /// Copy the config file's path to the clipboard.
-    fn copy_config_path(&self, cx: &mut Context<Self>) {
+    fn copy_config_path(&mut self, cx: &mut Context<Self>) {
         if let Some(path) = config::path() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                path.to_string_lossy().into_owned(),
-            ));
+            self.copy_to_clipboard(path.to_string_lossy().into_owned(), cx);
         }
     }
 
@@ -7485,7 +7555,7 @@ impl StatusView {
                         if can_discard {
                             menu = menu.menu("Discard", Box::new(CtxDiscard));
                         }
-                        menu
+                        menu.separator().menu("Copy", Box::new(CtxCopy))
                     })
                     .into_any_element()
                 }
@@ -7572,6 +7642,7 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxTakeTheirs, _window, cx| {
                 this.resolve_at_point(ConflictSide::Theirs, cx)
             }))
+            .on_action(cx.listener(|this, _: &CtxCopy, _window, cx| this.copy_selection(cx)))
             // Settings "Open config file" dropdown actions.
             .on_action(
                 cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),
@@ -7788,6 +7859,25 @@ fn plain(text: impl Into<String>, color: Hsla) -> Row {
             text: text.into(),
             color,
         },
+    }
+}
+
+/// The plain text of a row, for copying. A diff line yields its content without
+/// the `+`/`-` sigil (so pasted code is clean); a file row joins its status word
+/// and path.
+fn row_text(row: &Row) -> String {
+    match &row.kind {
+        RowKind::Plain { text, .. } => text.clone(),
+        RowKind::Section { title, .. } => title.clone(),
+        RowKind::File { status, label, .. } => {
+            if status.is_empty() {
+                label.clone()
+            } else {
+                format!("{status}  {label}")
+            }
+        }
+        RowKind::HunkHeader { text, .. } => text.clone(),
+        RowKind::Diff { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
     }
 }
 
