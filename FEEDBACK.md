@@ -580,9 +580,11 @@ Architecture pass, what changed:
            Repo::run_with_sequence_editor; rebase logic just builds the todo.
   - FB5-6  documented core's intentional second role (the UI-agnostic command/
            menu model in transient.rs) in lib.rs, with a split path if needed.
-  - FB5-10 first slice: editor-launching extracted to editor_launch.rs. The rest
-           of the helper-module split (text wrap, theming/fonts, target
-           resolution, status labels) follows the same pattern — incremental.
+  - FB5-10 helper-module split (incremental): editor_launch.rs (launch + goto),
+           commit_text.rs (50/72 ruler, body wrap/reflow), and status_label.rs
+           (status words/colors + hunk header) extracted from main.rs (9689 →
+           9303 lines). The remaining clusters (theming/fonts + editor
+           enumeration, which are FFI-heavy) follow the same pattern.
 
 Deferred (by decision, not oversight):
   - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
