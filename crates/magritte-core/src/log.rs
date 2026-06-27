@@ -9,12 +9,14 @@ use crate::repo::Repo;
 
 /// The fields every log listing requests, unit-separated; records are
 /// NUL-terminated (`-z`) so subjects can't confuse the parse.
-const LOG_FORMAT: &str = "--format=%h%x1f%s%x1f%D%x1f%an%x1f%ar";
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%s%x1f%D%x1f%an%x1f%ar";
 
 /// One commit in a log listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
-    /// Abbreviated commit hash.
+    /// Full commit hash (what we copy / pass to plumbing).
+    pub hash: String,
+    /// Abbreviated commit hash, for display.
     pub short_hash: String,
     /// Commit subject (first line of the message).
     pub subject: String,
@@ -51,7 +53,7 @@ impl Repo {
             "-g",
             &format!("--max-count={limit}"),
             // %gd = reflog selector, %gs = reflog subject.
-            "--format=%h%x1f%gs%x1f%gd%x1f%an%x1f%ar",
+            "--format=%H%x1f%h%x1f%gs%x1f%gd%x1f%an%x1f%ar",
             "-z",
         ])?;
         Ok(parse_log(&out.stdout))
@@ -91,6 +93,7 @@ fn parse_log(stdout: &[u8]) -> Vec<LogEntry> {
 fn parse_log_record(record: &str) -> Option<LogEntry> {
     let mut fields = record.split('\u{1f}');
     Some(LogEntry {
+        hash: fields.next()?.trim().to_string(),
         short_hash: fields.next()?.trim().to_string(),
         subject: fields.next()?.to_string(),
         refs: fields.next().unwrap_or("").trim().to_string(),

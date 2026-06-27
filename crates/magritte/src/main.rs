@@ -414,10 +414,13 @@ enum LogLoad {
 /// A single commit's detail (opened from the log): its header and diff, as the
 /// same flattened rows the commit editor renders.
 struct CommitView {
-    /// The commit's short hash (for the header's copy button).
+    /// The commit's full hash — passed to `diff_commit` and copied by the
+    /// header's copy button.
     rev: String,
-    /// `<short-hash> <subject>`, shown in the header.
-    title: SharedString,
+    /// The abbreviated hash, shown in the header next to the copy button.
+    short: SharedString,
+    /// The commit subject, shown after the hash in the header.
+    subject: SharedString,
     rows: Vec<CommitDiffRow>,
     scroll: UniformListScrollHandle,
     /// The cursor row (drives scrolling) and the visual-selection anchor, so
@@ -5133,10 +5136,11 @@ impl StatusView {
         else {
             return;
         };
-        let rev = entry.short_hash.clone();
+        let rev = entry.hash.clone();
         self.commit_view = Some(CommitView {
             rev: rev.clone(),
-            title: SharedString::from(format!("{}  {}", entry.short_hash, entry.subject)),
+            short: SharedString::from(entry.short_hash.clone()),
+            subject: SharedString::from(entry.subject.clone()),
             rows: vec![CommitDiffRow::Note("Loading…".to_string())],
             scroll: UniformListScrollHandle::new(),
             selected: 0,
@@ -5186,13 +5190,13 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Copy the hash of the commit selected in the log.
+    /// Copy the full hash of the commit selected in the log.
     fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
         let hash = self
             .log
             .as_ref()
             .and_then(|l| l.entries.get(l.selected))
-            .map(|e| e.short_hash.clone());
+            .map(|e| e.hash.clone());
         if let Some(hash) = hash {
             self.copy_to_clipboard(hash, cx);
         }
@@ -7085,7 +7089,7 @@ impl StatusView {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.section)
-                            .child(cv.title.clone()),
+                            .child(cv.short.clone()),
                     )
                     .child(self.copy_icon_button(
                         view,
@@ -7093,6 +7097,12 @@ impl StatusView {
                         cv.rev.clone(),
                         "Copy commit hash",
                     ))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.fg)
+                            .child(cv.subject.clone()),
+                    )
                     .child(self.key_action(
                         "commit-view-close",
                         "esc",
@@ -7686,6 +7696,27 @@ impl StatusView {
             cx.notify();
         }
     }
+
+    /// The status/confirmation banner ("Copied …", errors), as a bottom-pinned
+    /// bar. The full-window sub-views (settings, commit, log, …) append this so
+    /// a copy confirmation is visible there too, not only in the status view.
+    fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+        let msg = self.status_message.clone()?;
+        Some(
+            status_bar(
+                msg,
+                self.palette.panel,
+                self.palette.fg,
+                self.palette.border,
+            )
+            .id("status-bar")
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.status_message = None;
+                cx.notify();
+            })),
+        )
+    }
 }
 
 impl Render for StatusView {
@@ -7768,20 +7799,30 @@ impl Render for StatusView {
         // The settings screen, commit editor, and git-log view each take over
         // the window.
         if let Some(s) = &self.settings {
-            return root.child(self.render_settings(s, &view));
+            return root
+                .child(self.render_settings(s, &view))
+                .children(self.status_toast(cx));
         }
         if let Some(ed) = &self.editor {
-            return root.child(self.render_editor(ed, &view));
+            return root
+                .child(self.render_editor(ed, &view))
+                .children(self.status_toast(cx));
         }
         if let Some(scroll) = &self.git_log {
-            return root.child(self.render_git_log(scroll, &view));
+            return root
+                .child(self.render_git_log(scroll, &view))
+                .children(self.status_toast(cx));
         }
         // A commit's diff detail sits above the log; the log above the status.
         if let Some(cv) = &self.commit_view {
-            return root.child(self.render_commit_view(cv, &view));
+            return root
+                .child(self.render_commit_view(cv, &view))
+                .children(self.status_toast(cx));
         }
         if let Some(log) = &self.log {
-            return root.child(self.render_log(log, &view));
+            return root
+                .child(self.render_log(log, &view))
+                .children(self.status_toast(cx));
         }
 
         // An in-progress merge/rebase/cherry-pick/revert sits above the list,
@@ -7894,22 +7935,9 @@ impl Render for StatusView {
                         Self::visual_cancel,
                     )),
             );
-        } else if let Some(msg) = &self.status_message {
-            // The status/error banner: click it (or press Esc) to dismiss.
-            root = root.child(
-                status_bar(
-                    msg.clone(),
-                    self.palette.panel,
-                    self.palette.fg,
-                    self.palette.border,
-                )
-                .id("status-bar")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _window, cx| {
-                    this.status_message = None;
-                    cx.notify();
-                })),
-            );
+        } else {
+            // The status/error/"Copied" banner: click it (or press Esc) to dismiss.
+            root = root.children(self.status_toast(cx));
         }
 
         // A floating "?" button (bottom-right) opens the dispatch menu — a
