@@ -68,3 +68,4 @@
 - [x] Why is reset 'X' instead of 'O'? 'O' is the binding I see in magit — done: reset is now `O` (the evil-collection-magit binding); `X` is freed.
 - [x] '!' to run command like magit — done: `!` (and evil-collection's `|`) opens a free-text "git:" prompt; the typed args run as `git …` (a leading "git" is stripped), recorded in the `$` log, with the first output line shown and a refresh after. Output beyond the first line isn't surfaced yet (the `$` log records the invocation + stderr); a full process-output view is a future enhancement.
 - [ ] Other low-hanging magit commands, like 'i' ignore
+- [x] Why is 'y' yank not a command in the palette? — done: yank was wired directly in `on_key` and never registered. Added a `yank` ("Copy", `y`, Essential) command to the registry, so it now appears in the `?` dispatch menu and the `:` palette; `on_key` (`y` / Cmd-C) routes through `invoke_command("yank")` like the other commands.
