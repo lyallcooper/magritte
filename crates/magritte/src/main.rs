@@ -28,6 +28,7 @@ use gpui::prelude::FluentBuilder;
 mod config;
 #[cfg(feature = "debug")]
 mod debug;
+mod editor_launch;
 mod git_action;
 mod highlight;
 mod picker;
@@ -2963,13 +2964,15 @@ impl StatusView {
     fn launch_editor(&self, path: &std::path::Path, line: Option<u32>) {
         let editor = self.config.editor.trim();
         if editor.is_empty() {
-            open_with_os(path);
+            editor_launch::open_with_os(path);
             return;
         }
         // Open at the line when we have one and recognize how this editor takes
         // a goto target; otherwise fall through to a plain open.
         if let Some(line) = line {
-            if let Some((program, args)) = editor_goto(editor, &path.to_string_lossy(), line) {
+            if let Some((program, args)) =
+                editor_launch::editor_goto(editor, &path.to_string_lossy(), line)
+            {
                 if std::process::Command::new(program)
                     .args(args)
                     .spawn()
@@ -3008,7 +3011,7 @@ impl StatusView {
             return;
         }
         // Nothing launched — fall back to the OS default handler.
-        open_with_os(path);
+        editor_launch::open_with_os(path);
     }
 
     /// Resolve the conflicted file at point by keeping one side (`git checkout
@@ -8886,125 +8889,6 @@ fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
-}
-
-/// Build the `(program, args)` to open `path` at `line` (1-based) with the
-/// configured editor, per its goto convention, or `None` if we don't know how
-/// (the caller then opens without a line). Editors fall into three families:
-/// `+N file` (vim/emacs/nano/…), `--goto file:line` (VS Code family), and
-/// `file:line` (Zed/Sublime/Helix). On macOS an app *name* (e.g. "Zed") is
-/// resolved to the matching CLI inside its bundle.
-fn editor_goto(editor: &str, path: &str, line: u32) -> Option<(String, Vec<String>)> {
-    let first = editor.split_whitespace().next().unwrap_or(editor);
-    let extra: Vec<String> = editor
-        .split_whitespace()
-        .skip(1)
-        .map(String::from)
-        .collect();
-    let stem = std::path::Path::new(first)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(first)
-        .to_ascii_lowercase();
-
-    // `+N file` — vim family, emacs, and the common terminal editors.
-    let plus = || {
-        let mut a = extra.clone();
-        a.push(format!("+{line}"));
-        a.push(path.to_string());
-        Some((first.to_string(), a))
-    };
-    // `[goto] file:line` — `goto` is e.g. `--goto` for VS Code, absent for Zed.
-    let colon = |goto: Option<&str>| {
-        let mut a = extra.clone();
-        if let Some(g) = goto {
-            a.push(g.to_string());
-        }
-        a.push(format!("{path}:{line}"));
-        Some((first.to_string(), a))
-    };
-
-    match stem.as_str() {
-        "vim" | "nvim" | "vi" | "view" | "mvim" | "gvim" | "nano" | "pico" | "micro" | "emacs"
-        | "emacsclient" | "kak" | "joe" => plus(),
-        "code" | "codium" | "cursor" | "code-insiders" => colon(Some("--goto")),
-        "zed" | "subl" | "hx" | "helix" => colon(None),
-        // On macOS the editor may be an app *name* (the Settings dropdown stores
-        // these); resolve it to its bundle CLI.
-        _ => {
-            #[cfg(target_os = "macos")]
-            {
-                editor_app_goto(editor, path, line)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                None
-            }
-        }
-    }
-}
-
-/// macOS: open at a line for a known GUI editor named by its *app* (e.g. "Zed"),
-/// via the CLI inside its `.app` bundle.
-#[cfg(target_os = "macos")]
-fn editor_app_goto(editor: &str, path: &str, line: u32) -> Option<(String, Vec<String>)> {
-    // (app name, CLI path within the bundle, goto flag — None means `file:line`).
-    const APPS: &[(&str, &str, Option<&str>)] = &[
-        ("Zed", "Contents/MacOS/cli", None),
-        (
-            "Visual Studio Code",
-            "Contents/Resources/app/bin/code",
-            Some("--goto"),
-        ),
-        (
-            "VSCodium",
-            "Contents/Resources/app/bin/codium",
-            Some("--goto"),
-        ),
-        (
-            "Cursor",
-            "Contents/Resources/app/bin/cursor",
-            Some("--goto"),
-        ),
-        ("Sublime Text", "Contents/SharedSupport/bin/subl", None),
-    ];
-    let (rel, goto) = APPS
-        .iter()
-        .find(|(name, _, _)| name.eq_ignore_ascii_case(editor))
-        .map(|(_, rel, goto)| (*rel, *goto))?;
-    let cli = find_app_bundle(editor)?.join(rel);
-    if !cli.exists() {
-        return None;
-    }
-    let mut args = Vec::new();
-    if let Some(g) = goto {
-        args.push(g.to_string());
-    }
-    args.push(format!("{path}:{line}"));
-    Some((cli.to_string_lossy().into_owned(), args))
-}
-
-/// The path to `<name>.app` in the standard application directories, if present.
-#[cfg(target_os = "macos")]
-fn find_app_bundle(name: &str) -> Option<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Applications"));
-    }
-    dirs.into_iter()
-        .map(|d| d.join(format!("{name}.app")))
-        .find(|p| p.exists())
-}
-
-/// Open `path` with the OS default application for its type.
-fn open_with_os(path: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(path).spawn();
-    #[cfg(not(target_os = "macos"))]
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
 /// The remote a bare (unqualified) branch name targets: the conventional
