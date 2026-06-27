@@ -12,7 +12,7 @@
 //! runs on the background executor; a generation counter drops stale results.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{
@@ -75,8 +75,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
-    Change, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, LineKind,
-    RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
+    Change, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest,
+    LineKind, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -294,6 +294,8 @@ enum PickerAction {
     Rebase,
     /// Run an arbitrary git command typed by the user (magit's `!`).
     RunGit,
+    /// Add the typed pattern (seeded with the file at point) to a gitignore file.
+    Ignore(magritte_core::IgnoreDest),
 }
 
 impl PickerAction {
@@ -330,6 +332,7 @@ impl PickerAction {
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
             // Reads like magit's "git " prompt: the typed text follows "git".
             PickerAction::RunGit => transient::plain_title("git"),
+            PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
         }
     }
 
@@ -368,6 +371,7 @@ impl PickerAction {
             PickerAction::Merge => "merge",
             PickerAction::Rebase => "rebase",
             PickerAction::RunGit => "run",
+            PickerAction::Ignore(_) => "ignore",
         }
     }
 }
@@ -633,6 +637,9 @@ fn commands() -> &'static [Command] {
             } else {
                 t.open_transient(transient::merge_transient(), RemoteTargets::default(), cx);
             }
+        }),
+        top!("ignore", "Ignore", Category::Commands, "i", |t, _w, cx| {
+            t.open_transient(transient::ignore_transient(), RemoteTargets::default(), cx)
         }),
         top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
             t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
@@ -3090,6 +3097,9 @@ impl StatusView {
             RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => {
                 self.dispatch_rebase(command, args, &targets, window, cx)
             }
+            IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
+                self.dispatch_ignore(command, window, cx)
+            }
             StashPush => self.run_stash_push(false, cx),
             StashPushAll => self.run_stash_push(true, cx),
             StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
@@ -3380,6 +3390,91 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 this.report("Merged", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The repo-relative path of the file at the cursor (file/hunk/line rows),
+    /// used to seed prompts like ignore. `None` on a section header.
+    fn current_file_path(&self) -> Option<String> {
+        let row = self.rows.get(self.selected)?;
+        row.target.as_ref().map(|t| target_path(t).to_string())
+    }
+
+    /// Ignore transient suffix: open a free-text prompt for the pattern (seeded
+    /// with the file at point) for the chosen destination, then add it.
+    fn dispatch_ignore(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        let file = self.current_file_path();
+        let dest = match command {
+            IgnoreToplevel => IgnoreDest::Toplevel,
+            // A subdir .gitignore matches relative to itself, so the rule below
+            // defaults to the basename and the dir is the file's own directory.
+            IgnoreSubdir => IgnoreDest::Subdir(
+                file.as_deref()
+                    .map(Path::new)
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default(),
+            ),
+            IgnorePrivate => IgnoreDest::Private,
+            IgnoreGlobal => IgnoreDest::Global,
+            _ => return,
+        };
+        // Default the pattern to the file at point: its basename for a subdir
+        // .gitignore, else its repo-relative path.
+        let default = match (command, file.as_deref()) {
+            (IgnoreSubdir, Some(f)) => Path::new(f)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            (_, Some(f)) => f.to_string(),
+            _ => String::new(),
+        };
+        self.open_picker(
+            PickerAction::Ignore(dest),
+            Vec::new(),
+            CreateMode::Value,
+            Vec::new(),
+            window,
+            cx,
+        );
+        // Seed the prompt with the default pattern — set both the picker's query
+        // (what confirm reads) and the visible input (set_value emits no Change).
+        let input = if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+            p.list.set_query(&default);
+            Some(p.input.clone())
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            input.update(cx, |s, cx| s.set_value(default, window, cx));
+        }
+    }
+
+    /// Append the chosen pattern to the gitignore file for `dest` (off the UI
+    /// thread), then refresh so a newly-ignored untracked file leaves the list.
+    fn run_ignore(&mut self, dest: IgnoreDest, rule: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Ignoring…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.add_ignore_rule(&rule, dest).map(|()| String::new()) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Ignored", result, cx);
                 this.refresh(cx);
             })
             .ok();
@@ -4030,6 +4125,7 @@ impl StatusView {
                 PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
                 PickerAction::RunGit => self.run_git_command(chosen.to_string(), cx),
+                PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -5726,6 +5822,7 @@ impl StatusView {
             "m" => return self.invoke_command("merge", window, cx),
             "r" => return self.invoke_command("rebase", window, cx),
             "z" if shift => return self.invoke_command("stash", window, cx),
+            "i" => return self.invoke_command("ignore", window, cx),
             "l" => return self.invoke_command("log", window, cx),
             // Sync transients (evil-collection magit): p push, F pull, f fetch.
             "p" => return self.invoke_command("push", window, cx),
@@ -8249,6 +8346,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebasing",
+        IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
     }
 }
 
@@ -8268,6 +8366,7 @@ fn command_done(command: transient::Command) -> &'static str {
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebased",
+        IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
     }
 }
 
@@ -9096,7 +9195,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", "!", ",", "$", // commands
+            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions

@@ -80,6 +80,12 @@ pub enum Command {
     RebaseOntoPushRemote,
     /// Rebase onto a branch/ref the frontend prompts for.
     RebaseElsewhere,
+    /// Add a gitignore rule (the frontend prompts for it, seeded with the file
+    /// at point), to one of the four ignore files.
+    IgnoreToplevel,
+    IgnoreSubdir,
+    IgnorePrivate,
+    IgnoreGlobal,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -719,6 +725,37 @@ pub fn merge_transient() -> Transient {
                 ],
             },
         ],
+    }
+}
+
+pub fn ignore_transient() -> Transient {
+    Transient {
+        title: plain_title("Gitignore"),
+        groups: vec![Group {
+            title: plain_title("Gitignore"),
+            suffixes: vec![
+                Suffix::Action(Action {
+                    key: "t",
+                    description: "shared at toplevel (.gitignore)".to_string(),
+                    command: Command::IgnoreToplevel,
+                }),
+                Suffix::Action(Action {
+                    key: "s",
+                    description: "shared in subdirectory (.gitignore)".to_string(),
+                    command: Command::IgnoreSubdir,
+                }),
+                Suffix::Action(Action {
+                    key: "p",
+                    description: "privately (.git/info/exclude)".to_string(),
+                    command: Command::IgnorePrivate,
+                }),
+                Suffix::Action(Action {
+                    key: "g",
+                    description: "privately for all repositories".to_string(),
+                    command: Command::IgnoreGlobal,
+                }),
+            ],
+        }],
     }
 }
 
