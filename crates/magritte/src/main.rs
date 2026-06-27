@@ -2433,9 +2433,17 @@ impl StatusView {
 
     /// The loaded diff for a file in a given section, if available.
     fn diff_for(&self, file: &FileRef) -> Option<FileDiff> {
+        self.diff_for_ref(file).cloned()
+    }
+
+    /// Borrow the loaded diff for `file`, for read-only lookups (a hunk's line
+    /// count, a target line) that would otherwise clone the whole `FileDiff`
+    /// just to read a field. `diff_for` is the owning variant, used only when an
+    /// `Action` needs to keep the diff.
+    fn diff_for_ref(&self, file: &FileRef) -> Option<&FileDiff> {
         let source = section_source(file.section)?;
         match self.diffs.get(&(source, file.path.clone()))? {
-            DiffState::Loaded(diff) => Some(diff.clone()),
+            DiffState::Loaded(diff) => Some(diff),
             _ => None,
         }
     }
@@ -2629,10 +2637,7 @@ impl StatusView {
                     // Selecting a hunk header acts on the whole hunk: pull in
                     // every line index (the core ignores context lines).
                     if let Gran::Lines(sels) = &mut files[i].1 {
-                        if let Some(h) = self
-                            .diff_for(file)
-                            .and_then(|d| d.hunks.into_iter().nth(*hunk))
-                        {
+                        if let Some(h) = self.diff_for_ref(file).and_then(|d| d.hunks.get(*hunk)) {
                             add_lines(sels, *hunk, 0..h.lines.len());
                         }
                     }
@@ -2717,12 +2722,14 @@ impl StatusView {
     /// `None` when the diff isn't loaded (a collapsed file) — open without a line.
     fn diff_target_line(&self, target: &Target) -> Option<u32> {
         match target {
-            Target::File(f) => self.diff_for(f)?.hunks.first().map(|h| h.new_start),
-            Target::Hunk { file, hunk } => {
-                self.diff_for(file)?.hunks.get(*hunk).map(|h| h.new_start)
-            }
+            Target::File(f) => self.diff_for_ref(f)?.hunks.first().map(|h| h.new_start),
+            Target::Hunk { file, hunk } => self
+                .diff_for_ref(file)?
+                .hunks
+                .get(*hunk)
+                .map(|h| h.new_start),
             Target::Line { file, hunk, line } => {
-                let diff = self.diff_for(file)?;
+                let diff = self.diff_for_ref(file)?;
                 let h = diff.hunks.get(*hunk)?;
                 // A deleted line has no new-side number; fall back to the hunk.
                 Some(
