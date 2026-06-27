@@ -108,13 +108,21 @@ impl Action {
                 // Pre-verify the parts that can be dry-run (region applies, via
                 // `check_patch`) so a bad patch aborts before anything mutates.
                 // Whole-file ops (stage/unstage/discard of an entire file) can't
-                // be dry-run, so they run in sequence and a later failure leaves
-                // the earlier ones applied — not fully atomic for a mixed batch.
+                // be dry-run, so they run in sequence; a later failure leaves the
+                // earlier ones applied. We can't undo that, but we say so rather
+                // than report only the last error as if nothing else happened.
                 for action in &actions {
                     action.check(repo)?;
                 }
-                for action in actions {
-                    action.run(repo)?;
+                let total = actions.len();
+                for (done, action) in actions.into_iter().enumerate() {
+                    if let Err(e) = action.run(repo) {
+                        return Err(if done == 0 {
+                            e
+                        } else {
+                            format!("{e} — applied {done} of {total}; the rest were not")
+                        });
+                    }
                 }
                 Ok(())
             }

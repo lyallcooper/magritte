@@ -127,7 +127,12 @@ impl Repo {
     /// modifications/deletions combined, excluding untracked files. This is
     /// exactly the tree `git commit --all` records, so it's the preview for an
     /// all-commit (where the staged-only diff would hide tracked unstaged work).
+    /// On an unborn branch there is no HEAD (so `git diff HEAD` would error) and
+    /// nothing is tracked yet, so the staged diff is the whole story.
     pub fn diff_tracked_vs_head(&self) -> Result<Vec<FileDiff>> {
+        if !self.succeeds(["rev-parse", "--verify", "--quiet", "HEAD"])? {
+            return self.diff_all(DiffSource::Staged);
+        }
         let out = self.run([
             "diff",
             "--no-color",

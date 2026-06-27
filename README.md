@@ -33,7 +33,7 @@ incremental.
 
 The default keymap mirrors **evil-collection's magit**, so existing muscle
 memory transfers (`j`/`k` to move, `TAB` to fold, `s`/`u` to stage/unstage, `c`
-to commit, `P`/`F` to push/pull, `l` for log, `Z` for stash, and so on). Press
+to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on). Press
 `?` in the app for the dispatch/help popup. The full table lives in
 [PLAN.md](PLAN.md#36-keybindings); every keyboard action has a mouse
 equivalent.
@@ -45,9 +45,11 @@ Two crates, split at a synchronous/async seam:
 - **`magritte-core`** — UI-free and synchronous. Drives the `git` CLI and
   returns plain data, so it's unit-testable against throwaway repos with no
   graphics stack.
-- **`magritte`** — the GPUI app. Owns all asynchrony and cancellation; every git
-  call is dispatched to a background executor and the UI thread never blocks on
-  git.
+- **`magritte`** — the GPUI app. Owns all asynchrony and cancellation. Anything
+  that can be slow — status, diffs, ref/branch/stash listings, transfers — is
+  dispatched to a background executor, so the UI thread never blocks on it. (A
+  few bounded config/ref probes, e.g. resolving `@{upstream}`, still run inline;
+  they don't scan the worktree.)
 
 [`docs/extensibility.md`](docs/extensibility.md) sketches the planned
 customizable-commands and command-palette work.
