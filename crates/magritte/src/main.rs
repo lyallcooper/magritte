@@ -33,6 +33,7 @@ mod editor_launch;
 mod editors;
 mod git_action;
 mod highlight;
+mod kbd;
 mod picker;
 mod status_label;
 mod targets;
@@ -6117,7 +6118,7 @@ impl StatusView {
                     // Keys are monospace, like keycaps elsewhere, even under a
                     // proportional UI font.
                     .font_family(self.font.clone())
-                    .child(SharedString::from(format_keys(&seq))),
+                    .child(SharedString::from(kbd::format_keys(&seq))),
             );
         }
         el.into_any_element()
@@ -6277,7 +6278,7 @@ impl StatusView {
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
                     .child(track_target(sw.key))
-                    .child(switch_chip(
+                    .child(kbd::switch_chip(
                         sw.key,
                         self.palette.dim,
                         self.palette.removed,
@@ -6324,7 +6325,7 @@ impl StatusView {
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
                     .child(track_target(o.key))
-                    .child(switch_chip(
+                    .child(kbd::switch_chip(
                         o.key,
                         self.palette.dim,
                         self.palette.removed,
@@ -6358,7 +6359,7 @@ impl StatusView {
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
                     .child(track_target(a.key))
-                    .child(key_chip(a.key, self.palette.dim, &self.font))
+                    .child(kbd::key_chip(a.key, self.palette.dim, &self.font))
                     .child(self.hover_label(&a.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
@@ -6727,7 +6728,7 @@ impl StatusView {
         div()
             .flex()
             .items_center()
-            .child(key_chip(keys, self.palette.dim, &self.font))
+            .child(kbd::key_chip(keys, self.palette.dim, &self.font))
     }
 
     /// A clickable key hint: a keycap + label that runs `action` (the same
@@ -6753,7 +6754,7 @@ impl StatusView {
             .cursor_pointer()
             .group(KBD_ROW_GROUP)
             .child(track_target(id))
-            .child(key_chip(key, self.palette.dim, &self.font))
+            .child(kbd::key_chip(key, self.palette.dim, &self.font))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| action(v, window, vcx));
@@ -8554,31 +8555,6 @@ fn file_head_tail(path: &std::path::Path) -> (String, String) {
     )
 }
 
-/// Spell out one keystroke token as a word label. Modifier and named keys
-/// become words (`Cmd`, `Enter`, `Esc`, `Tab`) rather than the macOS glyphs,
-/// which render poorly in our monospace chrome. Plain letters keep their case
-/// (`F` vs `f`) so case alone distinguishes the shifted key — no `Shift` shown.
-fn key_word(token: &str) -> String {
-    match token {
-        "cmd" | "super" | "meta" => "Cmd".into(),
-        "ctrl" | "control" => "Ctrl".into(),
-        "alt" | "opt" | "option" => "Opt".into(),
-        "shift" => "Shift".into(),
-        "enter" | "return" => "Return".into(),
-        "esc" | "ESC" | "escape" => "Esc".into(),
-        "tab" | "TAB" => "Tab".into(),
-        "space" => "Space".into(),
-        _ => token.to_string(),
-    }
-}
-
-fn is_modifier(token: &str) -> bool {
-    matches!(
-        token,
-        "cmd" | "super" | "meta" | "ctrl" | "control" | "alt" | "opt" | "option" | "shift"
-    )
-}
-
 /// A transparent overlay that records its element's on-screen center for the
 /// debug `click-id` command. Add as a child of a `.relative()` clickable
 /// element so synthetic tests can click it by id. Compiled only with the
@@ -8603,76 +8579,6 @@ fn track_target(id: impl Into<SharedString>) -> impl IntoElement {
 #[cfg(not(feature = "debug"))]
 fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
     gpui::Empty
-}
-
-/// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
-/// label (or, for switches, a multi-span label). The border makes adjacent
-/// chips read as distinct keys rather than blending together. `font` is the
-/// monospace family — keys read as keys, never the proportional UI font.
-fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
-    div()
-        .px(px(5.0))
-        .min_w(px(18.0))
-        .flex()
-        .justify_center()
-        .text_center()
-        .rounded(px(3.0))
-        .border_1()
-        .border_color(with_alpha(color, 0.45))
-        .text_color(color)
-        .font_family(font.clone())
-        .bg(with_alpha(color, 0.12))
-}
-
-/// The display label for a keystroke spec. A multi-keystroke *sequence* is
-/// space-separated (e.g. `g r`, `c c`) and rendered with the keys spaced inside
-/// one keycap. A *chord* joins modifiers to a key with `-` (e.g. `cmd-enter` →
-/// `Cmd+Enter`). A lone token is word-ified (`tab` → `Tab`).
-fn format_keys(key: &str) -> String {
-    if key.contains(' ') {
-        return key.split(' ').map(key_word).collect::<Vec<_>>().join(" ");
-    }
-    let parts: Vec<&str> = key.split('-').collect();
-    let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
-    if is_chord {
-        parts
-            .iter()
-            .map(|p| key_word(p))
-            .collect::<Vec<_>>()
-            .join("+")
-    } else {
-        key_word(key)
-    }
-}
-
-/// A keyboard key badge: a keycap chip with a word-style label (see
-/// [`format_keys`]). `font` is the monospace family.
-fn key_chip(key: &str, color: Hsla, font: &SharedString) -> AnyElement {
-    chip_box(color, font)
-        .child(SharedString::from(format_keys(key)))
-        .into_any_element()
-}
-
-/// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
-/// switch letter), only the dash *inside* the keycap changes color to the
-/// accent, while the keycap itself stays neutral (magit's prefix feedback).
-fn switch_chip(
-    key: &str,
-    color: Hsla,
-    accent: Hsla,
-    pending: bool,
-    font: &SharedString,
-) -> AnyElement {
-    let rest = key.strip_prefix('-').unwrap_or(key);
-    let dash_color = if pending { accent } else { color };
-    chip_box(color, font)
-        .child(div().text_color(dash_color).child(SharedString::from("-")))
-        .child(
-            div()
-                .text_color(color)
-                .child(SharedString::from(rest.to_string())),
-        )
-        .into_any_element()
 }
 
 fn main() {
