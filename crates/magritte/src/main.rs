@@ -6137,7 +6137,11 @@ impl StatusView {
         let mut any_command = false;
         for group in def.groups.iter().filter(|g| !has_args(g)) {
             any_command = true;
-            command_row = command_row.child(self.render_group(group, 1, state, pending_dash, view));
+            // A tall command group (e.g. the `?` dispatch's "Commands") fans into
+            // sub-columns just like an argument band, so it doesn't tower over
+            // the shorter groups beside it.
+            let k = group.suffixes.len().div_ceil(BAND_CAP).max(1);
+            command_row = command_row.child(self.render_group(group, k, state, pending_dash, view));
         }
         if any_command {
             body = body.child(command_row);
