@@ -420,8 +420,10 @@ struct CommitView {
     title: SharedString,
     rows: Vec<CommitDiffRow>,
     scroll: UniformListScrollHandle,
-    /// Tracked top-row index for keyboard scrolling (see [`apply_scroll_key`]).
-    top: usize,
+    /// The cursor row (drives scrolling) and the visual-selection anchor, so
+    /// lines can be selected and yanked here too.
+    selected: usize,
+    visual: Option<usize>,
 }
 
 /// Scroll state for a read-only list view: its handle plus the top row we track
@@ -5137,7 +5139,8 @@ impl StatusView {
             title: SharedString::from(format!("{}  {}", entry.short_hash, entry.subject)),
             rows: vec![CommitDiffRow::Note("Loading…".to_string())],
             scroll: UniformListScrollHandle::new(),
-            top: 0,
+            selected: 0,
+            visual: None,
         });
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -5181,6 +5184,68 @@ impl StatusView {
         // Return focus to the status root; the log view (still open) handles keys.
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Copy the hash of the commit selected in the log.
+    fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
+        let hash = self
+            .log
+            .as_ref()
+            .and_then(|l| l.entries.get(l.selected))
+            .map(|e| e.short_hash.clone());
+        if let Some(hash) = hash {
+            self.copy_to_clipboard(hash, cx);
+        }
+    }
+
+    /// Move the commit-view cursor by `delta`, keeping it in view.
+    fn commit_view_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(cv) = self.commit_view.as_mut() {
+            if cv.rows.is_empty() {
+                return;
+            }
+            let last = cv.rows.len() as isize - 1;
+            cv.selected = (cv.selected as isize + delta).clamp(0, last) as usize;
+            cv.scroll
+                .scroll_to_item(cv.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Toggle a visual selection in the commit view, anchored at the cursor.
+    fn commit_view_toggle_visual(&mut self, cx: &mut Context<Self>) {
+        if let Some(cv) = self.commit_view.as_mut() {
+            cv.visual = if cv.visual.is_some() {
+                None
+            } else {
+                Some(cv.selected)
+            };
+            cx.notify();
+        }
+    }
+
+    /// Copy the commit view's visual selection (or the line at point), then
+    /// exit visual mode — the diff-view counterpart to [`Self::copy_selection`].
+    fn copy_commit_selection(&mut self, cx: &mut Context<Self>) {
+        let text = {
+            let Some(cv) = self.commit_view.as_ref() else {
+                return;
+            };
+            let (lo, hi) = match cv.visual {
+                Some(a) => (a.min(cv.selected), a.max(cv.selected)),
+                None => (cv.selected, cv.selected),
+            };
+            let hi = hi.min(cv.rows.len().saturating_sub(1));
+            cv.rows[lo..=hi]
+                .iter()
+                .map(commit_row_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if let Some(cv) = self.commit_view.as_mut() {
+            cv.visual = None;
+        }
+        self.copy_to_clipboard(text, cx);
     }
 
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -5308,16 +5373,38 @@ impl StatusView {
         // A commit's diff detail (opened from the log) is topmost; esc/q returns
         // to the log, and it scrolls with the usual vi/less keys.
         if self.commit_view.is_some() {
-            if key == "escape" || key == "q" {
-                self.close_commit_view(window, cx);
-                return;
+            let page = page_rows(window) as isize;
+            let half = (page / 2).max(1);
+            match key.as_str() {
+                // Cancel a visual selection first; otherwise leave the view.
+                "escape" | "q" => {
+                    if self
+                        .commit_view
+                        .as_ref()
+                        .is_some_and(|cv| cv.visual.is_some())
+                    {
+                        if let Some(cv) = self.commit_view.as_mut() {
+                            cv.visual = None;
+                        }
+                        cx.notify();
+                    } else {
+                        self.close_commit_view(window, cx);
+                    }
+                }
+                "j" | "down" => self.commit_view_move(1, cx),
+                "k" | "up" => self.commit_view_move(-1, cx),
+                "d" if ctrl => self.commit_view_move(half, cx),
+                "u" if ctrl => self.commit_view_move(-half, cx),
+                "f" if ctrl => self.commit_view_move(page, cx),
+                "space" => self.commit_view_move(page, cx),
+                "b" if ctrl => self.commit_view_move(-page, cx),
+                "g" if shift => self.commit_view_move(isize::MAX / 2, cx),
+                "g" => self.commit_view_move(isize::MIN / 2, cx),
+                "v" => self.commit_view_toggle_visual(cx),
+                "y" => self.copy_commit_selection(cx),
+                "c" if cmd => self.copy_commit_selection(cx),
+                _ => {}
             }
-            let page = page_rows(window);
-            if let Some(cv) = self.commit_view.as_mut() {
-                let len = cv.rows.len();
-                apply_scroll_key(&cv.scroll, &mut cv.top, len, &key, shift, ctrl, page);
-            }
-            cx.notify();
             return;
         }
 
@@ -5345,6 +5432,9 @@ impl StatusView {
                 // Revert is `_` (evil-collection-magit); `V` is visual-line there.
                 "_" => self.pick_selected(PickOp::Revert, window, cx),
                 "-" if shift => self.pick_selected(PickOp::Revert, window, cx),
+                // Yank the selected commit's hash.
+                "y" => self.copy_log_commit(cx),
+                "c" if cmd => self.copy_log_commit(cx),
                 _ => {}
             }
             return;
@@ -6599,7 +6689,7 @@ impl StatusView {
                         let this = view.read(cx);
                         match this.editor.as_ref() {
                             Some(ed) => range
-                                .map(|ix| this.render_commit_diff_row(&ed.diff[ix]))
+                                .map(|ix| this.render_commit_diff_row(&ed.diff[ix], false))
                                 .collect::<Vec<_>>(),
                             None => Vec::new(),
                         }
@@ -6612,13 +6702,14 @@ impl StatusView {
             .vertical_scrollbar(&ed.diff_scroll)
     }
 
-    fn render_commit_diff_row(&self, row: &CommitDiffRow) -> AnyElement {
+    fn render_commit_diff_row(&self, row: &CommitDiffRow, highlighted: bool) -> AnyElement {
         let base = div()
             .h(px(ROW_HEIGHT))
             .w_full()
             .px_2()
             .flex()
-            .items_center();
+            .items_center()
+            .when(highlighted, |el| el.bg(self.palette.selection));
         match row {
             CommitDiffRow::File(path) => base
                 .child(
@@ -6959,9 +7050,16 @@ impl StatusView {
             move |range, _window, cx| {
                 let this = view.read(cx);
                 match this.commit_view.as_ref() {
-                    Some(cv) => range
-                        .map(|ix| this.render_commit_diff_row(&cv.rows[ix]))
-                        .collect::<Vec<_>>(),
+                    Some(cv) => {
+                        let vis = cv.visual.map(|a| (a.min(cv.selected), a.max(cv.selected)));
+                        range
+                            .map(|ix| {
+                                let highlighted = ix == cv.selected
+                                    || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
+                                this.render_commit_diff_row(&cv.rows[ix], highlighted)
+                            })
+                            .collect::<Vec<_>>()
+                    }
                     None => Vec::new(),
                 }
             }
@@ -7878,6 +7976,17 @@ fn row_text(row: &Row) -> String {
         }
         RowKind::HunkHeader { text, .. } => text.clone(),
         RowKind::Diff { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
+    }
+}
+
+/// The plain text of a commit-view row, for copying (diff line content without
+/// the `+`/`-` sigil).
+fn commit_row_text(row: &CommitDiffRow) -> String {
+    match row {
+        CommitDiffRow::File(p) => p.clone(),
+        CommitDiffRow::Hunk(h) => h.clone(),
+        CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
+        CommitDiffRow::Note(n) => n.clone(),
     }
 }
 
