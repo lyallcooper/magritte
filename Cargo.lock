@@ -3537,6 +3537,7 @@ dependencies = [
 name = "magritte"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
  "core-foundation 0.10.0",
  "core-graphics 0.24.0",
  "core-text",
@@ -3546,6 +3547,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "magritte-core",
+ "notify",
  "serde",
  "serde_json",
  "shell-words",
