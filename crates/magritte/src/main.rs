@@ -796,6 +796,8 @@ fn commands() -> &'static [Command] {
                 cx.notify();
             }
         ),
+        top!("yank", "Copy", Category::Essential, "y", |t, _w, cx| t
+            .copy_selection(cx)),
     ];
     C
 }
@@ -5706,11 +5708,11 @@ impl StatusView {
             "s" => return self.invoke_command("stage", window, cx),
             "u" if shift => return self.invoke_command("unstage-all", window, cx),
             "u" => return self.invoke_command("unstage", window, cx),
-            // M-x (Alt-x) opens the palette too, alongside `:`.
             // Yank: copy the selection (or the line at point). `y` (evil) and
             // Cmd-C both work; `Cmd-C` must precede the `c` commit binding.
-            "y" => return self.copy_selection(cx),
-            "c" if cmd => return self.copy_selection(cx),
+            "y" => return self.invoke_command("yank", window, cx),
+            "c" if cmd => return self.invoke_command("yank", window, cx),
+            // M-x (Alt-x) opens the palette too, alongside `:`.
             "x" if alt => return self.open_command_palette(window, cx),
             "x" => return self.invoke_command("discard", window, cx),
             // Reset is `O` (the evil-collection-magit binding).
@@ -9096,7 +9098,7 @@ mod tests {
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", "!", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
-            "v", "tab", "g r", ":", "enter", // essential + open file + palette
+            "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
         ];
         // Keys allowed to be on only one side of the check. Empty today; add a
