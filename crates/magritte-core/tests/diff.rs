@@ -230,3 +230,41 @@ Binary files a/img.png and b/img.png differ
     assert!(files[0].is_binary);
     assert!(files[0].hunks.is_empty());
 }
+
+#[test]
+fn tracked_vs_head_combines_staged_and_unstaged() {
+    let t = TestRepo::new();
+    t.write("file.txt", "a\nb\nc\n");
+    t.commit_all("initial");
+    // One staged change and one further unstaged change to the same file.
+    t.write("file.txt", "A\nb\nc\n");
+    t.git(["add", "file.txt"]);
+    t.write("file.txt", "A\nb\nC\n");
+
+    let diff = open(&t).diff_tracked_vs_head().unwrap();
+    assert_eq!(diff.len(), 1, "the file appears once, not per source");
+    let added: Vec<_> = diff[0]
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.content.as_str())
+        .collect();
+    // Both the staged (A) and unstaged (C) edits are in the commit-all preview.
+    assert!(added.contains(&"A"), "staged edit present: {added:?}");
+    assert!(added.contains(&"C"), "unstaged edit present: {added:?}");
+}
+
+#[test]
+fn tracked_vs_head_on_unborn_branch_shows_staged() {
+    // No commits yet: `git diff HEAD` would error, so the staged diff is used.
+    let t = TestRepo::new();
+    t.write("file.txt", "a\nb\n");
+    t.git(["add", "file.txt"]);
+
+    let diff = open(&t)
+        .diff_tracked_vs_head()
+        .expect("unborn branch must not error");
+    assert_eq!(diff.len(), 1);
+    assert_eq!(diff[0].new_path, "file.txt");
+}

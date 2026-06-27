@@ -67,10 +67,13 @@ plain data structures. This is what makes it unit-testable against throwaway
 repos with no graphics stack, and it is the hedge against GPUI's API churn: the
 hard logic does not depend on the frontend.
 
-All asynchrony and cancellation live at the **GPUI boundary**. Every git call is
-dispatched to a background executor; the UI thread is never allowed to block on
-git. Each refresh carries a **generation counter** so results from superseded
-work are dropped rather than rendered.
+All asynchrony and cancellation live at the **GPUI boundary**. Any git call that
+can be slow — status, diffs, ref/branch/stash listings, transfers — is
+dispatched to a background executor, so the UI thread never blocks on it. (A few
+bounded config/ref probes, such as resolving `@{upstream}`/`@{push}` to build a
+transient header, still run inline; they read config and a couple of refs, not
+the worktree.) Each refresh carries a **generation counter** so results from
+superseded work are dropped rather than rendered.
 
 ### 3.2 Git backend: CLI-first hybrid
 
@@ -172,7 +175,7 @@ evil-collection source as we implement):
 | `x`        | discard at point (with confirm)     |
 | `c`        | commit transient                    |
 | `b`        | branch transient                    |
-| `P` / `F`  | push / pull transient               |
+| `p` / `F`  | push / pull transient               |
 | `f`        | fetch transient                     |
 | `l`        | log transient                       |
 | `d`        | diff transient                      |

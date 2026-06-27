@@ -589,8 +589,9 @@ fn commands() -> &'static [Command] {
             t.open_transient(transient::commit_transient(), RemoteTargets::default(), cx)
         }),
         top!("branch", "Branch", Category::Commands, "b", |t, _w, cx| {
-            let rt = t.remote_targets();
-            t.open_transient(transient::branch_transient(), rt, cx)
+            // The branch transient (checkout/create/rename/delete) doesn't use
+            // remote targets, so don't resolve them just to open it.
+            t.open_transient(transient::branch_transient(), RemoteTargets::default(), cx)
         }),
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
             t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
@@ -3164,6 +3165,8 @@ impl StatusView {
             transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
             _ => Vec::new(),
         };
+        self.picker_gen = self.picker_gen.wrapping_add(1);
+        let gen = self.picker_gen;
         self.open_picker(
             PickerAction::SetOption { key, description },
             initial,
@@ -3173,6 +3176,7 @@ impl StatusView {
             cx,
         );
         if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+            p.gen = gen;
             p.resume = Some(Box::new(resume));
             // A free-text value with no completion candidates (e.g. `-n`) has no
             // candidate list — collapse it to just the input + hints.
@@ -3193,13 +3197,15 @@ impl StatusView {
                     .spawn(async move { load(&repo) })
                     .await;
                 this.update(cx, |this, cx| {
+                    // Only fill the prompt these candidates were loaded for —
+                    // not a different option prompt the user opened meanwhile.
+                    if !matches!(&this.popup, Some(Popup::RemotePicker(p)) if p.gen == gen) {
+                        return;
+                    }
                     if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
-                        // Only the still-open value prompt; ignore if dismissed.
-                        if matches!(p.action, PickerAction::SetOption { .. }) {
-                            p.list
-                                .set_choices(items.into_iter().map(SharedString::from).collect());
-                            cx.notify();
-                        }
+                        p.list
+                            .set_choices(items.into_iter().map(SharedString::from).collect());
+                        cx.notify();
                     }
                 })
                 .ok();
@@ -8487,11 +8493,6 @@ fn default_remote(repo: &Repo) -> String {
     }
 }
 
-/// The push "elsewhere" candidate list, magit-style: seed `<remote>/<current>`
-/// for every remote (existing or not) so the same-named push target is always a
-/// normal candidate, then append the existing remote branches. The preferred
-/// remote (push-remote if set, else [`default_remote`]) comes first, so the most
-/// likely target is the default selection.
 /// Local + remote branch names — the candidate set shared by the branch, log,
 /// reset, merge, and rebase pickers.
 fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {
@@ -8500,6 +8501,11 @@ fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {
     Ok(names)
 }
 
+/// The push "elsewhere" candidate list, magit-style: seed `<remote>/<current>`
+/// for every remote (existing or not) so the same-named push target is always a
+/// normal candidate, then append the existing remote branches. The preferred
+/// remote (push-remote if set, else [`default_remote`]) comes first, so the most
+/// likely target is the default selection.
 fn seed_push_branches(
     repo: &Repo,
     remotes: &[String],
