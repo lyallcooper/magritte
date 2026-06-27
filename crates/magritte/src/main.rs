@@ -3472,23 +3472,12 @@ impl StatusView {
     /// Run the merge on the background executor, then refresh — a conflict pauses
     /// it, which the in-progress banner then surfaces.
     fn run_merge(&mut self, target: String, args: Vec<String>, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Merging…".to_string());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.merge(&target, &args) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Merged", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Merging…",
+            "Merged",
+            move |repo| repo.merge(&target, &args),
+            cx,
+        );
     }
 
     /// The repo-relative path of the file at the cursor (file/hunk/line rows),
@@ -3557,23 +3546,12 @@ impl StatusView {
     /// Append the chosen pattern to the gitignore file for `dest` (off the UI
     /// thread), then refresh so a newly-ignored untracked file leaves the list.
     fn run_ignore(&mut self, dest: IgnoreDest, rule: String, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Ignoring…".to_string());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.add_ignore_rule(&rule, dest).map(|()| String::new()) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Ignored", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Ignoring…",
+            "Ignored",
+            move |repo| repo.add_ignore_rule(&rule, dest).map(|()| String::new()),
+            cx,
+        );
     }
 
     /// Open the interactive-rebase todo editor for `base..HEAD`: load the
@@ -3663,24 +3641,13 @@ impl StatusView {
         let Some(rt) = self.rebase_todo.take() else {
             return;
         };
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         self.focus.focus(window, cx);
-        self.status_message = Some("Rebasing…".to_string());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.rebase_interactive(&rt.base, &rt.steps, &rt.args) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Rebased", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Rebasing…",
+            "Rebased",
+            move |repo| repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+            cx,
+        );
     }
 
     /// Close the rebase-todo editor without running it.
@@ -3808,44 +3775,22 @@ impl StatusView {
     /// Run the rebase on the background executor, then refresh — a conflict
     /// pauses it, which the in-progress banner then drives.
     fn run_rebase(&mut self, onto: String, args: Vec<String>, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Rebasing…".to_string());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.rebase(&onto, &args) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Rebased", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Rebasing…",
+            "Rebased",
+            move |repo| repo.rebase(&onto, &args),
+            cx,
+        );
     }
 
     /// Run the reset on the background executor, then refresh.
     fn do_reset(&mut self, mode: ResetMode, target: String, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Resetting…".to_string());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.reset(mode, &target) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Reset", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Resetting…",
+            "Reset",
+            move |repo| repo.reset(mode, &target),
+            cx,
+        );
     }
 
     /// Begin an amend/reword/extend, first checking (off the UI thread) whether
@@ -3971,34 +3916,21 @@ impl StatusView {
 
     /// Run a sequence control on the background executor, then refresh.
     fn run_sequence(&mut self, op: SeqOp, kind: SequenceKind, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let (verb, done) = match op {
             SeqOp::Continue => ("Continuing", "Continued"),
             SeqOp::Skip => ("Skipping", "Skipped"),
             SeqOp::Abort => ("Aborting", "Aborted"),
         };
-        self.status_message = Some(format!("{verb}…"));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match op {
-                        SeqOp::Continue => repo.sequence_continue(kind),
-                        SeqOp::Skip => repo.sequence_skip(kind),
-                        SeqOp::Abort => repo.sequence_abort(kind),
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            &format!("{verb}…"),
+            done,
+            move |repo| match op {
+                SeqOp::Continue => repo.sequence_continue(kind),
+                SeqOp::Skip => repo.sequence_skip(kind),
+                SeqOp::Abort => repo.sequence_abort(kind),
+            },
+            cx,
+        );
     }
 
     // --- Push / pull / fetch --------------------------------------------
@@ -4433,6 +4365,35 @@ impl StatusView {
         }
     }
 
+    /// Run a git operation off the UI thread, then report and refresh — the
+    /// shape almost every mutating command shares. `progress` shows immediately,
+    /// `op` does the git work on the background executor (so the UI never blocks
+    /// on it), and on completion `report(done, …)` posts the outcome and the
+    /// status is refreshed. Commands needing custom result handling (a recover
+    /// hint, a follow-up) still spawn by hand.
+    fn run_job<F>(&mut self, progress: &str, done: &'static str, op: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some(progress.to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { op(repo) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report(done, result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Copy `text` to the clipboard and flash a brief confirmation. The notice
     /// echoes a short single-line value (a path, a hash) but stays generic for
     /// multi-line or long copies.
@@ -4458,78 +4419,54 @@ impl StatusView {
         switches: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some(format!("{}…", transfer.verb()));
+        let progress = format!("{}…", transfer.verb());
         let done = match &transfer {
             Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushed",
             Transfer::Pull { .. } | Transfer::PullRef => "Pulled",
             Transfer::Fetch => "Fetched",
         };
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match transfer {
-                        Transfer::Push {
-                            branch,
-                            set_upstream,
-                            save_push_remote,
-                        } => {
-                            // Save the push remote only after the push lands, so
-                            // a rejected/offline push doesn't leave config
-                            // pointing at a remote we never pushed to. A failure
-                            // to record it surfaces rather than being swallowed.
-                            let pushed = repo.push_to(&chosen, &branch, set_upstream, &switches);
-                            if pushed.is_ok() && save_push_remote {
-                                repo.set_push_remote(&branch, &chosen)?;
-                            }
-                            pushed
-                        }
-                        Transfer::PushRef { branch } => {
-                            let (remote, target) = split_ref(&repo, &chosen);
-                            repo.push_ref(&remote, &branch, &target, &switches)
-                        }
-                        Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
-                        Transfer::PullRef => {
-                            let (remote, branch) = split_ref(&repo, &chosen);
-                            repo.pull_from(&remote, &branch, &switches)
-                        }
-                        Transfer::Fetch => repo.fetch_from(&chosen, &switches),
+        self.run_job(
+            &progress,
+            done,
+            move |repo| match transfer {
+                Transfer::Push {
+                    branch,
+                    set_upstream,
+                    save_push_remote,
+                } => {
+                    // Save the push remote only after the push lands, so a
+                    // rejected/offline push doesn't leave config pointing at a
+                    // remote we never pushed to. A failure to record it surfaces
+                    // rather than being swallowed.
+                    let pushed = repo.push_to(&chosen, &branch, set_upstream, &switches);
+                    if pushed.is_ok() && save_push_remote {
+                        repo.set_push_remote(&branch, &chosen)?;
                     }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+                    pushed
+                }
+                Transfer::PushRef { branch } => {
+                    let (remote, target) = split_ref(&repo, &chosen);
+                    repo.push_ref(&remote, &branch, &target, &switches)
+                }
+                Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
+                Transfer::PullRef => {
+                    let (remote, branch) = split_ref(&repo, &chosen);
+                    repo.pull_from(&remote, &branch, &switches)
+                }
+                Transfer::Fetch => repo.fetch_from(&chosen, &switches),
+            },
+            cx,
+        );
     }
 
     /// `git fetch --all` (no remote needed).
     fn run_fetch_all(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Fetching…".to_string());
-        let done = "Fetched";
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.fetch_all(&switches) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Fetching…",
+            "Fetched",
+            move |repo| repo.fetch_all(&switches),
+            cx,
+        );
     }
 
     /// Carry out a branch-transient action against the chosen branch/name.
