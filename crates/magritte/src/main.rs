@@ -33,6 +33,7 @@ mod editor_launch;
 mod git_action;
 mod highlight;
 mod picker;
+mod status_label;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
 use picker::{CreateMode, PickerList};
@@ -77,8 +78,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
-    Change, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest,
-    LineKind, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
+    CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest, LineKind,
+    RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -2196,8 +2197,8 @@ impl StatusView {
                 fold: source.map(|s| FoldKey::File(s, path.clone())),
                 target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
-                    status: status_label(entry, id),
-                    status_color: status_color(entry, id, &self.palette),
+                    status: status_label::status_label(entry, id),
+                    status_color: status_label::status_color(entry, id, &self.palette),
                     label,
                     expanded: file_expanded,
                 },
@@ -2229,7 +2230,7 @@ impl StatusView {
                             hunk: hunk_ix,
                         }),
                         kind: RowKind::HunkHeader {
-                            text: hunk_header_text(hunk),
+                            text: status_label::hunk_header_text(hunk),
                             expanded: hunk_expanded,
                         },
                     });
@@ -4938,7 +4939,7 @@ impl StatusView {
                 _ => None,
             };
             for (hi, hunk) in diff.hunks.iter().enumerate() {
-                rows.push(CommitDiffRow::Hunk(hunk_header_text(hunk)));
+                rows.push(CommitDiffRow::Hunk(status_label::hunk_header_text(hunk)));
                 for (li, line) in hunk.lines.iter().enumerate() {
                     let spans = hl
                         .as_ref()
@@ -8988,60 +8989,6 @@ fn switch_chip(
         .into_any_element()
 }
 
-fn hunk_header_text(hunk: &magritte_core::Hunk) -> String {
-    let mut text = format!(
-        "@@ -{},{} +{},{} @@",
-        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
-    );
-    if !hunk.section_heading.is_empty() {
-        text.push(' ');
-        text.push_str(&hunk.section_heading);
-    }
-    text
-}
-
-/// The change relevant to a file within a given section: a staged row reflects
-/// the index status, everything else the worktree status.
-fn section_change(entry: &FileEntry, section: SectionId) -> Change {
-    match section {
-        SectionId::Staged => entry.index,
-        _ => entry.worktree,
-    }
-}
-
-/// A human-readable status word (magit-style) for a file in a section, e.g.
-/// "modified", "new file", "deleted". Untracked files carry no word — the
-/// section header already says "Untracked files".
-fn status_label(entry: &FileEntry, section: SectionId) -> String {
-    if entry.kind == EntryKind::Untracked {
-        // No status word — the "Untracked files" header already says it, and
-        // the filename sits flush rather than tabbed past an empty column.
-        return String::new();
-    }
-    match section_change(entry, section) {
-        Change::Unmodified => "",
-        Change::Modified => "modified",
-        Change::TypeChanged => "typechange",
-        Change::Added => "new file",
-        Change::Deleted => "deleted",
-        Change::Renamed => "renamed",
-        Change::Copied => "copied",
-        Change::Unmerged => "conflicted",
-    }
-    .to_string()
-}
-
-fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -> Hsla {
-    if entry.kind == EntryKind::Untracked {
-        return p.added;
-    }
-    match section_change(entry, section) {
-        Change::Added | Change::Copied => p.added,
-        Change::Deleted => p.removed,
-        _ => p.modified,
-    }
-}
-
 /// Our own theme sets, embedded at compile time. Each file is a `ThemeSet` of
 /// light/dark `ThemeConfig`s authored against the official palettes (replacing
 /// gpui-component's bundled themes, which were loose ports). More land here as
@@ -9210,38 +9157,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn entry(kind: EntryKind, index: Change, worktree: Change) -> FileEntry {
-        FileEntry {
-            path: "f".into(),
-            orig_path: None,
-            kind,
-            index,
-            worktree,
-        }
-    }
-
-    #[test]
-    fn status_label_humanizes_per_section() {
-        // A staged row reflects the index status; unstaged reflects the worktree.
-        let staged_add = entry(EntryKind::Tracked, Change::Added, Change::Unmodified);
-        assert_eq!(status_label(&staged_add, SectionId::Staged), "new file");
-
-        let modified = entry(EntryKind::Tracked, Change::Unmodified, Change::Modified);
-        assert_eq!(status_label(&modified, SectionId::Unstaged), "modified");
-
-        let deleted = entry(EntryKind::Tracked, Change::Unmodified, Change::Deleted);
-        assert_eq!(status_label(&deleted, SectionId::Unstaged), "deleted");
-
-        let conflicted = entry(EntryKind::Unmerged, Change::Unmodified, Change::Unmerged);
-        assert_eq!(status_label(&conflicted, SectionId::Unstaged), "conflicted");
-    }
-
-    #[test]
-    fn untracked_files_carry_no_status_word() {
-        let untracked = entry(EntryKind::Untracked, Change::Unmodified, Change::Modified);
-        assert_eq!(status_label(&untracked, SectionId::Untracked), "");
     }
 
     #[test]
