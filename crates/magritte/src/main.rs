@@ -64,7 +64,7 @@ actions!(magritte, [CopyConfigPath]);
 #[action(namespace = magritte, no_json)]
 struct OpenConfigWith(SharedString);
 use gpui::Subscription;
-use gpui_component::button::{Button, ButtonRounded, ButtonVariants, DropdownButton};
+use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt;
@@ -874,7 +874,7 @@ fn dispatch_menu() -> Transient {
     let mut essential = group(Category::Essential);
     essential.suffixes.push(info(":", "Command palette"));
     Transient {
-        title: transient::plain_title("Dispatch"),
+        title: transient::plain_title("Help"),
         groups: vec![
             group(Category::Commands),
             group(Category::Applying),
@@ -5764,6 +5764,10 @@ impl StatusView {
         let page = page_rows(window) as isize;
         let half = (page / 2).max(1);
         match key.as_str() {
+            // Command palette: alongside `:` / M-x, the familiar cmd+p /
+            // cmd+shift+p / cmd+k aliases (shift on `p` is ignored). Before the
+            // plain `p` (push) and `k` (move) arms so the modifier wins.
+            "p" | "k" if cmd => return self.open_command_palette(window, cx),
             // Section nav: `g j`/`g k` (below) plus evil-collection-magit's
             // `C-j`/`C-k` and `]`/`[` aliases.
             "j" if ctrl => self.select_section(true),
@@ -8222,6 +8226,10 @@ impl Render for StatusView {
         let bottom_bar =
             self.confirm.is_some() || self.visual.is_some() || self.status_message.is_some();
         if self.popup.is_none() && !bottom_bar {
+            // A plain div (not gpui-component `Button`, which forces a default
+            // cursor for non-link variants) so it shows the click cursor, like
+            // the app's other affordances.
+            let tip_font = self.font.clone();
             root = root.child(
                 div()
                     .absolute()
@@ -8229,13 +8237,24 @@ impl Render for StatusView {
                     .right_4()
                     .child(track_target("dispatch-help"))
                     .child(
-                        Button::new("dispatch-help")
-                            .label("?")
-                            .ghost()
-                            .rounded(ButtonRounded::Size(px(14.0)))
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .tooltip("Dispatch (?)")
+                        div()
+                            .id("dispatch-help")
+                            .size(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(14.0))
+                            .cursor_pointer()
+                            .text_color(self.palette.dim)
+                            .hover(|s| s.bg(self.palette.selection).text_color(self.palette.fg))
+                            .child(SharedString::from("?"))
+                            .tooltip(move |window, cx| {
+                                let font = tip_font.clone();
+                                Tooltip::element(move |_, _| {
+                                    div().font_family(font.clone()).child("Help (?)")
+                                })
+                                .build(window, cx)
+                            })
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.popup = Some(Popup::Dispatch(dispatch_menu()));
                                 cx.notify();
