@@ -333,6 +333,19 @@ impl PickerAction {
         }
     }
 
+    /// Notice shown when a selection-only picker (one you can't type into) turns
+    /// up no candidates, so it closes instead of presenting an empty list. Only
+    /// the selection-only actions need a real message; value-entry pickers stay
+    /// open regardless and never use this.
+    fn empty_message(&self) -> &'static str {
+        match self {
+            PickerAction::Stash(_) => "No stashes",
+            PickerAction::Branch(_) => "No branches",
+            PickerAction::Transfer(_) => "No remotes configured",
+            _ => "Nothing to select",
+        }
+    }
+
     /// Imperative verb for the confirm key hint.
     fn confirm_label(&self) -> &'static str {
         match self {
@@ -374,6 +387,12 @@ struct RemotePickerState {
     scroll: UniformListScrollHandle,
     action: PickerAction,
     switches: Vec<String>,
+    /// Candidates are still loading off the UI thread (shows "Loading…" in the
+    /// reserved candidate area instead of "No match"). See `open_listed_picker`.
+    loading: bool,
+    /// Identifies this picker instance, so an async candidate load only fills
+    /// the picker it was started for — not a later one the user opened meanwhile.
+    gen: u64,
     /// Whether to reserve the fixed candidate-list area. True for every picker
     /// with candidates (so its height stays stable while filtering, and doesn't
     /// jump when async candidates load); false only for a pure free-text value
@@ -1646,6 +1665,9 @@ struct StatusView {
     /// Bumped each time the status message changes, so an auto-dismiss timer
     /// only clears the message it was scheduled for (not a newer one).
     status_seq: u64,
+    /// Bumped per async picker open, stamped onto the picker, so a late
+    /// candidate load only fills the picker it was started for.
+    picker_gen: u64,
     /// In the `$` command-log view, whether to also show the UI's own read-only
     /// queries (status/diff/ref lookups), which are hidden by default.
     git_log_show_all: bool,
@@ -1713,6 +1735,7 @@ impl StatusView {
             status_message: startup_warning,
             status_copied: None,
             status_seq: 0,
+            picker_gen: 0,
             git_log_show_all: false,
             confirm: None,
             focus: cx.focus_handle(),
@@ -3093,9 +3116,6 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         use transient::Command::*;
         let action = match command {
             StashApply => StashAction::Apply,
@@ -3103,18 +3123,11 @@ impl StatusView {
             StashDrop => StashAction::Drop,
             _ => return,
         };
-        let stashes = repo.stash_list().unwrap_or_default();
-        if stashes.is_empty() {
-            self.status_message = Some("No stashes".to_string());
-            cx.notify();
-            return;
-        }
-        let choices = stashes.iter().map(|s| s.display()).collect();
-        self.open_picker(
+        self.open_listed_picker(
             PickerAction::Stash(action),
-            choices,
             CreateMode::None,
             Vec::new(),
+            |r| Ok(r.stash_list()?.iter().map(|s| s.display()).collect()),
             window,
             cx,
         );
@@ -3198,73 +3211,76 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.as_ref() else {
-            return;
-        };
-        let mut choices = repo.local_branches().unwrap_or_default();
-        choices.extend(repo.remote_branches().unwrap_or_default());
-        self.open_picker(
+        self.open_listed_picker(
             PickerAction::LogRef {
                 flags,
                 paths,
                 limit,
             },
-            choices,
             CreateMode::Any,
             Vec::new(),
+            all_branches,
             window,
             cx,
         );
     }
 
     /// Open the picker for a branch-transient command: checkout/rename/delete
-    /// pick an existing branch; create reads a new name (free text).
+    /// pick an existing branch (listed off the UI thread); create reads a new
+    /// name (free text, no listing).
     fn dispatch_branch(
         &mut self,
         command: transient::Command,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
+        if self.repo.is_none() {
             return;
-        };
+        }
         use transient::Command::*;
-        let (action, choices, create) = match command {
-            BranchCheckout => {
-                let mut choices = repo.local_branches().unwrap_or_default();
-                choices.extend(repo.remote_branches().unwrap_or_default());
-                (BranchAction::Checkout, choices, CreateMode::None)
-            }
-            BranchCreateCheckout => (
-                BranchAction::Create { checkout: true },
-                Vec::new(),
-                CreateMode::Any,
-            ),
-            BranchCreate => (
-                BranchAction::Create { checkout: false },
-                Vec::new(),
-                CreateMode::Any,
-            ),
-            BranchRename => (
-                BranchAction::RenameFrom,
-                repo.local_branches().unwrap_or_default(),
+        // Checkout offers every branch; rename/delete only local ones.
+        let listed = |this: &mut Self,
+                      action: BranchAction,
+                      list: fn(&Repo) -> magritte_core::Result<Vec<String>>,
+                      window: &mut Window,
+                      cx: &mut Context<Self>| {
+            this.open_listed_picker(
+                PickerAction::Branch(action),
                 CreateMode::None,
-            ),
-            BranchDelete => (
-                BranchAction::Delete,
-                repo.local_branches().unwrap_or_default(),
-                CreateMode::None,
-            ),
-            _ => return,
+                Vec::new(),
+                list,
+                window,
+                cx,
+            );
         };
-        self.open_picker(
-            PickerAction::Branch(action),
-            choices,
-            create,
-            Vec::new(),
-            window,
-            cx,
-        );
+        match command {
+            BranchCheckout => listed(self, BranchAction::Checkout, all_branches, window, cx),
+            BranchRename => listed(
+                self,
+                BranchAction::RenameFrom,
+                Repo::local_branches,
+                window,
+                cx,
+            ),
+            BranchDelete => listed(self, BranchAction::Delete, Repo::local_branches, window, cx),
+            BranchCreateCheckout => self.open_picker(
+                PickerAction::Branch(BranchAction::Create { checkout: true }),
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            ),
+            BranchCreate => self.open_picker(
+                PickerAction::Branch(BranchAction::Create { checkout: false }),
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            ),
+            _ => {}
+        }
     }
 
     /// Reset transient suffix: pick the target commit (a branch/ref, or type any
@@ -3283,18 +3299,13 @@ impl StatusView {
             ResetKeep => ResetMode::Keep,
             _ => return,
         };
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let mut choices = repo.local_branches().unwrap_or_default();
-        choices.extend(repo.remote_branches().unwrap_or_default());
         // `Value`: the typed text is itself a valid target (any revision/sha),
-        // with the branches as suggestions.
-        self.open_picker(
+        // with the branches as suggestions (loaded off the UI thread).
+        self.open_listed_picker(
             PickerAction::Reset(mode),
-            choices,
             CreateMode::Value,
             Vec::new(),
+            all_branches,
             window,
             cx,
         );
@@ -3329,16 +3340,11 @@ impl StatusView {
             MergePlain => {}
             _ => return,
         }
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let mut choices = repo.local_branches().unwrap_or_default();
-        choices.extend(repo.remote_branches().unwrap_or_default());
-        self.open_picker(
+        self.open_listed_picker(
             PickerAction::Merge,
-            choices,
             CreateMode::Value,
             args,
+            all_branches,
             window,
             cx,
         );
@@ -3389,21 +3395,14 @@ impl StatusView {
         match onto {
             Some(onto) => self.run_rebase(onto, args, cx),
             // Unknown target (or "elsewhere") — pick a branch/ref to rebase onto.
-            None => {
-                let Some(repo) = self.repo.clone() else {
-                    return;
-                };
-                let mut choices = repo.local_branches().unwrap_or_default();
-                choices.extend(repo.remote_branches().unwrap_or_default());
-                self.open_picker(
-                    PickerAction::Rebase,
-                    choices,
-                    CreateMode::Value,
-                    args,
-                    window,
-                    cx,
-                );
-            }
+            None => self.open_listed_picker(
+                PickerAction::Rebase,
+                CreateMode::Value,
+                args,
+                all_branches,
+                window,
+                cx,
+            ),
         }
     }
 
@@ -3915,11 +3914,84 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             action,
             switches,
+            loading: false,
+            gen: 0,
             reserve_candidates: has_candidates,
             resume: None,
             _sub: sub,
         }));
         cx.notify();
+    }
+
+    /// Open a picker whose candidates come from git, without blocking the UI
+    /// thread on the listing: show the picker immediately (with a "Loading…"
+    /// line), run `list` on the background executor, then fill the candidates.
+    /// For a selection-only picker (`CreateMode::None`) an empty result closes
+    /// it with the action's empty-message and a listing error closes it with the
+    /// error (rather than silently showing "nothing"); a value-entry picker stays
+    /// open either way, since you can still type a target. Ref/branch listings
+    /// scale with a repo's ref count, so this keeps opening instant in large repos.
+    fn open_listed_picker(
+        &mut self,
+        action: PickerAction,
+        create: CreateMode,
+        switches: Vec<String>,
+        list: impl FnOnce(&Repo) -> magritte_core::Result<Vec<String>> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let selection_only = matches!(create, CreateMode::None);
+        let empty_message = action.empty_message();
+        self.picker_gen = self.picker_gen.wrapping_add(1);
+        let gen = self.picker_gen;
+        self.open_picker(action, Vec::new(), create, switches, window, cx);
+        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+            p.loading = true;
+            p.gen = gen;
+            // Reserve the candidate area so the Loading line, then the rows,
+            // don't shift the panel as they arrive.
+            p.reserve_candidates = true;
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { list(&repo) })
+                .await;
+            this.update(cx, |this, cx| {
+                // Ignore the load if this picker was dismissed or superseded.
+                if !matches!(&this.popup, Some(Popup::RemotePicker(p)) if p.gen == gen) {
+                    return;
+                }
+                match result {
+                    Ok(choices) if choices.is_empty() && selection_only => {
+                        this.popup = None;
+                        this.set_status(empty_message.to_string(), true, cx);
+                    }
+                    Ok(choices) => {
+                        if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                            p.loading = false;
+                            p.list
+                                .set_choices(choices.into_iter().map(SharedString::from).collect());
+                        }
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        if selection_only {
+                            this.popup = None;
+                        } else if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                            p.loading = false; // keep open for free-text entry
+                        }
+                        this.set_status(format!("error: {e}"), false, cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Run the pending action against the candidate currently highlighted in the
@@ -5819,9 +5891,14 @@ impl StatusView {
             // entirely so the hints sit right under the input.
             div().into_any_element()
         } else if rows == 0 {
-            // Candidates exist, but none match the query: a quiet "No match"
-            // line in the first row, keeping the reserved height so nothing
-            // shifts (the line stays at the top rather than floating mid-panel).
+            // No rows: either candidates are still loading off the UI thread, or
+            // they're loaded and none match the query. A quiet line in the first
+            // row keeps the reserved height so nothing shifts.
+            let note = if state.loading {
+                "Loading…"
+            } else {
+                "No match"
+            };
             div()
                 .h(list_height)
                 .child(
@@ -5831,7 +5908,7 @@ impl StatusView {
                         .flex()
                         .items_center()
                         .text_color(self.palette.dim)
-                        .child(SharedString::from("No match")),
+                        .child(SharedString::from(note)),
                 )
                 .into_any_element()
         } else {
@@ -8404,6 +8481,14 @@ fn default_remote(repo: &Repo) -> String {
 /// normal candidate, then append the existing remote branches. The preferred
 /// remote (push-remote if set, else [`default_remote`]) comes first, so the most
 /// likely target is the default selection.
+/// Local + remote branch names — the candidate set shared by the branch, log,
+/// reset, merge, and rebase pickers.
+fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {
+    let mut names = repo.local_branches()?;
+    names.extend(repo.remote_branches()?);
+    Ok(names)
+}
+
 fn seed_push_branches(
     repo: &Repo,
     remotes: &[String],
