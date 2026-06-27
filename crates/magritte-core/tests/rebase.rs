@@ -1,0 +1,80 @@
+mod common;
+
+use common::TestRepo;
+use magritte_core::{RebaseAction, Repo};
+
+fn open(t: &TestRepo) -> Repo {
+    Repo::discover(t.path()).expect("discover repo")
+}
+
+/// A line of `git log --format=%s` (subjects, newest first).
+fn subjects(t: &TestRepo) -> Vec<String> {
+    t.git(["log", "--format=%s"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// base + three commits A, B, C; returns (repo dir, base sha).
+fn three_commits() -> (TestRepo, String) {
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    let base = t.git(["rev-parse", "HEAD"]);
+    for name in ["A", "B", "C"] {
+        t.write(&format!("{name}.txt"), name);
+        t.commit_all(name);
+    }
+    (t, base)
+}
+
+#[test]
+fn todo_lists_commits_oldest_first_as_picks() {
+    let (t, base) = three_commits();
+    let todo = open(&t).rebase_todo(&base).unwrap();
+    let names: Vec<&str> = todo.iter().map(|s| s.subject.as_str()).collect();
+    assert_eq!(names, ["A", "B", "C"], "oldest first");
+    assert!(todo.iter().all(|s| s.action == RebaseAction::Pick));
+}
+
+#[test]
+fn drop_removes_a_commit() {
+    let (t, base) = three_commits();
+    let mut todo = open(&t).rebase_todo(&base).unwrap();
+    // Drop B.
+    todo[1].action = RebaseAction::Drop;
+    open(&t).rebase_interactive(&base, &todo, &[]).unwrap();
+    assert_eq!(subjects(&t), ["C", "A", "base"], "B is gone");
+}
+
+#[test]
+fn reorder_swaps_commit_order() {
+    let (t, base) = three_commits();
+    let todo = open(&t).rebase_todo(&base).unwrap();
+    // Reorder to A, C, B (C and B independent files, so no conflict).
+    let reordered = vec![todo[0].clone(), todo[2].clone(), todo[1].clone()];
+    open(&t).rebase_interactive(&base, &reordered, &[]).unwrap();
+    assert_eq!(subjects(&t), ["B", "C", "A", "base"]);
+}
+
+#[test]
+fn fixup_melds_into_previous() {
+    let (t, base) = three_commits();
+    let mut todo = open(&t).rebase_todo(&base).unwrap();
+    // Fixup C into B: C's change stays, its message is dropped.
+    todo[2].action = RebaseAction::Fixup;
+    open(&t).rebase_interactive(&base, &todo, &[]).unwrap();
+    assert_eq!(subjects(&t), ["B", "A", "base"], "C folded into B");
+    // C's file change survived the fixup.
+    assert!(t.path().join("C.txt").exists());
+}
+
+#[test]
+fn all_dropped_is_refused() {
+    let (t, base) = three_commits();
+    let mut todo = open(&t).rebase_todo(&base).unwrap();
+    for step in &mut todo {
+        step.action = RebaseAction::Drop;
+    }
+    assert!(open(&t).rebase_interactive(&base, &todo, &[]).is_err());
+}

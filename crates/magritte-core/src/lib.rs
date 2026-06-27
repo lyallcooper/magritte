@@ -31,6 +31,7 @@ pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use ignore::IgnoreDest;
 pub use log::LogEntry;
+pub use rebase::{RebaseAction, RebaseStep};
 pub use remote::{RemoteTargets, Upstream};
 pub use repo::{GitCommand, GitOutput, Repo};
 pub use reset::ResetMode;
