@@ -3,7 +3,7 @@
 //! `~/.config/magritte/config.toml`). Currently just the chosen theme and
 //! font; written when the settings screen closes, loaded at startup.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,6 +47,12 @@ pub struct Config {
     /// the user supplies the appropriate wait flag. Used only when
     /// `commit_in_editor` is set; empty falls back to the in-app editor.
     pub commit_editor: String,
+    /// Keystroke → command-id overrides, applied over the built-in keymap at
+    /// startup. The value `"unbound"` removes a default binding. Keystrokes use
+    /// the same form the `?` menu shows (e.g. `"K"`, `"g r"`); only top-level
+    /// command keys are remappable — motions and prefixes are fixed.
+    #[serde(default)]
+    pub keymap: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -65,6 +71,7 @@ impl Default for Config {
             editor: String::new(),
             commit_in_editor: false,
             commit_editor: String::new(),
+            keymap: BTreeMap::new(),
         }
     }
 }
