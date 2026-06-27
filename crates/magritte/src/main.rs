@@ -1645,6 +1645,30 @@ enum PickOp {
     Revert,
 }
 
+/// The active full-window screen. `Status` is the home base; the rest take over
+/// the window when open. Exactly one is active, so invalid combinations (two
+/// screens at once) can't be represented, and the active screen is chosen by a
+/// single `match` in render and key handling rather than a repeated cascade.
+#[derive(Default)]
+enum Screen {
+    #[default]
+    Status,
+    /// The commit message editor.
+    Editor(CommitEditor),
+    /// The live settings screen.
+    Settings(SettingsState),
+    /// The git command-log view (magit's `$` process buffer); holds the scroll
+    /// state, with entries read live from the repo.
+    GitLog(ScrollView),
+    /// The commit-log view (`l`).
+    Log(LogState),
+    /// A commit's diff detail, opened from the log with Enter. It overlays the
+    /// log it came from (closing returns there), so it carries that `LogState`.
+    Commit { view: CommitView, log: LogState },
+    /// The interactive-rebase todo editor (`r i`).
+    RebaseTodo(RebaseTodoView),
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -1681,19 +1705,12 @@ struct StatusView {
     pending_cx: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
-    /// The commit message editor, when open (takes over the window).
-    editor: Option<CommitEditor>,
-    /// The live settings screen, when open (takes over the window).
-    settings: Option<SettingsState>,
-    /// The git command-log view (magit's `$` process buffer), when open. Holds
-    /// the scroll state; the entries are read live from the repo.
-    git_log: Option<ScrollView>,
-    /// The commit-log view (`l`), when open.
-    log: Option<LogState>,
-    /// A commit's diff detail (opened from the log with Enter), when open.
-    commit_view: Option<CommitView>,
-    /// The interactive-rebase todo editor, when open.
-    rebase_todo: Option<RebaseTodoView>,
+    /// The active full-window screen — exactly one at a time. Modeling these as
+    /// one enum (rather than several `Option` fields) makes invalid combinations
+    /// unrepresentable and lets render and key-handling pick the active screen
+    /// with one `match` instead of re-deriving a priority cascade. Overlays (the
+    /// `popup` above, the confirm bar) sit *over* whatever screen is active.
+    screen: Screen,
     /// The monospace font family for code, diffs, and tabular columns.
     font: SharedString,
     /// The proportional UI font for prose chrome; equals `font` when unset.
@@ -1792,12 +1809,7 @@ impl StatusView {
             pending_g: false,
             pending_cx: false,
             popup: None,
-            editor: None,
-            settings: None,
-            git_log: None,
-            log: None,
-            commit_view: None,
-            rebase_todo: None,
+            screen: Screen::Status,
             font,
             ui_font,
             config,
@@ -1820,6 +1832,102 @@ impl StatusView {
         };
         view.refresh(cx);
         view
+    }
+
+    // Read accessors for the active [`Screen`]'s state — `None` unless that
+    // screen is the active one. Mutating sites match `&mut self.screen` inline
+    // (so the borrow stays scoped to `screen`, like the old per-field access).
+    fn editor(&self) -> Option<&CommitEditor> {
+        match &self.screen {
+            Screen::Editor(e) => Some(e),
+            _ => None,
+        }
+    }
+    fn settings(&self) -> Option<&SettingsState> {
+        match &self.screen {
+            Screen::Settings(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn git_log(&self) -> Option<&ScrollView> {
+        match &self.screen {
+            Screen::GitLog(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn log(&self) -> Option<&LogState> {
+        match &self.screen {
+            Screen::Log(l) => Some(l),
+            _ => None,
+        }
+    }
+    fn commit_view(&self) -> Option<&CommitView> {
+        match &self.screen {
+            Screen::Commit { view, .. } => Some(view),
+            _ => None,
+        }
+    }
+    fn rebase_todo(&self) -> Option<&RebaseTodoView> {
+        match &self.screen {
+            Screen::RebaseTodo(r) => Some(r),
+            _ => None,
+        }
+    }
+    fn editor_mut(&mut self) -> Option<&mut CommitEditor> {
+        match &mut self.screen {
+            Screen::Editor(e) => Some(e),
+            _ => None,
+        }
+    }
+    fn settings_mut(&mut self) -> Option<&mut SettingsState> {
+        match &mut self.screen {
+            Screen::Settings(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn log_mut(&mut self) -> Option<&mut LogState> {
+        match &mut self.screen {
+            Screen::Log(l) => Some(l),
+            _ => None,
+        }
+    }
+    fn commit_view_mut(&mut self) -> Option<&mut CommitView> {
+        match &mut self.screen {
+            Screen::Commit { view, .. } => Some(view),
+            _ => None,
+        }
+    }
+    fn rebase_todo_mut(&mut self) -> Option<&mut RebaseTodoView> {
+        match &mut self.screen {
+            Screen::RebaseTodo(r) => Some(r),
+            _ => None,
+        }
+    }
+    fn git_log_mut(&mut self) -> Option<&mut ScrollView> {
+        match &mut self.screen {
+            Screen::GitLog(s) => Some(s),
+            _ => None,
+        }
+    }
+    /// Take the rebase-todo editor's state, leaving the home screen.
+    fn take_rebase_todo(&mut self) -> Option<RebaseTodoView> {
+        match std::mem::take(&mut self.screen) {
+            Screen::RebaseTodo(r) => Some(r),
+            other => {
+                self.screen = other;
+                None
+            }
+        }
+    }
+    /// Take the commit editor's state, leaving the home screen.
+    fn take_editor(&mut self) -> Option<CommitEditor> {
+        match std::mem::take(&mut self.screen) {
+            Screen::Editor(e) => Some(e),
+            other => {
+                self.screen = other;
+                None
+            }
+        }
     }
 
     /// Re-apply config edits and system light/dark changes live, event-driven
@@ -3575,7 +3683,7 @@ impl StatusView {
                 }
                 Ok(steps) => {
                     this.status_message = None;
-                    this.rebase_todo = Some(RebaseTodoView {
+                    this.screen = Screen::RebaseTodo(RebaseTodoView {
                         base,
                         args,
                         steps,
@@ -3593,7 +3701,7 @@ impl StatusView {
 
     /// Move the cursor in the rebase-todo editor.
     fn rebase_todo_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo.as_mut() {
+        if let Some(rt) = self.rebase_todo_mut() {
             let n = rt.steps.len();
             if n == 0 {
                 return;
@@ -3607,7 +3715,7 @@ impl StatusView {
 
     /// Set the action of the step at the cursor.
     fn rebase_todo_set_action(&mut self, action: RebaseAction, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo.as_mut() {
+        if let Some(rt) = self.rebase_todo_mut() {
             if let Some(step) = rt.steps.get_mut(rt.selected) {
                 step.action = action;
                 cx.notify();
@@ -3618,7 +3726,7 @@ impl StatusView {
     /// Move the step at the cursor up/down (reorder), following it with the
     /// cursor so successive moves keep acting on the same commit.
     fn rebase_todo_reorder(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo.as_mut() {
+        if let Some(rt) = self.rebase_todo_mut() {
             let n = rt.steps.len();
             if n < 2 {
                 return;
@@ -3638,7 +3746,7 @@ impl StatusView {
     /// the editor, then refresh — a pause (an `edit`, or a conflict) surfaces in
     /// the in-progress banner for continue/skip/abort.
     fn run_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(rt) = self.rebase_todo.take() else {
+        let Some(rt) = self.take_rebase_todo() else {
             return;
         };
         self.focus.focus(window, cx);
@@ -3652,7 +3760,7 @@ impl StatusView {
 
     /// Close the rebase-todo editor without running it.
     fn close_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.rebase_todo = None;
+        self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -4659,7 +4767,7 @@ impl StatusView {
     /// and refresh the over-50 summary warning (if enabled). Reads the toggles
     /// live from config so the settings screen takes effect without reopening.
     fn on_editor_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(state) = self.editor.as_ref().map(|e| e.state.clone()) else {
+        let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
         let wrap = self.config.commit_body_wrap;
@@ -4703,7 +4811,7 @@ impl StatusView {
     /// Unlike auto-wrap, this rejoins manually-broken lines before re-wrapping,
     /// so it tidies a paragraph you've been editing.
     fn reflow_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(state) = self.editor.as_ref().map(|e| e.state.clone()) else {
+        let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
         state.update(cx, |s, cx| {
@@ -4805,7 +4913,7 @@ impl StatusView {
         );
         // Focus the input so typing goes straight into it.
         state.read(cx).focus_handle(cx).focus(window, cx);
-        self.editor = Some(CommitEditor {
+        self.screen = Screen::Editor(CommitEditor {
             state: state.clone(),
             mode,
             args,
@@ -4837,7 +4945,7 @@ impl StatusView {
                     // HEAD's message as the baseline, so canceling an unedited
                     // amend/reword doesn't prompt to discard.
                     let _ = this.update_in(cx, |this, window, cx| {
-                        if let Some(ed) = this.editor.as_mut() {
+                        if let Some(ed) = this.editor_mut() {
                             ed.initial = msg;
                         }
                         this.on_editor_changed(window, cx);
@@ -4861,7 +4969,7 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let Some(ed) = self.editor.as_ref() else {
+        let Some(ed) = self.editor() else {
             return;
         };
         let reword = ed.mode == CommitMode::Reword;
@@ -4900,18 +5008,18 @@ impl StatusView {
                 .await;
             let (files, error) = files;
             this.update(cx, |this, cx| {
-                if this.editor.is_none() {
+                if this.editor().is_none() {
                     return; // editor closed before the diff loaded
                 }
                 if let Some(err) = error {
-                    if let Some(ed) = this.editor.as_mut() {
+                    if let Some(ed) = this.editor_mut() {
                         ed.diff = vec![CommitDiffRow::Note(format!("diff unavailable: {err}"))];
                     }
                     cx.notify();
                     return;
                 }
                 let rows = this.diff_rows(&files, cx);
-                if let Some(ed) = this.editor.as_mut() {
+                if let Some(ed) = this.editor_mut() {
                     ed.diff = rows;
                 }
                 cx.notify();
@@ -5006,7 +5114,7 @@ impl StatusView {
             return;
         }
 
-        if self.editor.is_none() {
+        if self.editor().is_none() {
             return;
         }
         // C-g cancels here too; C-n/C-p are left to the Input for cursor motion.
@@ -5015,7 +5123,7 @@ impl StatusView {
             k => k,
         };
         // While the "discard message?" confirmation is up, capture y / n / esc.
-        if self.editor.as_ref().is_some_and(|e| e.confirming_cancel) {
+        if self.editor().is_some_and(|e| e.confirming_cancel) {
             match key {
                 "y" => {
                     cx.stop_propagation();
@@ -5043,12 +5151,12 @@ impl StatusView {
     /// Cancel the editor — but if there are unsaved edits, ask first rather than
     /// silently dropping the message.
     fn cancel_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dirty = match &self.editor {
+        let dirty = match self.editor() {
             Some(ed) => ed.state.read(cx).value().trim() != ed.initial.trim(),
             None => return,
         };
         if dirty {
-            if let Some(ed) = self.editor.as_mut() {
+            if let Some(ed) = self.editor_mut() {
                 ed.confirming_cancel = true;
             }
             cx.notify();
@@ -5059,14 +5167,14 @@ impl StatusView {
 
     /// Close the editor, discarding its message.
     fn discard_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor = None;
+        self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
     }
 
     /// Dismiss the discard confirmation and keep editing.
     fn keep_editing(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ed) = self.editor.as_mut() {
+        if let Some(ed) = self.editor_mut() {
             ed.confirming_cancel = false;
         }
         cx.notify();
@@ -5319,7 +5427,7 @@ impl StatusView {
         ];
 
         appearance.update(cx, |st, cx| st.focus(window, cx));
-        self.settings = Some(SettingsState {
+        self.screen = Screen::Settings(SettingsState {
             appearance,
             light_theme,
             dark_theme,
@@ -5342,7 +5450,7 @@ impl StatusView {
     /// Tab moves focus to the next settings dropdown. (The four dropdowns have
     /// distinct `SelectState` types, so each arm focuses its own entity.)
     fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(s) = self.settings.as_mut() else {
+        let Some(s) = self.settings_mut() else {
             return;
         };
         s.focus_ix = (s.focus_ix + 1) % 5;
@@ -5366,7 +5474,7 @@ impl StatusView {
 
     /// Close the settings screen, persisting and returning focus to the list.
     fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings = None;
+        self.screen = Screen::Status;
         config::save(&self.config);
         self.focus.focus(window, cx);
         cx.notify();
@@ -5378,12 +5486,12 @@ impl StatusView {
         let scroll = UniformListScrollHandle::new();
         let last = self.git_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
-        self.git_log = Some(ScrollView { scroll, top: last });
+        self.screen = Screen::GitLog(ScrollView { scroll, top: last });
         cx.notify();
     }
 
     fn close_git_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.git_log = None;
+        self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -5434,7 +5542,7 @@ impl StatusView {
 
     /// Show the (empty) log view immediately while commits load.
     fn show_log_loading(&mut self, cx: &mut Context<Self>) {
-        self.log = Some(LogState {
+        self.screen = Screen::Log(LogState {
             entries: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
@@ -5450,7 +5558,7 @@ impl StatusView {
         result: magritte_core::Result<Vec<magritte_core::LogEntry>>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(log) = self.log.as_mut() {
+        if let Some(log) = self.log_mut() {
             match result {
                 Ok(entries) => {
                     log.entries = entries;
@@ -5463,14 +5571,14 @@ impl StatusView {
     }
 
     fn close_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.log = None;
+        self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
     }
 
     /// Move the log's selection by `delta`, keeping it in view.
     fn log_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(log) = self.log.as_mut() {
+        if let Some(log) = self.log_mut() {
             if log.entries.is_empty() {
                 return;
             }
@@ -5492,8 +5600,7 @@ impl StatusView {
             return;
         };
         let Some(rev) = self
-            .log
-            .as_ref()
+            .log()
             .and_then(|l| l.entries.get(l.selected))
             .map(|e| e.short_hash.clone())
         else {
@@ -5529,23 +5636,26 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let Some(entry) = self
-            .log
-            .as_ref()
-            .and_then(|l| l.entries.get(l.selected).cloned())
-        else {
+        let Some(entry) = self.log().and_then(|l| l.entries.get(l.selected).cloned()) else {
+            return;
+        };
+        // Move the log into the commit screen so closing returns to it.
+        let Screen::Log(log) = std::mem::take(&mut self.screen) else {
             return;
         };
         let rev = entry.hash.clone();
-        self.commit_view = Some(CommitView {
-            rev: rev.clone(),
-            short: SharedString::from(entry.short_hash.clone()),
-            subject: SharedString::from(entry.subject.clone()),
-            rows: vec![CommitDiffRow::Note("Loading…".to_string())],
-            scroll: UniformListScrollHandle::new(),
-            selected: 0,
-            visual: None,
-        });
+        self.screen = Screen::Commit {
+            view: CommitView {
+                rev: rev.clone(),
+                short: SharedString::from(entry.short_hash.clone()),
+                subject: SharedString::from(entry.subject.clone()),
+                rows: vec![CommitDiffRow::Note("Loading…".to_string())],
+                scroll: UniformListScrollHandle::new(),
+                selected: 0,
+                visual: None,
+            },
+            log,
+        };
         cx.notify();
         cx.spawn(async move |this, cx| {
             let loaded = cx
@@ -5566,14 +5676,14 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.commit_view.is_none() {
+                if this.commit_view().is_none() {
                     return; // closed before the diff loaded
                 }
                 let rows = match loaded {
                     Ok(files) => this.diff_rows(&files, cx),
                     Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
                 };
-                if let Some(cv) = this.commit_view.as_mut() {
+                if let Some(cv) = this.commit_view_mut() {
                     cv.rows = rows;
                 }
                 cx.notify();
@@ -5584,8 +5694,10 @@ impl StatusView {
     }
 
     fn close_commit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.commit_view = None;
-        // Return focus to the status root; the log view (still open) handles keys.
+        // Return to the log the commit view was opened from.
+        if let Screen::Commit { log, .. } = std::mem::take(&mut self.screen) {
+            self.screen = Screen::Log(log);
+        }
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -5593,8 +5705,7 @@ impl StatusView {
     /// Copy the full hash of the commit selected in the log.
     fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
         let hash = self
-            .log
-            .as_ref()
+            .log()
             .and_then(|l| l.entries.get(l.selected))
             .map(|e| e.hash.clone());
         if let Some(hash) = hash {
@@ -5604,7 +5715,7 @@ impl StatusView {
 
     /// Move the commit-view cursor by `delta`, keeping it in view.
     fn commit_view_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(cv) = self.commit_view.as_mut() {
+        if let Some(cv) = self.commit_view_mut() {
             if cv.rows.is_empty() {
                 return;
             }
@@ -5618,7 +5729,7 @@ impl StatusView {
 
     /// Toggle a visual selection in the commit view, anchored at the cursor.
     fn commit_view_toggle_visual(&mut self, cx: &mut Context<Self>) {
-        if let Some(cv) = self.commit_view.as_mut() {
+        if let Some(cv) = self.commit_view_mut() {
             cv.visual = if cv.visual.is_some() {
                 None
             } else {
@@ -5632,7 +5743,7 @@ impl StatusView {
     /// exit visual mode — the diff-view counterpart to [`Self::copy_selection`].
     fn copy_commit_selection(&mut self, cx: &mut Context<Self>) {
         let text = {
-            let Some(cv) = self.commit_view.as_ref() else {
+            let Some(cv) = self.commit_view() else {
                 return;
             };
             let (lo, hi) = match cv.visual {
@@ -5646,14 +5757,14 @@ impl StatusView {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        if let Some(cv) = self.commit_view.as_mut() {
+        if let Some(cv) = self.commit_view_mut() {
             cv.visual = None;
         }
         self.copy_to_clipboard(text, cx);
     }
 
     fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ed) = self.editor.as_ref() else {
+        let Some(ed) = self.editor() else {
             return;
         };
         let text = ed.state.read(cx).value().to_string();
@@ -5662,7 +5773,7 @@ impl StatusView {
             cx.notify();
             return;
         }
-        let ed = self.editor.take().unwrap();
+        let ed = self.take_editor().unwrap();
         self.focus.focus(window, cx);
         // Drop the trailing newline the submit keystroke inserted.
         self.run_commit(text.trim_end().to_string(), ed.mode, ed.args, cx);
@@ -5699,7 +5810,7 @@ impl StatusView {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // While the editor is open the focused Input handles keys; commit/cancel
         // are caught in the capture phase (on_capture_key).
-        if self.editor.is_some() {
+        if self.editor().is_some() {
             return;
         }
 
@@ -5746,7 +5857,7 @@ impl StatusView {
         // While settings is open the focused Select handles keys; we only watch
         // for Esc (when no dropdown menu is open) to close the screen. Tab is
         // delivered via the ToggleFold action.
-        if self.settings.is_some() {
+        if self.settings().is_some() {
             if key == "escape" {
                 self.close_settings(window, cx);
             }
@@ -5755,7 +5866,7 @@ impl StatusView {
 
         // The git command-log view takes over the window; esc/q/$ close it, and
         // it scrolls with the usual vi/less keys.
-        if self.git_log.is_some() {
+        if self.git_log().is_some() {
             if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
                 self.close_git_log(window, cx);
                 return;
@@ -5767,7 +5878,7 @@ impl StatusView {
             }
             let page = page_rows(window);
             let len = self.git_log_rows().len();
-            if let Some(sv) = self.git_log.as_mut() {
+            if let Some(sv) = self.git_log_mut() {
                 apply_scroll_key(&sv.scroll, &mut sv.top, len, &key, shift, ctrl, page);
             }
             cx.notify();
@@ -5777,7 +5888,7 @@ impl StatusView {
         // A commit's diff detail (opened from the log) is topmost; esc/q returns
         // to the log, and it scrolls with the usual vi/less keys.
         // The interactive-rebase todo editor: set an action, reorder, then start.
-        if self.rebase_todo.is_some() {
+        if self.rebase_todo().is_some() {
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
             match key.as_str() {
@@ -5805,18 +5916,14 @@ impl StatusView {
             return;
         }
 
-        if self.commit_view.is_some() {
+        if self.commit_view().is_some() {
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
             match key.as_str() {
                 // Cancel a visual selection first; otherwise leave the view.
                 "escape" | "q" => {
-                    if self
-                        .commit_view
-                        .as_ref()
-                        .is_some_and(|cv| cv.visual.is_some())
-                    {
-                        if let Some(cv) = self.commit_view.as_mut() {
+                    if self.commit_view().is_some_and(|cv| cv.visual.is_some()) {
+                        if let Some(cv) = self.commit_view_mut() {
                             cv.visual = None;
                         }
                         cx.notify();
@@ -5843,7 +5950,7 @@ impl StatusView {
 
         // The commit-log view: Enter opens the commit; esc/q close; the vi/less
         // motion keys move the *selection* (paging by a screenful, g/G to ends).
-        if self.log.is_some() {
+        if self.log().is_some() {
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
             match key.as_str() {
@@ -7120,7 +7227,7 @@ impl StatusView {
                     let view = view.clone();
                     move |range, _window, cx| {
                         let this = view.read(cx);
-                        match this.editor.as_ref() {
+                        match this.editor() {
                             Some(ed) => range
                                 .map(|ix| this.render_commit_diff_row(&ed.diff[ix], false))
                                 .collect::<Vec<_>>(),
@@ -7370,7 +7477,7 @@ impl StatusView {
                 let view = view.clone();
                 move |range, _window, cx| {
                     let this = view.read(cx);
-                    match this.log.as_ref() {
+                    match this.log() {
                         Some(log) => range
                             .map(|ix| {
                                 this.render_log_row(ix, &log.entries[ix], ix == log.selected, &view)
@@ -7434,7 +7541,7 @@ impl StatusView {
             .cursor_pointer()
             .on_click(move |_, _window, cx: &mut App| {
                 view.update(cx, |this, vcx| {
-                    if let Some(log) = this.log.as_mut() {
+                    if let Some(log) = this.log_mut() {
                         log.selected = ix;
                     }
                     this.open_commit_view(vcx);
@@ -7482,7 +7589,7 @@ impl StatusView {
             let view = view.clone();
             move |range, _window, cx| {
                 let this = view.read(cx);
-                match this.commit_view.as_ref() {
+                match this.commit_view() {
                     Some(cv) => {
                         let vis = cv.visual.map(|a| (a.min(cv.selected), a.max(cv.selected)));
                         range
@@ -7570,7 +7677,7 @@ impl StatusView {
             let view = view.clone();
             move |range, _window, cx| {
                 let this = view.read(cx);
-                match this.rebase_todo.as_ref() {
+                match this.rebase_todo() {
                     Some(rt) => range
                         .map(|ix| this.render_rebase_todo_row(rt, ix))
                         .collect(),
@@ -8293,8 +8400,8 @@ impl Render for StatusView {
         // keyboard (the commit editor, settings, and the picker each have
         // their own focused input), so keys always land — including debug-channel
         // keystrokes while the window isn't frontmost.
-        let owns_focus_elsewhere = self.editor.is_some()
-            || self.settings.is_some()
+        let owns_focus_elsewhere = self.editor().is_some()
+            || self.settings().is_some()
             || matches!(self.popup, Some(Popup::Picker(_)));
         if !owns_focus_elsewhere && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
@@ -8308,11 +8415,11 @@ impl Render for StatusView {
             .track_focus(&self.focus)
             .key_context(STATUS_CONTEXT)
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
-                if this.settings.is_some() {
+                if this.settings().is_some() {
                     this.cycle_settings_focus(window, cx);
                 } else if matches!(this.popup, Some(Popup::Dispatch(_))) {
                     this.run_dispatch("tab", window, cx);
-                } else if this.popup.is_none() && this.editor.is_none() {
+                } else if this.popup.is_none() && this.editor().is_none() {
                     this.toggle_fold(cx);
                 }
             }))
@@ -8325,7 +8432,7 @@ impl Render for StatusView {
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.editor.is_none() && this.popup.is_none() && this.settings.is_none() {
+                if this.editor().is_none() && this.popup.is_none() && this.settings().is_none() {
                     this.open_settings(window, cx);
                 }
             }))
@@ -8364,38 +8471,41 @@ impl Render for StatusView {
         // The title bar sits above every view (status, settings, editor, …).
         root = root.child(self.render_title_bar(&view));
 
-        // The settings screen, commit editor, and git-log view each take over
-        // the window.
-        if let Some(s) = &self.settings {
-            return root
-                .child(self.render_settings(s, &view))
-                .children(self.status_toast(cx));
-        }
-        if let Some(ed) = &self.editor {
-            return root
-                .child(self.render_editor(ed, &view))
-                .children(self.status_toast(cx));
-        }
-        if let Some(scroll) = &self.git_log {
-            return root
-                .child(self.render_git_log(scroll, &view))
-                .children(self.status_toast(cx));
-        }
-        if let Some(rt) = &self.rebase_todo {
-            return root
-                .child(self.render_rebase_todo(rt, &view))
-                .children(self.status_toast(cx));
-        }
-        // A commit's diff detail sits above the log; the log above the status.
-        if let Some(cv) = &self.commit_view {
-            return root
-                .child(self.render_commit_view(cv, &view))
-                .children(self.status_toast(cx));
-        }
-        if let Some(log) = &self.log {
-            return root
-                .child(self.render_log(log, &view))
-                .children(self.status_toast(cx));
+        // Each non-Status screen takes over the window. One match defines the
+        // active screen (no re-derived priority cascade); Status falls through to
+        // the status list below.
+        match &self.screen {
+            Screen::Settings(s) => {
+                return root
+                    .child(self.render_settings(s, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::Editor(ed) => {
+                return root
+                    .child(self.render_editor(ed, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::GitLog(scroll) => {
+                return root
+                    .child(self.render_git_log(scroll, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::RebaseTodo(rt) => {
+                return root
+                    .child(self.render_rebase_todo(rt, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::Commit { view: cv, .. } => {
+                return root
+                    .child(self.render_commit_view(cv, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::Log(log) => {
+                return root
+                    .child(self.render_log(log, &view))
+                    .children(self.status_toast(cx));
+            }
+            Screen::Status => {}
         }
 
         // An in-progress merge/rebase/cherry-pick/revert sits above the list,
