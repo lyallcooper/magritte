@@ -166,8 +166,244 @@ better, and the extracted `git_action.rs` layer is a useful separation.
   this is not Magritte code, but it is worth tracking because a future Rust
   release may turn it into a hard error.
 
+## Third-Pass Findings (2026-06-27)
+
+Scope reviewed: the Rust workspace manifests, app crate, core crate, tests,
+docs, helper script, gitignore/mise metadata, and the existing feedback trail.
+I treated `.reference/` as non-owned reference material because `.gitignore`
+documents it as local upstream copies, not Magritte source.
+
+Overall: the codebase is in much better shape than a first-pass prototype. The
+core has useful integration coverage, the app tests cover a meaningful slice of
+UI state behavior, formatting/lints/tests are clean, and the extraction of
+`git_action.rs` helped. The remaining issues are mostly product-correctness and
+architecture drift rather than basic Rust hygiene.
+
+1. **Several UI paths still run Git synchronously, despite the stated
+   architecture.** `crates/magritte/src/main.rs:2911` calls
+   `Repo::remote_targets()` directly from `remote_targets()`, and command
+   dispatch paths synchronously enumerate stashes or branches before opening
+   their UI: `stash_list()` at `main.rs:3071`, branch/ref listing at
+   `main.rs:3169`, `main.rs:3199`, `main.rs:3215`, reset target listing at
+   `main.rs:3254`, merge target listing at `main.rs:3300`, and remote branch
+   listing at `main.rs:3801`/`main.rs:3807`. These are local Git calls, but in
+   large repos, on network filesystems, or with slow config/hooks, they can
+   freeze key handling and painting. The top-level design claim is that all Git
+   work runs on the background executor; these call sites should open a picker
+   or transient immediately with a loading/empty state, then populate choices
+   from the background executor. Caching branch/remote targets after refresh
+   would also reduce repeated command execution.
+
+2. **The commit preview can omit changes that `git commit --all` will include.**
+   `load_commit_diff()` at `crates/magritte/src/main.rs:4456` only falls back to
+   the unstaged diff when the staged diff is empty (`main.rs:4472`). With
+   `--all`, Git commits staged changes plus tracked unstaged modifications and
+   deletions. If both exist, Magritte previews only the staged side, so the user
+   can commit unseen tracked work. The preview should show both staged and
+   tracked unstaged diffs whenever `--all` is active, with clear labels. It
+   should still avoid implying that untracked files are included.
+
+3. **The commit-all confirmation text overpromises what Git will do.**
+   `start_commit()` asks "Nothing staged. Commit all uncommitted changes?" at
+   `crates/magritte/src/main.rs:4247`, but the confirmation appends `--all`,
+   which commits only tracked modifications/deletions. Untracked files are not
+   included. The prompt should say something like "Commit all tracked unstaged
+   changes?" or the implementation should offer a true stage-all workflow before
+   committing.
+
+4. **Batch prechecking is not actually atomic for whole-file actions.**
+   `Action::Batch` promises to verify every part before mutating anything
+   (`crates/magritte/src/git_action.rs:107`), but `check()` only dry-runs
+   `ApplyRegion`; all whole-file actions return `Ok(())` at `git_action.rs:143`.
+   `resolve_region_action()` can place whole-file actions in a batch when a
+   visual selection includes file rows, including destructive discard/clean
+   operations. That means a multi-file action can still partially mutate the
+   repo after one confirmation if an early whole-file action succeeds and a
+   later one fails. Either make the precheck conservative for whole-file
+   operations or stop presenting mixed whole-file batches as all-or-nothing.
+
+5. **Saving a push remote happens before the push succeeds.** In
+   `run_transfer()`, `repo.set_push_remote(&branch, &chosen)` runs before
+   `repo.push_to(...)` (`crates/magritte/src/main.rs:4031`). If the push is
+   rejected, offline, pointed at the wrong remote, or otherwise fails, the
+   branch config has already been changed, and that write error is ignored. Save
+   the push remote only after a successful non-dry-run push, and surface a
+   follow-up config-write failure. If the goal is upstream setup, prefer Git's
+   push/upstream flags where they match the workflow instead of pre-mutating
+   config.
+
+6. **The arbitrary Git command prompt cannot handle normal shell-style
+   quoting.** `run_git_command()` uses `split_whitespace()` at
+   `crates/magritte/src/main.rs:3392`, while the UI advertises "type git
+   command" behavior and strips an optional leading `git`. Commands involving
+   paths with spaces, quoted refspecs, or escaped values will be split into the
+   wrong argv. Use a shell-word parser such as `shell-words`/`shlex` without
+   invoking a shell, then surface parse errors in the status area. This keeps
+   the current no-shell safety property while matching user expectations.
+
+7. **Syntax highlighting can still do too much work on the UI thread.**
+   Prefetch warms up to `PREFETCH_FILE_CAP = 16` files and
+   `PREFETCH_LINE_CAP = 2000` lines per file (`crates/magritte/src/main.rs:967`
+   and `main.rs:970`). Each completed diff then calls
+   `highlight::highlight_diff()` from inside the UI update at `main.rs:1956`.
+   `highlight.rs:214` caps one file at 2000 lines, but there is no aggregate
+   per-refresh budget. A refresh that warms sixteen 2000-line supported files
+   can still run a large amount of tree-sitter work on the UI thread. Render
+   plain text first and highlight incrementally, add a per-refresh aggregate
+   budget, or move highlight generation off the UI path if GPUI's styling model
+   allows it.
+
+8. **Visual selection resolution clones whole diffs repeatedly.**
+   `resolve_region_action()` walks every selected row and calls `diff_for()`
+   while resolving hunk headers (`crates/magritte/src/main.rs:2598`), and
+   `diff_for()` itself returns a cloned `FileDiff` (`main.rs:2400`). It clones
+   again when constructing the final action at `main.rs:2642`. For large
+   expanded diffs and multi-row selections this is unnecessary churn. Add a
+   borrowed lookup (`diff_for_ref`), pre-index selected files, or clone exactly
+   once when building the final `Action`.
+
+9. **Stash drop and branch delete need stronger destructive affordances.**
+   `run_stash_action()` executes `repo.stash_drop()` directly after picker
+   selection (`crates/magritte/src/main.rs:4203`). `run_branch_action()`
+   executes `repo.delete_branch(&chosen, false)` after picker selection
+   (`main.rs:4136`). Git protects unmerged branches with `-d`, so branch delete
+   is lower risk, but stash drop is easy to trigger and cannot be recovered
+   through the app. These should get explicit yes/no confirmations, consistent
+   with the existing confirmations for hard reset, discard, abort, and quit with
+   an active editor.
+
+10. **Manual conflict-resolution detection is too textual and too forgiving.**
+    `has_conflict_markers()` only rejects lines starting with `<<<<<<< ` or
+    `>>>>>>> ` and treats read errors as "no markers"
+    (`crates/magritte/src/main.rs:2791`). It can miss malformed leftover
+    `=======`/`|||||||` sections, binary/unreadable conflict paths, or files
+    whose marker spacing has been edited. Because staging a conflicted path
+    marks it resolved, failure should be conservative. Also, `ours`/`theirs`
+    labels should become sequence-aware for rebase/cherry-pick contexts; Git's
+    meanings are notoriously easy to misread there.
+
+11. **`run_optional()`-style Git probes can hide unexpected failures.** The core
+    intentionally uses optional Git commands for absent refs/config, but
+    swallowing every non-zero exit as "none" makes UI decisions look clean when
+    the real state is "Git failed". This is acceptable for a few tightly scoped
+    probes, but it should not spread. For branch/remote titlebar and transient
+    target data, consider distinguishing "missing value" from permission,
+    corruption, config, and subprocess errors so the app can show a degraded
+    state instead of silently dropping options.
+
+12. **The repo still has no README.** `PLAN.md`, `TODO.md`, and
+    `docs/extensibility.md` are useful engineering artifacts, but a standalone
+    Git app needs a short `README.md`: what Magritte is, platform/toolchain
+    expectations, how to build/run, feature flags such as debug behavior, basic
+    keymap entry points, and current safety limitations. This is not a code bug,
+    but it is a real adoption and maintenance gap.
+
+## Third-Pass Verification
+
+- `cargo fmt --check` passes.
+- `cargo test` passes: app unit tests and all `magritte-core` integration tests.
+- `cargo clippy --all-targets --all-features` passes.
+- `cargo test --all-features` passes.
+- Cargo still reports the upstream future-incompatibility warning for
+  `block v0.1.6`; this appears to come through GPUI/cocoa rather than Magritte
+  code, but it remains worth tracking.
+
+## Comment Quality Notes
+
+Overall, the comments are a net positive. They are noticeably better than the
+usual "repeat the code in English" style: many explain invariants, Git behavior,
+UI framework constraints, or historical choices that are not obvious from the
+implementation alone.
+
+The strongest comments are in the places where a future maintainer would
+otherwise need to rediscover a subtle rule:
+
+- `crates/magritte-core/src/stage.rs:7` explains the forward/reverse patch
+  construction rules for partial staging/unstaging/discarding. This is exactly
+  the right level of detail: it documents the mental model and the danger, not
+  just the mechanics.
+- `crates/magritte-core/src/repo.rs:142` explains the signal-mask workaround and
+  `GIT_TERMINAL_PROMPT=0`. That context is operationally important and would be
+  very hard to infer from the subprocess setup alone.
+- `crates/magritte-core/src/diff.rs:185` explains why `str::lines()` is avoided
+  for CRLF fidelity. This is a good example of a small implementation choice
+  backed by a concrete correctness reason.
+- `crates/magritte/src/debug.rs:65` explains why the debug control directory
+  must be private. That is useful security context, not decorative prose.
+- `crates/magritte/src/highlight.rs:29` explains grammar-name quirks in
+  `gpui-component`, which is the kind of dependency-specific knowledge that
+  belongs in a comment.
+
+The main weakness is density, especially in `crates/magritte/src/main.rs`.
+The file is nearly 9k lines and has comments acting as navigation markers,
+architecture notes, UI rationale, Magit compatibility notes, and local
+implementation notes all in one place. The comments help, but they also reveal
+that `main.rs` is carrying too many concepts. Some comments would become
+unnecessary if command dispatch, transient/picker orchestration, commit-editor
+state, render helpers, and row/action resolution were split into smaller
+modules with clear names.
+
+The highest-risk comments are the ones that state guarantees the code no longer
+fully provides. For example, `crates/magritte/src/git_action.rs:108` says a
+multi-file region "can't half-apply", but `check()` only meaningfully dry-runs
+`ApplyRegion`; whole-file actions still return `Ok(())`. This kind of stale
+confidence comment is worse than no comment because it tells a maintainer a
+safety property exists when it does not. Treat comments that claim safety,
+atomicity, data-loss behavior, or UI-thread behavior as part of the contract and
+audit them when behavior changes.
+
+There are also comments that reference context the reader may not have. The
+Magit and evil-collection references are appropriate because Magritte is
+explicitly inspired by Magit, but they should usually be paired with the
+observable behavior being copied. A comment like "Reset is `O`
+(evil-collection-magit)" is less useful than one that also says what tradeoff
+that binding makes inside Magritte's own keymap. References to
+`.reference/magit/...` are even more fragile because `.reference/` is local
+ignored material; future readers may not have those files. Prefer documenting
+the behavior inline and using external references only as supporting provenance.
+
+Recommended cleanup policy:
+
+- Keep comments that explain invariants, Git edge cases, GPUI/dependency
+  constraints, security assumptions, or non-obvious user-facing tradeoffs.
+- Remove or shorten comments that only restate a function name, enum variant, or
+  immediately obvious control flow.
+- When extracting modules from `main.rs`, let module boundaries and names carry
+  more of the explanation so local comments can focus on surprising details.
+- Audit comments during fixes, especially any that use words like "atomic",
+  "safe", "destructive", "preserve", "never", "always", or "background".
+- For Magit-inspired behavior, describe the local behavior first, then cite
+  Magit/evil-collection as provenance only when it adds useful context.
+
 <!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
-First pass (#1–#12) and second pass (SP1–SP7) addressed — commits up to af8f9e2.
+First pass (#1–#12), second pass (SP1–SP7), and third pass (TP1–TP12) addressed
+— commits up to c6c89ef.
+
+Third pass, what changed:
+  - TP2  commit `--all` previews `git diff HEAD` (new diff_tracked_vs_head), so
+         tracked unstaged work the commit will include is no longer hidden.
+  - TP3  commit-all prompt reworded to "all tracked changes" (--all skips
+         untracked).
+  - TP4  the Batch "can't half-apply" comment now states the real guarantee
+         (only region applies are dry-runnable; whole-file ops aren't atomic).
+  - TP5  push remote saved only after a successful push; a config-write failure
+         surfaces instead of being swallowed.
+  - TP6  the `!` run-git prompt tokenizes with shell-words (no shell) and
+         reports parse errors, so quoted args survive.
+  - TP9  stash drop surfaces git's "Dropped …(<sha>)" line so it's recoverable
+         (matches Magit, which echoes it and doesn't prompt a single drop).
+  - TP10 has_conflict_markers treats a read failure as still-conflicted;
+         take-ours/theirs labels are sequence-aware (--ours/--theirs invert
+         during rebase/cherry-pick).
+  - TP12 added README.
+  - TP1/TP11 the stash/branch/ref/reset/merge/rebase pickers populate off the UI
+         thread (Loading → candidates), close with the action's message when
+         empty, and surface listing *errors* instead of silent emptiness.
+  - TP8  diff_for_ref borrows for read-only lookups; stops cloning whole
+         FileDiffs per selected row in region resolution.
+  - Comment-quality: the actionable stale-guarantee (TP4) is fixed; the broader
+         "split main.rs" is partially eased by the picker extraction.
+
 Deferred (by decision, not oversight):
   - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
     is the interim fail-fast mitigation.
@@ -176,5 +412,17 @@ Deferred (by decision, not oversight):
     compatibility matrix is a nice-to-have, not a bug.
   - SP5 (byte/bstr paths vs lossy UTF-8): broad core refactor, low value for a
     macOS-only v1; revisit for non-UTF-8 path fidelity.
+  - TP1 (remote-listing async): `git remote` / remote_targets read config and a
+    couple of refs — bounded, not worktree/ref-count-bound — and their
+    count-dependent dispatch / transient-header rendering don't fit
+    open-then-populate without flicker, for negligible benefit. Kept synchronous.
+  - TP7 (aggregate highlight budget): premise doesn't hold — the load path
+    highlights one file per UI tick (per-file 2000-line cap); the only
+    multi-file pass (recompute_highlights) runs on a manual theme change, still
+    per-file capped. No change.
+  - TP10 (match bare =======/|||||||): kept matching only the
+    <<<<<<< / >>>>>>> pair; a bare ======= occurs in ordinary text and would
+    false-positive.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
+
