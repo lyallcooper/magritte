@@ -10,6 +10,10 @@ use crate::error::{Error, Result};
 /// How many recent git invocations the command log keeps (a ring buffer).
 const LOG_CAPACITY: usize = 500;
 
+/// Distinguishes concurrent sequence-editor todo temp files (parallel tests, or
+/// two rebases at once), since the pid alone isn't unique across threads.
+static SEQ_TODO_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A handle to a git working tree.
 ///
 /// `Repo` is deliberately synchronous and cheap to clone: it holds the
@@ -69,6 +73,47 @@ impl GitCommand {
 pub struct GitOutput {
     pub stdout: Vec<u8>,
     pub stderr: String,
+}
+
+impl GitOutput {
+    /// Trimmed stdout as text (lossy UTF-8).
+    fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).trim().to_string()
+    }
+
+    /// The one-line summary for commands whose result is the first line of
+    /// stdout (e.g. `commit` → `[main abc123] subject`), falling back to stderr.
+    pub fn first_line(&self) -> String {
+        let stdout = self.stdout_text();
+        if stdout.is_empty() {
+            self.stderr.trim().to_string()
+        } else {
+            stdout.lines().next().unwrap_or("").to_string()
+        }
+    }
+
+    /// The one-line summary for commands that print their status to stderr
+    /// (rebase/cherry-pick/sequence progress): its last non-empty line, falling
+    /// back to stdout.
+    pub fn status_line(&self) -> String {
+        let stderr = self.stderr.trim();
+        if stderr.is_empty() {
+            self.stdout_text()
+        } else {
+            stderr.lines().next_back().unwrap_or("").to_string()
+        }
+    }
+
+    /// The full stderr report (e.g. a push/pull/fetch summary, which can span
+    /// lines), falling back to stdout.
+    pub fn report(&self) -> String {
+        let stderr = self.stderr.trim();
+        if stderr.is_empty() {
+            self.stdout_text()
+        } else {
+            stderr.to_string()
+        }
+    }
 }
 
 impl Repo {
@@ -289,6 +334,36 @@ impl Repo {
             stdout: output.stdout,
             stderr,
         })
+    }
+
+    /// Run `git <args>` where git would normally open the **sequence editor**
+    /// (`rebase -i`, etc.), feeding it `todo` non-interactively. A throwaway
+    /// `sequence.editor` copies `todo` over git's generated todo, and
+    /// `GIT_EDITOR` is neutralized (`true`) so any `reword`/`squash` keeps its
+    /// default message instead of blocking on an editor. The temp file is
+    /// removed regardless of outcome. This isolates the no-TTY plumbing from the
+    /// callers' domain logic (which just builds the todo + argv).
+    pub fn run_with_sequence_editor(&self, todo: &str, args: &[String]) -> Result<GitOutput> {
+        // A unique temp file (space-free path) holds the todo; pid+counter keeps
+        // concurrent runs (and parallel tests) from sharing one file.
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            SEQ_TODO_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(format!("magritte-seq-todo-{unique}"));
+        std::fs::write(&path, todo)
+            .map_err(|e| Error::Message(format!("{}: {e}", path.display())))?;
+
+        let mut argv = vec![
+            "-c".to_string(),
+            format!("sequence.editor=cp '{}'", path.display()),
+        ];
+        argv.extend(args.iter().cloned());
+
+        let result = self.run_with_env(&argv, "GIT_EDITOR", "true");
+        let _ = std::fs::remove_file(&path);
+        result
     }
 
     /// Run `git <args>` and report whether it exited successfully, without

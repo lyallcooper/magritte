@@ -7,7 +7,7 @@
 //! commands against a chosen remote rather than leaning on bare `git push`.
 
 use crate::error::Result;
-use crate::repo::{GitOutput, Repo};
+use crate::repo::Repo;
 
 /// A branch's upstream, split into its remote and remote-branch parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +114,7 @@ impl Repo {
         args.extend(switches.iter().cloned());
         args.push(remote.to_string());
         args.push(branch.to_string());
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git push [switches] <remote> <local>:<target>` — push the local branch
@@ -130,7 +130,7 @@ impl Repo {
         args.extend(switches.iter().cloned());
         args.push(remote.to_string());
         args.push(format!("{local}:{target}"));
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git pull [switches] <remote> <branch>`.
@@ -139,7 +139,7 @@ impl Repo {
         args.extend(switches.iter().cloned());
         args.push(remote.to_string());
         args.push(branch.to_string());
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git fetch [switches] <remote>`.
@@ -147,23 +147,13 @@ impl Repo {
         let mut args = vec!["fetch".to_string()];
         args.extend(switches.iter().cloned());
         args.push(remote.to_string());
-        Ok(summary(self.run(&args)?))
+        Ok(self.run(&args)?.report())
     }
 
     /// `git fetch --all [switches]`.
     pub fn fetch_all(&self, switches: &[String]) -> Result<String> {
         let mut args = vec!["fetch".to_string(), "--all".to_string()];
         args.extend(switches.iter().cloned());
-        Ok(summary(self.run(&args)?))
-    }
-}
-
-/// git reports push/fetch progress on stderr; prefer it, else stdout.
-pub(crate) fn summary(out: GitOutput) -> String {
-    let stderr = out.stderr.trim();
-    if stderr.is_empty() {
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    } else {
-        stderr.to_string()
+        Ok(self.run(&args)?.report())
     }
 }
