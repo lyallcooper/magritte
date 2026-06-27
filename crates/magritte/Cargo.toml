@@ -32,6 +32,10 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 ] }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
 magritte-core = { path = "../magritte-core" }
+# Native config-file watching (FSEvents on macOS) + the async channel that
+# bridges its callback thread to the GPUI executor — no polling.
+notify = "7"
+async-channel = "2"
 serde = { version = "1", features = ["derive"] }
 # POSIX-style word splitting for the `!` run-git prompt — honors quoting and
 # escapes without invoking a shell.

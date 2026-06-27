@@ -1702,6 +1702,11 @@ struct StatusView {
     /// The effective keystroke → command-id map (registry defaults overlaid with
     /// the user's `[keymap]`), resolved by `on_key`/`run_dispatch`.
     keymap: HashMap<String, String>,
+    /// Kept alive so the native config-file watcher keeps delivering events
+    /// (dropping it stops watching). `None` if there's no config dir to watch.
+    _config_watcher: Option<notify::RecommendedWatcher>,
+    /// Kept alive so the system light/dark appearance observer stays active.
+    _appearance_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
     /// Cached list of monospace font families (computed on first settings open).
@@ -1795,6 +1800,8 @@ impl StatusView {
             ui_font,
             config,
             keymap,
+            _config_watcher: None,
+            _appearance_sub: None,
             usage: config::load_usage(),
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
@@ -1810,41 +1817,63 @@ impl StatusView {
             palette: Palette::default(),
         };
         view.refresh(cx);
-        view.watch_config(cx);
         view
     }
 
-    /// Poll for external config-file edits and system light/dark changes, and
-    /// re-apply live. Cheap (a stat + an appearance read once a second) and
-    /// dependency-free; the in-app settings screen is the other path.
-    fn watch_config(&self, cx: &mut Context<Self>) {
+    /// Re-apply config edits and system light/dark changes live, event-driven
+    /// (no polling): a native watch on the config file and GPUI's appearance
+    /// observer. Needs `window` for the observer, so it runs once the window
+    /// exists; the in-app settings screen is the other path. Held subscriptions
+    /// keep both alive.
+    fn install_watchers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // System light/dark: re-theme when the window's appearance flips (only
+        // matters when the config follows the system, but `reapply_theme` is
+        // cheap and idempotent).
+        self._appearance_sub = Some(cx.observe_window_appearance(window, |view, _window, cx| {
+            view.reapply_theme(cx);
+        }));
+
+        // Config file: watch its directory (so atomic save-via-rename, which
+        // swaps the inode, still fires), forward matching events over a channel,
+        // and re-apply on the UI thread. Watching the dir means we ignore events
+        // for siblings like command-usage.toml by matching the exact path.
+        let Some(config_path) = config::path() else {
+            return;
+        };
+        let Some(dir) = config_path.parent().map(|p| p.to_path_buf()) else {
+            return;
+        };
+        // Canonicalize the dir so the watch target matches the resolved paths the
+        // OS reports (e.g. macOS reports `/private/tmp/…` for a `/tmp/…` watch).
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let watch_target = match config_path.file_name() {
+            Some(name) => dir.join(name),
+            None => return,
+        };
+        let (tx, rx) = async_channel::unbounded::<()>();
+        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                if event.paths.contains(&watch_target) {
+                    let _ = tx.send_blocking(());
+                }
+            }
+        });
+        let Ok(mut watcher) = watcher else { return };
+        // A missing config dir (no config yet) just means nothing to watch.
+        if notify::Watcher::watch(&mut watcher, &dir, notify::RecursiveMode::NonRecursive).is_err()
+        {
+            return;
+        }
+        self._config_watcher = Some(watcher);
+
         cx.spawn(async move |this, cx| {
-            let mut last_mtime = config::mtime();
-            let mut last_dark = cx.update(|cx| system_is_dark(cx));
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(1))
-                    .await;
-                let now_mtime = config::mtime();
-                let config_changed = now_mtime != last_mtime;
-                if config_changed {
-                    last_mtime = now_mtime;
-                }
-                let now_dark = cx.update(|cx| system_is_dark(cx));
-                let appearance_changed = now_dark != last_dark;
-                last_dark = now_dark;
-                if !config_changed && !appearance_changed {
-                    continue;
-                }
-                let cfg = config_changed.then(config::load);
+            while rx.recv().await.is_ok() {
+                let cfg = config::load();
                 let updated = this.update(cx, |view, cx| {
-                    match cfg {
-                        // Skip a re-apply when the file's contents are unchanged
-                        // (e.g. our own in-app save, or a no-op external edit).
-                        Some(cfg) if cfg != view.config => view.apply_config(cfg, cx),
-                        Some(_) => {}
-                        // System appearance flipped; re-apply with the same config.
-                        None => view.reapply_theme(cx),
+                    // Skip when the contents are unchanged (our own in-app save,
+                    // or a no-op external edit).
+                    if cfg != view.config {
+                        view.apply_config(cfg, cx);
                     }
                 });
                 if updated.is_err() {
@@ -9280,6 +9309,9 @@ fn main() {
                     let view = cx.new(|cx| {
                         StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx)
                     });
+                    // Now that the window exists, install the live-reload watchers
+                    // (the appearance observer needs `&mut Window`).
+                    view.update(cx, |view, cx| view.install_watchers(window, cx));
                     // The window's root must be a gpui-component Root (provides
                     // theming, overlays, and the component context).
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
