@@ -375,34 +375,105 @@ Recommended cleanup policy:
 - For Magit-inspired behavior, describe the local behavior first, then cite
   Magit/evil-collection as provenance only when it adds useful context.
 
-<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
-First pass (#1–#12), second pass (SP1–SP7), and third pass (TP1–TP12) addressed
-— commits up to c6c89ef.
+## Fourth-Pass Findings (2026-06-27)
 
-Third pass, what changed:
-  - TP2  commit `--all` previews `git diff HEAD` (new diff_tracked_vs_head), so
-         tracked unstaged work the commit will include is no longer hidden.
-  - TP3  commit-all prompt reworded to "all tracked changes" (--all skips
-         untracked).
-  - TP4  the Batch "can't half-apply" comment now states the real guarantee
-         (only region applies are dry-runnable; whole-file ops aren't atomic).
-  - TP5  push remote saved only after a successful push; a config-write failure
-         surfaces instead of being swallowed.
-  - TP6  the `!` run-git prompt tokenizes with shell-words (no shell) and
-         reports parse errors, so quoted args survive.
-  - TP9  stash drop surfaces git's "Dropped …(<sha>)" line so it's recoverable
-         (matches Magit, which echoes it and doesn't prompt a single drop).
-  - TP10 has_conflict_markers treats a read failure as still-conflicted;
-         take-ours/theirs labels are sequence-aware (--ours/--theirs invert
-         during rebase/cherry-pick).
-  - TP12 added README.
-  - TP1/TP11 the stash/branch/ref/reset/merge/rebase pickers populate off the UI
-         thread (Loading → candidates), close with the action's message when
-         empty, and surface listing *errors* instead of silent emptiness.
-  - TP8  diff_for_ref borrows for read-only lookups; stops cloning whole
-         FileDiffs per selected row in region resolution.
-  - Comment-quality: the actionable stale-guarantee (TP4) is fixed; the broader
-         "split main.rs" is partially eased by the picker extraction.
+Scope reviewed after the latest fixes: current manifests, README, core crate,
+app crate, tests, and the specific areas touched by the recent commits
+(`--all` preview, push-remote ordering, conflict handling, run-git parsing,
+async picker population, and borrowed diff lookups).
+
+Overall: the addressed feedback landed well. The core is cleaner, the README is
+useful, quoted git commands now behave like users expect, push config mutation
+is no longer ahead of the push, conflict staging is more conservative, and the
+branch/stash/ref/reset/merge/rebase pickers no longer do their large listings
+on the UI thread. The remaining findings are narrower and mostly second-order.
+
+1. **The "UI thread never blocks on git" contract is still too strong.**
+   `README.md:48` says every git call is dispatched to a background executor,
+   but some synchronous git probes remain in UI command paths. Opening branch
+   unnecessarily calls `remote_targets()` before rendering a transient
+   (`crates/magritte/src/main.rs:592`), and push/pull/fetch/rebase still call
+   `remote_targets()` synchronously (`main.rs:618`, `main.rs:640`,
+   `main.rs:644`, `main.rs:648`). Transfer fallback paths also synchronously
+   call `remotes()` / `remote_branches()` (`main.rs:3781`, `main.rs:3815`,
+   `main.rs:3849`, `main.rs:3855`). If keeping these synchronous is a deliberate
+   bounded-cost tradeoff, soften the README/PLAN wording and remove the
+   unnecessary branch-transient `remote_targets()` call. If the invariant is
+   meant literally, these transfer paths need the same open-then-populate
+   treatment as the fixed branch/ref pickers.
+
+2. **The new `--all` commit preview fails on unborn branches.**
+   `Repo::diff_tracked_vs_head()` uses `git diff HEAD`
+   (`crates/magritte-core/src/diff.rs:126`), and `load_commit_diff()` uses that
+   path for `--all` (`crates/magritte/src/main.rs:4611`). In an unborn repo,
+   `git diff HEAD` exits with "unknown revision", so the editor can show "diff
+   unavailable" for an initial commit path. I verified this in a scratch repo.
+   Use the empty tree when `HEAD` is absent, or fall back to the staged diff for
+   unborn branches.
+
+3. **Async option completions can race into the wrong option prompt.**
+   `open_listed_picker()` has a generation guard, but `open_option_prompt()`
+   only checks that the current popup is *some* `SetOption`
+   (`crates/magritte/src/main.rs:3195`). If an authors/files completion returns
+   after the user has opened another option prompt, stale candidates can populate
+   the newer prompt. Reuse `picker_gen` here too, or capture the option key and
+   only apply results when the still-open prompt matches that key.
+
+4. **Mixed whole-file visual batches remain partial-mutation workflows.**
+   The misleading guarantee comment is fixed, which is good, but the underlying
+   behavior remains: `Action::Batch` can precheck region patches, while
+   whole-file actions still report `Ok(())` from `check()` and then run
+   sequentially (`crates/magritte/src/git_action.rs:107`). For destructive
+   selections that include whole-file rows, a later failure can still leave
+   earlier files changed after one confirmation. Either add conservative
+   prechecks for whole-file destructive operations, or make the confirmation /
+   error reporting explicitly say the operation is sequential and may be
+   partially applied.
+
+5. **Syntax highlighting still lacks an aggregate foreground budget.**
+   Individual file diffs are capped at 2000 lines
+   (`crates/magritte/src/highlight.rs:214`), but prefetch can warm several files
+   and each loaded diff computes highlighting during the UI update
+   (`crates/magritte/src/main.rs:1935`, `main.rs:1991`). A manual theme change
+   also recomputes all loaded highlights in one pass (`main.rs:1821`). This is
+   much less severe than unbounded highlighting, but an aggregate per-frame or
+   per-refresh budget would make the performance story more robust.
+
+6. **A couple of docs/comments drifted during the cleanup.**
+   The push-elsewhere candidate-list doc comment is attached to `all_branches()`
+   instead of `seed_push_branches()` (`crates/magritte/src/main.rs:8490`).
+   `README.md:34` says `P` is push, but the app binds lowercase `p`
+   (`crates/magritte/src/main.rs:639`). Small issues, but worth fixing because
+   they are exactly the kind of stale-context comments that mislead later
+   maintainers.
+
+## Fourth-Pass Verification
+
+- `cargo fmt --check` passes.
+- `cargo test` passes.
+- `cargo clippy --all-targets --all-features` passes.
+- `cargo test --all-features` passes.
+- Cargo still reports the upstream future-incompatibility warning for
+  `block v0.1.6`.
+- The worktree was otherwise clean except for `FEEDBACK.md`; `git status` still
+  emits the existing fsmonitor IPC warning.
+
+<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
+First pass (#1–#12), second (SP1–SP7), third (TP1–TP12), and fourth (FP1–FP6)
+addressed — commits up to 6fa6d47.
+
+Fourth pass, what changed:
+  - FP1  the branch transient no longer resolves remote_targets it doesn't use;
+         README/PLAN "never blocks on git" softened to admit the bounded inline
+         config/ref probes (e.g. @{upstream}) we keep synchronous.
+  - FP2  diff_tracked_vs_head fell over on an unborn branch (no HEAD); it now
+         falls back to the staged diff. Tests added.
+  - FP3  option-prompt completions are guarded by picker_gen, so a late
+         authors/files load can't fill a newer prompt.
+  - FP4  a partially-applied whole-file Batch now reports "applied N of M; the
+         rest were not" instead of only the last error.
+  - FP6  fixed the doc comment that drifted onto all_branches (belongs to
+         seed_push_branches); README/PLAN push key corrected to `p`.
 
 Deferred (by decision, not oversight):
   - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
@@ -412,17 +483,20 @@ Deferred (by decision, not oversight):
     compatibility matrix is a nice-to-have, not a bug.
   - SP5 (byte/bstr paths vs lossy UTF-8): broad core refactor, low value for a
     macOS-only v1; revisit for non-UTF-8 path fidelity.
-  - TP1 (remote-listing async): `git remote` / remote_targets read config and a
-    couple of refs — bounded, not worktree/ref-count-bound — and their
+  - TP1 / FP1 (remote-listing async): `git remote` / remote_targets read config
+    and a couple of refs — bounded, not worktree/ref-count-bound — and their
     count-dependent dispatch / transient-header rendering don't fit
-    open-then-populate without flicker, for negligible benefit. Kept synchronous.
-  - TP7 (aggregate highlight budget): premise doesn't hold — the load path
-    highlights one file per UI tick (per-file 2000-line cap); the only
-    multi-file pass (recompute_highlights) runs on a manual theme change, still
-    per-file capped. No change.
+    open-then-populate without flicker, for negligible benefit. Kept synchronous
+    (and the README/PLAN wording now reflects this).
+  - TP7 / FP5 (aggregate highlight budget): the load path highlights one file per
+    UI tick (per-file 2000-line cap); the only multi-file pass
+    (recompute_highlights) runs on a manual theme change, still per-file capped.
+    No change.
   - TP10 (match bare =======/|||||||): kept matching only the
     <<<<<<< / >>>>>>> pair; a bare ======= occurs in ordinary text and would
     false-positive.
+  - FP4 (conservative whole-file prechecks): whole-file ops can't be dry-run; we
+    report partial application rather than fake atomicity.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
 
