@@ -7096,18 +7096,25 @@ impl StatusView {
                     .flex()
                     .items_center()
                     .gap_3()
+                    // The hash and its copy button share one highlight as a
+                    // divided pill, mirroring the title-bar branch chip.
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(cv.short.clone()),
+                            .flex()
+                            .items_center()
+                            .rounded(px(4.0))
+                            .bg(self.palette.selection)
+                            .text_color(self.palette.fg)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(div().px(px(5.0)).child(cv.short.clone()))
+                            .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
+                            .child(self.copy_icon_button(
+                                view,
+                                "commit-sha-copy",
+                                cv.rev.clone(),
+                                "Copy commit hash",
+                            )),
                     )
-                    .child(self.copy_icon_button(
-                        view,
-                        "commit-sha-copy",
-                        cv.rev.clone(),
-                        "Copy commit hash",
-                    ))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -7728,7 +7735,7 @@ impl StatusView {
                 cx.notify();
             }));
         // A copy confirmation renders the copied value emphasized — accent
-        // color, monospace — so a path or hash reads as a literal.
+        // color, monospace, italic — so a path or hash reads as a literal.
         Some(match self.status_copied.clone() {
             Some(value) if msg == COPIED_LABEL => bar
                 .flex()
@@ -7738,6 +7745,7 @@ impl StatusView {
                 .child(
                     div()
                         .font_family(self.font.clone())
+                        .italic()
                         .text_color(self.palette.section)
                         .child(value),
                 ),
