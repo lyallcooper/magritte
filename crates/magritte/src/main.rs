@@ -76,7 +76,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     Change, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest,
-    LineKind, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
+    LineKind, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -296,6 +296,8 @@ enum PickerAction {
     RunGit,
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
+    /// Start an interactive rebase: the chosen base opens the todo editor.
+    RebaseInteractive,
 }
 
 impl PickerAction {
@@ -333,6 +335,7 @@ impl PickerAction {
             // Reads like magit's "git " prompt: the typed text follows "git".
             PickerAction::RunGit => transient::plain_title("git"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
+            PickerAction::RebaseInteractive => transient::plain_title("Rebase since"),
         }
     }
 
@@ -372,6 +375,7 @@ impl PickerAction {
             PickerAction::Rebase => "rebase",
             PickerAction::RunGit => "run",
             PickerAction::Ignore(_) => "ignore",
+            PickerAction::RebaseInteractive => "edit",
         }
     }
 }
@@ -432,6 +436,20 @@ enum LogLoad {
     Loading,
     Loaded,
     Failed(String),
+}
+
+/// The interactive-rebase todo editor (`r i`): an editable list of the commits
+/// in `base..HEAD`, each with an action, reorderable, then run as one rebase.
+struct RebaseTodoView {
+    /// The rebase base (`base..HEAD` is the editable range).
+    base: String,
+    /// Toggled switches carried from the rebase transient (`--autostash`, …).
+    args: Vec<String>,
+    /// The todo, oldest first (git's order).
+    steps: Vec<magritte_core::RebaseStep>,
+    /// Cursor row.
+    selected: usize,
+    scroll: UniformListScrollHandle,
 }
 
 /// A single commit's detail (opened from the log): its header and diff, as the
@@ -1672,6 +1690,8 @@ struct StatusView {
     log: Option<LogState>,
     /// A commit's diff detail (opened from the log with Enter), when open.
     commit_view: Option<CommitView>,
+    /// The interactive-rebase todo editor, when open.
+    rebase_todo: Option<RebaseTodoView>,
     /// The monospace font family for code, diffs, and tabular columns.
     font: SharedString,
     /// The proportional UI font for prose chrome; equals `font` when unset.
@@ -1770,6 +1790,7 @@ impl StatusView {
             git_log: None,
             log: None,
             commit_view: None,
+            rebase_todo: None,
             font,
             ui_font,
             config,
@@ -3130,7 +3151,7 @@ impl StatusView {
             MergePlain | MergeNoCommit | MergeSquash => {
                 self.dispatch_merge(command, args, window, cx)
             }
-            RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => {
+            RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
                 self.dispatch_rebase(command, args, &targets, window, cx)
             }
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
@@ -3518,6 +3539,120 @@ impl StatusView {
         .detach();
     }
 
+    /// Open the interactive-rebase todo editor for `base..HEAD`: load the
+    /// default todo (all `pick`, oldest first) off the UI thread, then show the
+    /// editor — or report when the range is empty / the load fails.
+    fn open_rebase_todo(&mut self, base: String, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.status_message = Some("Loading commits…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let for_load = base.clone();
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { repo.rebase_todo(&for_load) })
+                .await;
+            this.update(cx, |this, cx| match loaded {
+                Ok(steps) if steps.is_empty() => {
+                    this.set_status("No commits to rebase".to_string(), true, cx);
+                }
+                Ok(steps) => {
+                    this.status_message = None;
+                    this.rebase_todo = Some(RebaseTodoView {
+                        base,
+                        args,
+                        steps,
+                        selected: 0,
+                        scroll: UniformListScrollHandle::new(),
+                    });
+                    cx.notify();
+                }
+                Err(e) => this.set_status(format!("error: {e}"), false, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Move the cursor in the rebase-todo editor.
+    fn rebase_todo_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(rt) = self.rebase_todo.as_mut() {
+            let n = rt.steps.len();
+            if n == 0 {
+                return;
+            }
+            rt.selected = (rt.selected as isize + delta).clamp(0, n as isize - 1) as usize;
+            rt.scroll
+                .scroll_to_item(rt.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Set the action of the step at the cursor.
+    fn rebase_todo_set_action(&mut self, action: RebaseAction, cx: &mut Context<Self>) {
+        if let Some(rt) = self.rebase_todo.as_mut() {
+            if let Some(step) = rt.steps.get_mut(rt.selected) {
+                step.action = action;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Move the step at the cursor up/down (reorder), following it with the
+    /// cursor so successive moves keep acting on the same commit.
+    fn rebase_todo_reorder(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(rt) = self.rebase_todo.as_mut() {
+            let n = rt.steps.len();
+            if n < 2 {
+                return;
+            }
+            let from = rt.selected;
+            let to = (from as isize + delta).clamp(0, n as isize - 1) as usize;
+            if to != from {
+                rt.steps.swap(from, to);
+                rt.selected = to;
+                rt.scroll.scroll_to_item(to, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Run the edited todo as one interactive rebase (off the UI thread), close
+    /// the editor, then refresh — a pause (an `edit`, or a conflict) surfaces in
+    /// the in-progress banner for continue/skip/abort.
+    fn run_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rt) = self.rebase_todo.take() else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.focus.focus(window, cx);
+        self.status_message = Some("Rebasing…".to_string());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.rebase_interactive(&rt.base, &rt.steps, &rt.args) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Rebased", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Close the rebase-todo editor without running it.
+    fn close_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rebase_todo = None;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     /// Rebase transient suffix: resolve the target to rebase onto (the upstream
     /// or push-remote when known, else prompt), then rebase.
     fn dispatch_rebase(
@@ -3529,6 +3664,18 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         use transient::Command::*;
+        if matches!(command, RebaseInteractive) {
+            // Prompt for the base; commits after it become the editable todo.
+            self.open_listed_picker(
+                PickerAction::RebaseInteractive,
+                CreateMode::Value,
+                args,
+                all_branches,
+                window,
+                cx,
+            );
+            return;
+        }
         let onto = match command {
             RebaseOntoUpstream => targets.upstream.as_ref().map(|u| u.display()),
             RebaseOntoPushRemote => match (&targets.branch, &targets.push_remote) {
@@ -4162,6 +4309,9 @@ impl StatusView {
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
                 PickerAction::RunGit => self.run_git_command(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
+                PickerAction::RebaseInteractive => {
+                    self.open_rebase_todo(chosen.to_string(), p.switches, cx)
+                }
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -5652,6 +5802,35 @@ impl StatusView {
 
         // A commit's diff detail (opened from the log) is topmost; esc/q returns
         // to the log, and it scrolls with the usual vi/less keys.
+        // The interactive-rebase todo editor: set an action, reorder, then start.
+        if self.rebase_todo.is_some() {
+            let page = page_rows(window) as isize;
+            let half = (page / 2).max(1);
+            match key.as_str() {
+                "escape" | "q" => self.close_rebase_todo(window, cx),
+                "enter" => self.run_rebase_todo(window, cx),
+                "j" | "down" if !shift => self.rebase_todo_move(1, cx),
+                "k" | "up" if !shift => self.rebase_todo_move(-1, cx),
+                "d" if ctrl => self.rebase_todo_move(half, cx),
+                "u" if ctrl => self.rebase_todo_move(-half, cx),
+                "f" if ctrl => self.rebase_todo_move(page, cx),
+                "b" if ctrl => self.rebase_todo_move(-page, cx),
+                "g" if shift => self.rebase_todo_move(isize::MAX / 2, cx),
+                "g" => self.rebase_todo_move(isize::MIN / 2, cx),
+                // Move the selected commit up/down (shift+k / shift+j).
+                "k" if shift => self.rebase_todo_reorder(-1, cx),
+                "j" if shift => self.rebase_todo_reorder(1, cx),
+                // Set the action of the commit at point.
+                "p" => self.rebase_todo_set_action(RebaseAction::Pick, cx),
+                "e" => self.rebase_todo_set_action(RebaseAction::Edit, cx),
+                "s" => self.rebase_todo_set_action(RebaseAction::Squash, cx),
+                "f" => self.rebase_todo_set_action(RebaseAction::Fixup, cx),
+                "d" | "x" => self.rebase_todo_set_action(RebaseAction::Drop, cx),
+                _ => {}
+            }
+            return;
+        }
+
         if self.commit_view.is_some() {
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
@@ -7397,6 +7576,120 @@ impl StatusView {
             .child(body)
     }
 
+    /// The action keyword + its color for a rebase-todo row.
+    fn rebase_action_style(&self, action: RebaseAction) -> (&'static str, Hsla) {
+        match action {
+            RebaseAction::Pick => ("pick", self.palette.fg),
+            RebaseAction::Reword => ("reword", self.palette.modified),
+            RebaseAction::Edit => ("edit", self.palette.modified),
+            RebaseAction::Squash => ("squash", self.palette.modified),
+            RebaseAction::Fixup => ("fixup", self.palette.modified),
+            RebaseAction::Drop => ("drop", self.palette.removed),
+        }
+    }
+
+    /// Render the interactive-rebase todo editor: a header, the editable commit
+    /// list (action · hash · subject), and a key-hint footer.
+    fn render_rebase_todo(&self, rt: &RebaseTodoView, view: &Entity<Self>) -> gpui::Div {
+        let count = rt.steps.len();
+        let body = uniform_list("rebase-todo-rows", count, {
+            let view = view.clone();
+            move |range, _window, cx| {
+                let this = view.read(cx);
+                match this.rebase_todo.as_ref() {
+                    Some(rt) => range
+                        .map(|ix| this.render_rebase_todo_row(rt, ix))
+                        .collect(),
+                    None => Vec::new(),
+                }
+            }
+        })
+        .track_scroll(&rt.scroll)
+        .flex_grow(1.0);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .font_family(self.font.clone())
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.section)
+                            .child(SharedString::from(format!("Rebase {}..HEAD", rt.base))),
+                    )
+                    .child(self.key_action(
+                        "rebase-todo-start",
+                        "return",
+                        "start",
+                        view,
+                        Self::run_rebase_todo,
+                    ))
+                    .child(self.key_action(
+                        "rebase-todo-cancel",
+                        "esc",
+                        "cancel",
+                        view,
+                        Self::close_rebase_todo,
+                    )),
+            )
+            .child(body)
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(
+                        "p pick · e edit · s squash · f fixup · d drop · K/J move",
+                    )),
+            )
+    }
+
+    /// One row of the rebase-todo editor.
+    fn render_rebase_todo_row(&self, rt: &RebaseTodoView, ix: usize) -> gpui::Div {
+        let step = &rt.steps[ix];
+        let selected = ix == rt.selected;
+        let (keyword, color) = self.rebase_action_style(step.action);
+        let dropped = step.action == RebaseAction::Drop;
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .h(px(ROW_HEIGHT))
+            .when(selected, |el| el.bg(self.palette.selection))
+            .child(
+                div()
+                    .w(px(56.0))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .child(SharedString::from(keyword)),
+            )
+            .child(
+                div()
+                    .w(px(72.0))
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(step.oid.clone())),
+            )
+            .child(
+                div()
+                    .text_color(if dropped {
+                        self.palette.dim
+                    } else {
+                        self.palette.fg
+                    })
+                    .child(SharedString::from(step.subject.clone())),
+            )
+    }
+
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
@@ -8114,6 +8407,11 @@ impl Render for StatusView {
                 .child(self.render_git_log(scroll, &view))
                 .children(self.status_toast(cx));
         }
+        if let Some(rt) = &self.rebase_todo {
+            return root
+                .child(self.render_rebase_todo(rt, &view))
+                .children(self.status_toast(cx));
+        }
         // A commit's diff detail sits above the log; the log above the status.
         if let Some(cv) = &self.commit_view {
             return root
@@ -8386,7 +8684,9 @@ fn describe_command(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebasing",
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
+            "Rebasing"
+        }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
     }
 }
@@ -8406,7 +8706,9 @@ fn command_done(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere => "Rebased",
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
+            "Rebased"
+        }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
     }
 }

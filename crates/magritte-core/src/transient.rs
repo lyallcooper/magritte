@@ -80,6 +80,9 @@ pub enum Command {
     RebaseOntoPushRemote,
     /// Rebase onto a branch/ref the frontend prompts for.
     RebaseElsewhere,
+    /// Interactive rebase: prompt for a base, then edit the todo
+    /// (pick/edit/squash/fixup/drop/reorder).
+    RebaseInteractive,
     /// Add a gitignore rule (the frontend prompts for it, seeded with the file
     /// at point), to one of the four ignore files.
     IgnoreToplevel,
@@ -680,6 +683,14 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                         command: Command::RebaseElsewhere,
                     }),
                 ],
+            },
+            Group {
+                title: plain_title("Interactively"),
+                suffixes: vec![Suffix::Action(Action {
+                    key: "i",
+                    description: "edit commits since…".to_string(),
+                    command: Command::RebaseInteractive,
+                })],
             },
         ],
     }
