@@ -458,45 +458,151 @@ on the UI thread. The remaining findings are narrower and mostly second-order.
 - The worktree was otherwise clean except for `FEEDBACK.md`; `git status` still
   emits the existing fsmonitor IPC warning.
 
-<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
-First pass (#1–#12), second (SP1–SP7), third (TP1–TP12), and fourth (FP1–FP6)
-addressed — commits up to 6fa6d47.
+## Architecture / Abstractions Pass
 
-Fourth pass, what changed:
-  - FP1  the branch transient no longer resolves remote_targets it doesn't use;
-         README/PLAN "never blocks on git" softened to admit the bounded inline
-         config/ref probes (e.g. @{upstream}) we keep synchronous.
-  - FP2  diff_tracked_vs_head fell over on an unborn branch (no HEAD); it now
-         falls back to the staged diff. Tests added.
-  - FP3  option-prompt completions are guarded by picker_gen, so a late
-         authors/files load can't fill a newer prompt.
-  - FP4  a partially-applied whole-file Batch now reports "applied N of M; the
-         rest were not" instead of only the last error.
-  - FP6  fixed the doc comment that drifted onto all_branches (belongs to
-         seed_push_branches); README/PLAN push key corrected to `p`.
+- **The app-level view state should be represented as an explicit state model.**
+  `StatusView` currently carries several independent screen/modal fields
+  (`popup`, `editor`, `settings`, `git_log`, `log`, `commit_view`,
+  `rebase_todo`) in `crates/magritte/src/main.rs:1680`. Rendering then defines
+  the active priority again around `main.rs:8401`, and key handling defines it
+  again around `main.rs:5731`. This lets invalid combinations exist in memory
+  and spreads screen lifecycle rules across rendering, input, focus restoration,
+  and close handlers. A dedicated screen/mode model would make the active UI
+  state explicit and centralize the rules for what can be open at the same time.
+
+- **`StatusView` is carrying too many architectural responsibilities.**
+  The struct starting at `crates/magritte/src/main.rs:1646` owns repository
+  state, status rows, selection and visual mode, diff and highlighting caches,
+  command dispatch, transient popups, picker orchestration, settings, logs,
+  commit editing, rebase todo editing, background jobs, rendering, focus
+  management, and persistence glue. That makes unrelated features share one
+  mutable surface area and makes local changes harder to reason about. The code
+  would benefit from clearer boundaries between the app shell, status model,
+  command controllers, picker model, settings model, log/commit-view model, and
+  rebase-todo model.
+
+- **Background Git job orchestration is duplicated instead of abstracted.**
+  Many operations repeat the same shape: clone the repo, set a progress message,
+  spawn onto `background_executor`, update the UI, report success or error, and
+  refresh. Examples include `run_command` (`main.rs:3884`), `run_sequence`
+  (`main.rs:3941`), `run_transfer` (`main.rs:4423`), `run_fetch_all`
+  (`main.rs:4483`), log loading (`main.rs:5436`), commit-view loading
+  (`main.rs:5560`), and `run_commit` (`main.rs:5703`). This should be
+  centralized so progress reporting, refresh behavior, stale-result checks,
+  error display, and notification behavior are consistent everywhere.
+
+- **The picker abstraction has outgrown its remote-specific naming.**
+  `Popup::RemotePicker` (`crates/magritte/src/main.rs:181`) and
+  `RemotePickerState` (`main.rs:386`) now handle remote selection, branch
+  selection, stash selection, ref selection, command-palette execution, transient
+  option entry, arbitrary git command entry, ignore-pattern entry, and
+  interactive-rebase base selection. The behavior is now a general minibuffer /
+  picker abstraction, and the names should reflect that so future code is not
+  forced through a misleading remote-oriented concept.
+
+- **The command registry is useful, but command execution is still centralized
+  in one large view/controller.** `Command` and `commands()` in
+  `crates/magritte/src/main.rs:534` and `main.rs:568` give the app a good
+  declarative command surface for menus, keybindings, and the command palette.
+  The actual execution still fans back into `StatusView` through dispatch code
+  such as `fire_action` around `main.rs:3125`. Command families such as
+  transfer, branch, stash, log, rebase, reset, merge, and ignore should have
+  clearer execution boundaries instead of all mutating the same view object
+  directly.
+
+- **The transient model sits across the core/app boundary.**
+  `crates/magritte-core/src/transient.rs:1` defines Magit-style menu data:
+  command variants, keys, descriptions, title spans, switch metadata, option
+  metadata, and transient layouts. It is UI-agnostic, but it is command-surface
+  and interaction-model code rather than Git-engine code. Keeping it in core
+  makes the app share one declarative command model, but it also weakens the
+  claim that `magritte-core` is only a UI-free Git engine. This boundary should
+  be made intentional, either by documenting the broader role of core or by
+  separating command/menu model code from Git plumbing.
+
+- **Git command result summarization is duplicated across core modules.**
+  Several modules carry local summary helpers or call a module-specific summary
+  function: `commit.rs:103`, `pick.rs:8`, `sequence.rs:279`, `remote.rs:162`,
+  and callers in branch/stash/merge/reset-style operations. This is one policy:
+  how to derive the user-facing summary from stdout and stderr for successful
+  Git commands. It belongs in a shared helper or on `GitOutput`, so behavior is
+  consistent and future Git operation modules do not reimplement it.
+
+- **Interactive rebase contains command-runner plumbing inside domain logic.**
+  `Repo::rebase_interactive` in `crates/magritte-core/src/rebase.rs:106`
+  constructs a temporary sequence-editor flow using Git configuration and a
+  generated todo file. That complexity is inherent to driving interactive
+  rebase non-interactively, but the sequence-editor mechanism is a reusable Git
+  command-running concern. Centralizing that mechanism would keep rebase logic
+  focused on rebase semantics and make shell/config/temp-file assumptions easier
+  to audit.
+
+- **Settings construction mixes data preparation, UI entity creation,
+  subscriptions, persistence, and theme application.** `open_settings` in
+  `crates/magritte/src/main.rs:5109` discovers fonts and editors, filters theme
+  lists, creates GPUI select/input entities, installs subscriptions, mutates
+  config, persists config, and reapplies themes. The settings screen would be
+  easier to reason about if option-list construction, config mutation, and GPUI
+  widget wiring were separated.
+
+- **The bottom of `main.rs` contains unrelated helper domains that obscure the
+  app structure.** Helpers for remote defaults, branch/ref splitting, file-head
+  sampling, key formatting, theme registration, editor launch behavior, status
+  labels, and text/row utilities live together near the bottom of the file. Many
+  of these are independent concepts that would read more clearly as focused
+  modules such as target resolution, editor launching, key formatting, theming,
+  diff-row construction, and status-row labeling.
+
+- **Essential Git complexity is mostly centralized; essential UI complexity is
+  not.** Git operations generally pass through `Repo` in `magritte-core`, which
+  gives the project a clear boundary for command execution, parsing, and tests.
+  UI complexity is still implicit in scattered booleans, options, render
+  priority, key-handler priority, focus calls, and async callbacks. The UI side
+  needs the same level of explicit modeling that the Git side already has.
+
+<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
+First pass (#1–#12), second (SP1–SP7), third (TP1–TP12), fourth (FP1–FP6), and
+the Architecture/Abstractions pass (FB5) addressed — commits up to 7d65b06.
+
+Architecture pass, what changed:
+  - FB5-1  the six mutually-exclusive screen fields became one `Screen` enum, so
+           invalid combinations are unrepresentable and render picks the active
+           screen with one match (the log→commit→log stack is modeled as
+           `Screen::Commit { view, log }`). Verified every screen in-app.
+  - FB5-3  the clone-repo/progress/spawn/report/refresh shape is now
+           `StatusView::run_job`, used by merge/rebase/reset/ignore/fetch-all/
+           transfer/sequence/rebase-todo.
+  - FB5-4  Popup::RemotePicker/RemotePickerState/render_/confirm_remote_picker →
+           Picker/PickerState/_picker (it's the general minibuffer now).
+  - FB5-7  the per-module summary() helpers became three GitOutput methods
+           (first_line / status_line / report) — one home, no behavior change.
+  - FB5-8  rebase_interactive's no-TTY plumbing moved to
+           Repo::run_with_sequence_editor; rebase logic just builds the todo.
+  - FB5-6  documented core's intentional second role (the UI-agnostic command/
+           menu model in transient.rs) in lib.rs, with a split path if needed.
+  - FB5-10 first slice: editor-launching extracted to editor_launch.rs. The rest
+           of the helper-module split (text wrap, theming/fonts, target
+           resolution, status labels) follows the same pattern — incremental.
 
 Deferred (by decision, not oversight):
   - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
     is the interim fail-fast mitigation.
   - #10 (evil/magit keybinding matrix): premise is off — j/k as motion matches
-    evil-collection-magit (vanilla magit's j-as-jump doesn't apply). A written
-    compatibility matrix is a nice-to-have, not a bug.
+    evil-collection-magit (vanilla magit's j-as-jump doesn't apply).
   - SP5 (byte/bstr paths vs lossy UTF-8): broad core refactor, low value for a
     macOS-only v1; revisit for non-UTF-8 path fidelity.
-  - TP1 / FP1 (remote-listing async): `git remote` / remote_targets read config
-    and a couple of refs — bounded, not worktree/ref-count-bound — and their
-    count-dependent dispatch / transient-header rendering don't fit
-    open-then-populate without flicker, for negligible benefit. Kept synchronous
-    (and the README/PLAN wording now reflects this).
-  - TP7 / FP5 (aggregate highlight budget): the load path highlights one file per
-    UI tick (per-file 2000-line cap); the only multi-file pass
-    (recompute_highlights) runs on a manual theme change, still per-file capped.
-    No change.
-  - TP10 (match bare =======/|||||||): kept matching only the
-    <<<<<<< / >>>>>>> pair; a bare ======= occurs in ordinary text and would
-    false-positive.
-  - FP4 (conservative whole-file prechecks): whole-file ops can't be dry-run; we
-    report partial application rather than fake atomicity.
+  - TP1 / FP1 (remote-listing async): bounded config/ref reads with
+    count-dependent dispatch; kept synchronous, README/PLAN reflect it.
+  - TP7 / FP5 (aggregate highlight budget): load path is per-tick, per-file
+    capped; only the manual theme-change recompute is multi-file. No change.
+  - TP10 (match bare =======/|||||||): kept the <<<<<<< / >>>>>>> pair only.
+  - FP4 (conservative whole-file prechecks): can't dry-run; we report partial
+    application rather than fake atomicity.
+  - FB5-2 / FB5-5 / FB5-9 / FB5-11 (split StatusView into app-shell + per-feature
+    models/controllers; decompose open_settings): a large, incremental
+    re-architecture. Substantially advanced by FB5-1/3/4/7/8/10 (explicit screen
+    model, one job runner, named picker, consolidated summaries, a first helper
+    module); the remaining controller/model extraction is tracked and best done
+    feature-by-feature rather than in one sweep.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
-
