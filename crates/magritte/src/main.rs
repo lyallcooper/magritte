@@ -176,9 +176,11 @@ impl TransientState {
 enum Popup {
     Transient(TransientState),
     Dispatch(Transient),
-    /// Picking which remote to push/pull/fetch against (when the target isn't
-    /// configured, or for "elsewhere", and more than one remote exists).
-    RemotePicker(RemotePickerState),
+    /// A vertico-style minibuffer picker (the general one): selecting or typing
+    /// a value — remotes, branches, refs, stashes, the command palette, a
+    /// transient option, an arbitrary git command, an ignore pattern, a rebase
+    /// base. The pending [`PickerAction`] says what the chosen value does.
+    Picker(PickerState),
 }
 
 /// What to do with the picker's chosen value. The remote-level variants take a
@@ -383,7 +385,7 @@ impl PickerAction {
 /// An open target picker (vertico-style): a prompt, an inline query input, a
 /// ranked candidate list, and the pending action. It runs against the
 /// highlighted (or clicked) candidate on Enter.
-struct RemotePickerState {
+struct PickerState {
     /// The minibuffer-style prompt as styled spans, e.g. `Push `[main]` to` (the
     /// `:` and the typed text are rendered after it).
     prompt: Vec<TitleSpan>,
@@ -3279,7 +3281,7 @@ impl StatusView {
             window,
             cx,
         );
-        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.gen = gen;
             p.resume = Some(Box::new(resume));
             // A free-text value with no completion candidates (e.g. `-n`) has no
@@ -3303,10 +3305,10 @@ impl StatusView {
                 this.update(cx, |this, cx| {
                     // Only fill the prompt these candidates were loaded for —
                     // not a different option prompt the user opened meanwhile.
-                    if !matches!(&this.popup, Some(Popup::RemotePicker(p)) if p.gen == gen) {
+                    if !matches!(&this.popup, Some(Popup::Picker(p)) if p.gen == gen) {
                         return;
                     }
-                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                    if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                         p.list
                             .set_choices(items.into_iter().map(SharedString::from).collect());
                         cx.notify();
@@ -3541,7 +3543,7 @@ impl StatusView {
         );
         // Seed the prompt with the default pattern — set both the picker's query
         // (what confirm reads) and the visible input (set_value emits no Change).
-        let input = if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.list.set_query(&default);
             Some(p.input.clone())
         } else {
@@ -4124,7 +4126,7 @@ impl StatusView {
         }
     }
 
-    /// Always show the remote picker for a pending transfer (the "elsewhere"
+    /// Always show the picker for a pending transfer (the "elsewhere"
     /// fetch, where the point is to choose) — even with a single remote.
     fn prompt_remote(
         &mut self,
@@ -4226,7 +4228,7 @@ impl StatusView {
             |this, input, ev: &InputEvent, _window, cx| {
                 if matches!(ev, InputEvent::Change) {
                     let query = input.read(cx).value().to_string();
-                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                    if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                         p.list.set_query(&query);
                         p.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
                         cx.notify();
@@ -4235,7 +4237,7 @@ impl StatusView {
             },
         );
         input.read(cx).focus_handle(cx).focus(window, cx);
-        self.popup = Some(Popup::RemotePicker(RemotePickerState {
+        self.popup = Some(Popup::Picker(PickerState {
             prompt,
             input,
             list: PickerList::new(items, create),
@@ -4276,7 +4278,7 @@ impl StatusView {
         self.picker_gen = self.picker_gen.wrapping_add(1);
         let gen = self.picker_gen;
         self.open_picker(action, Vec::new(), create, switches, window, cx);
-        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.loading = true;
             p.gen = gen;
             // Reserve the candidate area so the Loading line, then the rows,
@@ -4291,7 +4293,7 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 // Ignore the load if this picker was dismissed or superseded.
-                if !matches!(&this.popup, Some(Popup::RemotePicker(p)) if p.gen == gen) {
+                if !matches!(&this.popup, Some(Popup::Picker(p)) if p.gen == gen) {
                     return;
                 }
                 match result {
@@ -4300,7 +4302,7 @@ impl StatusView {
                         this.set_status(empty_message.to_string(), true, cx);
                     }
                     Ok(choices) => {
-                        if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                        if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                             p.loading = false;
                             p.list
                                 .set_choices(choices.into_iter().map(SharedString::from).collect());
@@ -4310,7 +4312,7 @@ impl StatusView {
                     Err(e) => {
                         if selection_only {
                             this.popup = None;
-                        } else if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                        } else if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                             p.loading = false; // keep open for free-text entry
                         }
                         this.set_status(format!("error: {e}"), false, cx);
@@ -4324,13 +4326,13 @@ impl StatusView {
 
     /// Run the pending action against the candidate currently highlighted in the
     /// picker (Enter, a row click, or the kbd button).
-    fn confirm_remote_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = match &self.popup {
-            Some(Popup::RemotePicker(p)) => p.list.selected_choice(),
+            Some(Popup::Picker(p)) => p.list.selected_choice(),
             _ => None,
         };
         let Some(chosen) = chosen else { return };
-        if let Some(Popup::RemotePicker(p)) = self.popup.take() {
+        if let Some(Popup::Picker(p)) = self.popup.take() {
             match p.action {
                 PickerAction::Transfer(t) => {
                     self.run_transfer(t, chosen.to_string(), p.switches, cx)
@@ -4382,7 +4384,7 @@ impl StatusView {
 
     /// Move the picker highlight by `delta` rows (Up/Down), keeping it in view.
     fn picker_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(Popup::RemotePicker(p)) = self.popup.as_mut() {
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.list.move_by(delta);
             p.scroll
                 .scroll_to_item(p.list.selected(), gpui::ScrollStrategy::Top);
@@ -5036,7 +5038,7 @@ impl StatusView {
         // The vertico picker's query input is focused, so steal navigation /
         // confirm / cancel keys before the input consumes them; everything else
         // (text, backspace) falls through to filter the list.
-        if matches!(self.popup, Some(Popup::RemotePicker(_))) {
+        if matches!(self.popup, Some(Popup::Picker(_))) {
             let ctrl = event.keystroke.modifiers.control;
             // Emacs minibuffer aliases: C-g cancels, C-n/C-p move the selection.
             let key = match event.keystroke.key.as_str() {
@@ -5056,7 +5058,7 @@ impl StatusView {
                 }
                 "enter" => {
                     cx.stop_propagation();
-                    self.confirm_remote_picker(window, cx);
+                    self.confirm_picker(window, cx);
                 }
                 "escape" => {
                     cx.stop_propagation();
@@ -5951,7 +5953,7 @@ impl StatusView {
         // The vertico picker's focused input handles text; navigation, confirm
         // and cancel are caught in the capture phase (on_capture_key). Ignore the
         // rest here so typed characters aren't read as commands.
-        if matches!(self.popup, Some(Popup::RemotePicker(_))) {
+        if matches!(self.popup, Some(Popup::Picker(_))) {
             return;
         }
 
@@ -6227,7 +6229,7 @@ impl StatusView {
     /// The remote-picker overlay: a title and kbd hints over a searchable list
     /// of remotes (search field focused on appear). Enter / clicking a row runs
     /// the transfer; the "return" kbd button does the same.
-    fn render_remote_picker(&self, state: &RemotePickerState, view: &Entity<Self>) -> gpui::Div {
+    fn render_picker(&self, state: &PickerState, view: &Entity<Self>) -> gpui::Div {
         let confirm_label = state.action.confirm_label();
 
         // Reserve a fixed screenful for the candidate area, so the
@@ -6267,7 +6269,7 @@ impl StatusView {
             uniform_list("picker-rows", rows, {
                 let view = view.clone();
                 move |range, _window, cx| match &view.read(cx).popup {
-                    Some(Popup::RemotePicker(p)) => {
+                    Some(Popup::Picker(p)) => {
                         // In the command palette, show each command's keybinding
                         // (when it has one) on the right, so it doubles as help.
                         let palette = matches!(p.action, PickerAction::RunCommand);
@@ -6348,7 +6350,7 @@ impl StatusView {
                         "return",
                         confirm_label,
                         view,
-                        Self::confirm_remote_picker,
+                        Self::confirm_picker,
                     ))
                     .child(self.key_action(
                         "remote-picker-cancel",
@@ -6383,10 +6385,10 @@ impl StatusView {
             .cursor_pointer()
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |this, vcx| {
-                    if let Some(Popup::RemotePicker(p)) = this.popup.as_mut() {
+                    if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                         p.list.set_selected(ix);
                     }
-                    this.confirm_remote_picker(window, vcx);
+                    this.confirm_picker(window, vcx);
                 });
             });
         if selected {
@@ -6435,7 +6437,7 @@ impl StatusView {
     /// Close the open picker. If it was prompting for a transient option value,
     /// reopen that transient unchanged rather than dismissing everything.
     fn cancel_popup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Popup::RemotePicker(p)) = self.popup.take() {
+        if let Some(Popup::Picker(p)) = self.popup.take() {
             if let Some(ts) = p.resume {
                 self.popup = Some(Popup::Transient(*ts));
             }
@@ -8351,12 +8353,12 @@ impl StatusView {
 impl Render for StatusView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Keep keyboard focus on the status view whenever nothing else owns the
-        // keyboard (the commit editor, settings, and the remote picker each have
+        // keyboard (the commit editor, settings, and the picker each have
         // their own focused input), so keys always land — including debug-channel
         // keystrokes while the window isn't frontmost.
         let owns_focus_elsewhere = self.editor.is_some()
             || self.settings.is_some()
-            || matches!(self.popup, Some(Popup::RemotePicker(_)));
+            || matches!(self.popup, Some(Popup::Picker(_)));
         if !owns_focus_elsewhere && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
@@ -8509,7 +8511,7 @@ impl Render for StatusView {
             root = root.child(match popup {
                 Popup::Transient(state) => self.render_transient(&state.def, Some(state), &view),
                 Popup::Dispatch(def) => self.render_transient(def, None, &view),
-                Popup::RemotePicker(state) => self.render_remote_picker(state, &view),
+                Popup::Picker(state) => self.render_picker(state, &view),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(
