@@ -956,6 +956,9 @@ impl Default for Palette {
 const ROW_HEIGHT: f32 = 18.0;
 /// How long a success notice lingers before auto-dismissing (seconds).
 const STATUS_FADE_SECS: u64 = 4;
+/// The status text for a clipboard copy. Doubles as the toast's discriminator:
+/// `status_copied` is rendered (emphasized) only when the message is this.
+const COPIED_LABEL: &str = "Copied";
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -1635,6 +1638,11 @@ struct StatusView {
     editors: Vec<(SharedString, SharedString)>,
     /// Last operation result / progress, shown in the bottom bar.
     status_message: Option<String>,
+    /// For a copy confirmation, the copied value — rendered emphasized after the
+    /// `Copied` label. Set by [`copy_to_clipboard`]; shown only when the message
+    /// is exactly that label, so the many direct `status_message` writes that
+    /// don't clear it can't accidentally trail a stale value.
+    status_copied: Option<SharedString>,
     /// Bumped each time the status message changes, so an auto-dismiss timer
     /// only clears the message it was scheduled for (not a newer one).
     status_seq: u64,
@@ -1703,6 +1711,7 @@ impl StatusView {
             ui_fonts: Vec::new(),
             editors: Vec::new(),
             status_message: startup_warning,
+            status_copied: None,
             status_seq: 0,
             git_log_show_all: false,
             confirm: None,
@@ -3993,12 +4002,14 @@ impl StatusView {
     /// multi-line or long copies.
     fn copy_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        let notice = if text.contains('\n') || text.chars().count() > 40 {
-            "Copied".to_string()
-        } else {
-            format!("Copied {text}")
-        };
-        self.set_status(notice, true, cx);
+        // Echo a short single-line value (a path, a hash) emphasized after the
+        // label; stay generic for multi-line or long copies.
+        let value =
+            (!text.contains('\n') && text.chars().count() <= 40).then(|| SharedString::from(text));
+        // Set the value before the message: `set_status` notifies, and the
+        // render reads both, so the toast paints with the value present.
+        self.status_copied = value;
+        self.set_status(COPIED_LABEL.to_string(), true, cx);
     }
 
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
@@ -7702,20 +7713,36 @@ impl StatusView {
     /// a copy confirmation is visible there too, not only in the status view.
     fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         let msg = self.status_message.clone()?;
-        Some(
-            status_bar(
-                msg,
-                self.palette.panel,
-                self.palette.fg,
-                self.palette.border,
-            )
+        let bar = div()
             .id("status-bar")
+            .w_full()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
+            .text_color(self.palette.fg)
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.status_message = None;
                 cx.notify();
-            })),
-        )
+            }));
+        // A copy confirmation renders the copied value emphasized — accent
+        // color, monospace — so a path or hash reads as a literal.
+        Some(match self.status_copied.clone() {
+            Some(value) if msg == COPIED_LABEL => bar
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(SharedString::from(COPIED_LABEL))
+                .child(
+                    div()
+                        .font_family(self.font.clone())
+                        .text_color(self.palette.section)
+                        .child(value),
+                ),
+            _ => bar.child(SharedString::from(msg)),
+        })
     }
 }
 
@@ -8502,19 +8529,6 @@ fn switch_chip(
                 .child(SharedString::from(rest.to_string())),
         )
         .into_any_element()
-}
-
-/// A bottom-pinned status bar row (confirm prompt or mode indicator).
-fn status_bar(text: String, bg: Hsla, fg: Hsla, border: Hsla) -> gpui::Div {
-    div()
-        .w_full()
-        .px_2()
-        .py_1()
-        .border_t_1()
-        .border_color(border)
-        .bg(bg)
-        .text_color(fg)
-        .child(SharedString::from(text))
 }
 
 fn hunk_header_text(hunk: &magritte_core::Hunk) -> String {
