@@ -1,110 +1,35 @@
-# Sketch: customizable commands & the `:` command palette
+# Extending Magritte
 
-> Status: registry, `:` palette (#43), and `[keymap]` remap/unbind (#42a) are
-> **implemented**; `[[command]]` custom commands (#42b) and the `:if`-style
-> `enabled` predicates remain a design sketch. Covers TODO #42 (user-customizable
-> actions — remap/unbind/add) and #43 (an `M-x`-style command palette on `:`).
+Magritte is configurable without touching code. Everything below is driven by
+the config file documented in [config.md](config.md); this page is the short
+tour, plus the one feature still on the roadmap.
 
-## The shared foundation: a command registry
+## Available now
 
-Everything here rests on one thing we don't fully have yet: a **single registry
-of named commands**. Today our commands live in three hand-kept places — the
-`on_key` match, `run_dispatch`, and the transient definitions — keyed by raw
-keystroke, not by a stable identity. Remapping, unbinding, a palette, and custom
-commands all need to refer to a command by a **stable id**, independent of which
-key invokes it.
+- **Remap or unbind any key.** A `[keymap]` table maps a keystroke to a command
+  id, or to `"unbound"` to drop a default. Every command has a stable id and
+  most can be bound, not just the top-level ones — see
+  [config.md → Keymap](config.md#keymap) for the full list.
+- **Add to a transient.** A `[transient.<id>]` table appends suffixes to a menu
+  — e.g. `b X` to delete a branch — Magit's `transient-append-suffix`. See
+  [config.md → Transients](config.md#transients).
+- **Prefix sequences.** Any key that begins a two-key binding becomes a prefix,
+  with an on-screen which-key hint and a configurable timeout.
+- **The `:` palette.** Opens a fuzzy picker over every command, with or without
+  a binding — the way to reach rarely-used commands and discover their keys.
 
-```rust
-struct Command {
-    id: &'static str,          // stable: "stage", "log-current", "branch-delete"
-    title: &'static str,       // human label for the palette: "Stage"
-    // Whether it makes sense right now (e.g. "stage" needs a selectable row).
-    enabled: fn(&StatusView) -> bool,
-    run: fn(&mut StatusView, &mut Window, &mut Context<StatusView>),
-}
+## Planned: custom commands
 
-fn commands() -> &'static [Command] { /* the one source of truth */ }
-```
-
-This is the table I prototyped and then pulled back from (see the dispatch
-work) — the difference is that *here it earns its keep*, because three user-facing
-features consume it. The earlier objection (a fn-pointer table is less greppable
-than a `match`) still holds for pure dispatch, but once ids are referenced by
-config and a palette, the registry is the right shape.
-
-Commands that need an argument (a branch, a file, a message) keep doing what
-they do now: `run` opens the relevant picker/transient. The registry doesn't try
-to model arguments — it just invokes, and the command gathers its own input.
-That keeps the registry flat and avoids re-modeling the transient system.
-
-### Migration path (incremental, low-risk)
-
-1. Introduce the registry alongside today's code; give each existing command an
-   id. `run_dispatch(id)` becomes a registry lookup. (We already proved this
-   shape works.)
-2. Point `on_key`'s command keys at the registry via the keymap (below), leaving
-   the genuinely special handling — `g`-prefix, visual mode, the dash/option
-   prefixes inside transients — as bespoke code. Not everything is a "command";
-   modal/prefix state stays hand-written.
-3. The `?` dispatch menu and the `:` palette both render from the registry.
-
-## #43 — the `:` command palette (do this first; it's the cheap win)
-
-`:` opens the **existing vertico picker** over `commands()` (filtered to
-`enabled`), matched by `title` (and maybe `id`). Enter runs the command's `run`.
-
-This is almost entirely free once the registry exists — it's the picker we
-already use everywhere, with command titles as the candidate list and "run the
-selected command" as the action. It's also the natural fallback for commands
-that don't have (or shouldn't spend) a keybinding.
-
-- Entry: `:` from the status view (no conflict — `:` is unbound).
-- Candidates: `commands().filter(enabled).map(title)`; `CreateMode::None`
-  (selection only — you can't invoke a command that doesn't exist).
-- Action: a new `PickerAction::RunCommand { id }`.
-- Nice-to-have: show each command's current keybinding on the right of its row
-  (purely from the keymap), so the palette doubles as discoverable help.
-
-**Why first:** it delivers most of the value (every command reachable, no
-memorization) with no config format and no new persistence — just the registry +
-the picker we already have.
-
-## #42 — remap / unbind / custom commands (config-driven)
-
-### Remap & unbind
-
-A `[keymap]` table in `config.toml` maps a keystroke to a command id (or to the
-sentinel `"unbound"`). User-facing docs and the full id list live in
-[config.md](config.md#keymap); the example here is illustrative:
-
-```toml
-[keymap]
-"K" = "branch-delete"   # bind K
-"x" = "unbound"         # remove the default discard binding
-"c" = "commit"          # (already the default; explicit is fine)
-```
-
-At startup the **effective keymap** = built-in defaults overlaid with the user
-table. `on_key` (for non-modal keys) resolves keystroke → id → registry. Unknown
-ids on load are reported (a startup warning line), not silently dropped.
-
-Open question — *scope of remappable keys*: the cleanest v1 is to make only the
-top-level command keys remappable, and keep modal/prefix machinery (`g`-prefix,
-transient `-`/`--` option entry, visual mode) fixed. Trying to make those
-user-remappable is a lot of complexity for little gain.
-
-### Custom commands
-
-A `[[command]]` array lets users add their own, scoped much simpler than magit
-(we're not hosting a Lisp environment — we shell out):
+A `[[command]]` array would let you define your own shell-out commands: a git
+argument list, optionally chained, surfaced in the `:` palette and bindable in
+`[keymap]` like any built-in.
 
 ```toml
 [[command]]
 id = "user.sync"
-title = "Sync (pull --rebase then push)"
-run = ["pull", "--rebase"]   # a git argument list (not a shell string — no shell parsing/injection)
-then = ["push"]              # optional follow-up; stop if the first fails
-refresh = true               # re-read status afterward (default true)
+title = "Sync (pull --rebase, then push)"
+run = ["pull", "--rebase"]   # a git argument list — no shell, no injection
+then = ["push"]              # optional follow-up; stops if the first fails
 
 [[command]]
 id = "user.wip"
@@ -112,31 +37,18 @@ title = "WIP commit"
 run = ["commit", "-a", "-m", "WIP"]
 ```
 
-- Custom commands run via the same background-executor path as our built-ins
-  (`Repo::run`), so they're logged in the `$` command log and never block the UI.
-- They appear in the `:` palette and can be bound in `[keymap]` like any
-  built-in — `id` is the link.
-- **Args, scoped simply:** support a few placeholders resolved at run time —
-  `{file}` (selected file), `{commit}` (commit at point), `{branch}` (current).
-  Anything richer (prompting, completion) is deferred; a custom command that
-  needs to *ask* for input is a bigger feature.
-- **Safety:** arg lists, not shell strings — no shell, no injection. Destructive
-  built-ins keep their confirmations; custom commands are the user's own rope, but
-  we could flag ones containing `reset --hard`/`clean`/`push --force` for a confirm.
+The intended scope:
 
-### What we deliberately *don't* copy from magit
+- Runs on the same background path as built-ins, so it's logged in the `$`
+  command log and never blocks the UI.
+- Placeholders resolved at run time — `{file}`, `{commit}`, `{branch}` — for the
+  selection at point. Prompting for richer input is deferred.
+- Argument lists, never shell strings, so there's nothing to inject into.
+  Destructive built-ins keep their confirmations; custom commands containing
+  `reset --hard` / `clean` / `push --force` may be flagged for a confirm.
 
-magit's `transient-append-suffix` et al. let users mutate transients and bind
-arbitrary Elisp. We're not in Emacs, so: no live transient mutation, no embedded
-language, no per-buffer keymaps. The 80% — rebind, unbind, add a
-shell-out command, reach anything via `:` — covers the real desire without that
+Not planned: an embedded scripting language, or live transient rewriting beyond
+the `[transient.<id>]` additions above. Magritte shells out to git rather than
+hosting a Lisp environment, so the goal is to cover the common 80% — rebind,
+unbind, extend a menu, add a shell-out, reach anything via `:` — without that
 machinery.
-
-## Suggested order
-
-1. **Registry** (foundation; incremental, no user-visible change).
-2. **`:` palette** (#43) — immediate value, reuses the picker.
-3. **`[keymap]` remap/unbind** (#42a).
-4. **`[[command]]` custom commands** (#42b), placeholders last.
-
-Each step is independently shippable and useful.
