@@ -1607,6 +1607,10 @@ struct StatusView {
     /// is exactly that label, so the many direct `status_message` writes that
     /// don't clear it can't accidentally trail a stale value.
     status_copied: Option<SharedString>,
+    /// A keystroke to render as keycap(s) before the message (e.g. the unbound
+    /// `g x` in "g x is unbound"). Cleared by every `status` post; set right
+    /// after by the few messages that lead with a key.
+    status_keys: Option<String>,
     /// Bumped each time the status message changes, so an auto-dismiss timer
     /// only clears the message it was scheduled for (not a newer one).
     status_seq: u64,
@@ -1693,6 +1697,7 @@ impl StatusView {
             editors: Vec::new(),
             status_message: startup_warning,
             status_copied: None,
+            status_keys: None,
             status_seq: 0,
             picker_gen: 0,
             git_log_show_all: false,
@@ -4627,6 +4632,12 @@ impl StatusView {
         let Some(p) = self.pending_prefix.take() else {
             return;
         };
+        // Esc / C-g (normalized to "escape") aborts the sequence silently — it's
+        // keyboard-quit, not an attempt at a binding, so no "unbound" notice.
+        if next == "escape" {
+            cx.notify();
+            return;
+        }
         let seq = format!("{} {next}", p.seq);
         match self.classify_seq(&seq) {
             KeyMatch::Command(id) => {
@@ -4640,9 +4651,10 @@ impl StatusView {
     }
 
     /// Note that a keystroke sequence isn't bound (magit/emacs' "… is undefined"
-    /// echo-area feedback), as a fading status notice.
+    /// echo-area feedback), as a fading notice with the keys shown as keycaps.
     fn report_unbound(&mut self, seq: &str, cx: &mut Context<Self>) {
-        self.set_status(format!("{seq} is unbound"), true, cx);
+        self.set_status("is unbound".to_string(), true, cx);
+        self.status_keys = Some(seq.to_string());
     }
 
     /// Note a command run *from the palette* for its frecency ranking, and
@@ -6716,15 +6728,21 @@ impl StatusView {
             .text_xs()
             .flex()
             .items_center()
-            .gap_3()
-            // The keys typed so far, with a trailing dash to show the sequence is
-            // awaiting the next key (emacs' echo-area `g-` feedback).
-            .child(
-                div()
-                    .font_family(self.font.clone())
-                    .text_color(self.palette.fg)
-                    .child(SharedString::from(format!("{}-", pending.seq))),
-            );
+            .gap_3();
+        // The keys typed so far in a single keycap, with a trailing dash to show
+        // the sequence is awaiting the next key (emacs' echo-area `g-` feedback).
+        bar = bar.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(kbd::key_chip(&pending.seq, self.palette.dim, &self.font))
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("-")),
+                ),
+        );
         if pending.which_key {
             // Group bindings by their immediate next key after the typed prefix.
             // A next key that completes a binding shows its command's label; one
@@ -6783,6 +6801,17 @@ impl StatusView {
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.clear_status(cx);
             }));
+        // A keys-led message (e.g. "g x is unbound") renders each typed key as a
+        // keycap before the text, matching the which-key strip.
+        if let Some(keys) = self.status_keys.clone() {
+            return Some(
+                bar.flex()
+                    .items_center()
+                    .gap_2()
+                    .child(kbd::key_chip(&keys, self.palette.dim, &self.font))
+                    .child(SharedString::from(msg)),
+            );
+        }
         // A copy confirmation renders the copied value emphasized — accent
         // color, monospace, italic — so a path or hash reads as a literal.
         Some(match self.status_copied.clone() {

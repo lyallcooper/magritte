@@ -1328,6 +1328,9 @@ impl StatusView {
         self.status_seq = self.status_seq.wrapping_add(1);
         let seq = self.status_seq;
         self.status_message = Some(msg);
+        // Most messages have no leading keycap; the few that do set it right
+        // after this call.
+        self.status_keys = None;
         cx.notify();
         if matches!(kind, StatusKind::Notice) {
             cx.spawn(async move |this, cx| {
@@ -1368,6 +1371,7 @@ impl StatusView {
     pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
         self.status_seq = self.status_seq.wrapping_add(1);
         self.status_message = None;
+        self.status_keys = None;
         cx.notify();
     }
 
