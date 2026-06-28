@@ -3082,8 +3082,13 @@ impl StatusView {
                 _ => {}
             },
         );
-        // Focus the input so typing goes straight into it.
-        state.read(cx).focus_handle(cx).focus(window, cx);
+        // Focus on the next frame, not now: the keystroke that opened the editor
+        // (`c`) is still mid-dispatch, and focusing synchronously would let that
+        // character land in the message (see open_picker for the same reasoning).
+        let to_focus = state.clone();
+        cx.on_next_frame(window, move |_this, window, cx| {
+            to_focus.read(cx).focus_handle(cx).focus(window, cx);
+        });
         self.screen = Screen::Editor(CommitEditor {
             state: state.clone(),
             mode,

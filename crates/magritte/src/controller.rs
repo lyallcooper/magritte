@@ -1044,7 +1044,15 @@ impl StatusView {
                 }
             },
         );
-        input.read(cx).focus_handle(cx).focus(window, cx);
+        // Focus on the next frame, not now. A picker is usually opened by a
+        // keystroke (e.g. `p` in the pull transient) that is still mid-dispatch;
+        // focusing the input synchronously lets that same character land in it
+        // (the macOS text-input phase runs after this handler). Next frame, the
+        // triggering key's character delivery is done, so the input starts empty.
+        let to_focus = input.clone();
+        cx.on_next_frame(window, move |_this, window, cx| {
+            to_focus.read(cx).focus_handle(cx).focus(window, cx);
+        });
         self.popup = Some(Popup::Picker(PickerState {
             prompt,
             input,
