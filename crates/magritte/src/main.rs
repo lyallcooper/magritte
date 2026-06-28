@@ -1108,6 +1108,29 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             }
         }
     }
+    // A sequence is unreachable if a shorter prefix of it is bound to a command:
+    // pressing that prefix fires its command, so the rest of the sequence never
+    // arrives (exact match wins over waiting). Adding a key *under* such a
+    // command — e.g. inside the commit transient — is what `[transient.<id>]` is
+    // for, so point there when the shadower is a transient.
+    let sequences: Vec<String> = map.keys().filter(|k| k.contains(' ')).cloned().collect();
+    for k in sequences {
+        let tokens: Vec<&str> = k.split(' ').collect();
+        for i in 1..tokens.len() {
+            let prefix = tokens[..i].join(" ");
+            if let Some(shadower) = map.get(&prefix) {
+                let hint = if TRANSIENT_IDS.contains(&shadower.as_str()) {
+                    format!("; add it inside that menu with [transient.{shadower}]")
+                } else {
+                    String::new()
+                };
+                warnings.push(format!(
+                    "keymap: \"{k}\" is unreachable — \"{prefix}\" runs \"{shadower}\"{hint}"
+                ));
+                break;
+            }
+        }
+    }
     (map, warnings)
 }
 
@@ -7915,6 +7938,30 @@ mod tests {
             .insert("w".into(), "user.wip".into());
         let (km, _) = build_keymap(&config);
         assert_eq!(command_keys(&km, &config, "WIP commit"), None);
+    }
+
+    /// A `[keymap]` sequence whose prefix already runs a command is unreachable
+    /// (exact match wins), so it warns — pointing at the transient when the
+    /// shadower is one. Unbinding the prefix makes it reachable, no warning.
+    #[test]
+    fn keymap_warns_on_shadowed_sequence() {
+        let mut config = config::Config::default();
+        config.keymap.insert("c W".into(), "stage".into()); // `c` runs commit
+        let (_, warnings) = build_keymap(&config);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("\"c W\"") && w.contains("[transient.commit]")),
+            "expected a shadow warning pointing at the transient: {warnings:?}"
+        );
+
+        // Free `c` and the sequence is reachable — no shadow warning.
+        config.keymap.insert("c".into(), "unbound".into());
+        let (_, warnings) = build_keymap(&config);
+        assert!(
+            !warnings.iter().any(|w| w.contains("unreachable")),
+            "unbinding the prefix clears the shadow: {warnings:?}"
+        );
     }
 
     #[test]
