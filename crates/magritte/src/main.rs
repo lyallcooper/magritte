@@ -955,10 +955,16 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
     for (keystroke, id) in &config.keymap {
         if id == "unbound" {
             map.remove(keystroke);
-        } else if commands().iter().any(|c| c.id == id) {
-            map.insert(keystroke.clone(), id.clone());
-        } else {
+        } else if !commands().iter().any(|c| c.id == id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
+        } else if keystroke.contains(' ') && !keystroke.starts_with("g ") {
+            // Only single keys and `g <key>` sequences are dispatchable; `g` is
+            // the one prefix. Anything else (e.g. `. c`) would never fire.
+            warnings.push(format!(
+                "keymap: \"{keystroke}\" isn't a bindable keystroke (only the `g` prefix takes a sequence)"
+            ));
+        } else {
+            map.insert(keystroke.clone(), id.clone());
         }
     }
     // Validate the `[transient]` suffix injections: the section must name a
@@ -4304,13 +4310,8 @@ impl StatusView {
         if matches!(self.popup, Some(Popup::Dispatch(_))) {
             if self.pending_g {
                 self.pending_g = false;
-                match key.as_str() {
-                    "r" => self.run_dispatch("g r", window, cx),
-                    "g" => self.run_dispatch("g g", window, cx),
-                    "j" => self.run_dispatch("g j", window, cx),
-                    "k" => self.run_dispatch("g k", window, cx),
-                    _ => {}
-                }
+                // Second key of a `g` sequence — dispatch `g <key>`.
+                self.run_dispatch(&format!("g {key}"), window, cx);
                 return;
             }
             match cased.as_str() {
@@ -7275,6 +7276,17 @@ mod tests {
         assert_eq!(warnings.len(), 1, "the unknown id warns: {warnings:?}");
         // Defaults the user didn't touch survive.
         assert_eq!(km.get("c").map(String::as_str), Some("commit"));
+    }
+
+    #[test]
+    fn keymap_sequences_only_under_the_g_prefix() {
+        let mut config = config::Config::default();
+        config.keymap.insert("g x".into(), "stage".into()); // valid g-sequence
+        config.keymap.insert(". c".into(), "commit".into()); // inert: not a prefix
+        let (km, warnings) = build_keymap(&config);
+        assert_eq!(km.get("g x").map(String::as_str), Some("stage"));
+        assert!(!km.contains_key(". c"), "a non-`g` sequence isn't bound");
+        assert_eq!(warnings.len(), 1, "the inert sequence warns: {warnings:?}");
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and
