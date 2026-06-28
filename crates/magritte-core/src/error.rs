@@ -20,6 +20,11 @@ pub enum Error {
     NotARepository { path: PathBuf },
     /// A precondition for an operation was not met (e.g. detached HEAD).
     Message(String),
+    /// The invocation was cancelled (superseded or user-requested) and the
+    /// child process killed before it finished.
+    Cancelled,
+    /// The invocation exceeded its time budget and the child process was killed.
+    TimedOut,
 }
 
 impl fmt::Display for Error {
@@ -49,6 +54,8 @@ impl fmt::Display for Error {
                 write!(f, "not a git repository: {}", path.display())
             }
             Error::Message(msg) => write!(f, "{msg}"),
+            Error::Cancelled => write!(f, "cancelled"),
+            Error::TimedOut => write!(f, "timed out"),
         }
     }
 }

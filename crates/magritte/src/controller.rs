@@ -1236,6 +1236,12 @@ impl StatusView {
     ) {
         match result {
             Ok(_) => self.set_status(success.to_string(), true, cx),
+            Err(magritte_core::Error::Cancelled) => {
+                self.set_status("Cancelled".to_string(), false, cx)
+            }
+            Err(magritte_core::Error::TimedOut) => {
+                self.set_status("Timed out".to_string(), false, cx)
+            }
             Err(e) => self.set_status(format!("error: {e}"), false, cx),
         }
     }
@@ -1258,6 +1264,11 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        // Tag the job's git calls with a cancel flag so `C-g`/Esc can kill a
+        // hung transfer (the common case: a stalled remote). Stored on `self`
+        // for the key handler; cleared when the job finishes.
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
         self.status_message = Some(progress.to_string());
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1266,12 +1277,25 @@ impl StatusView {
                 .spawn(async move { op(repo) })
                 .await;
             this.update(cx, |this, cx| {
+                this.job_cancel = None;
                 this.report(done, result, cx);
                 this.refresh(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Cancel the active mutating job, if any — killing its git subprocess.
+    /// Returns whether a job was running (so the key handler can swallow the key).
+    pub(crate) fn cancel_job(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(cancel) = self.job_cancel.take() else {
+            return false;
+        };
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.status_message = Some("Cancelling…".to_string());
+        cx.notify();
+        true
     }
 
     /// Copy `text` to the clipboard and flash a brief confirmation. The notice
