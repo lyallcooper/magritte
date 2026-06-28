@@ -1424,8 +1424,8 @@ impl StatusView {
     /// refresh — the shape almost every mutating command shares. `progress`
     /// shows immediately; the git work runs on the background executor (so the
     /// UI never blocks); a cancel flag lives on `self` for its duration so
-    /// `C-g`/Esc can kill it. The `run_job`/`run_job_reporting` wrappers cover
-    /// the common reporting shapes; this core is for anything bespoke.
+    /// `C-g`/Esc can kill it. The `run_job` wrapper covers the common
+    /// fixed-notice shape; this core is for anything bespoke.
     pub(crate) fn run_job_with<F, G>(
         &mut self,
         progress: String,
@@ -1475,23 +1475,6 @@ impl StatusView {
             progress.to_string(),
             op,
             move |this, result, cx| this.report(done, result, cx),
-            cx,
-        );
-    }
-
-    /// Run a git operation, then on success show the op's own returned summary
-    /// (e.g. git's first output line) instead of a fixed notice, and refresh.
-    pub(crate) fn run_job_reporting<F>(&mut self, progress: String, op: F, cx: &mut Context<Self>)
-    where
-        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
-    {
-        self.run_job_with(
-            progress,
-            op,
-            |this, result, cx| match result {
-                Ok(msg) => this.set_status(msg, true, cx),
-                Err(e) => this.report_error(e, cx),
-            },
             cx,
         );
     }
