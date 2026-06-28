@@ -939,8 +939,73 @@ fn commands() -> &'static [Command] {
             .nav_section(true, cx)),
         nav!("prev-section", "Previous section", "g k", |t, _w, cx| t
             .nav_section(false, cx)),
+        nav!("half-page-down", "Half page down", "C-d", |t, w, cx| t
+            .nav_page(true, false, w, cx)),
+        nav!("half-page-up", "Half page up", "C-u", |t, w, cx| t
+            .nav_page(false, false, w, cx)),
+        nav!("page-down", "Page down", "C-f", |t, w, cx| t
+            .nav_page(true, true, w, cx)),
+        nav!("page-up", "Page up", "C-b", |t, w, cx| t
+            .nav_page(false, true, w, cx)),
+        // Quit (Emacs `C-x C-c`, bound in DEFAULT_BINDINGS): no single key, so a
+        // literal rather than `top!`. Reachable via the palette too.
+        Command {
+            id: "quit",
+            title: "Quit",
+            category: Category::Application,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |_t, _w, cx| cx.quit(),
+        },
     ];
     C
+}
+
+/// Default *secondary* key bindings: aliases layered onto the registry's primary
+/// keys in [`build_keymap`] (before the user's `[keymap]`, so they're remappable
+/// and unbindable like any default). These keep modifier/arrow/sequence aliases
+/// in the one keymap rather than hardcoded in the key handler.
+const DEFAULT_BINDINGS: &[(&str, &str)] = &[
+    // Arrow + Emacs cursor motions.
+    ("down", "move-down"),
+    ("up", "move-up"),
+    ("C-n", "move-down"),
+    ("C-p", "move-up"),
+    // Paging: full page also on Space; sections also on Emacs/bracket keys.
+    ("space", "page-down"),
+    ("C-j", "next-section"),
+    ("C-k", "prev-section"),
+    ("]", "next-section"),
+    ("[", "prev-section"),
+    // Emacs quit.
+    ("C-x C-c", "quit"),
+];
+
+/// Canonical keystroke string for a keypress: modifier prefixes (`D-` cmd, `C-`
+/// ctrl, `M-` alt) then the key, with a shifted letter uppercased (so `K`, not
+/// `S-k`, matching the rest of the keymap). One token; multi-key sequences join
+/// these with spaces (`C-x C-c`).
+fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
+    let base = if shift && key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) {
+        key.to_uppercase()
+    } else {
+        key.to_string()
+    };
+    let mut s = String::new();
+    if cmd {
+        s.push_str("D-");
+    }
+    if ctrl {
+        s.push_str("C-");
+    }
+    if alt {
+        s.push_str("M-");
+    }
+    s.push_str(&base);
+    s
 }
 
 /// The effective keystroke → command-id map: the built-in defaults (every
@@ -953,6 +1018,11 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         .iter()
         .filter_map(|c| c.key.map(|key| (key.to_string(), c.id.to_string())))
         .collect();
+    // Secondary aliases (arrows, Emacs motions, Space, `C-x C-c`) — layered
+    // before the user's table so they remap/unbind like any default.
+    for (key, id) in DEFAULT_BINDINGS {
+        map.insert(key.to_string(), id.to_string());
+    }
     let mut warnings = Vec::new();
     for (keystroke, id) in &config.keymap {
         if id == "unbound" {
@@ -1496,9 +1566,6 @@ struct StatusView {
     /// Bumped each time a prefix is entered, so a stale timeout (a newer prefix,
     /// or a resolved one) is ignored.
     prefix_gen: u64,
-    /// Whether the Emacs `C-x` prefix is pending (next key resolves it, e.g.
-    /// `C-x C-c` to quit).
-    pending_cx: bool,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The active full-window screen — exactly one at a time. Modeling these as
@@ -1611,7 +1678,6 @@ impl StatusView {
             screen_gen: 0,
             pending_prefix: None,
             prefix_gen: 0,
-            pending_cx: false,
             popup: None,
             screen: Screen::Status,
             font,
@@ -2401,47 +2467,28 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        // Fixed aliases — not remappable.
-        match key {
-            "down" => self.nav_line(1, cx),
-            "up" => self.nav_line(-1, cx),
-            "d" if ctrl => self.nav_page(true, false, window, cx),
-            "u" if ctrl => self.nav_page(false, false, window, cx),
-            "f" if ctrl => self.nav_page(true, true, window, cx),
-            "b" if ctrl => self.nav_page(false, true, window, cx),
-            "space" => self.nav_page(true, true, window, cx),
-            "j" if ctrl => self.nav_section(true, cx),
-            "k" if ctrl => self.nav_section(false, cx),
-            "]" => self.nav_section(true, cx),
-            "[" => self.nav_section(false, cx),
-            _ => {
-                let cased = if shift {
-                    key.to_uppercase()
-                } else {
-                    key.to_string()
-                };
-                // A prefix key (begins a sequence): start the pending state.
-                if self.is_prefix(&cased) {
-                    self.enter_prefix(cased, window, cx);
-                    return true;
-                }
-                // A remappable motion key (default j/k/G, or any user binding):
-                // run only if it's a motion, so a command key (e.g. `s`) isn't
-                // fired in a non-status view.
-                let Some(id) = self.keymap.get(&cased).cloned() else {
-                    return false;
-                };
-                if commands()
-                    .iter()
-                    .any(|c| c.id == id && c.category == Category::Navigation)
-                {
-                    self.invoke_command(&id, window, cx);
-                } else {
-                    return false;
-                }
-            }
+        // All motions (arrows, `C-d`, Space, `]`, the `g` prefix, …) resolve
+        // through the effective keymap — there are no hardcoded aliases.
+        let chord = chord(key, shift, ctrl, false, false);
+        // A prefix key begins a sequence.
+        if self.is_prefix(&chord) {
+            self.enter_prefix(chord, window, cx);
+            return true;
         }
-        true
+        // Run only if it's a motion, so a command key (e.g. `s`) isn't fired in
+        // a non-status view.
+        let Some(id) = self.keymap.get(&chord).cloned() else {
+            return false;
+        };
+        if commands()
+            .iter()
+            .any(|c| c.id == id && c.category == Category::Navigation)
+        {
+            self.invoke_command(&id, window, cx);
+            true
+        } else {
+            false
+        }
     }
 
     fn toggle_fold(&mut self, cx: &mut Context<Self>) {
@@ -4175,48 +4222,21 @@ impl StatusView {
         let alt = event.keystroke.modifiers.alt;
         let cmd = event.keystroke.modifiers.platform;
 
-        // Emacs aliases, normalized up front so every downstream handler gets
-        // them for free: C-g is the universal cancel (= Escape), and C-n/C-p
-        // move down/up (= j/k) wherever those motions apply.
+        // C-g is the universal cancel (= Escape) everywhere — Emacs
+        // keyboard-quit. Other Emacs motions (`C-n`/`C-p`, `C-x C-c`, …) are now
+        // ordinary keymap entries (see DEFAULT_BINDINGS), not normalized here.
         let key = match key.as_str() {
             "g" if ctrl => {
                 ctrl = false;
                 "escape".to_string()
             }
-            "n" if ctrl => {
-                ctrl = false;
-                "j".to_string()
-            }
-            "p" if ctrl => {
-                ctrl = false;
-                "k".to_string()
-            }
             _ => key,
         };
 
-        // Emacs C-x C-c quits. C-x starts a prefix (like the `g` prefix); the
-        // next key resolves or cancels it. Handled before the modal branches so
-        // it works from any view.
-        if self.pending_cx {
-            self.pending_cx = false;
-            if ctrl && key == "c" {
-                cx.quit();
-            }
-            return;
-        }
-        if ctrl && key == "x" {
-            self.pending_cx = true;
-            return;
-        }
-
         // A sequence is pending: this key continues it. Resolve here — before the
-        // per-view branches — so sequences work everywhere.
+        // per-view branches — so sequences (including `C-x C-c`) work everywhere.
         if self.pending_prefix.is_some() {
-            let next = if shift {
-                key.to_uppercase()
-            } else {
-                key.clone()
-            };
+            let next = chord(&key, shift, ctrl, alt, cmd);
             self.advance_prefix(&next, window, cx);
             return;
         }
@@ -6815,12 +6835,16 @@ impl Render for StatusView {
             .track_focus(&self.focus)
             .key_context(STATUS_CONTEXT)
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
+                // Tab is delivered as an action (gpui's Root binds it for
+                // focus-nav, which we override here), but its *effect* routes
+                // through the keymap like any key, so rebinding/unbinding `tab`
+                // in `[keymap]` takes effect.
                 if this.settings().is_some() {
                     this.cycle_settings_focus(window, cx);
-                } else if matches!(this.popup, Some(Popup::Dispatch(_))) {
+                } else if this.editor().is_none()
+                    && matches!(this.popup, None | Some(Popup::Dispatch(_)))
+                {
                     this.run_dispatch("tab", window, cx);
-                } else if this.popup.is_none() && this.editor().is_none() {
-                    this.toggle_fold(cx);
                 }
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, cx| {
@@ -7552,6 +7576,7 @@ mod tests {
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
+            "C-d", "C-u", "C-f", "C-b", // half/full page motions
         ];
         // Keys allowed to be on only one side of the check. Empty today; add a
         // key here (with a comment) when an exception is genuinely warranted.

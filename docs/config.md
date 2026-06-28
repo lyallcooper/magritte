@@ -83,6 +83,9 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   a single key; the rest are space-separated **sequences** of any length (`g g`,
   `g r`, or your own `z b c`). An unknown command id is ignored with a startup
   warning rather than silently dropped.
+- **Modifiers** use prefixes on the key: `C-` (Ctrl), `M-` (Alt/Option), `D-`
+  (Cmd). So `C-d` is Ctrl-d, and `C-x C-c` is a two-step sequence. A shifted
+  letter is just its uppercase (`G`, not `S-g`).
 - **Prefixes are implicit**: any key that begins a sequence becomes a prefix.
   Binding `". c" = "commit"` makes `.` a prefix automatically. Press the prefix
   and a lightweight strip at the bottom shows the keys typed so far with a
@@ -91,13 +94,16 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   into a which-key list of the available continuations.
 - **Unbound keys** report themselves: pressing a key or sequence with no binding
   shows a brief "… is unbound" notice (emacs' echo-area feedback).
-- **Motions are remappable too** — they're ordinary commands (see the table),
-  resolved through the keymap in every view (status, log, commit, rebase-todo,
-  and the `$` pager), so a rebind applies everywhere.
-- **Reserved** (handled before the keymap, so binding them has no effect): the
-  fold key `Tab`, the `Ctrl-x` prefix, the fixed motion aliases (arrows,
-  `C-n`/`C-p`, `C-j`/`C-k`, `]`/`[`, `Ctrl-d`/`u`/`f`/`b`, `Space`), and any key
-  inside a transient, picker, or visual mode.
+- **One unified keymap** — there are no hardcoded keys. Motions, paging, `Tab`,
+  and `C-x C-c` are all ordinary keymap entries you can remap or unbind, in
+  every view (status, log, commit, rebase-todo, and the `$` pager). The default
+  *secondary* bindings — arrows and `C-n`/`C-p` (move), `Space`/`C-f`/`C-b`
+  (page), `C-d`/`C-u` (half-page), `C-j`/`C-k`/`]`/`[` (section), `C-x C-c`
+  (quit) — sit alongside the primary keys below and remap the same way.
+- **Two genuine exceptions**, both Emacs keyboard-quit conventions: `Esc` and
+  `C-g` always cancel/abort (a job, a selection, a pending sequence, a popup),
+  and aren't rebindable. Keys typed inside a transient, picker, or the commit
+  editor are consumed by that mode, not the keymap.
 
 ### Command ids
 
@@ -136,6 +142,11 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `goto-bottom` | `G` | Jump to bottom |
 | `next-section` | `g j` | Next section (status view) |
 | `prev-section` | `g k` | Previous section (status view) |
+| `half-page-down` | `C-d` | Scroll down half a page |
+| `half-page-up` | `C-u` | Scroll up half a page |
+| `page-down` | `C-f` | Scroll down a page |
+| `page-up` | `C-b` | Scroll up a page |
+| `quit` | `C-x C-c` | Quit Magritte |
 | `commit-create` | — | Create commit |
 | `commit-amend` | — | Amend commit |
 | `commit-reword` | — | Reword commit |
