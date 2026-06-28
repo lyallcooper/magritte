@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
@@ -27,6 +29,15 @@ static SEQ_TODO_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 pub struct Repo {
     workdir: PathBuf,
     log: Arc<Mutex<VecDeque<GitCommand>>>,
+    /// When set, every invocation polls this flag and kills the child (returning
+    /// [`Error::Cancelled`]) once it flips true — so a superseded or user
+    /// -cancelled job stops *running*, not just gets its result dropped. Shared
+    /// via the `Arc` so the caller can trigger it after handing the `Repo` to a
+    /// background job. `None` means uncancellable (the fast `.output()` path).
+    cancel: Option<Arc<AtomicBool>>,
+    /// When set, an invocation exceeding this kills the child and returns
+    /// [`Error::TimedOut`] — a backstop against a wedged remote/hook.
+    timeout: Option<Duration>,
 }
 
 /// One recorded git invocation, for the command log (magit's process buffer).
@@ -70,6 +81,7 @@ impl GitCommand {
 }
 
 /// The raw result of a git invocation.
+#[derive(Debug)]
 pub struct GitOutput {
     pub stdout: Vec<u8>,
     pub stderr: String,
@@ -145,6 +157,8 @@ impl Repo {
         Ok(Repo {
             workdir: PathBuf::from(top),
             log: Arc::new(Mutex::new(VecDeque::new())),
+            cancel: None,
+            timeout: None,
         })
     }
 
@@ -153,7 +167,37 @@ impl Repo {
         Repo {
             workdir: workdir.into(),
             log: Arc::new(Mutex::new(VecDeque::new())),
+            cancel: None,
+            timeout: None,
         }
+    }
+
+    /// A clone of this repo whose invocations are cancellable, paired with the
+    /// flag that cancels them. Hand the `Repo` to a background job and keep the
+    /// flag; setting it kills the in-flight git child. The clone shares the
+    /// command log (so its invocations still show in the `$` view).
+    pub fn cancellable(&self) -> (Repo, Arc<AtomicBool>) {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut repo = self.clone();
+        repo.cancel = Some(flag.clone());
+        (repo, flag)
+    }
+
+    /// A clone of this repo whose invocations time out after `d` (the child is
+    /// killed and [`Error::TimedOut`] returned).
+    pub fn with_timeout(&self, d: Duration) -> Repo {
+        let mut repo = self.clone();
+        repo.timeout = Some(d);
+        repo
+    }
+
+    /// A clone of this repo cancelled by an existing flag — for sharing one
+    /// cancel signal across a batch of jobs (e.g. all reads of a generation,
+    /// cancelled together when a newer refresh supersedes them).
+    pub fn with_cancel(&self, flag: Arc<AtomicBool>) -> Repo {
+        let mut repo = self.clone();
+        repo.cancel = Some(flag);
+        repo
     }
 
     pub fn workdir(&self) -> &Path {
@@ -213,7 +257,8 @@ impl Repo {
     }
 
     /// Run `git <args>` in the working tree, returning stdout as raw bytes so
-    /// that NUL-delimited (`-z`) output is preserved.
+    /// that NUL-delimited (`-z`) output is preserved. Honors this repo's cancel
+    /// flag and timeout (if set) — see [`cancellable`](Self::cancellable).
     pub fn run<I, S>(&self, args: I) -> Result<GitOutput>
     where
         I: IntoIterator<Item = S>,
@@ -224,27 +269,84 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let output = self
-            .git()
-            .args(&arg_vec)
-            .output()
-            .map_err(|source| Error::Spawn { source })?;
+        let mut cmd = self.git();
+        cmd.args(&arg_vec);
+        let (stdout, stderr, status) = self.collect_output(cmd)?;
+        self.record(&arg_vec, status.code(), &stderr);
 
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code(), &stderr);
-
-        if !output.status.success() {
+        if !status.success() {
             return Err(Error::Git {
                 args: arg_vec,
-                status: output.status.code(),
+                status: status.code(),
                 stderr,
             });
         }
 
-        Ok(GitOutput {
-            stdout: output.stdout,
-            stderr,
-        })
+        Ok(GitOutput { stdout, stderr })
+    }
+
+    /// Run `cmd` to completion, returning `(stdout, stderr, status)`.
+    ///
+    /// Without a cancel flag or timeout this is plain [`Command::output`]. With
+    /// either set, it spawns the child and polls for exit while *draining both
+    /// pipes on helper threads* — a full pipe would otherwise deadlock the wait
+    /// — and kills the child on cancel ([`Error::Cancelled`]) or deadline
+    /// ([`Error::TimedOut`]), reaping it so no zombie is left behind.
+    fn collect_output(&self, mut cmd: Command) -> Result<(Vec<u8>, String, ExitStatus)> {
+        if self.cancel.is_none() && self.timeout.is_none() {
+            let out = cmd.output().map_err(|source| Error::Spawn { source })?;
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            return Ok((out.stdout, stderr, out.status));
+        }
+
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| Error::Spawn { source })?;
+        let mut out_pipe = child.stdout.take().expect("stdout piped");
+        let mut err_pipe = child.stderr.take().expect("stderr piped");
+        let out_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out_pipe.read_to_end(&mut buf);
+            buf
+        });
+        let err_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = err_pipe.read_to_end(&mut buf);
+            buf
+        });
+
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(|source| Error::Spawn { source })? {
+                break status;
+            }
+            let cancelled = self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed));
+            let timed_out = self.timeout.is_some_and(|t| start.elapsed() >= t);
+            if cancelled || timed_out {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Don't join the reader threads: we discard the output, and a
+                // killed git can leave a grandchild (e.g. a hook) holding the
+                // pipe's write end open, which would block the read until *it*
+                // exits — defeating the prompt cancel. Let the readers detach;
+                // they finish when the pipe finally closes.
+                return Err(if cancelled {
+                    Error::Cancelled
+                } else {
+                    Error::TimedOut
+                });
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        };
+        let stdout = out_reader.join().unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).into_owned();
+        Ok((stdout, stderr, status))
     }
 
     /// Like [`run`](Self::run) but with one extra environment variable set.

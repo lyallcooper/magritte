@@ -13,6 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -1298,6 +1300,13 @@ struct StatusView {
     /// selection (and doesn't toggle the row's fold).
     shift_click: bool,
     generation: u64,
+    /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
+    /// generation. `refresh` flips this and installs a fresh flag, so the
+    /// processes superseded by a newer refresh are killed, not just dropped.
+    read_cancel: Arc<AtomicBool>,
+    /// Cancel flag for the active mutating job (push/pull/merge/…), set while it
+    /// runs so `C-g`/Esc can kill the subprocess. `None` when nothing is running.
+    job_cancel: Option<Arc<AtomicBool>>,
     pending_g: bool,
     /// Whether the Emacs `C-x` prefix is pending (next key resolves it, e.g.
     /// `C-x C-c` to quit).
@@ -1405,6 +1414,8 @@ impl StatusView {
             drag_anchor: None,
             shift_click: false,
             generation: 0,
+            read_cancel: Arc::new(AtomicBool::new(false)),
+            job_cancel: None,
             pending_g: false,
             pending_cx: false,
             popup: None,
@@ -1646,11 +1657,21 @@ impl StatusView {
         self.highlights = next;
     }
 
+    /// The repo cloned for a background *read* (status/diff/prefetch), tagged
+    /// with the current generation's cancel flag so a later `refresh` kills it.
+    fn read_repo(&self) -> Option<magritte_core::Repo> {
+        self.repo.clone().map(|r| r.with_cancel(self.read_cancel.clone()))
+    }
+
     /// Reload status from scratch, invalidating any in-flight work.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         // Capture the cursor's logical position so we can restore it after the
         // rebuild rather than leaving it at the same numeric index.
         let anchor = self.capture_anchor();
+        // Cancel the previous generation's in-flight reads (kill the processes,
+        // not just drop their results) and start a fresh cancel scope.
+        self.read_cancel.store(true, Ordering::Relaxed);
+        self.read_cancel = Arc::new(AtomicBool::new(false));
         self.generation += 1;
         let generation = self.generation;
         self.diffs.clear();
@@ -1661,7 +1682,7 @@ impl StatusView {
         self.collapsed_hunks.clear();
         self.error = None;
 
-        let Some(repo) = self.repo.clone() else {
+        let Some(repo) = self.read_repo() else {
             self.error = Some(format!("Not a git repository: {}", self.root.display()));
             self.rebuild_rows();
             return;
@@ -1718,7 +1739,7 @@ impl StatusView {
     /// files so expanding them feels instant. Massive diffs are skipped and
     /// load lazily on explicit expand.
     fn start_prefetch(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
+        let Some(repo) = self.read_repo() else {
             return;
         };
         let generation = self.generation;
@@ -1769,7 +1790,7 @@ impl StatusView {
         if self.diffs.contains_key(&key) {
             return;
         }
-        let Some(repo) = self.repo.clone() else {
+        let Some(repo) = self.read_repo() else {
             return;
         };
         self.diffs.insert(key.clone(), DiffState::Loading);
@@ -3936,8 +3957,12 @@ impl StatusView {
             // Root binds tab). Kept explicit — and out of the remappable keymap.
             "tab" => self.toggle_fold(cx),
             "escape" => {
-                // Cancel a visual selection, else dismiss the status/error
-                // banner if one is showing.
+                // A running job takes priority: C-g/Esc kills its subprocess.
+                // Otherwise cancel a visual selection, else dismiss the
+                // status/error banner if one is showing.
+                if self.cancel_job(cx) {
+                    return;
+                }
                 if self.visual.take().is_some() || self.status_message.take().is_some() {
                     cx.notify();
                 }
@@ -6014,6 +6039,17 @@ impl StatusView {
                         .italic()
                         .text_color(self.palette.section)
                         .child(value),
+                ),
+            // While a mutating job runs, hint that C-g/Esc cancels it.
+            _ if self.job_cancel.is_some() => bar
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(SharedString::from(msg))
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("C-g to cancel")),
                 ),
             _ => bar.child(SharedString::from(msg)),
         })
