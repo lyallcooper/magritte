@@ -674,7 +674,8 @@ impl StatusView {
         }
     }
 
-    /// Open the free-text prompt for an arbitrary git command (magit's `!`).
+    /// Open the free-text command prompt (magit's `!`), prefilled with `git ` —
+    /// run a git subcommand by default, or delete the prefix to run any command.
     pub(crate) fn open_run_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_picker(
             PickerAction::RunGit,
@@ -684,40 +685,46 @@ impl StatusView {
             window,
             cx,
         );
+        // Seed both the picker's query (what confirm reads) and the visible
+        // input. The triggering key's focus is deferred a frame (see
+        // `open_picker`), so this prefill isn't clobbered by that keystroke.
+        let seed = "git ".to_string();
+        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.list.set_query(&seed);
+            Some(p.input.clone())
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            input.update(cx, |s, cx| s.set_value(seed, window, cx));
+        }
     }
 
     /// Run a user-typed command from the `!` prompt on the background executor,
-    /// then refresh. Git by default — a leading `git` is optional, so both
-    /// "git stash list" and "stash list" work — or, with a leading `!`, an
-    /// arbitrary program run in the working tree (`!ls -la`, `!make test`).
-    /// Split with POSIX quoting (no shell) so quoted args like `-m "two words"`
-    /// stay one argv entry. The full output is recorded in the `$` log; a
-    /// multi-line result opens it, otherwise the first line shows as a notice.
+    /// then refresh. The prompt is prefilled with `git `, so the first word
+    /// selects the program: `git` (the default) runs a git subcommand via the
+    /// repo wrapper, anything else runs that program directly in the working
+    /// tree (delete the `git ` prefix to do so). Split with POSIX quoting (no
+    /// shell) so quoted args like `-m "two words"` stay one argv entry. The full
+    /// output is recorded in the `$` log; a multi-line result opens it,
+    /// otherwise the first line shows as a notice.
     pub(crate) fn run_user_command(&mut self, input: String, cx: &mut Context<Self>) {
-        let trimmed = input.trim();
-        // A leading `!` is the shell escape: the rest is an arbitrary command.
-        let (program, rest) = match trimmed.strip_prefix('!') {
-            Some(rest) => {
-                let mut parts = match shell_words::split(rest) {
-                    Ok(p) => p,
-                    Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
-                };
-                if parts.is_empty() {
-                    return;
-                }
-                (Some(parts.remove(0)), parts)
-            }
-            None => {
-                let mut args = match shell_words::split(trimmed) {
-                    Ok(p) => p,
-                    Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
-                };
-                if args.first().map(String::as_str) == Some("git") {
-                    args.remove(0);
-                }
-                (None, args)
-            }
+        let mut parts = match shell_words::split(input.trim()) {
+            Ok(p) => p,
+            Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
         };
+        if parts.is_empty() {
+            return;
+        }
+        // The first word is the program; `git` routes through the repo wrapper
+        // (`None`), anything else runs directly.
+        let program = if parts[0] == "git" {
+            parts.remove(0);
+            None
+        } else {
+            Some(parts.remove(0))
+        };
+        let rest = parts;
         if program.is_none() && rest.is_empty() {
             return;
         }

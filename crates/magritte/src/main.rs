@@ -344,7 +344,7 @@ impl PickerAction {
             PickerAction::Merge => transient::plain_title("Merge"),
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
             // Reads like magit's "git " prompt: the typed text follows "git".
-            PickerAction::RunGit => transient::plain_title("git, or !command"),
+            PickerAction::RunGit => transient::plain_title("Run"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
         }
     }
