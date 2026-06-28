@@ -6610,7 +6610,14 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_3()
-            .child(kbd::key_chip(&pending.key, self.palette.dim, &self.font));
+            // The keys typed so far, with a trailing dash to show the prefix is
+            // awaiting the next key (emacs' echo-area `g-` feedback).
+            .child(
+                div()
+                    .font_family(self.font.clone())
+                    .text_color(self.palette.fg)
+                    .child(SharedString::from(format!("{}-", pending.key))),
+            );
         if pending.which_key {
             let lead = format!("{} ", pending.key);
             let mut conts: Vec<(String, &'static str)> = self
