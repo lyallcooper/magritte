@@ -957,13 +957,9 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             map.remove(keystroke);
         } else if !commands().iter().any(|c| c.id == id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
-        } else if keystroke.split(' ').count() > 2 {
-            // A sequence is a prefix plus one key (e.g. `g r`); deeper chains
-            // (`g r x`) aren't dispatched.
-            warnings.push(format!(
-                "keymap: \"{keystroke}\" has too many keys (a sequence is a prefix + one key)"
-            ));
         } else {
+            // Any keystroke sequence is allowed, to any depth — `dispatch`
+            // accumulates keys until one resolves to a binding (or to nothing).
             map.insert(keystroke.clone(), id.clone());
         }
     }
@@ -1395,14 +1391,26 @@ enum SeqOp {
     Abort,
 }
 
-/// A pressed prefix key awaiting the next key of a sequence.
+/// How a keystroke sequence resolves against the effective keymap.
+enum KeyMatch {
+    /// A complete binding: run this command id.
+    Command(String),
+    /// A prefix of one or more longer bindings: wait for the next key.
+    Prefix,
+    /// Neither — nothing is bound to this sequence or anything extending it.
+    Unbound,
+}
+
+/// The keys typed so far of an in-progress sequence, awaiting the next key.
+/// Sequences nest to any depth: each key that lands on a deeper prefix extends
+/// `seq` (e.g. `g` → `g r`), until one resolves to a command or to nothing.
 struct PendingPrefix {
-    /// The prefix keystroke (e.g. `g`).
-    key: String,
+    /// The keys typed so far, space-joined (e.g. `g` or `C-x C-c`).
+    seq: String,
     /// The `prefix_gen` value when entered, so a stale timer is ignored.
     gen: u64,
     /// Set once the which-key delay elapses: the bottom strip expands from just
-    /// the pressed key into the list of possible continuations.
+    /// the typed keys into the list of possible continuations.
     which_key: bool,
 }
 
@@ -4161,15 +4169,15 @@ impl StatusView {
             return;
         }
 
-        // A prefix is pending: this key is the second of the sequence. Resolve
-        // it here — before the per-view branches — so prefixes work everywhere.
+        // A sequence is pending: this key continues it. Resolve here — before the
+        // per-view branches — so sequences work everywhere.
         if self.pending_prefix.is_some() {
-            let second = if shift {
+            let next = if shift {
                 key.to_uppercase()
             } else {
                 key.clone()
             };
-            self.resolve_prefix(&second, window, cx);
+            self.advance_prefix(&next, window, cx);
             return;
         }
 
@@ -4421,6 +4429,13 @@ impl StatusView {
                 if Self::is_dispatch_key(&self.keymap, &cased) {
                     return self.run_dispatch(&cased, window, cx);
                 }
+                // An unbound key: tell the user (emacs' "… is undefined"). Only
+                // for plain/shifted keys — keys held with cmd/alt/ctrl are OS or
+                // editor shortcuts we don't model in the keymap, so a "z is
+                // unbound" toast for cmd-z would be misleading.
+                if !cmd && !alt && !ctrl {
+                    self.report_unbound(&cased, cx);
+                }
                 return;
             }
         }
@@ -4492,22 +4507,35 @@ impl StatusView {
         }
     }
 
-    /// Whether `key` begins a multi-key binding in the effective keymap — i.e.
-    /// it's a prefix the next keystroke completes.
-    fn is_prefix(&self, key: &str) -> bool {
-        let prefix = format!("{key} ");
-        self.keymap.keys().any(|k| k.starts_with(&prefix))
+    /// Classify a keystroke sequence against the effective keymap: a complete
+    /// binding, a prefix of one or more longer bindings, or neither.
+    fn classify_seq(&self, seq: &str) -> KeyMatch {
+        if let Some(id) = self.keymap.get(seq) {
+            return KeyMatch::Command(id.clone());
+        }
+        let lead = format!("{seq} ");
+        if self.keymap.keys().any(|k| k.starts_with(&lead)) {
+            return KeyMatch::Prefix;
+        }
+        KeyMatch::Unbound
     }
 
-    /// Begin a prefix sequence: remember the key and show the lightweight bottom
-    /// strip (just the key). The prefix then waits indefinitely for the next key;
-    /// after `which_key_delay_ms` the strip expands into the which-key list of
-    /// continuations.
-    fn enter_prefix(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// Whether `key` begins a longer binding — a prefix the next keystroke
+    /// continues (it may also be a complete binding on its own; this only asks
+    /// whether *more* could follow).
+    fn is_prefix(&self, key: &str) -> bool {
+        matches!(self.classify_seq(key), KeyMatch::Prefix)
+    }
+
+    /// Begin (or extend) a sequence: remember the keys typed so far and show the
+    /// lightweight bottom strip. The sequence then waits indefinitely for the
+    /// next key; after `which_key_delay_ms` the strip expands into the which-key
+    /// list of continuations.
+    fn enter_prefix(&mut self, seq: String, window: &mut Window, cx: &mut Context<Self>) {
         self.prefix_gen = self.prefix_gen.wrapping_add(1);
         let gen = self.prefix_gen;
         self.pending_prefix = Some(PendingPrefix {
-            key,
+            seq,
             gen,
             which_key: false,
         });
@@ -4516,7 +4544,7 @@ impl StatusView {
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
             this.update_in(cx, |this, _window, cx| {
-                // Reveal the which-key list only if this exact prefix is still
+                // Reveal the which-key list only if this exact sequence is still
                 // waiting (a newer prefix or a resolved sequence bumps/clears it).
                 let Some(p) = this.pending_prefix.as_mut() else {
                     return;
@@ -4532,15 +4560,29 @@ impl StatusView {
         .detach();
     }
 
-    /// Resolve the second key of a pending prefix: run `<prefix> <key>` through
-    /// the keymap (dismissing the indicator). Any context — cursor view, popup —
-    /// since `run_dispatch` just invokes the bound command.
-    fn resolve_prefix(&mut self, second: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Feed the next key into the pending sequence. Appends it and re-classifies:
+    /// a complete binding runs (closing any dispatch popup), a deeper prefix
+    /// keeps waiting, and an unbound sequence reports "… is unbound".
+    fn advance_prefix(&mut self, next: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.pending_prefix.take() else {
             return;
         };
-        cx.notify(); // dismiss the indicator
-        self.run_dispatch(&format!("{} {second}", p.key), window, cx);
+        let seq = format!("{} {next}", p.seq);
+        match self.classify_seq(&seq) {
+            KeyMatch::Command(id) => {
+                self.popup = None;
+                self.invoke_command(&id, window, cx);
+            }
+            KeyMatch::Prefix => self.enter_prefix(seq, window, cx),
+            KeyMatch::Unbound => self.report_unbound(&seq, cx),
+        }
+        cx.notify();
+    }
+
+    /// Note that a keystroke sequence isn't bound (magit/emacs' "… is undefined"
+    /// echo-area feedback), as a fading status notice.
+    fn report_unbound(&mut self, seq: &str, cx: &mut Context<Self>) {
+        self.set_status(format!("{seq} is unbound"), true, cx);
     }
 
     /// Note a command run *from the palette* for its frecency ranking, and
@@ -6610,37 +6652,47 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_3()
-            // The keys typed so far, with a trailing dash to show the prefix is
+            // The keys typed so far, with a trailing dash to show the sequence is
             // awaiting the next key (emacs' echo-area `g-` feedback).
             .child(
                 div()
                     .font_family(self.font.clone())
                     .text_color(self.palette.fg)
-                    .child(SharedString::from(format!("{}-", pending.key))),
+                    .child(SharedString::from(format!("{}-", pending.seq))),
             );
         if pending.which_key {
-            let lead = format!("{} ", pending.key);
-            let mut conts: Vec<(String, &'static str)> = self
-                .keymap
-                .iter()
-                .filter_map(|(k, id)| {
-                    let suffix = k.strip_prefix(&lead)?;
-                    let title = commands().iter().find(|c| c.id == id).map(|c| c.title)?;
-                    Some((suffix.to_string(), title))
-                })
-                .collect();
-            conts.sort();
-            for (suffix, title) in conts {
+            // Group bindings by their immediate next key after the typed prefix.
+            // A next key that completes a binding shows its command's label; one
+            // that only leads deeper shows "…" to mark a further sub-sequence.
+            let lead = format!("{} ", pending.seq);
+            let mut conts: std::collections::BTreeMap<String, Option<&'static str>> =
+                std::collections::BTreeMap::new();
+            for (k, id) in &self.keymap {
+                let Some(rest) = k.strip_prefix(&lead) else {
+                    continue;
+                };
+                let token = rest.split(' ').next().unwrap_or(rest).to_string();
+                let completes = format!("{lead}{token}") == *k;
+                let title = completes
+                    .then(|| commands().iter().find(|c| c.id == id).map(|c| c.title))
+                    .flatten();
+                // A completing binding's label wins over a sibling sub-prefix.
+                let entry = conts.entry(token).or_insert(None);
+                if title.is_some() {
+                    *entry = title;
+                }
+            }
+            for (token, title) in conts {
                 bar = bar.child(
                     div()
                         .flex()
                         .items_center()
                         .gap_1()
-                        .child(kbd::key_chip(&suffix, self.palette.dim, &self.font))
+                        .child(kbd::key_chip(&token, self.palette.dim, &self.font))
                         .child(
                             div()
                                 .text_color(self.palette.dim)
-                                .child(SharedString::from(title)),
+                                .child(SharedString::from(title.unwrap_or("…"))),
                         ),
                 );
             }
@@ -7425,16 +7477,16 @@ mod tests {
     }
 
     #[test]
-    fn keymap_sequences_any_prefix() {
+    fn keymap_sequences_any_depth() {
         let mut config = config::Config::default();
-        config.keymap.insert("g x".into(), "stage".into()); // g sequence
+        config.keymap.insert("g x".into(), "stage".into()); // 2-key sequence
         config.keymap.insert(". c".into(), "commit".into()); // a `.` prefix
-        config.keymap.insert("g r x".into(), "stage".into()); // too deep
+        config.keymap.insert("a b c".into(), "stage".into()); // 3-key chain
         let (km, warnings) = build_keymap(&config);
         assert_eq!(km.get("g x").map(String::as_str), Some("stage"));
         assert_eq!(km.get(". c").map(String::as_str), Some("commit"));
-        assert!(!km.contains_key("g r x"), "a 3-key chain isn't bound");
-        assert_eq!(warnings.len(), 1, "only the deep chain warns: {warnings:?}");
+        assert_eq!(km.get("a b c").map(String::as_str), Some("stage"));
+        assert!(warnings.is_empty(), "any-depth sequence is fine: {warnings:?}");
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and
