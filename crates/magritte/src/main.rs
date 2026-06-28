@@ -1592,14 +1592,16 @@ impl StatusView {
         }
         self._config_watcher = Some(watcher);
 
-        cx.spawn(async move |this, cx| {
+        // spawn_in so the reload has a Window: applying a config can rebuild the
+        // open settings form, whose Select/Input entities need one.
+        cx.spawn_in(window, async move |this, cx| {
             while rx.recv().await.is_ok() {
                 let cfg = config::load();
-                let updated = this.update(cx, |view, cx| {
+                let updated = this.update_in(cx, |view, window, cx| {
                     // Skip when the contents are unchanged (our own in-app save,
                     // or a no-op external edit).
                     if cfg != view.config {
-                        view.apply_config(cfg, cx);
+                        view.apply_config(cfg, window, cx);
                     }
                 });
                 if updated.is_err() {
@@ -1613,7 +1615,7 @@ impl StatusView {
     /// Adopt a freshly-loaded config: store it, re-apply theme/appearance,
     /// update the font, and rebuild the effective keymap — so a `[keymap]` edit
     /// takes effect on save, like the other settings (any unknown id re-warns).
-    fn apply_config(&mut self, cfg: config::Config, cx: &mut Context<Self>) {
+    fn apply_config(&mut self, cfg: config::Config, window: &mut Window, cx: &mut Context<Self>) {
         self.config = cfg;
         self.font = theme::resolve_font(&self.config, cx);
         self.ui_font = theme::resolve_ui_font(&self.config, cx);
@@ -1623,13 +1625,12 @@ impl StatusView {
             self.set_status(warnings.join("; "), false, cx);
         }
         self.reapply_theme(cx);
-        // The settings screen's dropdowns/inputs were built from the old config
-        // (rebuilding them needs a Window we don't have on this reload path), so
-        // close it rather than leave stale controls — the next open reflects the
-        // reloaded config. Only external edits reach here; our own in-app saves
-        // are filtered out upstream by the unchanged-config guard.
+        // The open settings form's dropdowns/inputs were built from the old
+        // config, so rebuild it in place against the reloaded values rather than
+        // leave stale controls. Only external edits reach here; our own in-app
+        // saves are filtered out upstream by the unchanged-config guard.
         if self.settings().is_some() {
-            self.screen = Screen::Status;
+            self.open_settings(window, cx);
             self.set_status("Settings reloaded from disk".to_string(), true, cx);
         }
     }
