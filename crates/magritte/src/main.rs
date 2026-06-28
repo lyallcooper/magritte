@@ -1259,6 +1259,10 @@ enum Confirm {
     AbortSequence(SequenceKind),
     /// Hard reset (discards uncommitted changes): on `y`, reset to the target.
     ResetHard(String),
+    /// Interactive rebase since an already-published commit: on `y`, open the
+    /// todo editor for `rev^..HEAD` with the carried switches (rewriting pushed
+    /// history).
+    RebaseSincePushed { rev: String, args: Vec<String> },
 }
 
 /// The three controls for an in-progress sequence.
@@ -2812,6 +2816,9 @@ impl StatusView {
             }
             Some((_, Confirm::AbortSequence(kind))) => self.run_sequence(SeqOp::Abort, kind, cx),
             Some((_, Confirm::ResetHard(target))) => self.do_reset(ResetMode::Hard, target, cx),
+            Some((_, Confirm::RebaseSincePushed { rev, args })) => {
+                self.open_rebase_todo(format!("{rev}^"), args, cx)
+            }
             None => {}
         }
         cx.notify();
@@ -3458,7 +3465,10 @@ impl StatusView {
 
     /// Begin an interactive rebase since the commit selected in the log (its
     /// parent is the base, so that commit and everything above it are editable),
-    /// opening the todo editor. `args` are the rebase switches.
+    /// opening the todo editor. `args` are the rebase switches. First checks
+    /// (off the UI thread) whether that commit is already published; if so,
+    /// confirm before rewriting pushed history — like magit's rebase assert and
+    /// our amend/reword warning.
     fn rebase_since_selected(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
         let Some(rev) = self
             .log()
@@ -3467,8 +3477,37 @@ impl StatusView {
         else {
             return;
         };
-        // base = commit^: `base..HEAD` then includes the selected commit.
-        self.open_rebase_todo(format!("{rev}^"), args, cx);
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let probe = rev.clone();
+        cx.spawn(async move |this, cx| {
+            let branches = cx
+                .background_executor()
+                .spawn(async move { repo.published_branches(&probe).unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| {
+                // base = commit^: `base..HEAD` then includes the selected commit.
+                if branches.is_empty() {
+                    this.open_rebase_todo(format!("{rev}^"), args, cx);
+                    return;
+                }
+                // The confirmation bar is status-screen chrome, so leave the log
+                // to show it; "yes" opens the todo editor.
+                this.screen = Screen::Status;
+                let target = match branches.as_slice() {
+                    [one] => one.clone(),
+                    many => format!("{} remote branches", many.len()),
+                };
+                this.confirm = Some((
+                    format!("{rev} has already been pushed to {target}. Rebase since it anyway?"),
+                    Confirm::RebaseSincePushed { rev, args },
+                ));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Open the selected commit's diff (the clickable "view" button; Return does
