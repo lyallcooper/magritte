@@ -403,6 +403,10 @@ impl StatusView {
         div()
             .flex()
             .flex_col()
+            // Fill the height (like the other full-window screens) so the
+            // status bar pins to the window bottom instead of floating under
+            // the content.
+            .flex_grow(1.0)
             .w_full()
             .max_w(px(620.0))
             .p_4()
