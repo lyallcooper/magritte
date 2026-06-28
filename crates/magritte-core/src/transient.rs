@@ -10,6 +10,7 @@
 use crate::error::{Error, Result};
 use crate::remote::{RemoteTargets, Upstream};
 use crate::repo::Repo;
+use crate::sequence::SequenceKind;
 
 /// The git operation an [`Action`] runs. Push/pull/fetch come in magit's three
 /// flavors — to the push-remote, to the upstream, or elsewhere (the frontend
@@ -89,6 +90,11 @@ pub enum Command {
     IgnoreSubdir,
     IgnorePrivate,
     IgnoreGlobal,
+    /// Drive an in-progress sequence (rebase/merge/cherry-pick/revert): run
+    /// `--continue` / `--skip`, or abort it (the frontend confirms abort).
+    SequenceContinue,
+    SequenceSkip,
+    SequenceAbort,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -736,6 +742,45 @@ pub fn merge_transient() -> Transient {
                 ],
             },
         ],
+    }
+}
+
+/// The transient shown when the matching prefix key (`r` rebase, `m` merge) is
+/// pressed while *that* sequence is already in progress: magit's continue / skip
+/// / abort, scoped to what the operation supports. A merge has no continue/skip
+/// (you finish it by committing the resolved index, or abort), so it shows only
+/// abort; rebase/cherry-pick/revert show all three — making `r r` = continue,
+/// `r s` = skip, `r a` = abort.
+pub fn sequence_transient(kind: SequenceKind) -> Transient {
+    let mut suffixes = Vec::new();
+    if kind.can_continue() {
+        suffixes.push(Suffix::Action(Action {
+            key: "r",
+            description: "continue".to_string(),
+            command: Command::SequenceContinue,
+        }));
+    }
+    if kind.can_skip() {
+        suffixes.push(Suffix::Action(Action {
+            key: "s",
+            description: "skip".to_string(),
+            command: Command::SequenceSkip,
+        }));
+    }
+    suffixes.push(Suffix::Action(Action {
+        key: "a",
+        description: "abort".to_string(),
+        command: Command::SequenceAbort,
+    }));
+    let label = kind.label();
+    let mut title = label.to_string();
+    title[..1].make_ascii_uppercase();
+    Transient {
+        title: plain_title(format!("{title} in progress")),
+        groups: vec![Group {
+            title: plain_title("Actions"),
+            suffixes,
+        }],
     }
 }
 

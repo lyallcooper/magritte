@@ -642,29 +642,34 @@ fn commands() -> &'static [Command] {
             |t, w, cx| { t.open_run_git(w, cx) }
         ),
         top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
-            // A paused rebase is driven from the banner (continue/skip/abort).
+            // While a rebase is paused, `r` opens the continue/skip/abort
+            // transient (magit's `r r` = continue) rather than starting a new one.
             if matches!(
                 t.sequence.as_ref().map(|s| s.kind),
                 Some(SequenceKind::Rebase)
             ) {
-                t.status_message =
-                    Some("Rebase in progress — continue/skip/abort from the banner".to_string());
-                cx.notify();
+                t.open_transient(
+                    transient::sequence_transient(SequenceKind::Rebase),
+                    RemoteTargets::default(),
+                    cx,
+                );
             } else {
                 let rt = t.remote_targets();
                 t.open_transient(transient::rebase_transient(&rt), rt, cx);
             }
         }),
         top!("merge", "Merge", Category::Commands, "m", |t, _w, cx| {
-            // A merge already in progress is driven from the banner (commit or
-            // abort), not by starting another.
+            // While a merge is in progress, `m` opens its abort action (you
+            // finish a merge by committing); don't start another.
             if matches!(
                 t.sequence.as_ref().map(|s| s.kind),
                 Some(SequenceKind::Merge)
             ) {
-                t.status_message =
-                    Some("Merge in progress — commit or abort it from the banner".to_string());
-                cx.notify();
+                t.open_transient(
+                    transient::sequence_transient(SequenceKind::Merge),
+                    RemoteTargets::default(),
+                    cx,
+                );
             } else {
                 t.open_transient(transient::merge_transient(), RemoteTargets::default(), cx);
             }
@@ -1596,11 +1601,16 @@ impl StatusView {
         // open settings form, whose Select/Input entities need one.
         cx.spawn_in(window, async move |this, cx| {
             while rx.recv().await.is_ok() {
-                let cfg = config::load();
+                let (cfg, warning) = config::load_reporting();
                 let updated = this.update_in(cx, |view, window, cx| {
-                    // Skip when the contents are unchanged (our own in-app save,
-                    // or a no-op external edit).
-                    if cfg != view.config {
+                    if let Some(warning) = warning {
+                        // The file is now invalid/unreadable. Keep the live
+                        // config (don't reset to defaults on a transient bad
+                        // edit) and surface why it was ignored.
+                        view.set_status(warning, false, cx);
+                    } else if cfg != view.config {
+                        // Skip an unchanged config (our own in-app save, or a
+                        // no-op external edit).
                         view.apply_config(cfg, window, cx);
                     }
                 });
@@ -4747,20 +4757,44 @@ impl StatusView {
             )));
         }
 
-        // Continue / skip / abort, per what the operation supports.
-        let mut actions = div().flex().items_center().gap_2();
+        // Continue / skip / abort as keycap+label buttons. The keycap shows the
+        // *full* keystroke that drives it from the status view — the prefix that
+        // opens this sequence's transient plus the action key (so rebase continue
+        // is `r r`, not a bare `r`, which would collide with "open rebase"). Only
+        // rebase/merge have a status-view prefix; cherry-pick/revert/am are driven
+        // only by clicking these buttons, so they show no (misleading) keycap.
+        let prefix = match seq.kind {
+            SequenceKind::Rebase => Some("r"),
+            SequenceKind::Merge => Some("m"),
+            SequenceKind::CherryPick | SequenceKind::Revert | SequenceKind::Am => None,
+        };
+        let keys = |action_key: &str| prefix.map(|p| format!("{p} {action_key}"));
+        let mut actions = div().flex().items_center().gap_3();
         if seq.kind.can_continue() {
-            actions = actions.child(self.seq_button(
+            actions = actions.child(self.seq_action(
                 "seq-continue",
-                "Continue",
+                keys("r"),
+                "continue",
                 view,
                 Self::sequence_continue,
             ));
         }
         if seq.kind.can_skip() {
-            actions = actions.child(self.seq_button("seq-skip", "Skip", view, Self::sequence_skip));
+            actions = actions.child(self.seq_action(
+                "seq-skip",
+                keys("s"),
+                "skip",
+                view,
+                Self::sequence_skip,
+            ));
         }
-        actions = actions.child(self.seq_button("seq-abort", "Abort", view, Self::sequence_abort));
+        actions = actions.child(self.seq_action(
+            "seq-abort",
+            keys("a"),
+            "abort",
+            view,
+            Self::sequence_abort,
+        ));
 
         div()
             .flex()
@@ -4782,25 +4816,34 @@ impl StatusView {
             .child(actions)
     }
 
-    /// A clickable text button for the sequence banner that runs `action`.
-    fn seq_button(
+    /// A sequence-banner action button: keycap + label, clickable to run
+    /// `action`. `keys` is the full keystroke that triggers it from the status
+    /// view (e.g. `r r`); when `None` (a sequence with no status-view prefix)
+    /// the button is click-only, with no misleading keycap.
+    fn seq_action(
         &self,
         id: &'static str,
+        keys: Option<String>,
         label: &'static str,
         view: &Entity<Self>,
         action: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
         let view = view.clone();
-        div()
+        let mut row = div()
             .id(id)
-            .px_2()
-            .py(px(2.0))
+            .relative()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
             .rounded(px(4.0))
-            .border_1()
-            .border_color(self.palette.border)
             .cursor_pointer()
-            .hover(|s| s.bg(self.palette.hover))
-            .child(SharedString::from(label))
+            .group(KBD_ROW_GROUP)
+            .child(track_target(id));
+        if let Some(keys) = keys {
+            row = row.child(kbd::key_chip(&keys, self.palette.dim, &self.font));
+        }
+        row.child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| action(v, window, vcx));
             })
@@ -6435,6 +6478,8 @@ fn describe_command(command: transient::Command) -> &'static str {
             "Rebasing"
         }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
+        // These route through run_sequence, which sets its own progress text.
+        SequenceContinue | SequenceSkip | SequenceAbort => "Working",
     }
 }
 
@@ -6457,6 +6502,7 @@ fn command_done(command: transient::Command) -> &'static str {
             "Rebased"
         }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
+        SequenceContinue | SequenceSkip | SequenceAbort => "Done",
     }
 }
 

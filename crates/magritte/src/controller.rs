@@ -77,6 +77,9 @@ impl StatusView {
             LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
             LogOther => self.prompt_log_ref(args, paths, limit, window, cx),
             LogReflog => self.start_reflog(limit, cx),
+            SequenceContinue => self.sequence_continue(window, cx),
+            SequenceSkip => self.sequence_skip(window, cx),
+            SequenceAbort => self.sequence_abort(window, cx),
         }
     }
 
