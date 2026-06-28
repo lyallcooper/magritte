@@ -80,6 +80,7 @@ impl StatusView {
             SequenceContinue => self.sequence_continue(window, cx),
             SequenceSkip => self.sequence_skip(window, cx),
             SequenceAbort => self.sequence_abort(window, cx),
+            SequenceEditTodo => self.open_rebase_edit_todo(cx),
         }
     }
 
@@ -474,6 +475,48 @@ impl StatusView {
                             steps,
                             selected: 0,
                             scroll: UniformListScrollHandle::new(),
+                            mode: RebaseTodoMode::Start,
+                        });
+                        this.clear_status(cx);
+                    }
+                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Open the todo editor on an in-progress rebase's remaining steps
+    /// (`r e` → `git rebase --edit-todo`). Reads the current todo off the UI
+    /// thread; an empty plan (nothing left to reorder) just says so.
+    pub(crate) fn open_rebase_edit_todo(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        self.set_progress("Loading rebase todo…".to_string(), cx);
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { repo.rebase_current_todo() })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.screen_gen != gen {
+                    return;
+                }
+                match loaded {
+                    Ok(steps) if steps.is_empty() => {
+                        this.set_status("No remaining steps to edit".to_string(), true, cx);
+                    }
+                    Ok(steps) => {
+                        this.screen = Screen::RebaseTodo(RebaseTodoView {
+                            base: String::new(),
+                            args: Vec::new(),
+                            steps,
+                            selected: 0,
+                            scroll: UniformListScrollHandle::new(),
+                            mode: RebaseTodoMode::Edit,
                         });
                         this.clear_status(cx);
                     }
@@ -536,10 +579,17 @@ impl StatusView {
             return;
         };
         self.focus.focus(window, cx);
+        let (progress, done): (&str, &'static str) = match rt.mode {
+            RebaseTodoMode::Start => ("Rebasing…", "Rebased"),
+            RebaseTodoMode::Edit => ("Updating todo…", "Todo updated"),
+        };
         self.run_job(
-            "Rebasing…",
-            "Rebased",
-            move |repo| repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+            progress,
+            done,
+            move |repo| match rt.mode {
+                RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+                RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
+            },
             cx,
         );
     }

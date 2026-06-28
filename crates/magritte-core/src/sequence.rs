@@ -46,6 +46,10 @@ impl SequenceKind {
     pub fn can_skip(self) -> bool {
         !matches!(self, SequenceKind::Merge)
     }
+    /// Only a rebase has an editable todo (`git rebase --edit-todo`).
+    pub fn can_edit_todo(self) -> bool {
+        matches!(self, SequenceKind::Rebase)
+    }
 }
 
 /// One line in the sequence's plan, for display. `action` is the git verb
@@ -71,7 +75,7 @@ pub struct Sequence {
 impl Repo {
     /// The absolute git dir (handles worktrees and `.git`-file links), where the
     /// sequencing state files live.
-    fn git_dir(&self) -> Result<PathBuf> {
+    pub(crate) fn git_dir(&self) -> Result<PathBuf> {
         let out = self.run(["rev-parse", "--absolute-git-dir"])?;
         Ok(PathBuf::from(
             String::from_utf8_lossy(&out.stdout).trim_end(),
@@ -254,7 +258,12 @@ fn parse_todo(text: &str) -> Vec<SequenceStep> {
                 return None;
             }
             let oid = parts.next().map(short);
-            let subject = parts.next().unwrap_or("").to_string();
+            // git may write the oneline as a trailing comment ("# subject").
+            let subject = parts
+                .next()
+                .unwrap_or("")
+                .trim_start_matches("# ")
+                .to_string();
             Some(SequenceStep {
                 action,
                 oid,

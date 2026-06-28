@@ -451,10 +451,21 @@ enum LogLoad {
     Failed(String),
 }
 
-/// The interactive-rebase todo editor (`r i`): an editable list of the commits
-/// in `base..HEAD`, each with an action, reorderable, then run as one rebase.
+/// Whether the rebase-todo editor is composing a *new* interactive rebase or
+/// editing the remaining plan of one already in progress.
+#[derive(PartialEq, Eq)]
+enum RebaseTodoMode {
+    /// `r i`: build `base..HEAD`, then run `git rebase -i`.
+    Start,
+    /// `r e` while paused: rewrite the remaining todo via `git rebase --edit-todo`.
+    Edit,
+}
+
+/// The interactive-rebase todo editor: an editable list of commits, each with an
+/// action, reorderable. In `Start` mode it's `base..HEAD` and runs as one new
+/// rebase; in `Edit` mode it's an in-progress rebase's remaining steps.
 struct RebaseTodoView {
-    /// The rebase base (`base..HEAD` is the editable range).
+    /// The rebase base (`base..HEAD` is the editable range). Unused in `Edit`.
     base: String,
     /// Toggled switches carried from the rebase transient (`--autostash`, …).
     args: Vec<String>,
@@ -463,6 +474,7 @@ struct RebaseTodoView {
     /// Cursor row.
     selected: usize,
     scroll: UniformListScrollHandle,
+    mode: RebaseTodoMode,
 }
 
 /// A single commit's detail (opened from the log): its header and diff, as the
@@ -5621,12 +5633,18 @@ impl StatusView {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.section)
-                            .child(SharedString::from(format!("Rebase {}..HEAD", rt.base))),
+                            .child(SharedString::from(match rt.mode {
+                                RebaseTodoMode::Start => format!("Rebase {}..HEAD", rt.base),
+                                RebaseTodoMode::Edit => "Edit rebase todo".to_string(),
+                            })),
                     )
                     .child(self.key_action(
                         "rebase-todo-start",
                         "return",
-                        "start",
+                        match rt.mode {
+                            RebaseTodoMode::Start => "start",
+                            RebaseTodoMode::Edit => "save",
+                        },
                         view,
                         Self::run_rebase_todo,
                     ))
@@ -5644,7 +5662,7 @@ impl StatusView {
                     .text_size(px(12.0))
                     .text_color(self.palette.dim)
                     .child(SharedString::from(
-                        "p pick · e edit · s squash · f fixup · d drop · K/J move",
+                        "p pick · e edit · s squash · f fixup · d drop · j/k move · J/K reorder",
                     )),
             )
     }
@@ -6478,8 +6496,9 @@ fn describe_command(command: transient::Command) -> &'static str {
             "Rebasing"
         }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
-        // These route through run_sequence, which sets its own progress text.
-        SequenceContinue | SequenceSkip | SequenceAbort => "Working",
+        // These route through run_sequence / the todo editor, which set their
+        // own progress text.
+        SequenceContinue | SequenceSkip | SequenceAbort | SequenceEditTodo => "Working",
     }
 }
 
@@ -6502,7 +6521,7 @@ fn command_done(command: transient::Command) -> &'static str {
             "Rebased"
         }
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
-        SequenceContinue | SequenceSkip | SequenceAbort => "Done",
+        SequenceContinue | SequenceSkip | SequenceAbort | SequenceEditTodo => "Done",
     }
 }
 

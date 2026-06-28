@@ -34,6 +34,20 @@ impl RebaseAction {
             RebaseAction::Drop => "drop",
         }
     }
+
+    /// Parse a git-rebase-todo keyword (long or short form), or `None` for one we
+    /// don't model (e.g. `exec`, `label`, `merge`).
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        Some(match word {
+            "pick" | "p" => RebaseAction::Pick,
+            "reword" | "r" => RebaseAction::Reword,
+            "edit" | "e" => RebaseAction::Edit,
+            "squash" | "s" => RebaseAction::Squash,
+            "fixup" | "f" => RebaseAction::Fixup,
+            "drop" | "d" => RebaseAction::Drop,
+            _ => return None,
+        })
+    }
 }
 
 /// One line of an interactive-rebase todo: an action against a commit.
@@ -78,6 +92,53 @@ impl Repo {
                 })
             })
             .collect())
+    }
+
+    /// The remaining instructions of an in-progress interactive rebase, parsed
+    /// from `rebase-merge/git-rebase-todo` — the steps git has yet to apply.
+    /// Empty when the rebase has no editable plan left (e.g. paused on its last
+    /// commit) or isn't using the interactive (merge) backend.
+    pub fn rebase_current_todo(&self) -> Result<Vec<RebaseStep>> {
+        let todo = self.git_dir()?.join("rebase-merge").join("git-rebase-todo");
+        let Ok(text) = std::fs::read_to_string(&todo) else {
+            return Ok(Vec::new());
+        };
+        Ok(text
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|line| {
+                let mut parts = line.splitn(3, ' ');
+                let action = RebaseAction::from_keyword(parts.next()?)?;
+                // The todo stores full oids; abbreviate for display (git still
+                // resolves the prefix against the rebase's own commits on write).
+                let oid: String = parts.next()?.chars().take(7).collect();
+                // git may write the oneline as a trailing comment ("# subject");
+                // strip the marker so the editor shows a clean subject.
+                let subject = parts
+                    .next()
+                    .unwrap_or("")
+                    .trim_start_matches("# ")
+                    .to_string();
+                Some(RebaseStep {
+                    action,
+                    oid,
+                    subject,
+                })
+            })
+            .collect())
+    }
+
+    /// Rewrite the remaining todo of an in-progress rebase (`git rebase
+    /// --edit-todo`), injected via the throwaway sequence editor — magit's
+    /// `magit-rebase-edit`. The rebase stays paused at its current stop; the new
+    /// plan governs what happens once it's continued.
+    pub fn rebase_edit_todo(&self, steps: &[RebaseStep]) -> Result<String> {
+        let todo: String = steps
+            .iter()
+            .map(|s| format!("{} {}\n", s.action.keyword(), s.oid))
+            .collect();
+        let argv = vec!["rebase".to_string(), "--edit-todo".to_string()];
+        Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
     }
 
     /// Run an interactive rebase onto `base` with the given todo. The todo is
