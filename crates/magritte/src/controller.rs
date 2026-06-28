@@ -686,44 +686,71 @@ impl StatusView {
         );
     }
 
-    /// Run a user-typed git command on the background executor, then refresh.
-    /// Shows the first line of output (the command is also recorded in the `$`
-    /// log). A leading "git" is stripped so both "git stash list" and
-    /// "stash list" work. Split with POSIX quoting (no shell) so quoted args
-    /// like `commit -m "two words"` stay a single argv entry.
-    pub(crate) fn run_git_command(&mut self, input: String, cx: &mut Context<Self>) {
-        let mut args = match shell_words::split(&input) {
-            Ok(args) => args,
-            Err(e) => {
-                self.set_status(format!("parse error: {e}"), false, cx);
-                return;
+    /// Run a user-typed command from the `!` prompt on the background executor,
+    /// then refresh. Git by default — a leading `git` is optional, so both
+    /// "git stash list" and "stash list" work — or, with a leading `!`, an
+    /// arbitrary program run in the working tree (`!ls -la`, `!make test`).
+    /// Split with POSIX quoting (no shell) so quoted args like `-m "two words"`
+    /// stay one argv entry. The full output is recorded in the `$` log; a
+    /// multi-line result opens it, otherwise the first line shows as a notice.
+    pub(crate) fn run_user_command(&mut self, input: String, cx: &mut Context<Self>) {
+        let trimmed = input.trim();
+        // A leading `!` is the shell escape: the rest is an arbitrary command.
+        let (program, rest) = match trimmed.strip_prefix('!') {
+            Some(rest) => {
+                let mut parts = match shell_words::split(rest) {
+                    Ok(p) => p,
+                    Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
+                };
+                if parts.is_empty() {
+                    return;
+                }
+                (Some(parts.remove(0)), parts)
+            }
+            None => {
+                let mut args = match shell_words::split(trimmed) {
+                    Ok(p) => p,
+                    Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
+                };
+                if args.first().map(String::as_str) == Some("git") {
+                    args.remove(0);
+                }
+                (None, args)
             }
         };
-        if args.first().map(String::as_str) == Some("git") {
-            args.remove(0);
-        }
-        if args.is_empty() {
+        if program.is_none() && rest.is_empty() {
             return;
         }
-        let progress = format!("git {}…", args.join(" "));
-        // The first non-empty output line (stdout, else stderr) as a summary.
-        self.run_job_reporting(
+        let progress = match &program {
+            Some(p) => format!("{p} {}…", rest.join(" ")),
+            None => format!("git {}…", rest.join(" ")),
+        };
+        self.run_job_with(
             progress,
             move |repo| {
-                repo.run(&args).map(|o| {
-                    let out = String::from_utf8_lossy(&o.stdout);
-                    let line = out.trim().lines().next().unwrap_or("").to_string();
-                    if !line.is_empty() {
-                        line
-                    } else {
-                        o.stderr
-                            .trim()
-                            .lines()
-                            .next()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| "done".to_string())
-                    }
+                repo.run_user(program.as_deref(), &rest).map(|run| {
+                    // First non-empty line (stdout, else stderr) as the summary.
+                    let summary = run
+                        .stdout
+                        .lines()
+                        .chain(run.stderr.lines())
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or(if run.ok { "done" } else { "command failed" })
+                        .to_string();
+                    summary
                 })
+            },
+            |this, result, cx| {
+                match result {
+                    Ok(summary) => this.set_status(summary, true, cx),
+                    Err(e) => this.report_error(e, cx),
+                }
+                // Open the `$` log when the result spans more than one line, so
+                // the user sees the whole thing (it's recorded there in full).
+                if this.last_user_output_lines() > 1 {
+                    this.open_git_log(cx);
+                }
             },
             cx,
         );
@@ -1240,7 +1267,7 @@ impl StatusView {
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
                 PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
-                PickerAction::RunGit => self.run_git_command(chosen.to_string(), cx),
+                PickerAction::RunGit => self.run_user_command(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
