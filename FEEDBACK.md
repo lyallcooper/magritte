@@ -580,11 +580,21 @@ Architecture pass, what changed:
            Repo::run_with_sequence_editor; rebase logic just builds the todo.
   - FB5-6  documented core's intentional second role (the UI-agnostic command/
            menu model in transient.rs) in lib.rs, with a split path if needed.
-  - FB5-10 helper-module split (incremental): editor_launch.rs (launch + goto),
-           commit_text.rs (50/72 ruler, body wrap/reflow), and status_label.rs
-           (status words/colors + hunk header) extracted from main.rs (9689 →
-           9303 lines). The remaining clusters (theming/fonts + editor
-           enumeration, which are FFI-heavy) follow the same pattern.
+  - FB5-10 helper-module split: editor_launch.rs (launch + goto), commit_text.rs
+           (50/72 ruler, wrap/reflow), status_label.rs (status words/colors +
+           hunk header), theme.rs (font discovery, appearance/theme resolution,
+           bundled-theme registration), editors.rs (LaunchServices editor
+           discovery), targets.rs (remote/branch resolution), kbd.rs (keycap
+           chips + key formatting) — all extracted from main.rs.
+  - FB5-5 / FB5-2 / FB5-11 controller split: command dispatch (fire_action +
+           the dispatch_*/run_* git executions), picker orchestration, and the
+           status/report/job plumbing moved to controller.rs as `impl
+           StatusView`. (Kept `impl StatusView` deliberately — see below.)
+  - FB5-9 settings split: the whole settings screen (state, open/render, config
+           actions) moved to settings.rs, isolating that concern.
+
+  Net of the round: main.rs 9689 → 6791 lines, with the view's render/state core
+  in main.rs and dispatch/settings/helpers in focused modules.
 
 Deferred (by decision, not oversight):
   - #4 / SP2 (real subprocess cancellation): milestone M6. GIT_TERMINAL_PROMPT=0
@@ -600,11 +610,13 @@ Deferred (by decision, not oversight):
   - TP10 (match bare =======/|||||||): kept the <<<<<<< / >>>>>>> pair only.
   - FP4 (conservative whole-file prechecks): can't dry-run; we report partial
     application rather than fake atomicity.
-  - FB5-2 / FB5-5 / FB5-9 / FB5-11 (split StatusView into app-shell + per-feature
-    models/controllers; decompose open_settings): a large, incremental
-    re-architecture. Substantially advanced by FB5-1/3/4/7/8/10 (explicit screen
-    model, one job runner, named picker, consolidated summaries, a first helper
-    module); the remaining controller/model extraction is tracked and best done
-    feature-by-feature rather than in one sweep.
+  - Full data-model separation (controllers/models that DON'T hold the view):
+    not pursued — an anti-goal for a single-Entity GPUI app, where the view owns
+    its state and behavior. The achievable, valuable version (concern-focused
+    modules + an explicit screen model + one job runner) is done above; turning
+    the dispatch/settings impls into non-view controllers would add message
+    -passing ceremony for no real benefit. The `impl StatusView` blocks now live
+    in their own files (controller.rs, settings.rs) — a file/concern boundary,
+    not a data boundary, which is the right trade here.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
