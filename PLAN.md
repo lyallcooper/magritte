@@ -46,7 +46,7 @@ clients — designed from the start to stay responsive in very large repositorie
             │  magritte (GPUI app)                      │
             │   • views, transient popups, keymap       │
             │   • background_executor().spawn(...)       │
-            │   • generation-counter cancellation        │
+            │   • cancellable subprocesses + timeouts     │
             └───────────────────┬───────────────────────┘
                                  │ plain data in/out
             ┌───────────────────▼───────────────────────┐
@@ -100,8 +100,9 @@ This is requirement #5 and the main thing that differentiates Magritte.
   magit sections start collapsed, opening a huge repo renders almost nothing.
 - **Virtualized rendering.** Only on-screen lines become view nodes, so a
   50k-line diff costs the same to render as a 50-line one.
-- **Cancellation.** Navigating or refreshing again cancels in-flight git work
-  (generation counter / dropped results).
+- **Cancellation.** A superseded or user-cancelled (`C-g`) git call is *killed*,
+  not just ignored — the child process is terminated, with an optional timeout;
+  a generation counter also drops any stale result that still slips through.
 - **Refresh model.** Like magit, we refresh after our own commands and on
   demand (`gr`) — *not* via a worktree filesystem watcher. Watching a large
   worktree means event/refresh storms (build output, `.git` churn) that would
@@ -158,8 +159,9 @@ keyboard or the mouse.
 ### 3.6 Keybindings
 
 Default keymap mirrors **evil-collection's magit** layout, so existing muscle
-memory transfers. Representative bindings (to be reconciled exactly against the
-evil-collection source as we implement):
+memory transfers. A representative subset (the complete, current list of command
+ids and default keys — and how to remap them — is in
+[docs/config.md](docs/config.md#keymap)):
 
 | Key        | Action                              |
 |------------|-------------------------------------|
@@ -168,8 +170,8 @@ evil-collection source as we implement):
 | `TAB`      | toggle section fold                 |
 | `gg` / `G` | top / bottom                        |
 | `gr`       | refresh                             |
-| `RET`      | visit / show thing at point         |
-| `v` / `V`  | visual select lines/hunk (for partial staging) |
+| `RET`      | visit / open thing at point         |
+| `v`        | visual select lines/hunk (for partial staging) |
 | `s` / `u`  | stage / unstage at point            |
 | `S` / `U`  | stage all / unstage all             |
 | `x`        | discard at point (with confirm)     |
@@ -178,15 +180,17 @@ evil-collection source as we implement):
 | `p` / `F`  | push / pull transient               |
 | `f`        | fetch transient                     |
 | `l`        | log transient                       |
-| `d`        | diff transient                      |
 | `Z`        | stash transient                     |
 | `r` / `m`  | rebase / merge transient            |
-| `X`        | reset transient                     |
+| `O`        | reset transient                     |
+| `i`        | gitignore transient                 |
+| `!`        | run a raw git command               |
 | `?`        | dispatch / help                     |
-| `q`        | quit / bury buffer                  |
+| `q`        | close the current view              |
 
-Keybindings will be data-driven and remappable. Mouse equivalents (click to
-fold, click affordances for stage/unstage) accompany every keyboard action.
+Keybindings are data-driven and remappable via a `[keymap]` table; motions
+included. Mouse equivalents (click to fold, click affordances for
+stage/unstage) accompany every keyboard action.
 
 ### 3.7 Crate layout
 
@@ -224,7 +228,8 @@ reusable widgets) will be split out if and when they earn their keep.
 - Merge (with conflict surfacing).
 - Rebase (non-interactive), cherry-pick, revert.
 - Reset (soft / mixed / hard / keep).
-- Interactive rebase (magit's beloved UI — disproportionate effort; deferred).
+- Interactive rebase (done — todo editor + `--edit-todo`; reword and the
+  autosquash/edit-commit shortcuts remain deferred).
 - Blame, bisect, reflog, submodules, worktrees.
 
 ---
@@ -240,7 +245,7 @@ reusable widgets) will be split out if and when they earn their keep.
 | M4 | Commit & sync            | Commit transient + message editor; push / pull / fetch transients          | ✅ done |
 | M5 | Breadth                  | Log view; branch transient; stash transient                                 | ✅ done |
 | M6 | Robustness               | Cancellation hardening; error surfacing. (Filesystem-watcher auto-refresh dropped — magit has none and it's a large-repo hazard; an opt-in auto-refresh is a TODO instead.) | ✅ done |
-| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert, reset + in-progress sequence surfacing and conflict resolution. Interactive rebase deferred (as planned). | ✅ done |
+| M7 | Tier 3                   | Merge, rebase, cherry-pick, revert, reset + in-progress sequence surfacing and conflict resolution; interactive rebase (todo editor + `--edit-todo`). | ✅ done |
 
 Each milestone ends in a buildable, demoable state.
 

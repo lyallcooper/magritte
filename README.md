@@ -34,10 +34,10 @@ incremental.
 The default keymap mirrors **evil-collection's magit**, so existing muscle
 memory transfers (`j`/`k` to move, `TAB` to fold, `s`/`u` to stage/unstage, `c`
 to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on). Press
-`?` in the app for the dispatch/help popup. The full table lives in
-[PLAN.md](PLAN.md#36-keybindings); every keyboard action has a mouse
-equivalent. Keys can be remapped or unbound with a `[keymap]` table — see
-[Configuration](#configuration).
+`?` in the app for the dispatch/help popup. The complete key list — and how to
+remap or unbind keys with a `[keymap]` table — is in
+[`docs/config.md`](docs/config.md#keymap); every keyboard action has a mouse
+equivalent.
 
 ## Configuration
 
@@ -60,8 +60,9 @@ Two crates, split at a synchronous/async seam:
   few bounded config/ref probes, e.g. resolving `@{upstream}`, still run inline;
   they don't scan the worktree.)
 
-[`docs/extensibility.md`](docs/extensibility.md) sketches the planned
-customizable-commands and command-palette work.
+The command registry, the `:` command palette, and `[keymap]` remapping are
+built; [`docs/extensibility.md`](docs/extensibility.md) covers their design and
+sketches the still-planned user-defined `[[command]]` commands.
 
 ## Development
 
