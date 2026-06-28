@@ -36,7 +36,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
-| `prefix_timeout_ms` | milliseconds | `1000` | How long a prefix key (e.g. `g`) waits for the next key before giving up — see *Keymap*. |
+| `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
 
@@ -84,9 +84,10 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   dropped, as is a chain deeper than two keys.
 - **Prefixes are implicit**: any key that begins a sequence becomes a prefix.
   Binding `". c" = "commit"` makes `.` a prefix automatically. Press the prefix
-  and a which-key hint lists the continuations; the next key resolves it. With
-  no follow-up within `prefix_timeout_ms` (default 1000) the hint clears — and
-  if the prefix key is *also* bound to a command, that command then runs.
+  and a lightweight strip at the bottom shows the pressed key; it waits for the
+  next key, which resolves the sequence. After `which_key_delay_ms` (default
+  1000) with no follow-up, the strip expands into a which-key list of the
+  available continuations.
 - **Motions are remappable too** — they're ordinary commands (see the table),
   resolved through the keymap in every view (status, log, commit, rebase-todo,
   and the `$` pager), so a rebind applies everywhere.
