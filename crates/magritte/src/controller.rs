@@ -472,10 +472,12 @@ impl StatusView {
                         this.screen = Screen::RebaseTodo(RebaseTodoView {
                             base,
                             args,
+                            initial: steps.clone(),
                             steps,
                             selected: 0,
                             scroll: UniformListScrollHandle::new(),
                             mode: RebaseTodoMode::Start,
+                            confirming_cancel: false,
                         });
                         this.clear_status(cx);
                     }
@@ -513,10 +515,12 @@ impl StatusView {
                         this.screen = Screen::RebaseTodo(RebaseTodoView {
                             base: String::new(),
                             args: Vec::new(),
+                            initial: steps.clone(),
                             steps,
                             selected: 0,
                             scroll: UniformListScrollHandle::new(),
                             mode: RebaseTodoMode::Edit,
+                            confirming_cancel: false,
                         });
                         this.clear_status(cx);
                     }
@@ -594,10 +598,38 @@ impl StatusView {
         );
     }
 
-    /// Close the rebase-todo editor without running it.
+    /// Cancel the rebase-todo editor — but if the plan has unsaved edits, ask
+    /// first rather than silently dropping them (like the commit editor).
     pub(crate) fn close_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty = self
+            .rebase_todo()
+            .is_some_and(|rt| !rt.confirming_cancel && rt.steps != rt.initial);
+        if dirty {
+            if let Some(rt) = self.rebase_todo_mut() {
+                rt.confirming_cancel = true;
+            }
+            cx.notify();
+        } else {
+            self.discard_rebase_todo(window, cx);
+        }
+    }
+
+    /// Close the editor, discarding any edits to the plan.
+    pub(crate) fn discard_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Dismiss the discard confirmation and keep editing the plan.
+    pub(crate) fn keep_editing_rebase_todo(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(rt) = self.rebase_todo_mut() {
+            rt.confirming_cancel = false;
+        }
         cx.notify();
     }
 
