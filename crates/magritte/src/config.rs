@@ -63,6 +63,14 @@ pub struct Config {
     /// for the next key; this only delays the help.
     #[serde(default = "default_which_key_delay_ms")]
     pub which_key_delay_ms: u64,
+    /// Re-run `git status` when the window regains focus, so out-of-app changes
+    /// show up without a manual refresh. On by default; set false to opt out.
+    #[serde(default = "default_true")]
+    pub refresh_on_focus: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_which_key_delay_ms() -> u64 {
@@ -88,6 +96,7 @@ impl Default for Config {
             keymap: BTreeMap::new(),
             transient: BTreeMap::new(),
             which_key_delay_ms: default_which_key_delay_ms(),
+            refresh_on_focus: true,
         }
     }
 }
