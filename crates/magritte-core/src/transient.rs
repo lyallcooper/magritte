@@ -107,6 +107,32 @@ pub struct Switch {
     pub key: &'static str,
     pub arg: &'static str,
     pub description: &'static str,
+    /// Whether the flag starts toggled on when the transient opens (the user can
+    /// still turn it off), like magit's `--autostash` on the rebase popup. Most
+    /// switches start off.
+    pub default_on: bool,
+}
+
+impl Switch {
+    /// A switch that starts off (the common case).
+    pub const fn new(key: &'static str, arg: &'static str, description: &'static str) -> Self {
+        Switch {
+            key,
+            arg,
+            description,
+            default_on: false,
+        }
+    }
+
+    /// A switch that starts on; the user toggles it off.
+    pub const fn on(key: &'static str, arg: &'static str, description: &'static str) -> Self {
+        Switch {
+            key,
+            arg,
+            description,
+            default_on: true,
+        }
+    }
 }
 
 /// Where a value-reading [`Opt`] sources its autocomplete candidates. The
@@ -297,16 +323,8 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch {
-                        key: "-f",
-                        arg: "--force-with-lease",
-                        description: "Force with lease",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-n",
-                        arg: "--dry-run",
-                        description: "Dry run",
-                    }),
+                    Suffix::Switch(Switch::new("-f", "--force-with-lease", "Force with lease")),
+                    Suffix::Switch(Switch::new("-n", "--dry-run", "Dry run")),
                 ],
             },
             Group {
@@ -429,11 +447,7 @@ pub fn log_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch {
-                        key: "-r",
-                        arg: "--reverse",
-                        description: "Reverse order",
-                    }),
+                    Suffix::Switch(Switch::new("-r", "--reverse", "Reverse order")),
                     Suffix::Option(Opt {
                         key: "-o",
                         // The value is the full `--…-order` flag, so no prefix.
@@ -528,26 +542,10 @@ pub fn commit_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch {
-                        key: "-a",
-                        arg: "--all",
-                        description: "Stage all modified and deleted files",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-e",
-                        arg: "--allow-empty",
-                        description: "Allow empty commit",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-n",
-                        arg: "--no-verify",
-                        description: "Disable hooks",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-s",
-                        arg: "--signoff",
-                        description: "Add Signed-off-by line",
-                    }),
+                    Suffix::Switch(Switch::new("-a", "--all", "Stage all modified and deleted files")),
+                    Suffix::Switch(Switch::new("-e", "--allow-empty", "Allow empty commit")),
+                    Suffix::Switch(Switch::new("-n", "--no-verify", "Disable hooks")),
+                    Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
                 ],
             },
             Group {
@@ -593,11 +591,7 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Switch(Switch {
-                    key: "-r",
-                    arg: "--rebase",
-                    description: "Rebase local commits",
-                })],
+                suffixes: vec![Suffix::Switch(Switch::new("-r", "--rebase", "Rebase local commits"))],
             },
             Group {
                 title: plain_title("Pull from"),
@@ -639,11 +633,7 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Switch(Switch {
-                    key: "-p",
-                    arg: "--prune",
-                    description: "Prune deleted branches",
-                })],
+                suffixes: vec![Suffix::Switch(Switch::new("-p", "--prune", "Prune deleted branches"))],
             },
             Group {
                 title: plain_title("Fetch from"),
@@ -685,16 +675,8 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch {
-                        key: "-a",
-                        arg: "--autostash",
-                        description: "Stash uncommitted changes around the rebase",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-s",
-                        arg: "--autosquash",
-                        description: "Honor fixup!/squash! commits",
-                    }),
+                    Suffix::Switch(Switch::on("-a", "--autostash", "Stash uncommitted changes around the rebase")),
+                    Suffix::Switch(Switch::new("-s", "--autosquash", "Honor fixup!/squash! commits")),
                 ],
             },
             Group {
@@ -736,16 +718,8 @@ pub fn merge_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch {
-                        key: "-n",
-                        arg: "--no-ff",
-                        description: "Always create a merge commit",
-                    }),
-                    Suffix::Switch(Switch {
-                        key: "-f",
-                        arg: "--ff-only",
-                        description: "Fast-forward only",
-                    }),
+                    Suffix::Switch(Switch::new("-n", "--no-ff", "Always create a merge commit")),
+                    Suffix::Switch(Switch::new("-f", "--ff-only", "Fast-forward only")),
                 ],
             },
             Group {

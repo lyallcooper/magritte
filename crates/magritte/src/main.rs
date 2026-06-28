@@ -141,9 +141,16 @@ struct TransientState {
 
 impl TransientState {
     fn new(def: Transient, targets: RemoteTargets) -> Self {
+        // Switches flagged default-on start toggled on (the user can turn them
+        // off); the rest start off.
+        let active = def
+            .switches()
+            .filter(|s| s.default_on)
+            .map(|s| s.key.to_string())
+            .collect();
         TransientState {
             def,
-            active: std::collections::HashSet::new(),
+            active,
             values: std::collections::HashMap::new(),
             pending_dash: false,
             targets,
