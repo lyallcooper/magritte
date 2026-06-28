@@ -309,8 +309,6 @@ enum PickerAction {
     RunGit,
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
-    /// Start an interactive rebase: the chosen base opens the todo editor.
-    RebaseInteractive,
 }
 
 impl PickerAction {
@@ -348,7 +346,6 @@ impl PickerAction {
             // Reads like magit's "git " prompt: the typed text follows "git".
             PickerAction::RunGit => transient::plain_title("git"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
-            PickerAction::RebaseInteractive => transient::plain_title("Rebase since"),
         }
     }
 
@@ -388,7 +385,6 @@ impl PickerAction {
             PickerAction::Rebase => "rebase",
             PickerAction::RunGit => "run",
             PickerAction::Ignore(_) => "ignore",
-            PickerAction::RebaseInteractive => "edit",
         }
     }
 }
@@ -434,13 +430,26 @@ enum GitLogRow {
     Output(String),
 }
 
-/// The commit-log view (`l`): a scrollable list of commits with j/k navigation;
-/// Enter opens the selected commit's diff in a [`CommitView`].
+/// Why the log view is open. Browsing is the default; selecting picks a commit
+/// to act on and confirms with Return (magit's `magit-log-select`).
+#[derive(PartialEq, Eq)]
+enum LogPurpose {
+    /// Ordinary browsing: Return opens the commit's diff.
+    Browse,
+    /// Pick the commit to rebase interactively since (its `^`..HEAD becomes the
+    /// editable todo). Carries the switches gathered in the rebase transient.
+    SelectRebaseBase { args: Vec<String> },
+}
+
+/// The commit-log view (`l`): a scrollable list of commits with j/k navigation.
+/// When browsing, Return opens the selected commit's diff in a [`CommitView`];
+/// in a select mode, Return confirms the commit for the pending action.
 struct LogState {
     entries: Vec<magritte_core::LogEntry>,
     selected: usize,
     scroll: UniformListScrollHandle,
     load: LogLoad,
+    purpose: LogPurpose,
 }
 
 /// Load state of the log view, so the body can distinguish still-loading from a
@@ -3411,7 +3420,7 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let gen = self.show_log_loading(cx);
+        let gen = self.show_log_loading(LogPurpose::Browse, cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -3423,12 +3432,56 @@ impl StatusView {
         .detach();
     }
 
+    /// Open the log to pick the commit to rebase interactively *since* — magit's
+    /// `magit-log-select`. The chosen commit and everything above it become the
+    /// editable todo; `switches` carries the rebase transient's flags.
+    fn start_log_select_rebase(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.show_log_loading(LogPurpose::SelectRebaseBase { args: switches }, cx);
+        let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.log_with(&args) })
+                .await;
+            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Begin an interactive rebase since the commit selected in the log (its
+    /// parent is the base, so that commit and everything above it are editable),
+    /// opening the todo editor. `args` are the rebase switches.
+    fn rebase_since_selected(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(rev) = self
+            .log()
+            .and_then(|l| l.entries.get(l.selected))
+            .map(|e| e.short_hash.clone())
+        else {
+            return;
+        };
+        // base = commit^: `base..HEAD` then includes the selected commit.
+        self.open_rebase_todo(format!("{rev}^"), args, cx);
+    }
+
+    /// Confirm the selected commit in a log-select mode (the clickable "select"
+    /// button; Return does the same from the key handler).
+    fn confirm_log_select(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(LogPurpose::SelectRebaseBase { args }) = self.log().map(|l| &l.purpose) {
+            let args = args.clone();
+            self.rebase_since_selected(args, cx);
+        }
+    }
+
     /// Open the reflog view (`l r`).
     fn start_reflog(&mut self, limit: usize, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let gen = self.show_log_loading(cx);
+        let gen = self.show_log_loading(LogPurpose::Browse, cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -3442,13 +3495,14 @@ impl StatusView {
 
     /// Show the (empty) log view immediately while commits load, returning the
     /// screen-load generation the matching `fill_log` must still see.
-    fn show_log_loading(&mut self, cx: &mut Context<Self>) -> u64 {
+    fn show_log_loading(&mut self, purpose: LogPurpose, cx: &mut Context<Self>) -> u64 {
         let gen = self.next_screen_gen();
         self.screen = Screen::Log(LogState {
             entries: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             load: LogLoad::Loading,
+            purpose,
         });
         cx.notify();
         gen
@@ -3844,9 +3898,18 @@ impl StatusView {
         if self.log().is_some() {
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
+            // In a select mode, Return confirms the commit for the pending
+            // action; while browsing it opens the commit's diff.
+            let select_args = match self.log().map(|l| &l.purpose) {
+                Some(LogPurpose::SelectRebaseBase { args }) => Some(args.clone()),
+                _ => None,
+            };
             match key.as_str() {
                 "escape" | "q" => self.close_log(window, cx),
-                "enter" => self.open_commit_view(cx),
+                "enter" => match select_args {
+                    Some(args) => self.rebase_since_selected(args, cx),
+                    None => self.open_commit_view(cx),
+                },
                 "j" | "down" => self.log_move(1, cx),
                 "k" | "up" => self.log_move(-1, cx),
                 "d" if ctrl => self.log_move(half, cx),
@@ -3863,6 +3926,9 @@ impl StatusView {
                 // Revert is `_` (evil-collection-magit); `V` is visual-line there.
                 "_" => self.pick_selected(PickOp::Revert, window, cx),
                 "-" if shift => self.pick_selected(PickOp::Revert, window, cx),
+                // `r`: rebase interactively since the commit at point (magit's
+                // commit-at-point path) — only while browsing, with default args.
+                "r" if select_args.is_none() => self.rebase_since_selected(Vec::new(), cx),
                 // Yank the selected commit's hash.
                 "y" => self.copy_log_commit(cx),
                 "c" if cmd => self.copy_log_commit(cx),
@@ -5420,11 +5486,19 @@ impl StatusView {
             .into_any_element(),
         };
 
+        // In select mode the title becomes a prompt and Return confirms the
+        // commit; while browsing it's just "Log".
+        let selecting = matches!(log.purpose, LogPurpose::SelectRebaseBase { .. });
+        let title = if selecting {
+            "Select a commit to rebase since"
+        } else {
+            "Log"
+        };
         let mut header = div().flex().items_center().gap_3().child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(self.palette.section)
-                .child(SharedString::from("Log")),
+                .child(SharedString::from(title)),
         );
         if capped {
             header = header.child(
@@ -5433,7 +5507,27 @@ impl StatusView {
                     .child(SharedString::from(format!("(first {})", Self::LOG_LIMIT))),
             );
         }
-        header = header.child(self.key_action("log-close", "esc", "close", view, Self::close_log));
+        if selecting {
+            header = header.child(self.key_action(
+                "log-select-confirm",
+                "return",
+                "select",
+                view,
+                Self::confirm_log_select,
+            ));
+        }
+        let (close_key, close_label) = if selecting {
+            ("esc", "cancel")
+        } else {
+            ("esc", "close")
+        };
+        header = header.child(self.key_action(
+            "log-close",
+            close_key,
+            close_label,
+            view,
+            Self::close_log,
+        ));
 
         div()
             .flex()

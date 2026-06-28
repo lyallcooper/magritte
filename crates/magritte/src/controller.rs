@@ -613,15 +613,10 @@ impl StatusView {
     ) {
         use transient::Command::*;
         if matches!(command, RebaseInteractive) {
-            // Prompt for the base; commits after it become the editable todo.
-            self.open_listed_picker(
-                PickerAction::RebaseInteractive,
-                CreateMode::Value,
-                args,
-                targets::all_branches,
-                window,
-                cx,
-            );
+            // magit's model: pick the commit to rebase *since* from the log
+            // (not a free-text base) — that commit and everything above it
+            // become the editable todo.
+            self.start_log_select_rebase(args, cx);
             return;
         }
         let onto = match command {
@@ -1215,9 +1210,6 @@ impl StatusView {
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
                 PickerAction::RunGit => self.run_git_command(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
-                PickerAction::RebaseInteractive => {
-                    self.open_rebase_todo(chosen.to_string(), p.switches, cx)
-                }
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
