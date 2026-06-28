@@ -102,15 +102,11 @@ pub fn path() -> Option<PathBuf> {
     Some(base.join("magritte").join("config.toml"))
 }
 
-/// Load the config, returning defaults if it's missing or unreadable.
-pub fn load() -> Config {
-    load_reporting().0
-}
-
-/// Like [`load`], but also returns a warning when the config file *exists* yet
-/// fails to parse — so we can tell the user their settings were ignored rather
-/// than silently falling back to defaults. A missing/unreadable file is not a
-/// warning (defaulting is the intended behavior there).
+/// Load the config, returning defaults if it's missing or unreadable, plus a
+/// warning when the config file *exists* yet fails to parse — so we can tell the
+/// user their settings were ignored rather than silently falling back to
+/// defaults. A missing/unreadable file is not a warning (defaulting is the
+/// intended behavior there).
 pub fn load_reporting() -> (Config, Option<String>) {
     let Some(path) = path() else {
         return (Config::default(), None);
