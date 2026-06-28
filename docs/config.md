@@ -79,15 +79,17 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
 ```
 
 - **Keystrokes** are case-sensitive (`s` vs `S`, `f` fetch vs `F` pull). Most are
-  a single key; the rest are a **prefix + one key** sequence (`g g`, `g r`). An
-  unknown command id is ignored with a startup warning rather than silently
-  dropped, as is a chain deeper than two keys.
+  a single key; the rest are space-separated **sequences** of any length (`g g`,
+  `g r`, or your own `z b c`). An unknown command id is ignored with a startup
+  warning rather than silently dropped.
 - **Prefixes are implicit**: any key that begins a sequence becomes a prefix.
   Binding `". c" = "commit"` makes `.` a prefix automatically. Press the prefix
-  and a lightweight strip at the bottom shows the pressed key; it waits for the
-  next key, which resolves the sequence. After `which_key_delay_ms` (default
-  1000) with no follow-up, the strip expands into a which-key list of the
-  available continuations.
+  and a lightweight strip at the bottom shows the keys typed so far with a
+  trailing dash (`g-`); each further key extends the sequence until it resolves.
+  After `which_key_delay_ms` (default 1000) with no follow-up, the strip expands
+  into a which-key list of the available continuations.
+- **Unbound keys** report themselves: pressing a key or sequence with no binding
+  shows a brief "… is unbound" notice (emacs' echo-area feedback).
 - **Motions are remappable too** — they're ordinary commands (see the table),
   resolved through the keymap in every view (status, log, commit, rebase-todo,
   and the `$` pager), so a rebind applies everywhere.
