@@ -1305,11 +1305,23 @@ impl StatusView {
                         build_log_args(flags, LogScope::Ref(chosen.to_string()), paths, limit);
                     self.start_log(args, cx);
                 }
-                // Resolve the chosen title back to its command and run it.
+                // Resolve the chosen title back to its command (built-in or a
+                // user `[[command]]`) and run it through the shared dispatch.
                 PickerAction::RunCommand => {
-                    if let Some(cmd) = commands().iter().find(|c| c.title == chosen.as_ref()) {
-                        self.record_use(cmd.id);
-                        (cmd.run)(self, window, cx);
+                    let id = commands()
+                        .iter()
+                        .find(|c| c.title == chosen.as_ref())
+                        .map(|c| c.id.to_string())
+                        .or_else(|| {
+                            self.config
+                                .commands
+                                .iter()
+                                .find(|c| c.title == chosen.as_ref())
+                                .map(|c| c.id.clone())
+                        });
+                    if let Some(id) = id {
+                        self.record_use(&id);
+                        self.invoke_command(&id, window, cx);
                     }
                 }
             }

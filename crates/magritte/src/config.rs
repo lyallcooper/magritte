@@ -67,6 +67,30 @@ pub struct Config {
     /// show up without a manual refresh. On by default; set false to opt out.
     #[serde(default = "default_true")]
     pub refresh_on_focus: bool,
+    /// User-defined commands (`[[command]]`): a git argument list, optionally
+    /// chained, surfaced in the `:` palette and bindable in `[keymap]` by `id`.
+    #[serde(default, rename = "command")]
+    pub commands: Vec<CustomCommand>,
+}
+
+/// A user-defined command from a `[[command]]` table: a git invocation (an
+/// argument list, never a shell string) the palette and keymap can run by `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomCommand {
+    /// Stable id — bound in `[keymap]` and recorded for palette frecency.
+    /// Conventionally namespaced (`user.sync`) to avoid clashing with built-ins.
+    pub id: String,
+    /// Human label shown in the palette.
+    pub title: String,
+    /// The git argument list to run (`["pull", "--rebase"]`). Supports the
+    /// `{file}`, `{commit}`, and `{branch}` placeholders, resolved at run time.
+    pub run: Vec<String>,
+    /// An optional follow-up git command, run only if `run` succeeds.
+    #[serde(default)]
+    pub then: Vec<String>,
+    /// Re-read status after running (default true).
+    #[serde(default = "default_true")]
+    pub refresh: bool,
 }
 
 fn default_true() -> bool {
@@ -97,6 +121,7 @@ impl Default for Config {
             transient: BTreeMap::new(),
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
+            commands: Vec::new(),
         }
     }
 }
