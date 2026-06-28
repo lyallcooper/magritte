@@ -40,7 +40,10 @@ fn timeout_kills_a_blocking_command() {
     let repo = open(&t).with_timeout(Duration::from_millis(300));
     let start = Instant::now();
     let res = repo.run(["commit", "-m", "x"]);
-    assert!(matches!(res, Err(Error::TimedOut)), "expected TimedOut, got {res:?}");
+    assert!(
+        matches!(res, Err(Error::TimedOut)),
+        "expected TimedOut, got {res:?}"
+    );
     assert!(
         start.elapsed() < Duration::from_secs(3),
         "should bail near the deadline, took {:?}",
@@ -59,7 +62,10 @@ fn cancel_kills_a_blocking_command_promptly() {
     thread::sleep(Duration::from_millis(300));
     cancel.store(true, Ordering::Relaxed);
     let (res, elapsed) = worker.join().unwrap();
-    assert!(matches!(res, Err(Error::Cancelled)), "expected Cancelled, got {res:?}");
+    assert!(
+        matches!(res, Err(Error::Cancelled)),
+        "expected Cancelled, got {res:?}"
+    );
     assert!(
         elapsed < Duration::from_secs(3),
         "should stop soon after cancel, took {elapsed:?}"

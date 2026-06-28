@@ -1307,6 +1307,11 @@ struct StatusView {
     /// Cancel flag for the active mutating job (push/pull/merge/…), set while it
     /// runs so `C-g`/Esc can kill the subprocess. `None` when nothing is running.
     job_cancel: Option<Arc<AtomicBool>>,
+    /// Bumped whenever a screen-changing async load starts (log, reflog, commit
+    /// diff, rebase todo). A load verifies its captured value still matches
+    /// before populating the screen, so a superseded load can't land in the
+    /// screen a newer request opened.
+    screen_gen: u64,
     pending_g: bool,
     /// Whether the Emacs `C-x` prefix is pending (next key resolves it, e.g.
     /// `C-x C-c` to quit).
@@ -1416,6 +1421,7 @@ impl StatusView {
             generation: 0,
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
+            screen_gen: 0,
             pending_g: false,
             pending_cx: false,
             popup: None,
@@ -1617,6 +1623,15 @@ impl StatusView {
             self.set_status(warnings.join("; "), false, cx);
         }
         self.reapply_theme(cx);
+        // The settings screen's dropdowns/inputs were built from the old config
+        // (rebuilding them needs a Window we don't have on this reload path), so
+        // close it rather than leave stale controls — the next open reflects the
+        // reloaded config. Only external edits reach here; our own in-app saves
+        // are filtered out upstream by the unchanged-config guard.
+        if self.settings().is_some() {
+            self.screen = Screen::Status;
+            self.set_status("Settings reloaded from disk".to_string(), true, cx);
+        }
     }
 
     /// Re-apply the current config's theme and refresh everything that bakes in
@@ -1660,7 +1675,9 @@ impl StatusView {
     /// The repo cloned for a background *read* (status/diff/prefetch), tagged
     /// with the current generation's cancel flag so a later `refresh` kills it.
     fn read_repo(&self) -> Option<magritte_core::Repo> {
-        self.repo.clone().map(|r| r.with_cancel(self.read_cancel.clone()))
+        self.repo
+            .clone()
+            .map(|r| r.with_cancel(self.read_cancel.clone()))
     }
 
     /// Reload status from scratch, invalidating any in-flight work.
@@ -2639,23 +2656,12 @@ impl StatusView {
         let Some(path) = self.conflicted_in_selection() else {
             return;
         };
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some(format!("Resolving {path}…"));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.resolve_conflict(&path, side).map(|()| String::new()) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Resolved", result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            &format!("Resolving {path}…"),
+            "Resolved",
+            move |repo| repo.resolve_conflict(&path, side).map(|()| String::new()),
+            cx,
+        );
     }
 
     /// Labels for the take-ours / take-theirs conflict actions. git's `--ours`
@@ -2708,8 +2714,7 @@ impl StatusView {
                 } else {
                     format!("{path} is conflicted — resolve it first")
                 };
-                self.status_message = Some(msg);
-                cx.notify();
+                self.set_status(msg, false, cx);
                 return;
             }
         }
@@ -2742,14 +2747,13 @@ impl StatusView {
                 .spawn(async move { action.run(&repo) })
                 .await;
             this.update(cx, |this, cx| {
-                // Use status_message, not `error`: refresh() clears `error` at
-                // its top, so a failure stored there would never be shown.
+                // Status, not `error`: refresh() clears `error` at its top, so a
+                // failure stored there would never be shown.
                 match result {
-                    Ok(()) => this.status_message = None,
-                    Err(e) => this.status_message = Some(format!("error: {e}")),
+                    Ok(()) => this.clear_status(cx),
+                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
                 }
                 this.refresh(cx);
-                cx.notify();
             })
             .ok();
         })
@@ -2907,8 +2911,7 @@ impl StatusView {
             .as_ref()
             .is_some_and(|s| s.unstaged().next().is_some());
         if !has_unstaged {
-            self.status_message = Some("Nothing staged (or unstaged)".to_string());
-            cx.notify();
+            self.set_status("Nothing staged (or unstaged)".to_string(), false, cx);
             return;
         }
         self.confirm = Some((
@@ -3380,13 +3383,14 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        self.show_log_loading(cx);
+        let gen = self.show_log_loading(cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { repo.log_with(&args) })
                 .await;
-            this.update(cx, |this, cx| this.fill_log(result, cx)).ok();
+            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
+                .ok();
         })
         .detach();
     }
@@ -3396,19 +3400,22 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        self.show_log_loading(cx);
+        let gen = self.show_log_loading(cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { repo.reflog(limit) })
                 .await;
-            this.update(cx, |this, cx| this.fill_log(result, cx)).ok();
+            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
+                .ok();
         })
         .detach();
     }
 
-    /// Show the (empty) log view immediately while commits load.
-    fn show_log_loading(&mut self, cx: &mut Context<Self>) {
+    /// Show the (empty) log view immediately while commits load, returning the
+    /// screen-load generation the matching `fill_log` must still see.
+    fn show_log_loading(&mut self, cx: &mut Context<Self>) -> u64 {
+        let gen = self.next_screen_gen();
         self.screen = Screen::Log(LogState {
             entries: Vec::new(),
             selected: 0,
@@ -3416,15 +3423,21 @@ impl StatusView {
             load: LogLoad::Loading,
         });
         cx.notify();
+        gen
     }
 
     /// Fill the open log view with the load result: entries on success, the
     /// error otherwise (so the view shows it rather than an endless "Loading…").
     fn fill_log(
         &mut self,
+        gen: u64,
         result: magritte_core::Result<Vec<magritte_core::LogEntry>>,
         cx: &mut Context<Self>,
     ) {
+        // Drop a load a newer log/reflog request has superseded.
+        if self.screen_gen != gen {
+            return;
+        }
         if let Some(log) = self.log_mut() {
             match result {
                 Ok(entries) => {
@@ -3463,9 +3476,6 @@ impl StatusView {
     /// status view (so a conflict shows in the in-progress banner). Runs on the
     /// background executor.
     fn pick_selected(&mut self, op: PickOp, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let Some(rev) = self
             .log()
             .and_then(|l| l.entries.get(l.selected))
@@ -3478,25 +3488,22 @@ impl StatusView {
             PickOp::Revert => ("Reverting", "Reverted"),
         };
         self.close_log(window, cx);
-        self.status_message = Some(format!("{verb} {rev}…"));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match op {
-                        PickOp::CherryPick => repo.cherry_pick(&rev),
-                        PickOp::Revert => repo.revert(&rev),
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            &format!("{verb} {rev}…"),
+            done,
+            move |repo| match op {
+                PickOp::CherryPick => repo.cherry_pick(&rev),
+                PickOp::Revert => repo.revert(&rev),
+            },
+            cx,
+        );
+    }
+
+    /// Advance and return the screen-load generation. A screen-changing async
+    /// load captures this and re-checks it before mutating the screen.
+    fn next_screen_gen(&mut self) -> u64 {
+        self.screen_gen = self.screen_gen.wrapping_add(1);
+        self.screen_gen
     }
 
     fn open_commit_view(&mut self, cx: &mut Context<Self>) {
@@ -3506,6 +3513,7 @@ impl StatusView {
         let Some(entry) = self.log().and_then(|l| l.entries.get(l.selected).cloned()) else {
             return;
         };
+        let gen = self.next_screen_gen();
         // Move the log into the commit screen so closing returns to it.
         let Screen::Log(log) = std::mem::take(&mut self.screen) else {
             return;
@@ -3543,8 +3551,10 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.commit_view().is_none() {
-                    return; // closed before the diff loaded
+                // Bail if a newer screen load superseded this one, or the view
+                // was closed before the diff arrived.
+                if this.screen_gen != gen || this.commit_view().is_none() {
+                    return;
                 }
                 let rows = match loaded {
                     Ok(files) => this.diff_rows(&files, cx),
@@ -3636,8 +3646,7 @@ impl StatusView {
         };
         let text = ed.state.read(cx).value().to_string();
         if text.trim().is_empty() {
-            self.status_message = Some("Commit message is empty".to_string());
-            cx.notify();
+            self.set_status("Commit message is empty".to_string(), false, cx);
             return;
         }
         let ed = self.take_editor().unwrap();
@@ -3653,25 +3662,12 @@ impl StatusView {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Committing…".to_string());
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.commit(&message, mode, &args) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report("Committed", result, cx);
-                this.refresh(cx);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Committing…",
+            "Committed",
+            move |repo| repo.commit(&message, mode, &args),
+            cx,
+        );
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -6022,8 +6018,7 @@ impl StatusView {
             .text_color(self.palette.fg)
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _window, cx| {
-                this.status_message = None;
-                cx.notify();
+                this.clear_status(cx);
             }));
         // A copy confirmation renders the copied value emphasized — accent
         // color, monospace, italic — so a path or hash reads as a literal.

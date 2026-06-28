@@ -35,8 +35,8 @@ pub(crate) struct SettingsState {
     editor: Entity<InputState>,
     /// External commit-message editor command (free text, e.g. `zed --wait`).
     commit_editor: Entity<InputState>,
-    /// Which dropdown Tab focuses next (0=appearance,1=light,2=dark,3=font,
-    /// 4=ui_font).
+    /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
+    /// 4=ui_font, 5=editor, 6=commit_editor).
     focus_ix: usize,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
@@ -310,13 +310,14 @@ impl StatusView {
         config::save(&self.config);
     }
 
-    /// Tab moves focus to the next settings dropdown. (The four dropdowns have
-    /// distinct `SelectState` types, so each arm focuses its own entity.)
+    /// Tab moves focus to the next settings control, cycling through every one
+    /// of them (the dropdowns have distinct `SelectState` types and the editor
+    /// fields are `Select`/`Input`, so each arm focuses its own entity).
     pub(crate) fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = self.settings_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + 1) % 5;
+        s.focus_ix = (s.focus_ix + 1) % 7;
         match s.focus_ix {
             0 => s
                 .appearance
@@ -331,7 +332,12 @@ impl StatusView {
                 .clone()
                 .update(cx, |st, cx| st.focus(window, cx)),
             3 => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
-            _ => s.ui_font.clone().update(cx, |st, cx| st.focus(window, cx)),
+            4 => s.ui_font.clone().update(cx, |st, cx| st.focus(window, cx)),
+            5 => s.editor.clone().update(cx, |st, cx| st.focus(window, cx)),
+            _ => s
+                .commit_editor
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
         }
     }
 
