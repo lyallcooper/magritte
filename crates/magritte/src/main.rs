@@ -1031,15 +1031,32 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         map.insert(key.to_string(), id.to_string());
     }
     let mut warnings = Vec::new();
+    // A binding target is valid if it's a built-in command or a user `[[command]]`.
+    let known = |id: &str| {
+        commands().iter().any(|c| c.id == id) || config.commands.iter().any(|c| c.id == id)
+    };
     for (keystroke, id) in &config.keymap {
         if id == "unbound" {
             map.remove(keystroke);
-        } else if !commands().iter().any(|c| c.id == id) {
+        } else if !known(id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
         } else {
             // Any keystroke sequence is allowed, to any depth — `dispatch`
             // accumulates keys until one resolves to a binding (or to nothing).
             map.insert(keystroke.clone(), id.clone());
+        }
+    }
+    // Validate the user `[[command]]` definitions.
+    let mut seen_ids = HashSet::new();
+    for c in &config.commands {
+        if c.run.is_empty() {
+            warnings.push(format!("command \"{}\": empty run", c.id));
+        }
+        if commands().iter().any(|b| b.id == c.id) {
+            warnings.push(format!("command \"{}\": shadows a built-in command", c.id));
+        }
+        if !seen_ids.insert(c.id.as_str()) {
+            warnings.push(format!("command \"{}\": duplicate id", c.id));
         }
     }
     // Validate the `[transient]` suffix injections: the section must name a
@@ -1057,6 +1074,16 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         }
     }
     (map, warnings)
+}
+
+/// Whether a custom command's git arguments look like they could throw away
+/// work — so the frontend confirms first, like the built-in destructive ops.
+/// Flags `clean`, and any `--hard` / `--force` / `--force-with-lease`.
+fn custom_is_destructive(args: &[String]) -> bool {
+    args.first().map(String::as_str) == Some("clean")
+        || args
+            .iter()
+            .any(|a| matches!(a.as_str(), "--hard" | "--force" | "--force-with-lease"))
 }
 
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
@@ -1461,6 +1488,13 @@ enum Confirm {
     /// todo editor for `rev^..HEAD` with the carried switches (rewriting pushed
     /// history).
     RebaseSincePushed { rev: String, args: Vec<String> },
+    /// A user `[[command]]` that looks destructive (resolved args): on `y`, run
+    /// `git <run>` then `git <then>`, refreshing unless opted out.
+    CustomGit {
+        run: Vec<String>,
+        then: Vec<String>,
+        refresh: bool,
+    },
 }
 
 /// The three controls for an in-progress sequence.
@@ -3181,6 +3215,9 @@ impl StatusView {
             Some((_, Confirm::RebaseSincePushed { rev, args })) => {
                 self.open_rebase_todo(format!("{rev}^"), args, cx)
             }
+            Some((_, Confirm::CustomGit { run, then, refresh })) => {
+                self.run_custom_git(run, then, refresh, cx)
+            }
             None => {}
         }
         cx.notify();
@@ -4577,7 +4614,148 @@ impl StatusView {
     fn invoke_command(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(cmd) = commands().iter().find(|c| c.id == id) {
             (cmd.run)(self, window, cx);
+        } else if let Some(custom) = self.config.commands.iter().find(|c| c.id == id).cloned() {
+            self.run_custom_command(custom, window, cx);
         }
+    }
+
+    /// Run a user `[[command]]`: resolve its placeholders against the current
+    /// selection, confirm if it looks destructive, then run it (and its `then`
+    /// follow-up) as a git command on the background path.
+    fn run_custom_command(
+        &mut self,
+        cmd: config::CustomCommand,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(run), Some(then)) = (
+            self.resolve_args(&cmd.run, cx),
+            self.resolve_args(&cmd.then, cx),
+        ) else {
+            return; // a placeholder couldn't be resolved; resolve_args reported it
+        };
+        if run.is_empty() {
+            return;
+        }
+        if custom_is_destructive(&run) || custom_is_destructive(&then) {
+            self.confirm = Some((
+                format!("Run git {}? (y/n)", run.join(" ")),
+                Confirm::CustomGit {
+                    run,
+                    then,
+                    refresh: cmd.refresh,
+                },
+            ));
+            cx.notify();
+        } else {
+            self.run_custom_git(run, then, cmd.refresh, cx);
+        }
+    }
+
+    /// Expand `{file}`/`{commit}`/`{branch}` in each argument against the current
+    /// selection. Returns `None` (after reporting why) if a placeholder can't be
+    /// resolved — e.g. `{file}` with no file at point.
+    fn resolve_args(&mut self, args: &[String], cx: &mut Context<Self>) -> Option<Vec<String>> {
+        let mut out = Vec::with_capacity(args.len());
+        for arg in args {
+            match self.expand_placeholders(arg) {
+                Ok(s) => out.push(s),
+                Err(e) => {
+                    self.set_status(e, false, cx);
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Substitute the supported placeholders in one argument.
+    fn expand_placeholders(&self, arg: &str) -> Result<String, String> {
+        let mut s = arg.to_string();
+        if s.contains("{file}") {
+            let path = self
+                .path_at_point()
+                .ok_or_else(|| "No file at point for {file}".to_string())?;
+            s = s.replace("{file}", &path);
+        }
+        if s.contains("{branch}") {
+            let branch = self
+                .status
+                .as_ref()
+                .and_then(|st| st.head.branch.clone())
+                .ok_or_else(|| "No current branch for {branch}".to_string())?;
+            s = s.replace("{branch}", &branch);
+        }
+        if s.contains("{commit}") {
+            let hash = self
+                .log()
+                .and_then(|l| l.entries.get(l.selected))
+                .map(|e| e.hash.clone())
+                .ok_or_else(|| "No commit at point for {commit}".to_string())?;
+            s = s.replace("{commit}", &hash);
+        }
+        Ok(s)
+    }
+
+    /// The repo-relative path of the file at point (its row, or the file a
+    /// hunk/line belongs to), if any.
+    fn path_at_point(&self) -> Option<String> {
+        match self.rows.get(self.selected)?.target.as_ref()? {
+            Target::File(f) => Some(f.path.clone()),
+            Target::Hunk { file, .. } | Target::Line { file, .. } => Some(file.path.clone()),
+        }
+    }
+
+    /// Run a resolved custom command (and its optional `then`) as one background
+    /// job — `git <run>`, then `git <then>` if the first succeeds — showing the
+    /// last command's first output line, and refreshing unless opted out.
+    fn run_custom_git(
+        &mut self,
+        run: Vec<String>,
+        then: Vec<String>,
+        refresh: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        self.set_progress(format!("git {}…", run.join(" ")), cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut out = repo.run(&run)?;
+                    if !then.is_empty() {
+                        out = repo.run(&then)?;
+                    }
+                    Ok::<String, magritte_core::Error>(out.first_line())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.job_cancel = None;
+                match result {
+                    Ok(summary) => {
+                        this.set_status(
+                            if summary.is_empty() {
+                                "Done".to_string()
+                            } else {
+                                summary
+                            },
+                            true,
+                            cx,
+                        );
+                    }
+                    Err(e) => this.report_error(e, cx),
+                }
+                if refresh {
+                    this.refresh(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Classify a keystroke sequence against the effective keymap: a complete
@@ -4679,15 +4857,23 @@ impl StatusView {
         // Order by frecency (most-used-recently first); a stable sort keeps the
         // registry order among never-used commands and ties. The picker's fuzzy
         // ranking takes over once the user types, with this order breaking ties.
-        let mut cmds: Vec<&Command> = commands()
+        let mut entries: Vec<(&str, String)> = commands()
             .iter()
             .filter(|c| c.palette && (c.enabled)(self))
+            .map(|c| (c.id, c.title.to_string()))
+            .chain(
+                // User `[[command]]`s — always palette-able.
+                self.config
+                    .commands
+                    .iter()
+                    .map(|c| (c.id.as_str(), c.title.clone())),
+            )
             .collect();
-        cmds.sort_by(|a, b| {
-            let (sa, sb) = (self.usage.score(a.id), self.usage.score(b.id));
+        entries.sort_by(|a, b| {
+            let (sa, sb) = (self.usage.score(a.0), self.usage.score(b.0));
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let choices: Vec<String> = cmds.iter().map(|c| c.title.to_string()).collect();
+        let choices: Vec<String> = entries.into_iter().map(|(_, title)| title).collect();
         self.open_picker(
             PickerAction::RunCommand,
             choices,
@@ -7593,6 +7779,36 @@ mod tests {
         assert_eq!(km.get(". c").map(String::as_str), Some("commit"));
         assert_eq!(km.get("a b c").map(String::as_str), Some("stage"));
         assert!(warnings.is_empty(), "any-depth sequence is fine: {warnings:?}");
+    }
+
+    #[test]
+    fn custom_command_is_a_valid_bind_target() {
+        let mut config = config::Config::default();
+        config.commands.push(config::CustomCommand {
+            id: "user.wip".into(),
+            title: "WIP".into(),
+            run: vec!["commit".into(), "-a".into(), "-m".into(), "WIP".into()],
+            then: Vec::new(),
+            refresh: true,
+        });
+        config.keymap.insert("X".into(), "user.wip".into());
+        config.keymap.insert("Y".into(), "user.nope".into()); // unknown id
+        let (km, warnings) = build_keymap(&config);
+        assert_eq!(km.get("X").map(String::as_str), Some("user.wip"));
+        assert!(!km.contains_key("Y"), "unknown id isn't bound");
+        assert_eq!(warnings.len(), 1, "only the unknown id warns: {warnings:?}");
+    }
+
+    #[test]
+    fn custom_destructive_detection() {
+        let d = |args: &[&str]| {
+            custom_is_destructive(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
+        assert!(d(&["reset", "--hard", "HEAD"]));
+        assert!(d(&["clean", "-fd"]));
+        assert!(d(&["push", "--force"]));
+        assert!(!d(&["pull", "--rebase"]));
+        assert!(!d(&["commit", "-a", "-m", "WIP"]));
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and

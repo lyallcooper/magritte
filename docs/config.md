@@ -123,14 +123,14 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |
-| `git-command` | `!` | Run a raw git command |
+| `git-command` | `!` | Run a command (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
 | `stage-all` | `S` | Stage all |
 | `unstage-all` | `U` | Unstage all |
 | `discard` | `x` | Discard the selection |
 | `open-file` | `Return` | Open file at point in `editor` |
-| `fold` | `Tab` | Fold / unfold (the `Tab` key itself is reserved) |
+| `fold` | `Tab` | Fold / unfold |
 | `refresh` | `g r` | Refresh status |
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y` | Copy the selection |
@@ -181,3 +181,36 @@ The injected suffixes appear in a **Custom** group at the bottom of the menu and
 run with default arguments. A key that already exists in the transient is left
 alone (the built-in binding wins). Unknown command ids — and a section that
 isn't a real transient — warn at startup.
+
+## Commands
+
+A `[[command]]` table defines your own command: a **git argument list** (never a
+shell string) the `:` palette and `[keymap]` can run by `id`.
+
+```toml
+[[command]]
+id = "user.sync"                # bind in [keymap] / shown in the palette by title
+title = "Sync (pull --rebase, then push)"
+run = ["pull", "--rebase"]      # the git arguments to run
+then = ["push"]                 # optional follow-up; runs only if `run` succeeds
+refresh = true                  # re-read status afterward (default true)
+
+[[command]]
+id = "user.wip"
+title = "WIP commit"
+run = ["commit", "-a", "-m", "WIP"]
+```
+
+- **Placeholders** in any argument are resolved at run time against the current
+  selection: `{file}` (the file at point), `{commit}` (the commit at point in
+  the log), `{branch}` (the current branch). If one can't be resolved — e.g.
+  `{file}` with no file selected — the command reports that and doesn't run.
+- **Bind it** like any built-in: `[keymap]` entry `"X" = "user.wip"`, or run it
+  from the `:` palette by its `title`. The full command (and `then`) is logged
+  in the `$` command log.
+- **Destructive commands confirm first** — one whose arguments include `clean`,
+  `--hard`, or `--force` prompts before running, like the built-in destructive
+  operations.
+- **Git only.** The arguments run as `git <args>`; for a one-off non-git command
+  use the `!` prompt (delete its `git ` prefix). An empty `run`, an `id` that
+  shadows a built-in, or a duplicate `id` warns at startup.
