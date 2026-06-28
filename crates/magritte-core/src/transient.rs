@@ -150,10 +150,11 @@ pub struct Action {
 
 /// A keys-and-description row with no toggle state of its own (e.g. the rows of
 /// the `?` dispatch menu). The frontend decides what a row does when invoked;
-/// `keys` may list several keystrokes (e.g. `gg`).
-#[derive(Debug, Clone, Copy)]
+/// `keys` is the *current* binding (so the menu reflects remaps) and may list
+/// several keystrokes (e.g. `g g`).
+#[derive(Debug, Clone)]
 pub struct Info {
-    pub keys: &'static str,
+    pub keys: String,
     pub description: &'static str,
 }
 
