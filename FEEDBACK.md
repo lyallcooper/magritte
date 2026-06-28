@@ -618,5 +618,110 @@ Deferred (by decision, not oversight):
     -passing ceremony for no real benefit. The `impl StatusView` blocks now live
     in their own files (controller.rs, settings.rs) — a file/concern boundary,
     not a data boundary, which is the right trade here.
+────────────────────────────────────────────────────────────────────────── -->
+
+## Post-Rearchitecture Review
+
+- **Stale async screen loads can update the wrong active screen.**
+  The new `Screen` enum is a real improvement, but some async screen loads still
+  identify the destination only by screen type, not by the specific request that
+  started them. `open_commit_view` starts loading one commit's diff
+  (`crates/magritte/src/main.rs:3481`) and completion only checks that some
+  commit view is open (`main.rs:3525`). If the user opens commit A, closes it,
+  then opens commit B before A finishes loading, A's diff can populate B's
+  `CommitView`. The same missing request identity exists for log loads through
+  `start_log` / `fill_log` (`main.rs:3358`, `main.rs:3402`) and for the
+  interactive-rebase todo loader (`crates/magritte/src/controller.rs:430`).
+  These loads should carry a generation/revision/base token and verify it before
+  mutating the current screen.
+
+- **Status messages still bypass the centralized status lifecycle.**
+  `set_status` bumps `status_seq` so old auto-dismiss timers cannot clear newer
+  messages (`crates/magritte/src/controller.rs:1205`), but many paths still
+  assign `status_message` directly. Examples include `run_job` progress
+  (`controller.rs:1261`), detached-HEAD / no-remote errors, conflict-resolution
+  progress (`crates/magritte/src/main.rs:2624`), action failures
+  (`main.rs:2728`), commit progress (`main.rs:3638`), branch progress
+  (`controller.rs:1393`), and stash progress (`controller.rs:1428`,
+  `controller.rs:1471`). A timer from an earlier transient status can therefore
+  clear a newer progress or error message. All status writes should go through a
+  small API that distinguishes transient, sticky, and progress messages while
+  still advancing the sequence.
+
+- **The shared job abstraction is useful but only partially adopted.**
+  `run_job` centralizes the common mutating-command shape
+  (`crates/magritte/src/controller.rs:1249`), but several operations still
+  hand-roll the same spawn/report/refresh sequence: `run_command`
+  (`controller.rs:735`), `run_branch_action` (`controller.rs:1355`),
+  `run_stash_push` (`controller.rs:1424`), `run_stash_action`
+  (`controller.rs:1447`), `resolve_at_point` (`main.rs:2617`), and
+  `run_commit` (`main.rs:3628`). This keeps refresh, error reporting, progress
+  messages, and future cancellation/stale-result policy split across multiple
+  sites.
+
+- **External config reloads do not update an already-open settings screen.**
+  `apply_config` updates the stored config, fonts, keymap, and theme
+  (`crates/magritte/src/main.rs:1599`), but an open `SettingsState` owns GPUI
+  select/input entities initialized by `open_settings`
+  (`crates/magritte/src/settings.rs:24`, `settings.rs:48`). If the config file
+  changes while Settings is open, the app state changes but the visible controls
+  can remain stale until the screen is closed and reopened.
+
+- **Settings Tab focus covers only part of the form.**
+  `cycle_settings_focus` cycles the five appearance/font controls
+  (`crates/magritte/src/settings.rs:315`), while the editor control, commit
+  editor input, and settings toggles are outside that focus ring. Since Tab is
+  intercepted globally for settings at `crates/magritte/src/main.rs:6043`, the
+  form is not fully keyboard reachable through its own advertised focus path.
+
+- **Some extracted files are still organizational splits rather than strong
+  abstraction boundaries.** The helper modules such as `targets.rs`, `theme.rs`,
+  `kbd.rs`, `status_label.rs`, and `commit_text.rs` are clean, focused
+  extractions. By contrast, `controller.rs` and `settings.rs` remain broad
+  `impl StatusView` extensions that import `crate::*`
+  (`crates/magritte/src/controller.rs:14`, `crates/magritte/src/settings.rs:12`).
+  That is a useful file/concern split, but it still leaves wide coupling to
+  `StatusView` internals. The current shape is clearer than the old monolith,
+  but those modules should not be mistaken for independent controllers/models.
+
+## Post-Rearchitecture Verification
+
+- `cargo fmt --check` passes.
+- `cargo test` passes.
+- `cargo clippy --all-targets --all-features` passes.
+- `cargo test --all-features` passes.
+- Cargo still reports the upstream future-incompatibility warning for
+  `block v0.1.6`.
+- `git status` / `git diff` still emit the existing fsmonitor IPC warning.
+- The worktree had an unrelated modified `TODO.md` before this feedback edit.
+
+<!-- ───────────────────────── ADDRESSED UP TO HERE ─────────────────────────
+Post-Rearchitecture round (PR1–PR6) addressed — commits up to 32fadf2.
+
+  - PR1  async screen loads (commit-view diff, log/reflog, rebase-todo) now
+         carry a screen-load generation, re-checked before mutating the screen,
+         so a superseded load can't populate the screen a newer request opened.
+  - PR2  every status write goes through a typed API (Notice / Progress /
+         Sticky) that always advances status_seq, so a stale notice's fade timer
+         can't clear a newer progress or error. Added set_progress/clear_status.
+  - PR3  run_command, branch, stash (push/action), conflict-resolve, commit, and
+         cherry-pick/revert folded onto run_job (new run_job_with core plus a
+         run_job_reporting variant). They now share refresh/error/progress AND
+         C-g cancellation.
+  - PR4  an external config reload rebuilds the open settings form in place
+         (the watcher spawns with spawn_in for the Window that rebuilding the
+         Select/Input entities needs) instead of leaving stale controls.
+  - PR5  the settings Tab focus ring now includes the editor and commit-editor
+         controls, so the whole form is keyboard reachable.
+
+Not an action item:
+  - PR6 (controller.rs / settings.rs are organizational splits, not strong
+    boundaries): restates the FB5 data-model-separation disposition — an
+    anti-goal for a single-Entity GPUI app where the view owns its state. No
+    change; the file/concern split stands. See the FB5 notes above.
+
+Also landed: subprocess cancellation (the deferred #4 / SP2 above) — a Repo
+cancel flag + timeout with a killable run path, wired to read-supersession
+(refresh kills outpaced status/diff reads) and a C-g cancel for the active job.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
