@@ -1399,8 +1399,11 @@ enum SeqOp {
 struct PendingPrefix {
     /// The prefix keystroke (e.g. `g`).
     key: String,
-    /// The `prefix_gen` value when entered, so a stale timeout is ignored.
+    /// The `prefix_gen` value when entered, so a stale timer is ignored.
     gen: u64,
+    /// Set once the which-key delay elapses: the bottom strip expands from just
+    /// the pressed key into the list of possible continuations.
+    which_key: bool,
 }
 
 /// Applying a commit selected in the log to the current branch.
@@ -4496,33 +4499,32 @@ impl StatusView {
         self.keymap.keys().any(|k| k.starts_with(&prefix))
     }
 
-    /// Begin a prefix sequence: remember the key, show the indicator, and start
-    /// the timeout. On expiry the indicator clears and — if the prefix key is
-    /// itself bound to a command — that command runs.
+    /// Begin a prefix sequence: remember the key and show the lightweight bottom
+    /// strip (just the key). The prefix then waits indefinitely for the next key;
+    /// after `which_key_delay_ms` the strip expands into the which-key list of
+    /// continuations.
     fn enter_prefix(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
         self.prefix_gen = self.prefix_gen.wrapping_add(1);
         let gen = self.prefix_gen;
-        self.pending_prefix = Some(PendingPrefix { key, gen });
+        self.pending_prefix = Some(PendingPrefix {
+            key,
+            gen,
+            which_key: false,
+        });
         cx.notify();
-        let timeout = Duration::from_millis(self.config.prefix_timeout_ms);
+        let delay = Duration::from_millis(self.config.which_key_delay_ms);
         cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(timeout).await;
-            this.update_in(cx, |this, window, cx| {
-                // Act only if this exact pending prefix is still waiting (a newer
-                // prefix or a resolved sequence bumps/clears it).
-                let Some(p) = &this.pending_prefix else {
+            cx.background_executor().timer(delay).await;
+            this.update_in(cx, |this, _window, cx| {
+                // Reveal the which-key list only if this exact prefix is still
+                // waiting (a newer prefix or a resolved sequence bumps/clears it).
+                let Some(p) = this.pending_prefix.as_mut() else {
                     return;
                 };
-                if p.gen != gen {
+                if p.gen != gen || p.which_key {
                     return;
                 }
-                let key = p.key.clone();
-                this.pending_prefix = None;
-                // The prefix key's own command, if it has one (e.g. a key bound
-                // both directly and as a prefix).
-                if this.keymap.contains_key(&key) {
-                    this.run_dispatch(&key, window, cx);
-                }
+                p.which_key = true;
                 cx.notify();
             })
             .ok();
@@ -6591,54 +6593,57 @@ impl StatusView {
         }
     }
 
-    /// The status/confirmation banner ("Copied …", errors), as a bottom-pinned
-    /// bar. The full-window sub-views (settings, commit, log, …) append this so
-    /// a copy confirmation is visible there too, not only in the status view.
-    /// A which-key hint for a pending prefix: the prefix keycap and, for each
-    /// `<prefix> <key>` binding, that key and its command's label. Shown until
-    /// the sequence resolves or the timeout fires.
+    /// The pending-prefix strip, pinned to the window bottom. A lightweight line
+    /// showing just the pressed key, until the which-key delay elapses — then it
+    /// expands into the continuations (each `<prefix> <key>` and its command's
+    /// label), like emacs' which-key.
     fn prefix_indicator(&self) -> Option<gpui::Div> {
         let pending = self.pending_prefix.as_ref()?;
-        let lead = format!("{} ", pending.key);
-        let mut conts: Vec<(String, &'static str)> = self
-            .keymap
-            .iter()
-            .filter_map(|(k, id)| {
-                let suffix = k.strip_prefix(&lead)?;
-                let title = commands().iter().find(|c| c.id == id).map(|c| c.title)?;
-                Some((suffix.to_string(), title))
-            })
-            .collect();
-        conts.sort();
         let mut bar = div()
             .w_full()
             .px_2()
             .py_1()
-            .border_b_1()
+            .border_t_1()
             .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .text_color(self.palette.fg)
+            .text_color(self.palette.dim)
+            .text_xs()
             .flex()
             .items_center()
             .gap_3()
             .child(kbd::key_chip(&pending.key, self.palette.dim, &self.font));
-        for (suffix, title) in conts {
-            bar = bar.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(kbd::key_chip(&suffix, self.palette.dim, &self.font))
-                    .child(
-                        div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from(title)),
-                    ),
-            );
+        if pending.which_key {
+            let lead = format!("{} ", pending.key);
+            let mut conts: Vec<(String, &'static str)> = self
+                .keymap
+                .iter()
+                .filter_map(|(k, id)| {
+                    let suffix = k.strip_prefix(&lead)?;
+                    let title = commands().iter().find(|c| c.id == id).map(|c| c.title)?;
+                    Some((suffix.to_string(), title))
+                })
+                .collect();
+            conts.sort();
+            for (suffix, title) in conts {
+                bar = bar.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(kbd::key_chip(&suffix, self.palette.dim, &self.font))
+                        .child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(title)),
+                        ),
+                );
+            }
         }
         Some(bar)
     }
 
+    /// The status/confirmation banner ("Copied …", errors), as a bottom-pinned
+    /// bar. The full-window sub-views (settings, commit, log, …) append this so
+    /// a copy confirmation is visible there too, not only in the status view.
     fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         let msg = self.status_message.clone()?;
         let bar = div()
@@ -6762,12 +6767,6 @@ impl Render for StatusView {
         // The title bar sits above every view (status, settings, editor, …).
         root = root.child(self.render_title_bar(&view));
 
-        // A pending prefix shows a which-key hint under the title bar until the
-        // next key resolves it or the timeout dismisses it.
-        if let Some(hint) = self.prefix_indicator() {
-            root = root.child(hint);
-        }
-
         // Each non-Status screen takes over the window. One match defines the
         // active screen (no re-derived priority cascade); Status falls through to
         // the status list below.
@@ -6775,32 +6774,38 @@ impl Render for StatusView {
             Screen::Settings(s) => {
                 return root
                     .child(self.render_settings(s, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::Editor(ed) => {
                 return root
                     .child(self.render_editor(ed, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::GitLog(scroll) => {
                 return root
                     .child(self.render_git_log(scroll, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::RebaseTodo(rt) => {
                 return root
                     .child(self.render_rebase_todo(rt, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::Commit { view: cv, .. } => {
                 return root
                     .child(self.render_commit_view(cv, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::Log(log) => {
                 return root
                     .child(self.render_log(log, &view))
-                    .children(self.status_toast(cx));
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
             }
             Screen::Status => {}
         }
@@ -6924,8 +6929,10 @@ impl Render for StatusView {
         // mouse affordance for discovering commands. Hidden while a popup or a
         // bottom bar (confirm / visual / status) is shown, so it never overlaps
         // them.
-        let bottom_bar =
-            self.confirm.is_some() || self.visual.is_some() || self.status_message.is_some();
+        let bottom_bar = self.confirm.is_some()
+            || self.visual.is_some()
+            || self.status_message.is_some()
+            || self.pending_prefix.is_some();
         if self.popup.is_none() && !bottom_bar {
             // A plain div (not gpui-component `Button`, which forces a default
             // cursor for non-link variants) so it shows the click cursor, like
@@ -6963,6 +6970,9 @@ impl Render for StatusView {
                     ),
             );
         }
+
+        // The pending-prefix strip pins to the very bottom, below any other bar.
+        root = root.children(self.prefix_indicator());
 
         root
     }
