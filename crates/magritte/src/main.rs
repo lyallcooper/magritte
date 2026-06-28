@@ -480,10 +480,14 @@ struct RebaseTodoView {
     args: Vec<String>,
     /// The todo, oldest first (git's order).
     steps: Vec<magritte_core::RebaseStep>,
+    /// The todo as loaded, to detect unsaved edits when cancelling.
+    initial: Vec<magritte_core::RebaseStep>,
     /// Cursor row.
     selected: usize,
     scroll: UniformListScrollHandle,
     mode: RebaseTodoMode,
+    /// Showing the "discard edits?" confirmation (Esc with unsaved changes).
+    confirming_cancel: bool,
 }
 
 /// A single commit's detail (opened from the log): its header and diff, as the
@@ -3467,6 +3471,12 @@ impl StatusView {
         self.open_rebase_todo(format!("{rev}^"), args, cx);
     }
 
+    /// Open the selected commit's diff (the clickable "view" button; Return does
+    /// the same from the key handler).
+    fn view_log_commit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_commit_view(cx);
+    }
+
     /// Confirm the selected commit in a log-select mode (the clickable "select"
     /// button; Return does the same from the key handler).
     fn confirm_log_select(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -3834,6 +3844,15 @@ impl StatusView {
         // to the log, and it scrolls with the usual vi/less keys.
         // The interactive-rebase todo editor: set an action, reorder, then start.
         if self.rebase_todo().is_some() {
+            // While the "discard edits?" confirmation is up, capture y / n / esc.
+            if self.rebase_todo().is_some_and(|rt| rt.confirming_cancel) {
+                match key.as_str() {
+                    "y" => self.discard_rebase_todo(window, cx),
+                    "n" | "escape" => self.keep_editing_rebase_todo(window, cx),
+                    _ => {}
+                }
+                return;
+            }
             let page = page_rows(window) as isize;
             let half = (page / 2).max(1);
             match key.as_str() {
@@ -3906,10 +3925,16 @@ impl StatusView {
             };
             match key.as_str() {
                 "escape" | "q" => self.close_log(window, cx),
-                "enter" => match select_args {
-                    Some(args) => self.rebase_since_selected(args, cx),
-                    None => self.open_commit_view(cx),
-                },
+                // Cmd+Return confirms the pending select (rebase since); plain
+                // Return opens the commit's diff — in select mode too, so you can
+                // inspect commits before choosing (magit lets you visit from the
+                // log-select).
+                "enter" if cmd => {
+                    if let Some(args) = select_args.clone() {
+                        self.rebase_since_selected(args, cx);
+                    }
+                }
+                "enter" => self.open_commit_view(cx),
                 "j" | "down" => self.log_move(1, cx),
                 "k" | "up" => self.log_move(-1, cx),
                 "d" if ctrl => self.log_move(half, cx),
@@ -5508,9 +5533,17 @@ impl StatusView {
             );
         }
         if selecting {
+            // Return inspects the commit; Cmd+Return picks it as the base.
+            header = header.child(self.key_action(
+                "log-select-view",
+                "return",
+                "view",
+                view,
+                Self::view_log_commit,
+            ));
             header = header.child(self.key_action(
                 "log-select-confirm",
-                "return",
+                "cmd-enter",
                 "select",
                 view,
                 Self::confirm_log_select,
@@ -5718,7 +5751,33 @@ impl StatusView {
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
-            .child(
+            .child(if rt.confirming_cancel {
+                // Unsaved edits to the plan: confirm before discarding them.
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.section)
+                            .child(SharedString::from("Discard rebase edits?")),
+                    )
+                    .child(self.key_action(
+                        "rebase-todo-discard",
+                        "y",
+                        "discard",
+                        view,
+                        Self::discard_rebase_todo,
+                    ))
+                    .child(self.key_action(
+                        "rebase-todo-keep",
+                        "n",
+                        "keep editing",
+                        view,
+                        Self::keep_editing_rebase_todo,
+                    ))
+            } else {
                 div()
                     .flex()
                     .items_center()
@@ -5748,8 +5807,8 @@ impl StatusView {
                         "cancel",
                         view,
                         Self::close_rebase_todo,
-                    )),
-            )
+                    ))
+            })
             .child(body)
             .child(
                 div()
