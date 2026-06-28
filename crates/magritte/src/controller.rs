@@ -1308,17 +1308,9 @@ impl StatusView {
                 // Resolve the chosen title back to its command (built-in or a
                 // user `[[command]]`) and run it through the shared dispatch.
                 PickerAction::RunCommand => {
-                    let id = commands()
-                        .iter()
+                    let id = all_commands(&self.config)
                         .find(|c| c.title == chosen.as_ref())
-                        .map(|c| c.id.to_string())
-                        .or_else(|| {
-                            self.config
-                                .commands
-                                .iter()
-                                .find(|c| c.title == chosen.as_ref())
-                                .map(|c| c.id.clone())
-                        });
+                        .map(|c| c.id.to_string());
                     if let Some(id) = id {
                         self.record_use(&id);
                         self.invoke_command(&id, window, cx);

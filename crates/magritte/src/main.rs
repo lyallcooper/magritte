@@ -1015,6 +1015,43 @@ fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
     s
 }
 
+/// Lightweight metadata for any command — built-in or user `[[command]]`.
+/// The cross-cutting consumers (keymap/transient validation, the palette,
+/// suffix labels) read commands through [`all_commands`], so none of them can
+/// silently forget user commands; only dispatch ([`StatusView::invoke_command`])
+/// and built-in-specific key logic touch the two kinds directly.
+#[derive(Clone, Copy)]
+struct CommandInfo<'a> {
+    id: &'a str,
+    title: &'a str,
+    /// Whether it appears in the `:` palette.
+    palette: bool,
+    /// Whether it's applicable right now.
+    enabled: fn(&StatusView) -> bool,
+}
+
+/// Every command the user can refer to by id or title: the built-in registry,
+/// then the user's `[[command]]` definitions. The single source of truth for
+/// "what commands exist" — bind/run targets, the palette, and transient
+/// injections all resolve through this.
+fn all_commands(config: &config::Config) -> impl Iterator<Item = CommandInfo<'_>> {
+    const ALWAYS: fn(&StatusView) -> bool = |_| true;
+    commands()
+        .iter()
+        .map(|c| CommandInfo {
+            id: c.id,
+            title: c.title,
+            palette: c.palette,
+            enabled: c.enabled,
+        })
+        .chain(config.commands.iter().map(|c| CommandInfo {
+            id: &c.id,
+            title: &c.title,
+            palette: true,
+            enabled: ALWAYS,
+        }))
+}
+
 /// The effective keystroke → command-id map: the built-in defaults (every
 /// registry command that has a key) overlaid with the user's `[keymap]`. A value
 /// of `"unbound"` removes a default binding; an unknown id is skipped with a
@@ -1031,10 +1068,8 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         map.insert(key.to_string(), id.to_string());
     }
     let mut warnings = Vec::new();
-    // A binding target is valid if it's a built-in command or a user `[[command]]`.
-    let known = |id: &str| {
-        commands().iter().any(|c| c.id == id) || config.commands.iter().any(|c| c.id == id)
-    };
+    // A binding target is valid if it names any command — built-in or user.
+    let known = |id: &str| all_commands(config).any(|c| c.id == id);
     for (keystroke, id) in &config.keymap {
         if id == "unbound" {
             map.remove(keystroke);
@@ -1096,8 +1131,16 @@ const TRANSIENT_IDS: &[&str] = &[
 /// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
 /// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
 /// has no binding. Lets the `:` palette double as a keymap reference.
-fn command_keys(keymap: &HashMap<String, String>, title: &str) -> Option<String> {
-    let cmd = commands().iter().find(|c| c.title == title)?;
+fn command_keys(
+    keymap: &HashMap<String, String>,
+    config: &config::Config,
+    title: &str,
+) -> Option<String> {
+    let Some(cmd) = commands().iter().find(|c| c.title == title) else {
+        // Not a built-in: a user `[[command]]`, reached by a `[keymap]` binding
+        // or a `[transient.<id>]` injection.
+        return user_command_keys(keymap, config, title);
+    };
     // A current top-level key — including a leaf bound directly to one via
     // `[keymap]`. Reflects remaps and hides what the user unbound.
     if let Some(key) = current_key(keymap, cmd.id, cmd.key) {
@@ -1133,6 +1176,56 @@ fn command_keys(keymap: &HashMap<String, String>, title: &str) -> Option<String>
         }
     }
     None
+}
+
+/// The keystroke for a user `[[command]]` (matched by `title`): a direct
+/// `[keymap]` binding, else a `[transient.<id>]` injection as `<prefix> <key>`.
+/// An injection whose key is shadowed by a built-in suffix is skipped, since
+/// `open_transient` drops it (the built-in wins), so it wouldn't actually fire.
+fn user_command_keys(
+    keymap: &HashMap<String, String>,
+    config: &config::Config,
+    title: &str,
+) -> Option<String> {
+    let id = &config.commands.iter().find(|c| c.title == title)?.id;
+    if let Some(key) = current_key(keymap, id, None) {
+        return Some(key);
+    }
+    for (tid, suffixes) in &config.transient {
+        for (key, cmd_id) in suffixes {
+            if cmd_id != id {
+                continue;
+            }
+            if transient_for(tid).is_some_and(|t| t.action_for(key).is_some()) {
+                continue; // shadowed by a built-in suffix — the injection is dropped
+            }
+            let default = commands().iter().find(|c| c.id == tid).and_then(|c| c.key);
+            if let Some(prefix_key) = current_key(keymap, tid, default) {
+                return Some(format!("{prefix_key} {key}"));
+            }
+        }
+    }
+    None
+}
+
+/// The built-in transient for an injectable prefix id (the `[transient.<id>]`
+/// sections), for resolving an injected suffix's key against its built-ins.
+fn transient_for(id: &str) -> Option<Transient> {
+    let rt = RemoteTargets::default();
+    Some(match id {
+        "commit" => transient::commit_transient(),
+        "branch" => transient::branch_transient(),
+        "stash" => transient::stash_transient(),
+        "reset" => transient::reset_transient(),
+        "rebase" => transient::rebase_transient(&rt),
+        "merge" => transient::merge_transient(),
+        "ignore" => transient::ignore_transient(),
+        "log" => transient::log_transient(),
+        "push" => transient::push_transient(&rt),
+        "pull" => transient::pull_transient(&rt),
+        "fetch" => transient::fetch_transient(&rt),
+        _ => return None,
+    })
 }
 
 /// The keystroke currently bound to command `id` in the effective `keymap`,
@@ -3261,19 +3354,11 @@ impl StatusView {
             // injected duplicate would just be a dead row.
             .filter(|(key, _)| def.action_for(key).is_none())
             .map(|(key, cmd_id)| {
-                // Label it with the command's title — built-in or user
-                // `[[command]]` — falling back to the raw id if neither matches.
-                let description = commands()
-                    .iter()
+                // Label it with the command's title (built-in or user), falling
+                // back to the raw id if it names nothing.
+                let description = all_commands(&self.config)
                     .find(|c| c.id == cmd_id)
                     .map(|c| c.title.to_string())
-                    .or_else(|| {
-                        self.config
-                            .commands
-                            .iter()
-                            .find(|c| &c.id == cmd_id)
-                            .map(|c| c.title.clone())
-                    })
                     .unwrap_or_else(|| cmd_id.clone());
                 transient::Suffix::Custom(transient::Custom {
                     key: key.clone(),
@@ -4838,20 +4923,12 @@ impl StatusView {
         // Order by frecency (most-used-recently first); a stable sort keeps the
         // registry order among never-used commands and ties. The picker's fuzzy
         // ranking takes over once the user types, with this order breaking ties.
-        let mut entries: Vec<(&str, String)> = commands()
-            .iter()
+        let mut entries: Vec<(String, String)> = all_commands(&self.config)
             .filter(|c| c.palette && (c.enabled)(self))
-            .map(|c| (c.id, c.title.to_string()))
-            .chain(
-                // User `[[command]]`s — always palette-able.
-                self.config
-                    .commands
-                    .iter()
-                    .map(|c| (c.id.as_str(), c.title.clone())),
-            )
+            .map(|c| (c.id.to_string(), c.title.to_string()))
             .collect();
         entries.sort_by(|a, b| {
-            let (sa, sb) = (self.usage.score(a.0), self.usage.score(b.0));
+            let (sa, sb) = (self.usage.score(&a.0), self.usage.score(&b.0));
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
         let choices: Vec<String> = entries.into_iter().map(|(_, title)| title).collect();
@@ -4944,7 +5021,10 @@ impl StatusView {
                             .map(|ix| match p.list.row(ix) {
                                 Some(r) => {
                                     let hint = palette
-                                        .then(|| command_keys(&view.read(cx).keymap, &r.label))
+                                        .then(|| {
+                                            let v = view.read(cx);
+                                            command_keys(&v.keymap, &v.config, &r.label)
+                                        })
                                         .flatten()
                                         .map(SharedString::from);
                                     view.read(cx).render_picker_row(
@@ -7773,10 +7853,68 @@ mod tests {
         });
         config.keymap.insert("X".into(), "user.wip".into());
         config.keymap.insert("Y".into(), "user.nope".into()); // unknown id
+        // Injected into a transient too — a valid target there, no warning.
+        config
+            .transient
+            .entry("commit".into())
+            .or_default()
+            .insert("W".into(), "user.wip".into());
         let (km, warnings) = build_keymap(&config);
         assert_eq!(km.get("X").map(String::as_str), Some("user.wip"));
         assert!(!km.contains_key("Y"), "unknown id isn't bound");
         assert_eq!(warnings.len(), 1, "only the unknown id warns: {warnings:?}");
+    }
+
+    /// The palette key-hint resolves a user command's binding — a `[keymap]`
+    /// entry, or a `[transient.<id>]` injection as `<prefix> <key>`.
+    #[test]
+    fn command_keys_for_user_command() {
+        let mut config = config::Config::default();
+        config.commands.push(config::CustomCommand {
+            id: "user.wip".into(),
+            title: "WIP commit".into(),
+            run: "git commit -m WIP".into(),
+            refresh: true,
+        });
+        // Injected into the commit transient at a free key → reached via `c W`.
+        config
+            .transient
+            .entry("commit".into())
+            .or_default()
+            .insert("W".into(), "user.wip".into());
+        let (km, _) = build_keymap(&config);
+        assert_eq!(
+            command_keys(&km, &config, "WIP commit").as_deref(),
+            Some("c W")
+        );
+
+        // A direct keymap binding is shown directly.
+        config.keymap.insert("g w".into(), "user.wip".into());
+        let (km, _) = build_keymap(&config);
+        assert_eq!(
+            command_keys(&km, &config, "WIP commit").as_deref(),
+            Some("g w")
+        );
+    }
+
+    /// An injection whose key is shadowed by a built-in suffix (`w` = Reword in
+    /// the commit transient) is dropped, so no key is shown for it.
+    #[test]
+    fn command_keys_skips_shadowed_injection() {
+        let mut config = config::Config::default();
+        config.commands.push(config::CustomCommand {
+            id: "user.wip".into(),
+            title: "WIP commit".into(),
+            run: "git commit -m WIP".into(),
+            refresh: true,
+        });
+        config
+            .transient
+            .entry("commit".into())
+            .or_default()
+            .insert("w".into(), "user.wip".into());
+        let (km, _) = build_keymap(&config);
+        assert_eq!(command_keys(&km, &config, "WIP commit"), None);
     }
 
     #[test]
