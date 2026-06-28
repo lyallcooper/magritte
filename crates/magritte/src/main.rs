@@ -1556,13 +1556,15 @@ impl StatusView {
         let font = theme::resolve_font(&config, cx);
         let ui_font = theme::resolve_ui_font(&config, cx);
 
-        // Resolve the effective keymap; fold any unknown-id warnings into the
-        // startup notice so the user learns their binding was ignored.
-        let (keymap, keymap_warnings) = build_keymap(&config);
-        let startup_warning = match (startup_warning, keymap_warnings.is_empty()) {
+        // Resolve the effective keymap and validate config values; fold any
+        // warnings (unknown command id, theme, appearance, …) into the startup
+        // notice so the user learns the setting was ignored.
+        let (keymap, mut warnings) = build_keymap(&config);
+        warnings.extend(theme::config_value_warnings(&config, cx));
+        let startup_warning = match (startup_warning, warnings.is_empty()) {
             (warning, true) => warning,
-            (Some(warning), false) => Some(format!("{warning}; {}", keymap_warnings.join("; "))),
-            (None, false) => Some(keymap_warnings.join("; ")),
+            (Some(warning), false) => Some(format!("{warning}; {}", warnings.join("; "))),
+            (None, false) => Some(warnings.join("; ")),
         };
 
         // Sections are expanded by default; individual files start collapsed,
@@ -1795,11 +1797,9 @@ impl StatusView {
         self.config = cfg;
         self.font = theme::resolve_font(&self.config, cx);
         self.ui_font = theme::resolve_ui_font(&self.config, cx);
-        let (keymap, warnings) = build_keymap(&self.config);
+        let (keymap, mut warnings) = build_keymap(&self.config);
         self.keymap = keymap;
-        if !warnings.is_empty() {
-            self.set_status(warnings.join("; "), false, cx);
-        }
+        warnings.extend(theme::config_value_warnings(&self.config, cx));
         self.reapply_theme(cx);
         // The open settings form's dropdowns/inputs were built from the old
         // config, so rebuild it in place against the reloaded values rather than
@@ -1807,7 +1807,16 @@ impl StatusView {
         // saves are filtered out upstream by the unchanged-config guard.
         if self.settings().is_some() {
             self.open_settings(window, cx);
+        }
+        // Confirm every external reload, on any screen. Problems take priority
+        // and stay until dismissed; a clean reload posts a fading confirmation.
+        // Since each reload posts a fresh status, fixing the config and saving
+        // replaces a prior warning with the confirmation — so a resolved warning
+        // clears itself.
+        if warnings.is_empty() {
             self.set_status("Settings reloaded from disk".to_string(), true, cx);
+        } else {
+            self.set_status(warnings.join("; "), false, cx);
         }
     }
 

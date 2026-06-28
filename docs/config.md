@@ -14,7 +14,11 @@ doc covers editing by hand, plus the `[keymap]` remapping the UI doesn't expose.
 
 A missing file means defaults. A file that fails to parse is ignored, with the
 error shown in the status bar — at startup that falls back to defaults; on a
-live reload your current settings stay in place.
+live reload your current settings stay in place. Individual bad values (an
+unknown theme, appearance mode, or key binding) are reported the same way and
+fall back to their default rather than failing the whole file. A successful
+live reload confirms with a brief "Settings reloaded from disk"; fixing a
+flagged value and saving again clears its warning.
 
 ## Settings
 

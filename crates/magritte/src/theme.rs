@@ -120,6 +120,31 @@ pub(crate) fn apply_appearance(cfg: &config::Config, cx: &mut App) {
     gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
 }
 
+/// Config *values* worth warning about on load: an unknown appearance mode, or a
+/// theme name that isn't in the registry. (Keymap and transient problems are
+/// reported separately by `build_keymap`.) Each bad value still falls back
+/// safely — `apply_appearance` uses the defaults — so this only tells the user
+/// their setting was ignored rather than changing behavior.
+pub(crate) fn config_value_warnings(cfg: &config::Config, cx: &App) -> Vec<String> {
+    let mut warnings = Vec::new();
+    match cfg.appearance.as_str() {
+        "" | "auto" | "light" | "dark" => {}
+        other => warnings.push(format!(
+            "config: unknown appearance \"{other}\" (expected auto, light, or dark)"
+        )),
+    }
+    let registry = gpui_component::ThemeRegistry::global(cx);
+    for (field, name) in [
+        ("light_theme", &cfg.light_theme),
+        ("dark_theme", &cfg.dark_theme),
+    ] {
+        if !name.is_empty() && registry.themes().get(name.as_str()).is_none() {
+            warnings.push(format!("config: unknown {field} \"{name}\""));
+        }
+    }
+    warnings
+}
+
 /// The platform's system monospace UI font. On macOS this is the SF Mono-based
 /// `.AppleSystemUIFontMonospaced` (what `NSFont.monospacedSystemFont` returns),
 /// which Apple does not expose as a normal selectable font family.
