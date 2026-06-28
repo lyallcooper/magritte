@@ -1520,6 +1520,8 @@ struct StatusView {
     _config_watcher: Option<notify::RecommendedWatcher>,
     /// Kept alive so the system light/dark appearance observer stays active.
     _appearance_sub: Option<Subscription>,
+    /// Kept alive so the window-activation observer (focus refresh) stays active.
+    _activation_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
     /// Cached list of monospace font families (computed on first settings open).
@@ -1616,6 +1618,7 @@ impl StatusView {
             keymap,
             _config_watcher: None,
             _appearance_sub: None,
+            _activation_sub: None,
             usage: config::load_usage(),
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
@@ -1741,6 +1744,23 @@ impl StatusView {
         // cheap and idempotent).
         self._appearance_sub = Some(cx.observe_window_appearance(window, |view, _window, cx| {
             view.reapply_theme(cx);
+        }));
+
+        // Refresh when the window regains focus, so changes made outside the app
+        // show up without a manual `g r` — the same cost as the `g r` you'd press
+        // anyway, and opt-out via `refresh_on_focus`. We deliberately don't watch
+        // the worktree (a large-repo event/refresh-storm hazard magit also
+        // avoids); this is the bounded, on-demand alternative. Skipped until the
+        // first status load lands so it doesn't double the startup refresh, and
+        // only on the status screen (other screens have their own state).
+        self._activation_sub = Some(cx.observe_window_activation(window, |view, window, cx| {
+            if window.is_window_active()
+                && view.config.refresh_on_focus
+                && view.status.is_some()
+                && matches!(view.screen, Screen::Status)
+            {
+                view.refresh(cx);
+            }
         }));
 
         // Config file: watch its directory (so atomic save-via-rename, which
