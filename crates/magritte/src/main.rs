@@ -1068,7 +1068,7 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             continue;
         }
         for id in suffixes.values() {
-            if !commands().iter().any(|c| c.id == id) {
+            if !known(id) {
                 warnings.push(format!("transient.{tid}: unknown command id \"{id}\""));
             }
         }
@@ -3261,10 +3261,20 @@ impl StatusView {
             // injected duplicate would just be a dead row.
             .filter(|(key, _)| def.action_for(key).is_none())
             .map(|(key, cmd_id)| {
+                // Label it with the command's title — built-in or user
+                // `[[command]]` — falling back to the raw id if neither matches.
                 let description = commands()
                     .iter()
                     .find(|c| c.id == cmd_id)
-                    .map_or_else(|| cmd_id.clone(), |c| c.title.to_string());
+                    .map(|c| c.title.to_string())
+                    .or_else(|| {
+                        self.config
+                            .commands
+                            .iter()
+                            .find(|c| &c.id == cmd_id)
+                            .map(|c| c.title.clone())
+                    })
+                    .unwrap_or_else(|| cmd_id.clone());
                 transient::Suffix::Custom(transient::Custom {
                     key: key.clone(),
                     description,
