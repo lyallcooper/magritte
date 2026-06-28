@@ -40,33 +40,49 @@ pub struct Repo {
     timeout: Option<Duration>,
 }
 
-/// One recorded git invocation, for the command log (magit's process buffer).
+/// One recorded command invocation, for the command log (magit's process
+/// buffer). Usually git, but a user `!` shell escape records its program too.
 #[derive(Debug, Clone)]
 pub struct GitCommand {
-    /// The git arguments, without the `git -C <dir>` boilerplate or the
-    /// internal `-c core.quotepath=false` flags.
+    /// The program, if not git (a user shell command). `None` is the common
+    /// case — a git subcommand, displayed with a `git` prefix.
+    pub program: Option<String>,
+    /// The arguments, without the `git -C <dir>` boilerplate or the internal
+    /// `-c core.quotepath=false` flags.
     pub args: Vec<String>,
     /// The process exit code, or `None` if it was killed by a signal or failed
     /// to spawn.
     pub code: Option<i32>,
-    /// Whether git exited successfully (status 0).
+    /// Whether the command exited successfully (status 0).
     pub ok: bool,
-    /// git's stderr — its progress/error narrative (`Switched to branch …`,
-    /// fetch progress, error messages). Empty for the predicate `succeeds`
-    /// calls, which discard output.
+    /// Whether the user invoked this directly (the `!` prompt), as opposed to
+    /// the UI issuing it. User commands always show in the log (never hidden as
+    /// a query) and keep their full output.
+    pub user: bool,
+    /// Captured stdout. Empty for the internal git calls (whose stdout the UI
+    /// consumes directly); populated for user `!` commands so the log shows
+    /// their full output.
+    pub stdout: String,
+    /// stderr — git's progress/error narrative (`Switched to branch …`, fetch
+    /// progress, error messages), or a user command's. Empty for the predicate
+    /// `succeeds` calls, which discard output.
     pub stderr: String,
 }
 
 impl GitCommand {
-    /// The command as a user would type it, e.g. `git fetch origin`.
+    /// The command as a user would type it, e.g. `git fetch origin` or `ls -la`.
     pub fn display(&self) -> String {
-        format!("git {}", self.args.join(" "))
+        let prog = self.program.as_deref().unwrap_or("git");
+        format!("{prog} {}", self.args.join(" "))
     }
 
     /// Whether this is a read-only query the UI issues on its own — the status
     /// refresh, diffs, and ref lookups — rather than something the user invoked.
     /// These are noise in the command log, so it hides them by default.
     pub fn is_query(&self) -> bool {
+        if self.user {
+            return false;
+        }
         match self.args.first().map(String::as_str) {
             Some(
                 "status" | "diff" | "rev-parse" | "for-each-ref" | "show-ref" | "ls-files"
@@ -84,6 +100,15 @@ impl GitCommand {
 #[derive(Debug)]
 pub struct GitOutput {
     pub stdout: Vec<u8>,
+    pub stderr: String,
+}
+
+/// The result of a user `!` command: its text output and whether it succeeded.
+/// Unlike [`GitOutput`], a non-zero exit isn't an error here.
+#[derive(Debug)]
+pub struct CommandRun {
+    pub ok: bool,
+    pub stdout: String,
     pub stderr: String,
 }
 
@@ -214,18 +239,27 @@ impl Repo {
     }
 
     /// Record one invocation in the ring-buffered command log.
-    fn record(&self, args: &[String], code: Option<i32>, stderr: &str) {
+    fn record(&self, cmd: GitCommand) {
         if let Ok(mut q) = self.log.lock() {
             if q.len() >= LOG_CAPACITY {
                 q.pop_front();
             }
-            q.push_back(GitCommand {
-                args: args.to_vec(),
-                code,
-                ok: code == Some(0),
-                stderr: stderr.to_string(),
-            });
+            q.push_back(cmd);
         }
+    }
+
+    /// Record an internal git call (the UI's own invocations): a `git` command,
+    /// not user-invoked, with stdout consumed by the caller rather than stored.
+    fn record_git(&self, args: &[String], code: Option<i32>, stderr: &str) {
+        self.record(GitCommand {
+            program: None,
+            args: args.to_vec(),
+            code,
+            ok: code == Some(0),
+            user: false,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        });
     }
 
     /// A `git` command rooted at the working tree, with the signal environment
@@ -272,7 +306,7 @@ impl Repo {
         let mut cmd = self.git();
         cmd.args(&arg_vec);
         let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.record(&arg_vec, status.code(), &stderr);
+        self.record_git(&arg_vec, status.code(), &stderr);
 
         if !status.success() {
             return Err(Error::Git {
@@ -283,6 +317,42 @@ impl Repo {
         }
 
         Ok(GitOutput { stdout, stderr })
+    }
+
+    /// Run a user-typed command from the `!` prompt — git by default, or an
+    /// arbitrary `program` (its shell escape) run in the working tree. Unlike
+    /// [`run`](Self::run), a non-zero exit is *not* an error: the output is the
+    /// point, so it's returned either way. The full output is recorded in the
+    /// command log (`user`-flagged, so it's always shown there).
+    pub fn run_user(&self, program: Option<&str>, args: &[String]) -> Result<CommandRun> {
+        let cmd = match program {
+            None => {
+                let mut c = self.git();
+                c.args(args);
+                c
+            }
+            Some(p) => {
+                let mut c = Command::new(p);
+                c.current_dir(&self.workdir).args(args);
+                c
+            }
+        };
+        let (stdout, stderr, status) = self.collect_output(cmd)?;
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        self.record(GitCommand {
+            program: program.map(String::from),
+            args: args.to_vec(),
+            code: status.code(),
+            ok: status.success(),
+            user: true,
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+        });
+        Ok(CommandRun {
+            ok: status.success(),
+            stdout,
+            stderr,
+        })
     }
 
     /// Run `cmd` to completion, returning `(stdout, stderr, status)`.
@@ -371,7 +441,7 @@ impl Repo {
             .map_err(|source| Error::Spawn { source })?;
 
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code(), &stderr);
+        self.record_git(&arg_vec, output.status.code(), &stderr);
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -422,7 +492,7 @@ impl Repo {
             .wait_with_output()
             .map_err(|source| Error::Spawn { source })?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code(), &stderr);
+        self.record_git(&arg_vec, output.status.code(), &stderr);
 
         if !output.status.success() {
             return Err(Error::Git {
@@ -488,7 +558,7 @@ impl Repo {
             .status()
             .map_err(|source| Error::Spawn { source })?;
         // Output is discarded (Stdio::null), so there's no stderr to log.
-        self.record(&arg_vec, status.code(), "");
+        self.record_git(&arg_vec, status.code(), "");
         Ok(status.success())
     }
 
@@ -510,7 +580,7 @@ impl Repo {
             .output()
             .map_err(|source| Error::Spawn { source })?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record(&arg_vec, output.status.code(), &stderr);
+        self.record_git(&arg_vec, output.status.code(), &stderr);
         if !output.status.success() {
             return Ok(None);
         }

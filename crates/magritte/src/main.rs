@@ -344,7 +344,7 @@ impl PickerAction {
             PickerAction::Merge => transient::plain_title("Merge"),
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
             // Reads like magit's "git " prompt: the typed text follows "git".
-            PickerAction::RunGit => transient::plain_title("git"),
+            PickerAction::RunGit => transient::plain_title("git, or !command"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
         }
     }
@@ -424,9 +424,11 @@ struct PickerState {
 }
 
 /// A flattened row of the git command-log view: a command, or one line of its
-/// stderr output. Flattening keeps the view a single uniform-height list.
+/// output. Flattening keeps the view a single uniform-height list.
 enum GitLogRow {
-    Command { args: String, ok: bool },
+    /// `prog` is the program (`git` for the common case), shown dimmed before
+    /// the arguments.
+    Command { prog: String, args: String, ok: bool },
     Output(String),
 }
 
@@ -702,7 +704,7 @@ fn commands() -> &'static [Command] {
         }),
         top!(
             "git-command",
-            "Run git command",
+            "Run command",
             Category::Commands,
             "!",
             |t, w, cx| { t.open_run_git(w, cx) }
@@ -3739,6 +3741,24 @@ impl StatusView {
         cx.notify();
     }
 
+    /// How many non-empty output lines the most recent user (`!`) command
+    /// produced — to decide whether its result warrants opening the `$` log.
+    /// Called right after the command (before the post-job refresh appends its
+    /// own queries), so the last user-flagged entry is that command.
+    fn last_user_output_lines(&self) -> usize {
+        self.repo
+            .as_ref()
+            .and_then(|r| r.command_log().into_iter().rev().find(|c| c.user))
+            .map(|c| {
+                c.stdout
+                    .lines()
+                    .chain(c.stderr.lines())
+                    .filter(|l| !l.trim().is_empty())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Open the git command-log view (magit's `$` process buffer), scrolled to
     /// the most recent command.
     fn open_git_log(&mut self, cx: &mut Context<Self>) {
@@ -5834,14 +5854,19 @@ impl StatusView {
                 continue;
             }
             rows.push(GitLogRow::Command {
+                prog: c.program.clone().unwrap_or_else(|| "git".to_string()),
                 args: c.args.join(" "),
                 ok: c.ok,
             });
-            // stderr progress often uses '\r' to overwrite; split on both so
-            // each update is its own line, and drop the blanks.
-            for line in c.stderr.split(['\n', '\r']) {
-                if !line.trim().is_empty() {
-                    rows.push(GitLogRow::Output(line.trim_end().to_string()));
+            // Output, stdout then stderr. stdout is only stored for user `!`
+            // commands (internal git calls leave it empty). Progress on stderr
+            // often uses '\r' to overwrite; split on both so each update is its
+            // own line, and drop the blanks.
+            for stream in [&c.stdout, &c.stderr] {
+                for line in stream.split(['\n', '\r']) {
+                    if !line.trim().is_empty() {
+                        rows.push(GitLogRow::Output(line.trim_end().to_string()));
+                    }
                 }
             }
         }
@@ -5853,7 +5878,7 @@ impl StatusView {
     /// of that command's stderr output.
     fn render_git_log_row(&self, row: &GitLogRow) -> AnyElement {
         match row {
-            GitLogRow::Command { args, ok } => {
+            GitLogRow::Command { prog, args, ok } => {
                 let (sigil, sigil_color) = if *ok {
                     ("✓", self.palette.added)
                 } else {
@@ -5885,7 +5910,7 @@ impl StatusView {
                             .child(
                                 div()
                                     .text_color(self.palette.dim)
-                                    .child(SharedString::from("git")),
+                                    .child(SharedString::from(prog.clone())),
                             )
                             .child(
                                 div()
