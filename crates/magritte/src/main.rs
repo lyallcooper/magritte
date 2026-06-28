@@ -1049,7 +1049,7 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
     // Validate the user `[[command]]` definitions.
     let mut seen_ids = HashSet::new();
     for c in &config.commands {
-        if c.run.is_empty() {
+        if c.run.trim().is_empty() {
             warnings.push(format!("command \"{}\": empty run", c.id));
         }
         if commands().iter().any(|b| b.id == c.id) {
@@ -1076,14 +1076,13 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
     (map, warnings)
 }
 
-/// Whether a custom command's git arguments look like they could throw away
-/// work — so the frontend confirms first, like the built-in destructive ops.
-/// Flags `clean`, and any `--hard` / `--force` / `--force-with-lease`.
-fn custom_is_destructive(args: &[String]) -> bool {
-    args.first().map(String::as_str) == Some("clean")
-        || args
-            .iter()
-            .any(|a| matches!(a.as_str(), "--hard" | "--force" | "--force-with-lease"))
+/// Whether a custom command looks like it could throw away work — so the
+/// frontend confirms first, like the built-in destructive ops. A word-level
+/// scan for `clean`, `--hard`, or `--force`/`--force-with-lease`.
+fn command_is_destructive(command: &str) -> bool {
+    command.split_whitespace().any(|w| {
+        matches!(w, "clean" | "--hard" | "--force" | "--force-with-lease")
+    })
 }
 
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
@@ -1488,13 +1487,9 @@ enum Confirm {
     /// todo editor for `rev^..HEAD` with the carried switches (rewriting pushed
     /// history).
     RebaseSincePushed { rev: String, args: Vec<String> },
-    /// A user `[[command]]` that looks destructive (resolved args): on `y`, run
-    /// `git <run>` then `git <then>`, refreshing unless opted out.
-    CustomGit {
-        run: Vec<String>,
-        then: Vec<String>,
-        refresh: bool,
-    },
+    /// A user `[[command]]` that looks destructive (resolved command): on `y`,
+    /// run it via the shell, refreshing unless opted out.
+    CustomShell { command: String, refresh: bool },
 }
 
 /// The three controls for an in-progress sequence.
@@ -3215,8 +3210,8 @@ impl StatusView {
             Some((_, Confirm::RebaseSincePushed { rev, args })) => {
                 self.open_rebase_todo(format!("{rev}^"), args, cx)
             }
-            Some((_, Confirm::CustomGit { run, then, refresh })) => {
-                self.run_custom_git(run, then, refresh, cx)
+            Some((_, Confirm::CustomShell { command, refresh })) => {
+                self.run_custom_shell(command, refresh, cx)
             }
             None => {}
         }
@@ -4619,64 +4614,47 @@ impl StatusView {
         }
     }
 
-    /// Run a user `[[command]]`: resolve its placeholders against the current
-    /// selection, confirm if it looks destructive, then run it (and its `then`
-    /// follow-up) as a git command on the background path.
+    /// Run a user `[[command]]`: substitute its placeholders against the current
+    /// selection, confirm if it looks destructive, then run it as a shell command
+    /// on the background path.
     fn run_custom_command(
         &mut self,
         cmd: config::CustomCommand,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (Some(run), Some(then)) = (
-            self.resolve_args(&cmd.run, cx),
-            self.resolve_args(&cmd.then, cx),
-        ) else {
-            return; // a placeholder couldn't be resolved; resolve_args reported it
+        let command = match self.expand_placeholders(&cmd.run) {
+            Ok(c) => c,
+            Err(e) => return self.set_status(e, false, cx),
         };
-        if run.is_empty() {
+        if command.trim().is_empty() {
             return;
         }
-        if custom_is_destructive(&run) || custom_is_destructive(&then) {
+        if command_is_destructive(&command) {
             self.confirm = Some((
-                format!("Run git {}? (y/n)", run.join(" ")),
-                Confirm::CustomGit {
-                    run,
-                    then,
+                format!("Run `{command}`? (y/n)"),
+                Confirm::CustomShell {
+                    command,
                     refresh: cmd.refresh,
                 },
             ));
             cx.notify();
         } else {
-            self.run_custom_git(run, then, cmd.refresh, cx);
+            self.run_custom_shell(command, cmd.refresh, cx);
         }
     }
 
-    /// Expand `{file}`/`{commit}`/`{branch}` in each argument against the current
-    /// selection. Returns `None` (after reporting why) if a placeholder can't be
-    /// resolved — e.g. `{file}` with no file at point.
-    fn resolve_args(&mut self, args: &[String], cx: &mut Context<Self>) -> Option<Vec<String>> {
-        let mut out = Vec::with_capacity(args.len());
-        for arg in args {
-            match self.expand_placeholders(arg) {
-                Ok(s) => out.push(s),
-                Err(e) => {
-                    self.set_status(e, false, cx);
-                    return None;
-                }
-            }
-        }
-        Some(out)
-    }
-
-    /// Substitute the supported placeholders in one argument.
-    fn expand_placeholders(&self, arg: &str) -> Result<String, String> {
-        let mut s = arg.to_string();
+    /// Substitute `{file}`/`{commit}`/`{branch}` in the command against the
+    /// current selection, each shell-quoted so a path with spaces stays one word.
+    /// `Err` (with why) if a placeholder can't be resolved — e.g. `{file}` with
+    /// no file at point.
+    fn expand_placeholders(&self, command: &str) -> Result<String, String> {
+        let mut s = command.to_string();
         if s.contains("{file}") {
             let path = self
                 .path_at_point()
                 .ok_or_else(|| "No file at point for {file}".to_string())?;
-            s = s.replace("{file}", &path);
+            s = s.replace("{file}", &shell_words::quote(&path));
         }
         if s.contains("{branch}") {
             let branch = self
@@ -4684,7 +4662,7 @@ impl StatusView {
                 .as_ref()
                 .and_then(|st| st.head.branch.clone())
                 .ok_or_else(|| "No current branch for {branch}".to_string())?;
-            s = s.replace("{branch}", &branch);
+            s = s.replace("{branch}", &shell_words::quote(&branch));
         }
         if s.contains("{commit}") {
             let hash = self
@@ -4692,7 +4670,7 @@ impl StatusView {
                 .and_then(|l| l.entries.get(l.selected))
                 .map(|e| e.hash.clone())
                 .ok_or_else(|| "No commit at point for {commit}".to_string())?;
-            s = s.replace("{commit}", &hash);
+            s = s.replace("{commit}", &shell_words::quote(&hash));
         }
         Ok(s)
     }
@@ -4706,51 +4684,44 @@ impl StatusView {
         }
     }
 
-    /// Run a resolved custom command (and its optional `then`) as one background
-    /// job — `git <run>`, then `git <then>` if the first succeeds — showing the
-    /// last command's first output line, and refreshing unless opted out.
-    fn run_custom_git(
-        &mut self,
-        run: Vec<String>,
-        then: Vec<String>,
-        refresh: bool,
-        cx: &mut Context<Self>,
-    ) {
+    /// Run a resolved custom command as one background job (`sh -c`), showing the
+    /// first output line (or opening the `$` log for multi-line output) and
+    /// refreshing unless opted out.
+    fn run_custom_shell(&mut self, command: String, refresh: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
         let (repo, cancel) = repo.cancellable();
         self.job_cancel = Some(cancel);
-        self.set_progress(format!("git {}…", run.join(" ")), cx);
+        self.set_progress(format!("{command}…"), cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    let mut out = repo.run(&run)?;
-                    if !then.is_empty() {
-                        out = repo.run(&then)?;
-                    }
-                    Ok::<String, magritte_core::Error>(out.first_line())
-                })
+                .spawn(async move { repo.run_shell(&command) })
                 .await;
             this.update(cx, |this, cx| {
                 this.job_cancel = None;
                 match result {
-                    Ok(summary) => {
-                        this.set_status(
-                            if summary.is_empty() {
-                                "Done".to_string()
-                            } else {
-                                summary
-                            },
-                            true,
-                            cx,
-                        );
+                    Ok(run) => {
+                        let summary = run
+                            .stdout
+                            .lines()
+                            .chain(run.stderr.lines())
+                            .map(str::trim)
+                            .find(|l| !l.is_empty())
+                            .unwrap_or(if run.ok { "done" } else { "command failed" })
+                            .to_string();
+                        // A failure stays up (sticky); success fades.
+                        this.set_status(summary, run.ok, cx);
                     }
                     Err(e) => this.report_error(e, cx),
                 }
                 if refresh {
                     this.refresh(cx);
+                }
+                // Show the whole thing when it spans more than a line.
+                if this.last_user_output_lines() > 1 {
+                    this.open_git_log(cx);
                 }
             })
             .ok();
@@ -7787,8 +7758,7 @@ mod tests {
         config.commands.push(config::CustomCommand {
             id: "user.wip".into(),
             title: "WIP".into(),
-            run: vec!["commit".into(), "-a".into(), "-m".into(), "WIP".into()],
-            then: Vec::new(),
+            run: "git commit -a -m WIP".into(),
             refresh: true,
         });
         config.keymap.insert("X".into(), "user.wip".into());
@@ -7801,14 +7771,11 @@ mod tests {
 
     #[test]
     fn custom_destructive_detection() {
-        let d = |args: &[&str]| {
-            custom_is_destructive(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-        };
-        assert!(d(&["reset", "--hard", "HEAD"]));
-        assert!(d(&["clean", "-fd"]));
-        assert!(d(&["push", "--force"]));
-        assert!(!d(&["pull", "--rebase"]));
-        assert!(!d(&["commit", "-a", "-m", "WIP"]));
+        assert!(command_is_destructive("git reset --hard HEAD"));
+        assert!(command_is_destructive("git clean -fd"));
+        assert!(command_is_destructive("git push --force"));
+        assert!(!command_is_destructive("git pull --rebase && git push"));
+        assert!(!command_is_destructive("git commit -a -m WIP"));
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and
