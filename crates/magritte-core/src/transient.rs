@@ -95,6 +95,8 @@ pub enum Command {
     SequenceContinue,
     SequenceSkip,
     SequenceAbort,
+    /// Edit the remaining todo of an in-progress rebase (`--edit-todo`).
+    SequenceEditTodo,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`).
@@ -765,6 +767,13 @@ pub fn sequence_transient(kind: SequenceKind) -> Transient {
             key: "s",
             description: "skip".to_string(),
             command: Command::SequenceSkip,
+        }));
+    }
+    if kind.can_edit_todo() {
+        suffixes.push(Suffix::Action(Action {
+            key: "e",
+            description: "edit".to_string(),
+            command: Command::SequenceEditTodo,
         }));
     }
     suffixes.push(Suffix::Action(Action {
