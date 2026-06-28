@@ -57,7 +57,7 @@ impl StatusView {
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
                 self.dispatch_branch(command, window, cx)
             }
-            ResetSoft | ResetMixed | ResetHard | ResetKeep => {
+            ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
             }
             MergePlain | MergeNoCommit | MergeSquash => {
@@ -301,6 +301,8 @@ impl StatusView {
             ResetMixed => ResetMode::Mixed,
             ResetHard => ResetMode::Hard,
             ResetKeep => ResetMode::Keep,
+            ResetIndex => ResetMode::Index,
+            ResetWorktree => ResetMode::Worktree,
             _ => return,
         };
         // `Value`: the typed text is itself a valid target (any revision/sha),
@@ -315,12 +317,17 @@ impl StatusView {
         );
     }
 
-    /// Reset to `target`; a hard reset confirms first (it discards work).
+    /// Reset to `target`; a destructive reset (hard or worktree) confirms first.
     pub(crate) fn run_reset(&mut self, mode: ResetMode, target: String, cx: &mut Context<Self>) {
         if mode.is_destructive() {
+            let what = if matches!(mode, ResetMode::Worktree) {
+                "Reset worktree"
+            } else {
+                "Hard reset"
+            };
             self.confirm = Some((
-                format!("Hard reset to {target}? (y/n)"),
-                Confirm::ResetHard(target),
+                format!("{what} to {target}? (y/n)"),
+                Confirm::Reset(mode, target),
             ));
             cx.notify();
         } else {

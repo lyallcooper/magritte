@@ -1447,8 +1447,9 @@ enum Confirm {
     /// Abort the in-progress sequence (discards its progress): on `y`, run the
     /// abort for the carried kind.
     AbortSequence(SequenceKind),
-    /// Hard reset (discards uncommitted changes): on `y`, reset to the target.
-    ResetHard(String),
+    /// Destructive reset (hard or worktree-only, discards uncommitted changes):
+    /// on `y`, reset to the target in the carried mode.
+    Reset(ResetMode, String),
     /// Interactive rebase since an already-published commit: on `y`, open the
     /// todo editor for `rev^..HEAD` with the carried switches (rewriting pushed
     /// history).
@@ -3169,7 +3170,7 @@ impl StatusView {
                 self.proceed_history_rewrite(command, switches, window, cx);
             }
             Some((_, Confirm::AbortSequence(kind))) => self.run_sequence(SeqOp::Abort, kind, cx),
-            Some((_, Confirm::ResetHard(target))) => self.do_reset(ResetMode::Hard, target, cx),
+            Some((_, Confirm::Reset(mode, target))) => self.do_reset(mode, target, cx),
             Some((_, Confirm::RebaseSincePushed { rev, args })) => {
                 self.open_rebase_todo(format!("{rev}^"), args, cx)
             }
@@ -7230,7 +7231,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
-        ResetSoft | ResetMixed | ResetHard | ResetKeep => "Resetting",
+        ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
             "Rebasing"
@@ -7255,7 +7256,7 @@ fn command_done(command: transient::Command) -> &'static str {
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
-        ResetSoft | ResetMixed | ResetHard | ResetKeep => "Reset",
+        ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
             "Rebased"
