@@ -69,6 +69,8 @@ pub enum Command {
     ResetMixed,
     ResetHard,
     ResetKeep,
+    ResetIndex,
+    ResetWorktree,
     /// Merge a branch/ref into HEAD (the frontend prompts for it).
     MergePlain,
     /// Merge but don't commit (`--no-commit`).
@@ -872,6 +874,16 @@ pub fn reset_transient() -> Transient {
                     key: "k",
                     description: "keep (HEAD and index, keep uncommitted)".to_string(),
                     command: Command::ResetKeep,
+                }),
+                Suffix::Action(Action {
+                    key: "i",
+                    description: "index (only)".to_string(),
+                    command: Command::ResetIndex,
+                }),
+                Suffix::Action(Action {
+                    key: "w",
+                    description: "worktree (only)".to_string(),
+                    command: Command::ResetWorktree,
                 }),
             ],
         }],
