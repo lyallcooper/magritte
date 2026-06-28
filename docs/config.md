@@ -184,33 +184,34 @@ isn't a real transient — warn at startup.
 
 ## Commands
 
-A `[[command]]` table defines your own command: a **git argument list** (never a
-shell string) the `:` palette and `[keymap]` can run by `id`.
+A `[[command]]` table defines your own command — a shell command the `:` palette
+and `[keymap]` can run by `id`.
 
 ```toml
 [[command]]
 id = "user.sync"                # bind in [keymap] / shown in the palette by title
-title = "Sync (pull --rebase, then push)"
-run = ["pull", "--rebase"]      # the git arguments to run
-then = ["push"]                 # optional follow-up; runs only if `run` succeeds
+title = "Sync"
+run = "git pull --rebase && git push"
 refresh = true                  # re-read status afterward (default true)
 
 [[command]]
 id = "user.wip"
 title = "WIP commit"
-run = ["commit", "-a", "-m", "WIP"]
+run = "git commit -a -m WIP"
 ```
 
-- **Placeholders** in any argument are resolved at run time against the current
-  selection: `{file}` (the file at point), `{commit}` (the commit at point in
+- **`run` is a shell command**, executed with `sh -c` in the repo root — so
+  `&&`, pipes, and redirection all work, and it can run any program, not just
+  git (`run = "make test"`).
+- **Placeholders** are resolved at run time against the current selection and
+  shell-quoted: `{file}` (the file at point), `{commit}` (the commit at point in
   the log), `{branch}` (the current branch). If one can't be resolved — e.g.
   `{file}` with no file selected — the command reports that and doesn't run.
 - **Bind it** like any built-in: `[keymap]` entry `"X" = "user.wip"`, or run it
-  from the `:` palette by its `title`. The full command (and `then`) is logged
-  in the `$` command log.
-- **Destructive commands confirm first** — one whose arguments include `clean`,
+  from the `:` palette by its `title`. The command and its output are recorded
+  in the `$` command log (multi-line output opens it).
+- **Destructive commands confirm first** — one whose words include `clean`,
   `--hard`, or `--force` prompts before running, like the built-in destructive
   operations.
-- **Git only.** The arguments run as `git <args>`; for a one-off non-git command
-  use the `!` prompt (delete its `git ` prefix). An empty `run`, an `id` that
-  shadows a built-in, or a duplicate `id` warns at startup.
+- An empty `run`, an `id` that shadows a built-in, or a duplicate `id` warns at
+  startup. For a *one-off* command, use the `!` prompt instead.

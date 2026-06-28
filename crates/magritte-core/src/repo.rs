@@ -112,6 +112,33 @@ pub struct CommandRun {
     pub stderr: String,
 }
 
+/// Configure a child process for spawning from our GPUI worker threads — shared
+/// by the `git` wrapper, the `!` prompt's arbitrary commands, and user
+/// `[[command]]` shell commands so they all behave the same (it matters once any
+/// of them invokes a networked git, directly or through `sh`):
+///
+/// - **Reset the signal mask.** Our worker threads block signals; children
+///   inherit that, so when git's transport child (e.g. `upload-pack`) fails
+///   mid-pull, git can't signal it during cleanup and hangs forever instead of
+///   erroring. Clearing the mask in the child fixes it. The mask is inherited
+///   across an intermediate `sh`, so resetting `sh`'s reaches git.
+/// - **`GIT_TERMINAL_PROMPT=0`.** No terminal here, so git must not block on a
+///   credential prompt; inherited by `sh` and its git child.
+fn prepare_spawn(cmd: &mut Command) {
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            // Only async-signal-safe calls here (post-fork, pre-exec).
+            let mut empty: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut empty);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+}
+
 impl GitOutput {
     /// Trimmed stdout as text (lossy UTF-8).
     fn stdout_text(&self) -> String {
@@ -262,31 +289,15 @@ impl Repo {
         });
     }
 
-    /// A `git` command rooted at the working tree, with the signal environment
-    /// of a shell. We spawn from a GPUI worker thread whose signal mask blocks
-    /// signals; git's children inherit it, so when one fails mid-transport
-    /// (e.g. a pull of a missing ref) git can't signal its stuck `upload-pack`
-    /// child during cleanup and `git pull` hangs forever instead of erroring.
-    /// Resetting the mask in the child fixes it. `GIT_TERMINAL_PROMPT=0` keeps
-    /// git from blocking on a credential prompt with no terminal.
+    /// A `git` command rooted at the working tree, with the spawn environment
+    /// git needs under our worker threads (see [`prepare_spawn`]).
     fn git(&self) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C")
             .arg(&self.workdir)
             // Keep output stable and machine-readable regardless of user config.
-            .args(["-c", "core.quotepath=false"])
-            .env("GIT_TERMINAL_PROMPT", "0");
-        #[cfg(unix)]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                // Only async-signal-safe calls here (post-fork, pre-exec).
-                let mut empty: libc::sigset_t = std::mem::zeroed();
-                libc::sigemptyset(&mut empty);
-                libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
-                Ok(())
-            });
-        }
+            .args(["-c", "core.quotepath=false"]);
+        prepare_spawn(&mut cmd);
         cmd
     }
 
@@ -334,6 +345,7 @@ impl Repo {
             Some(p) => {
                 let mut c = Command::new(p);
                 c.current_dir(&self.workdir).args(args);
+                prepare_spawn(&mut c);
                 c
             }
         };
@@ -342,6 +354,35 @@ impl Repo {
         self.record(GitCommand {
             program: program.map(String::from),
             args: args.to_vec(),
+            code: status.code(),
+            ok: status.success(),
+            user: true,
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+        });
+        Ok(CommandRun {
+            ok: status.success(),
+            stdout,
+            stderr,
+        })
+    }
+
+    /// Run a user `[[command]]` — an arbitrary shell command (`sh -c`) in the
+    /// working tree, supporting `&&`, pipes, etc. Like [`run_user`](Self::run_user),
+    /// a non-zero exit isn't an error. Recorded in the command log as the command
+    /// was written (split for display only — it runs via the shell).
+    pub fn run_shell(&self, command: &str) -> Result<CommandRun> {
+        let mut cmd = Command::new("sh");
+        cmd.current_dir(&self.workdir).arg("-c").arg(command);
+        prepare_spawn(&mut cmd);
+        let (stdout, stderr, status) = self.collect_output(cmd)?;
+        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        // For the log: show the command as written. The first word reads as the
+        // "program" (dim) and the rest as its arguments, like a git line.
+        let mut words = command.split_whitespace().map(String::from);
+        self.record(GitCommand {
+            program: words.next(),
+            args: words.collect(),
             code: status.code(),
             ok: status.success(),
             user: true,

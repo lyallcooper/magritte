@@ -67,14 +67,14 @@ pub struct Config {
     /// show up without a manual refresh. On by default; set false to opt out.
     #[serde(default = "default_true")]
     pub refresh_on_focus: bool,
-    /// User-defined commands (`[[command]]`): a git argument list, optionally
-    /// chained, surfaced in the `:` palette and bindable in `[keymap]` by `id`.
+    /// User-defined commands (`[[command]]`): a shell command surfaced in the
+    /// `:` palette and bindable in `[keymap]` by `id`.
     #[serde(default, rename = "command")]
     pub commands: Vec<CustomCommand>,
 }
 
-/// A user-defined command from a `[[command]]` table: a git invocation (an
-/// argument list, never a shell string) the palette and keymap can run by `id`.
+/// A user-defined command from a `[[command]]` table: a shell command the
+/// palette and keymap can run by `id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomCommand {
     /// Stable id — bound in `[keymap]` and recorded for palette frecency.
@@ -82,12 +82,11 @@ pub struct CustomCommand {
     pub id: String,
     /// Human label shown in the palette.
     pub title: String,
-    /// The git argument list to run (`["pull", "--rebase"]`). Supports the
-    /// `{file}`, `{commit}`, and `{branch}` placeholders, resolved at run time.
-    pub run: Vec<String>,
-    /// An optional follow-up git command, run only if `run` succeeds.
-    #[serde(default)]
-    pub then: Vec<String>,
+    /// The shell command to run, e.g. `"git pull --rebase && git push"`. Run via
+    /// `sh -c` in the repo root, so it supports `&&`, pipes, and any program —
+    /// not just git. The `{file}`, `{commit}`, and `{branch}` placeholders are
+    /// substituted (shell-quoted) from the selection at run time.
+    pub run: String,
     /// Re-read status after running (default true).
     #[serde(default = "default_true")]
     pub refresh: bool,
