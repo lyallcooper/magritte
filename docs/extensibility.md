@@ -16,7 +16,7 @@ key invokes it.
 
 ```rust
 struct Command {
-    id: &'static str,          // stable: "stage", "log.current", "branch.delete"
+    id: &'static str,          // stable: "stage", "log-current", "branch-delete"
     title: &'static str,       // human label for the palette: "Stage"
     // Whether it makes sense right now (e.g. "stage" needs a selectable row).
     enabled: fn(&StatusView) -> bool,
@@ -74,11 +74,12 @@ the picker we already have.
 ### Remap & unbind
 
 A `[keymap]` table in `config.toml` maps a keystroke to a command id (or to the
-sentinel `"unbound"`):
+sentinel `"unbound"`). User-facing docs and the full id list live in
+[config.md](config.md#keymap); the example here is illustrative:
 
 ```toml
 [keymap]
-"K" = "branch.delete"   # bind K
+"K" = "branch-delete"   # bind K
 "x" = "unbound"         # remove the default discard binding
 "c" = "commit"          # (already the default; explicit is fine)
 ```
