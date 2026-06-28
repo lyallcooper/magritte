@@ -36,7 +36,16 @@ memory transfers (`j`/`k` to move, `TAB` to fold, `s`/`u` to stage/unstage, `c`
 to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on). Press
 `?` in the app for the dispatch/help popup. The full table lives in
 [PLAN.md](PLAN.md#36-keybindings); every keyboard action has a mouse
-equivalent.
+equivalent. Keys can be remapped or unbound with a `[keymap]` table — see
+[Configuration](#configuration).
+
+## Configuration
+
+Settings live in `~/.config/magritte/config.toml` (or `$XDG_CONFIG_HOME/…`),
+loaded at startup and re-read live on change. The Settings screen (`,`) edits
+appearance, fonts, and editor options; a `[keymap]` table remaps keys.
+[`docs/config.md`](docs/config.md) documents every key, valid values, and the
+command ids you can bind.
 
 ## Architecture
 
@@ -78,8 +87,7 @@ It is compiled out of normal release builds entirely.
 
 - Not yet code-signed, notarized, or packaged as a `.app`.
 - macOS only; non-UTF-8 paths are handled lossily.
-- Interactive rebase is not implemented (deferred — see PLAN.md).
-- Auto-refresh is on-demand (`gr`) and after our own commands; there is no
+- Auto-refresh is on-demand (`g r`) and after our own commands; there is no
   filesystem watcher (intentionally — it's a large-repo hazard magit also
   avoids).
 
