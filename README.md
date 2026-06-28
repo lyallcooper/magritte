@@ -60,9 +60,10 @@ Two crates, split at a synchronous/async seam:
   few bounded config/ref probes, e.g. resolving `@{upstream}`, still run inline;
   they don't scan the worktree.)
 
-The command registry, the `:` command palette, and `[keymap]` remapping are
-built; [`docs/extensibility.md`](docs/extensibility.md) covers their design and
-sketches the still-planned user-defined `[[command]]` commands.
+Keymap remapping, transient extension, and the `:` command palette are built and
+documented in [`docs/config.md`](docs/config.md);
+[`docs/extensibility.md`](docs/extensibility.md) tours them and sketches the
+still-planned user-defined `[[command]]` commands.
 
 ## Development
 
