@@ -1020,26 +1020,49 @@ fn command_keys(title: &str) -> Option<String> {
     None
 }
 
+/// The keystroke currently bound to command `id` in the effective `keymap`,
+/// preferring its built-in `default` key when that's still bound to it — so the
+/// `?` menu shows remapped keys and hides anything the user unbound.
+fn current_key(
+    keymap: &HashMap<String, String>,
+    id: &str,
+    default: Option<&str>,
+) -> Option<String> {
+    if let Some(def) = default {
+        if keymap.get(def).map(String::as_str) == Some(id) {
+            return Some(def.to_string());
+        }
+    }
+    keymap
+        .iter()
+        .filter(|(_, v)| v.as_str() == id)
+        .map(|(k, _)| k.clone())
+        .min()
+}
+
 /// The `?` dispatch menu: a modal command transient (magit's dispatch),
-/// generated from the [`commands`] registry (grouped by [`Category`]) plus a
-/// static Navigation group for the pure motions. Each row is invoked by its key
-/// or a click.
+/// generated from the [`commands`] registry (grouped by [`Category`]). Each
+/// row shows its *current* key from `keymap` — remaps are reflected, and an
+/// unbound command is dropped — and is invoked by that key or a click.
 ///
 /// This menu is the discoverable face of the keymap. The
 /// `dispatch_menu_covers_every_command` test cross-checks it against the keys
 /// `run_dispatch` actually handles, so a command can't be shown-but-dead or
 /// invocable-but-hidden.
-fn dispatch_menu() -> Transient {
-    let info = |keys, description| Suffix::Info(transient::Info { keys, description });
+fn dispatch_menu(keymap: &HashMap<String, String>) -> Transient {
     let group = |cat: Category| Group {
         title: transient::plain_title(cat.title()),
+        // Navigation motions have `menu: false` but belong in the menu's
+        // Navigation group; every other group shows its `menu` commands.
         suffixes: commands()
             .iter()
-            .filter(|c| c.menu && c.category == cat)
-            .map(|c| {
-                Suffix::Info(transient::Info {
-                    keys: c.key.expect("a `?`-menu command has a key"),
-                    description: c.title,
+            .filter(|c| c.category == cat && (c.menu || cat == Category::Navigation))
+            .filter_map(|c| {
+                current_key(keymap, c.id, c.key).map(|keys| {
+                    Suffix::Info(transient::Info {
+                        keys,
+                        description: c.title,
+                    })
                 })
             })
             .collect(),
@@ -1048,23 +1071,16 @@ fn dispatch_menu() -> Transient {
     // palette — itself a meta-affordance (reach any command), not a registry
     // entry, so it's appended here rather than living in `commands()`.
     let mut essential = group(Category::Essential);
-    essential.suffixes.push(info(":", "Command palette"));
+    essential.suffixes.push(Suffix::Info(transient::Info {
+        keys: ":".to_string(),
+        description: "Command palette",
+    }));
     Transient {
         title: transient::plain_title("Help"),
         groups: vec![
             group(Category::Commands),
             group(Category::Applying),
-            Group {
-                title: transient::plain_title("Navigation"),
-                suffixes: vec![
-                    info("j", "Move down"),
-                    info("k", "Move up"),
-                    info("g g", "Top"),
-                    info("G", "Bottom"),
-                    info("g j", "Next section"),
-                    info("g k", "Previous section"),
-                ],
-            },
+            group(Category::Navigation),
             essential,
             group(Category::Application),
         ],
@@ -4350,12 +4366,12 @@ impl StatusView {
             ":" => return self.open_command_palette(window, cx),
             ";" if shift => return self.open_command_palette(window, cx),
             "?" => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu()));
+                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap)));
                 cx.notify();
                 return;
             }
             "/" if shift => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu()));
+                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap)));
                 cx.notify();
                 return;
             }
@@ -4952,9 +4968,9 @@ impl StatusView {
             // A dispatch command row: keycap + label, clickable to run.
             Suffix::Info(i) => {
                 let view = view.clone();
-                let key = SharedString::from(i.keys);
+                let key = SharedString::from(i.keys.clone());
                 div()
-                    .id(i.keys)
+                    .id(key.clone())
                     .relative()
                     .flex()
                     .items_center()
@@ -4963,8 +4979,8 @@ impl StatusView {
                     .rounded(px(4.0))
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
-                    .child(track_target(i.keys))
-                    .child(self.key_tokens(i.keys))
+                    .child(track_target(key.clone()))
+                    .child(self.key_tokens(&i.keys))
                     .child(self.hover_label(i.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
@@ -6803,7 +6819,7 @@ impl Render for StatusView {
                                 .build(window, cx)
                             })
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.popup = Some(Popup::Dispatch(dispatch_menu()));
+                                this.popup = Some(Popup::Dispatch(dispatch_menu(&this.keymap)));
                                 cx.notify();
                             })),
                     ),
@@ -7203,12 +7219,13 @@ mod tests {
             }
         }
         // Every menu command is actually reachable from the `?` dispatch menu.
-        let menu: HashSet<&str> = dispatch_menu()
+        let km = build_keymap(&config::Config::default()).0;
+        let menu: HashSet<String> = dispatch_menu(&km)
             .groups
             .iter()
             .flat_map(|g| &g.suffixes)
             .filter_map(|s| match s {
-                Suffix::Info(i) => Some(i.keys),
+                Suffix::Info(i) => Some(i.keys.clone()),
                 _ => None,
             })
             .collect();
@@ -7275,22 +7292,22 @@ mod tests {
         // key here (with a comment) when an exception is genuinely warranted.
         const OVERRIDES: &[&str] = &[];
 
-        let menu: HashSet<&str> = dispatch_menu()
+        let km = build_keymap(&config::Config::default()).0;
+        let menu: HashSet<String> = dispatch_menu(&km)
             .groups
             .iter()
             .flat_map(|g| &g.suffixes)
             .filter_map(|s| match s {
-                Suffix::Info(i) => Some(i.keys),
+                Suffix::Info(i) => Some(i.keys.clone()),
                 _ => None,
             })
             .collect();
-        let dispatched: HashSet<&str> = DISPATCH_KEYS.iter().copied().collect();
-        let overrides: HashSet<&str> = OVERRIDES.iter().copied().collect();
+        let dispatched: HashSet<String> = DISPATCH_KEYS.iter().map(|s| s.to_string()).collect();
+        let overrides: HashSet<String> = OVERRIDES.iter().map(|s| s.to_string()).collect();
 
-        let missing_from_menu: Vec<&str> = dispatched
+        let missing_from_menu: Vec<&String> = dispatched
             .difference(&menu)
-            .copied()
-            .filter(|k| !overrides.contains(k))
+            .filter(|k| !overrides.contains(*k))
             .collect();
         assert!(
             missing_from_menu.is_empty(),
@@ -7298,10 +7315,9 @@ mod tests {
              or OVERRIDES): {missing_from_menu:?}"
         );
 
-        let missing_handler: Vec<&str> = menu
+        let missing_handler: Vec<&String> = menu
             .difference(&dispatched)
-            .copied()
-            .filter(|k| !overrides.contains(k))
+            .filter(|k| !overrides.contains(*k))
             .collect();
         assert!(
             missing_handler.is_empty(),
