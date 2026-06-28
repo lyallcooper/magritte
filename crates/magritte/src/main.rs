@@ -549,6 +549,9 @@ enum Category {
     Applying,
     /// Always-available essentials (fold, refresh, visual selection).
     Essential,
+    /// Cursor motions (move, page, section, edges). Resolved through the keymap
+    /// like any command — so they're remappable — but dispatched screen-aware.
+    Navigation,
 }
 
 impl Category {
@@ -558,6 +561,7 @@ impl Category {
             Category::Application => "Application",
             Category::Applying => "Applying changes",
             Category::Essential => "Essential",
+            Category::Navigation => "Navigation",
         }
     }
 }
@@ -618,6 +622,23 @@ fn commands() -> &'static [Command] {
                 key: Some($key),
                 menu: true,
                 palette: true,
+                enabled: ALWAYS,
+                leaf: None,
+                run: $run,
+            }
+        };
+    }
+    // A motion: bound to a key (so the keymap can remap it) but kept out of the
+    // `?` menu and `:` palette. Its `run` is screen-aware.
+    macro_rules! nav {
+        ($id:literal, $title:literal, $key:literal, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                category: Category::Navigation,
+                key: Some($key),
+                menu: false,
+                palette: false,
                 enabled: ALWAYS,
                 leaf: None,
                 run: $run,
@@ -866,6 +887,19 @@ fn commands() -> &'static [Command] {
         ),
         top!("yank", "Copy", Category::Essential, "y", |t, _w, cx| t
             .copy_selection(cx)),
+        // Motions: resolved through the keymap (so remappable) but applied
+        // screen-aware via the `nav_*` helpers. Kept out of the `?` menu (the
+        // static Navigation group shows them) and the `:` palette (navigating
+        // from a list picker is pointless).
+        nav!("move-down", "Move down", "j", |t, _w, cx| t.nav_line(1, cx)),
+        nav!("move-up", "Move up", "k", |t, _w, cx| t.nav_line(-1, cx)),
+        nav!("goto-top", "Top", "g g", |t, _w, cx| t.nav_edge(false, cx)),
+        nav!("goto-bottom", "Bottom", "G", |t, _w, cx| t
+            .nav_edge(true, cx)),
+        nav!("next-section", "Next section", "g j", |t, _w, cx| t
+            .nav_section(true, cx)),
+        nav!("prev-section", "Previous section", "g k", |t, _w, cx| t
+            .nav_section(false, cx)),
     ];
     C
 }
@@ -2140,6 +2174,134 @@ impl StatusView {
         if let Some(i) = next {
             self.selected = i;
         }
+    }
+
+    // --- Unified, screen-aware navigation ---------------------------------
+    // One [keymap] drives motion in every cursor view: the registry's
+    // Navigation commands resolve to these, dispatched to the active screen.
+
+    /// Move the cursor/selection by `delta` rows in the active view.
+    fn nav_line(&mut self, delta: isize, cx: &mut Context<Self>) {
+        match self.screen {
+            Screen::Log(_) => self.log_move(delta, cx),
+            Screen::Commit { .. } => self.commit_view_move(delta, cx),
+            Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
+            _ => {
+                self.move_selection(delta);
+                self.scroll
+                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Page the cursor by a half- or full-screen in the active view.
+    fn nav_page(&mut self, down: bool, full: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let page = page_rows(window) as isize;
+        let amount = if full { page } else { (page / 2).max(1) };
+        let delta = if down { amount } else { -amount };
+        match self.screen {
+            Screen::Log(_) => self.log_move(delta, cx),
+            Screen::Commit { .. } => self.commit_view_move(delta, cx),
+            Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
+            _ => {
+                self.page_selection(delta);
+                self.scroll
+                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Jump to the first/last row of the active view.
+    fn nav_edge(&mut self, to_bottom: bool, cx: &mut Context<Self>) {
+        match self.screen {
+            Screen::Log(_) | Screen::Commit { .. } | Screen::RebaseTodo(_) => self.nav_line(
+                if to_bottom {
+                    isize::MAX / 2
+                } else {
+                    isize::MIN / 2
+                },
+                cx,
+            ),
+            _ => {
+                self.select_edge(to_bottom);
+                self.scroll
+                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Move to the next/previous section. Only the status view has sections; a
+    /// no-op elsewhere.
+    fn nav_section(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Status) {
+            self.select_section(forward);
+            self.scroll
+                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Shared key handling for the cursor views (status / log / commit / rebase
+    /// todo): the `g` prefix, the fixed motion aliases (arrows, Ctrl-paging,
+    /// `]`/`[`), and the remappable motion keys resolved through the effective
+    /// keymap. Returns whether it consumed the key.
+    fn try_nav(
+        &mut self,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // Second key of a `g` sequence: resolve `g <key>` through the keymap
+        // (any bound command — `g g`/`g j`/`g k` motions and `g r` refresh).
+        if self.pending_g {
+            self.pending_g = false;
+            if let Some(id) = self.keymap.get(&format!("g {key}")).cloned() {
+                self.invoke_command(&id, window, cx);
+            }
+            return true; // `g` always consumes the next key
+        }
+        // Fixed aliases — not remappable.
+        match key {
+            "down" => self.nav_line(1, cx),
+            "up" => self.nav_line(-1, cx),
+            "d" if ctrl => self.nav_page(true, false, window, cx),
+            "u" if ctrl => self.nav_page(false, false, window, cx),
+            "f" if ctrl => self.nav_page(true, true, window, cx),
+            "b" if ctrl => self.nav_page(false, true, window, cx),
+            "space" => self.nav_page(true, true, window, cx),
+            "j" if ctrl => self.nav_section(true, cx),
+            "k" if ctrl => self.nav_section(false, cx),
+            "]" => self.nav_section(true, cx),
+            "[" => self.nav_section(false, cx),
+            "g" if !shift => self.pending_g = true,
+            _ => {
+                // A remappable motion key (default j/k/G, or any user binding):
+                // resolve through the keymap and run only if it's a motion, so a
+                // command key (e.g. `s`) isn't fired in a non-status view.
+                let cased = if shift {
+                    key.to_uppercase()
+                } else {
+                    key.to_string()
+                };
+                let Some(id) = self.keymap.get(&cased).cloned() else {
+                    return false;
+                };
+                if commands()
+                    .iter()
+                    .any(|c| c.id == id && c.category == Category::Navigation)
+                {
+                    self.invoke_command(&id, window, cx);
+                } else {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn toggle_fold(&mut self, cx: &mut Context<Self>) {
@@ -3872,8 +4034,23 @@ impl StatusView {
             }
             let page = page_rows(window);
             let len = self.git_log_rows().len();
+            // The pager has no cursor, so it scrolls via less-style keys rather
+            // than the shared `nav_*`; translate a remapped motion to the key
+            // apply_scroll_key understands, so [keymap] still drives it.
+            let cased = if shift {
+                key.to_uppercase()
+            } else {
+                key.clone()
+            };
+            let (skey, sshift) = match self.keymap.get(&cased).map(String::as_str) {
+                Some("move-down") => ("j", false),
+                Some("move-up") => ("k", false),
+                Some("goto-bottom") => ("g", true),
+                Some("goto-top") => ("g", false),
+                _ => (key.as_str(), shift),
+            };
             if let Some(sv) = self.git_log_mut() {
-                apply_scroll_key(&sv.scroll, &mut sv.top, len, &key, shift, ctrl, page);
+                apply_scroll_key(&sv.scroll, &mut sv.top, len, skey, sshift, ctrl, page);
             }
             cx.notify();
             return;
@@ -3892,19 +4069,12 @@ impl StatusView {
                 }
                 return;
             }
-            let page = page_rows(window) as isize;
-            let half = (page / 2).max(1);
+            if self.try_nav(&key, shift, ctrl, window, cx) {
+                return;
+            }
             match key.as_str() {
                 "escape" | "q" => self.close_rebase_todo(window, cx),
                 "enter" => self.run_rebase_todo(window, cx),
-                "j" | "down" if !shift => self.rebase_todo_move(1, cx),
-                "k" | "up" if !shift => self.rebase_todo_move(-1, cx),
-                "d" if ctrl => self.rebase_todo_move(half, cx),
-                "u" if ctrl => self.rebase_todo_move(-half, cx),
-                "f" if ctrl => self.rebase_todo_move(page, cx),
-                "b" if ctrl => self.rebase_todo_move(-page, cx),
-                "g" if shift => self.rebase_todo_move(isize::MAX / 2, cx),
-                "g" => self.rebase_todo_move(isize::MIN / 2, cx),
                 // Move the selected commit up/down (shift+k / shift+j).
                 "k" if shift => self.rebase_todo_reorder(-1, cx),
                 "j" if shift => self.rebase_todo_reorder(1, cx),
@@ -3920,8 +4090,9 @@ impl StatusView {
         }
 
         if self.commit_view().is_some() {
-            let page = page_rows(window) as isize;
-            let half = (page / 2).max(1);
+            if self.try_nav(&key, shift, ctrl, window, cx) {
+                return;
+            }
             match key.as_str() {
                 // Cancel a visual selection first; otherwise leave the view.
                 "escape" | "q" => {
@@ -3934,15 +4105,6 @@ impl StatusView {
                         self.close_commit_view(window, cx);
                     }
                 }
-                "j" | "down" => self.commit_view_move(1, cx),
-                "k" | "up" => self.commit_view_move(-1, cx),
-                "d" if ctrl => self.commit_view_move(half, cx),
-                "u" if ctrl => self.commit_view_move(-half, cx),
-                "f" if ctrl => self.commit_view_move(page, cx),
-                "space" => self.commit_view_move(page, cx),
-                "b" if ctrl => self.commit_view_move(-page, cx),
-                "g" if shift => self.commit_view_move(isize::MAX / 2, cx),
-                "g" => self.commit_view_move(isize::MIN / 2, cx),
                 "v" => self.commit_view_toggle_visual(cx),
                 "y" => self.copy_commit_selection(cx),
                 "c" if cmd => self.copy_commit_selection(cx),
@@ -3951,17 +4113,18 @@ impl StatusView {
             return;
         }
 
-        // The commit-log view: Enter opens the commit; esc/q close; the vi/less
-        // motion keys move the *selection* (paging by a screenful, g/G to ends).
+        // The commit-log view: Enter opens the commit; esc/q close; motions move
+        // the selection (shared with every cursor view via `try_nav`).
         if self.log().is_some() {
-            let page = page_rows(window) as isize;
-            let half = (page / 2).max(1);
             // In a select mode, Return confirms the commit for the pending
             // action; while browsing it opens the commit's diff.
             let select_args = match self.log().map(|l| &l.purpose) {
                 Some(LogPurpose::SelectRebaseBase { args }) => Some(args.clone()),
                 _ => None,
             };
+            if self.try_nav(&key, shift, ctrl, window, cx) {
+                return;
+            }
             match key.as_str() {
                 "escape" | "q" => self.close_log(window, cx),
                 // Cmd+Return confirms the pending select (rebase since); plain
@@ -3974,15 +4137,6 @@ impl StatusView {
                     }
                 }
                 "enter" => self.open_commit_view(cx),
-                "j" | "down" => self.log_move(1, cx),
-                "k" | "up" => self.log_move(-1, cx),
-                "d" if ctrl => self.log_move(half, cx),
-                "u" if ctrl => self.log_move(-half, cx),
-                "space" => self.log_move(page, cx),
-                "f" if ctrl => self.log_move(page, cx),
-                "b" if ctrl => self.log_move(-page, cx),
-                "g" if shift => self.log_move(isize::MAX / 2, cx), // G → bottom
-                "g" => self.log_move(isize::MIN / 2, cx),          // g → top
                 // Apply the selected commit to the current branch (magit's `A`),
                 // or revert it (`V`). Both return to the status view, where a
                 // conflict surfaces as the in-progress banner.
@@ -4060,53 +4214,16 @@ impl StatusView {
             return;
         }
 
-        if self.pending_g {
-            self.pending_g = false;
-            match key.as_str() {
-                "g" => self.select_edge(false),
-                "j" => self.select_section(true),
-                "k" => self.select_section(false),
-                "r" => {
-                    self.refresh(cx);
-                    cx.notify();
-                    return;
-                }
-                _ => {}
-            }
-            self.scroll
-                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
+        // Command palette via cmd+p / cmd+k — before `try_nav`, so cmd+k isn't
+        // read as the `k` motion.
+        if cmd && matches!(key.as_str(), "p" | "k") {
+            return self.open_command_palette(window, cx);
+        }
+        // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
+        if self.try_nav(&key, shift, ctrl, window, cx) {
             return;
         }
-
-        // Page-motion size for Ctrl-d/u/f/b (a screenful of rows).
-        let page = page_rows(window) as isize;
-        let half = (page / 2).max(1);
         match key.as_str() {
-            // Command palette: alongside `:` / M-x, the familiar cmd+p /
-            // cmd+shift+p / cmd+k aliases (shift on `p` is ignored). Before the
-            // plain `p` (push) and `k` (move) arms so the modifier wins.
-            "p" | "k" if cmd => return self.open_command_palette(window, cx),
-            // Section nav: `g j`/`g k` (below) plus evil-collection-magit's
-            // `C-j`/`C-k` and `]`/`[` aliases.
-            "j" if ctrl => self.select_section(true),
-            "k" if ctrl => self.select_section(false),
-            "]" => self.select_section(true),
-            "[" => self.select_section(false),
-            // `!shift` so a shifted letter (e.g. a remapped `J`/`K`) falls through
-            // to the keymap below instead of being eaten as a motion.
-            "j" | "down" if !shift => self.move_selection(1),
-            "k" | "up" if !shift => self.move_selection(-1),
-            // Vi-style paging (kept off the `?` menu — a scroll convenience).
-            "d" if ctrl => self.page_selection(half),
-            "u" if ctrl => self.page_selection(-half),
-            "f" if ctrl => self.page_selection(page),
-            "b" if ctrl => self.page_selection(-page),
-            "g" if shift => self.select_edge(true), // G
-            "g" => {
-                self.pending_g = true;
-                return;
-            }
             // Tab toggles a fold (also delivered via the ToggleFold action, since
             // Root binds tab). Kept explicit — and out of the remappable keymap.
             "tab" => self.toggle_fold(cx),
@@ -4206,25 +4323,12 @@ impl StatusView {
         // remap/unbind take effect — and binding *any* command id (even a leaf
         // like `branch.delete`) to a key Just Works via `invoke_command`.
         if let Some(id) = self.keymap.get(key).cloned() {
+            // Motions resolve here too (registry Navigation commands), applied
+            // screen-aware by their `run`.
             self.invoke_command(&id, window, cx);
-            return;
-        }
-        if key == ":" {
+        } else if key == ":" {
             self.open_command_palette(window, cx);
-            return;
         }
-        match key {
-            "j" => self.move_selection(1),
-            "k" => self.move_selection(-1),
-            "g g" => self.select_edge(false),
-            "G" => self.select_edge(true),
-            "g j" => self.select_section(true),
-            "g k" => self.select_section(false),
-            _ => {}
-        }
-        self.scroll
-            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-        cx.notify();
     }
 
     /// Invoke a registry [`Command`] by id — the keymap's bridge to the
@@ -4277,7 +4381,8 @@ impl StatusView {
         if matches!(key, "tab" | "g r" | "g g" | "g j" | "g k") {
             return false;
         }
-        keymap.contains_key(key) || matches!(key, "j" | "k" | "G" | ":")
+        // Single-key motions (`j`/`k`/`G`) are registry commands in the keymap now.
+        keymap.contains_key(key) || key == ":"
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom

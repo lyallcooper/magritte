@@ -73,12 +73,16 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
 "E" = "commit-extend"   # leaf commands work too, not just top-level ones
 ```
 
-- **Keystrokes** are case-sensitive single keys as shown in the `?` menu
-  (`s` vs `S`, `f` fetch vs `F` pull). An unknown command id is ignored with a
-  startup warning rather than silently dropped.
-- **Reserved** (handled before the keymap, so binding them has no effect):
-  the motions `j` `k` `g g` `G` `g j` `g k`, the fold key `Tab`, the refresh
-  sequence `g r`, and any key inside a transient, picker, or visual mode.
+- **Keystrokes** are case-sensitive (`s` vs `S`, `f` fetch vs `F` pull). Most are
+  a single key; a few are `g`-prefixed sequences (`g g`, `g r`). An unknown
+  command id is ignored with a startup warning rather than silently dropped.
+- **Motions are remappable too** — they're ordinary commands (see the table),
+  resolved through the keymap in every view (status, log, commit, rebase-todo,
+  and the `$` pager), so a rebind applies everywhere.
+- **Reserved** (handled before the keymap, so binding them has no effect): the
+  fold key `Tab`, the `g` and `Ctrl-x` prefixes themselves, the fixed motion
+  aliases (arrows, `C-n`/`C-p`, `C-j`/`C-k`, `]`/`[`, `Ctrl-d`/`u`/`f`/`b`,
+  `Space`), and any key inside a transient, picker, or visual mode.
 
 ### Command ids
 
@@ -105,12 +109,18 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `unstage-all` | `U` | Unstage all |
 | `discard` | `x` | Discard the selection |
 | `open-file` | `Return` | Open file at point in `editor` |
-| `fold` | `Tab` | Fold / unfold (reserved) |
-| `refresh` | `g r` | Refresh status (reserved) |
+| `fold` | `Tab` | Fold / unfold (the `Tab` key itself is reserved) |
+| `refresh` | `g r` | Refresh status |
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y` | Copy the selection |
 | `settings` | `,` | Open Settings |
 | `git-log` | `$` | Open the git command log |
+| `move-down` | `j` | Move cursor down |
+| `move-up` | `k` | Move cursor up |
+| `goto-top` | `g g` | Jump to top |
+| `goto-bottom` | `G` | Jump to bottom |
+| `next-section` | `g j` | Next section (status view) |
+| `prev-section` | `g k` | Previous section (status view) |
 | `commit-create` | — | Create commit |
 | `commit-amend` | — | Amend commit |
 | `commit-reword` | — | Reword commit |
