@@ -667,18 +667,38 @@ fn commands() -> &'static [Command] {
     const C: &[Command] = &[
         // Prefixes (open a transient).
         top!("commit", "Commit", Category::Commands, "c", |t, _w, cx| {
-            t.open_transient(transient::commit_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "commit",
+                transient::commit_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!("branch", "Branch", Category::Commands, "b", |t, _w, cx| {
             // The branch transient (checkout/create/rename/delete) doesn't use
             // remote targets, so don't resolve them just to open it.
-            t.open_transient(transient::branch_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "branch",
+                transient::branch_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
-            t.open_transient(transient::stash_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "stash",
+                transient::stash_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!("reset", "Reset", Category::Commands, "O", |t, _w, cx| {
-            t.open_transient(transient::reset_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "reset",
+                transient::reset_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!(
             "git-command",
@@ -695,13 +715,14 @@ fn commands() -> &'static [Command] {
                 Some(SequenceKind::Rebase)
             ) {
                 t.open_transient(
+                    "",
                     transient::sequence_transient(SequenceKind::Rebase),
                     RemoteTargets::default(),
                     cx,
                 );
             } else {
                 let rt = t.remote_targets();
-                t.open_transient(transient::rebase_transient(&rt), rt, cx);
+                t.open_transient("rebase", transient::rebase_transient(&rt), rt, cx);
             }
         }),
         top!("merge", "Merge", Category::Commands, "m", |t, _w, cx| {
@@ -712,31 +733,47 @@ fn commands() -> &'static [Command] {
                 Some(SequenceKind::Merge)
             ) {
                 t.open_transient(
+                    "",
                     transient::sequence_transient(SequenceKind::Merge),
                     RemoteTargets::default(),
                     cx,
                 );
             } else {
-                t.open_transient(transient::merge_transient(), RemoteTargets::default(), cx);
+                t.open_transient(
+                    "merge",
+                    transient::merge_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                );
             }
         }),
         top!("ignore", "Ignore", Category::Commands, "i", |t, _w, cx| {
-            t.open_transient(transient::ignore_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "ignore",
+                transient::ignore_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
-            t.open_transient(transient::log_transient(), RemoteTargets::default(), cx)
+            t.open_transient(
+                "log",
+                transient::log_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
         }),
         top!("push", "Push", Category::Commands, "p", |t, _w, cx| {
             let rt = t.remote_targets();
-            t.open_transient(transient::push_transient(&rt), rt, cx)
+            t.open_transient("push", transient::push_transient(&rt), rt, cx)
         }),
         top!("pull", "Pull", Category::Commands, "F", |t, _w, cx| {
             let rt = t.remote_targets();
-            t.open_transient(transient::pull_transient(&rt), rt, cx)
+            t.open_transient("pull", transient::pull_transient(&rt), rt, cx)
         }),
         top!("fetch", "Fetch", Category::Commands, "f", |t, _w, cx| {
             let rt = t.remote_targets();
-            t.open_transient(transient::fetch_transient(&rt), rt, cx)
+            t.open_transient("fetch", transient::fetch_transient(&rt), rt, cx)
         }),
         // Leaf subcommands (palette-only; reached in the `?` menu via their
         // prefix's transient).
@@ -924,8 +961,29 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             warnings.push(format!("keymap: unknown command id \"{id}\""));
         }
     }
+    // Validate the `[transient]` suffix injections: the section must name a
+    // transient, and each value a real command (the injection itself happens in
+    // `open_transient`).
+    for (tid, suffixes) in &config.transient {
+        if !TRANSIENT_IDS.contains(&tid.as_str()) {
+            warnings.push(format!("transient: \"{tid}\" is not a transient"));
+            continue;
+        }
+        for id in suffixes.values() {
+            if !commands().iter().any(|c| c.id == id) {
+                warnings.push(format!("transient.{tid}: unknown command id \"{id}\""));
+            }
+        }
+    }
     (map, warnings)
 }
+
+/// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
+/// sections for suffix injection.
+const TRANSIENT_IDS: &[&str] = &[
+    "commit", "branch", "stash", "reset", "rebase", "merge", "ignore", "log", "push", "pull",
+    "fetch",
+];
 
 /// The keystroke sequence to reach the command with this palette title, as
 /// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
@@ -3009,7 +3067,43 @@ impl StatusView {
 
     // --- Popups (transients + help) --------------------------------------
 
-    fn open_transient(&mut self, def: Transient, targets: RemoteTargets, cx: &mut Context<Self>) {
+    /// Open a transient, injecting any user-configured suffixes for it. `id` is
+    /// the transient's command id (`branch`, `commit`, …); pass `""` for ad-hoc
+    /// transients (e.g. an in-progress sequence) that take no user suffixes.
+    fn open_transient(
+        &mut self,
+        id: &str,
+        mut def: Transient,
+        targets: RemoteTargets,
+        cx: &mut Context<Self>,
+    ) {
+        let extra: Vec<transient::Suffix> = self
+            .config
+            .transient
+            .get(id)
+            .into_iter()
+            .flatten()
+            // Don't shadow a built-in suffix — its binding wins anyway, so an
+            // injected duplicate would just be a dead row.
+            .filter(|(key, _)| def.action_for(key).is_none())
+            .map(|(key, cmd_id)| {
+                let description = commands()
+                    .iter()
+                    .find(|c| c.id == cmd_id)
+                    .map_or_else(|| cmd_id.clone(), |c| c.title.to_string());
+                transient::Suffix::Custom(transient::Custom {
+                    key: key.clone(),
+                    description,
+                    id: cmd_id.clone(),
+                })
+            })
+            .collect();
+        if !extra.is_empty() {
+            def.groups.push(transient::Group {
+                title: transient::plain_title("Custom"),
+                suffixes: extra,
+            });
+        }
         self.popup = Some(Popup::Transient(TransientState::new(def, targets)));
         cx.notify();
     }
@@ -3066,8 +3160,10 @@ impl StatusView {
             return;
         }
 
-        // Invoke an action.
+        // Invoke an action — or a user-injected custom suffix (which runs a
+        // registry command by id, with default args).
         let action = state.def.action_for(key).cloned();
+        let custom = state.def.custom_for(key).cloned();
         // The active git arguments: toggled switches plus set option values.
         let args = state.args();
         // Pathspec limits trail the revision behind a `--` (log only).
@@ -3086,6 +3182,9 @@ impl StatusView {
                 limit,
             };
             self.fire_action(action.command, fired, window, cx);
+        } else if let Some(custom) = custom {
+            self.popup = None;
+            self.invoke_command(&custom.id, window, cx);
         }
     }
 
@@ -4869,6 +4968,29 @@ impl StatusView {
                     .child(self.hover_label(i.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
+                    })
+                    .into_any_element()
+            }
+            // A user-injected suffix (from `[transient]`): keycap + label,
+            // clickable; dispatched by key like an action.
+            Suffix::Custom(c) => {
+                let view = view.clone();
+                let key = SharedString::from(c.key.clone());
+                div()
+                    .id(key.clone())
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(key.clone()))
+                    .child(kbd::key_chip(&c.key, self.palette.dim, &self.font))
+                    .child(self.hover_label(&c.description, self.palette.fg))
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
                     })
                     .into_any_element()
             }

@@ -157,12 +157,23 @@ pub struct Info {
     pub description: &'static str,
 }
 
+/// A user-injected suffix (from the `[transient]` config): a key + label that
+/// runs a registry command by id. Core stores the id opaquely; the frontend
+/// resolves it against the command registry.
+#[derive(Debug, Clone)]
+pub struct Custom {
+    pub key: String,
+    pub description: String,
+    pub id: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum Suffix {
     Switch(Switch),
     Action(Action),
     Option(Opt),
     Info(Info),
+    Custom(Custom),
 }
 
 pub struct Group {
@@ -233,6 +244,17 @@ impl Transient {
             .flat_map(|g| g.suffixes.iter())
             .find_map(|s| match s {
                 Suffix::Action(a) if a.key == key => Some(a),
+                _ => None,
+            })
+    }
+
+    /// The user-injected custom suffix bound to `key`, if any.
+    pub fn custom_for(&self, key: &str) -> Option<&Custom> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .find_map(|s| match s {
+                Suffix::Custom(c) if c.key == key => Some(c),
                 _ => None,
             })
     }

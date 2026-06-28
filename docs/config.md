@@ -135,3 +135,23 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | — | Fetch variants |
 | `stash-push` / `stash-push-all` / `stash-apply` / `stash-pop` / `stash-drop` | — | Stash variants |
 | `log-current` / `log-all` / `log-other` / `log-reflog` | — | Log variants |
+
+## Transients
+
+A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
+`transient-append-suffix`. The section id is the transient's command id
+(`commit`, `branch`, `stash`, `reset`, `rebase`, `merge`, `ignore`, `log`,
+`push`, `pull`, `fetch`); each entry maps a suffix key to a command id to run.
+
+```toml
+[transient.branch]
+"X" = "branch-delete"   # `b X` deletes a branch, shown in a "Custom" group
+
+[transient.commit]
+"A" = "commit-amend"    # `c A` amends
+```
+
+The injected suffixes appear in a **Custom** group at the bottom of the menu and
+run with default arguments. A key that already exists in the transient is left
+alone (the built-in binding wins). Unknown command ids — and a section that
+isn't a real transient — warn at startup.

@@ -49,10 +49,15 @@ pub struct Config {
     pub commit_editor: String,
     /// Keystroke → command-id overrides, applied over the built-in keymap at
     /// startup. The value `"unbound"` removes a default binding. Keystrokes use
-    /// the same form the `?` menu shows (e.g. `"K"`, `"g r"`); only top-level
-    /// command keys are remappable — motions and prefixes are fixed.
+    /// the same form the `?` menu shows (e.g. `"K"`, `"g r"`).
     #[serde(default)]
     pub keymap: BTreeMap<String, String>,
+    /// Extra suffixes to add into a transient, keyed by the transient's command
+    /// id (`branch`, `commit`, `push`, …): each inner entry maps a suffix
+    /// keystroke to the command id it runs. Lets users add e.g. a `b X` →
+    /// delete-branch binding inside the branch transient.
+    #[serde(default)]
+    pub transient: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for Config {
@@ -72,6 +77,7 @@ impl Default for Config {
             commit_in_editor: false,
             commit_editor: String::new(),
             keymap: BTreeMap::new(),
+            transient: BTreeMap::new(),
         }
     }
 }
