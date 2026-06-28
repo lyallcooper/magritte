@@ -60,10 +60,10 @@ Two crates, split at a synchronous/async seam:
   few bounded config/ref probes, e.g. resolving `@{upstream}`, still run inline;
   they don't scan the worktree.)
 
-Keymap remapping, transient extension, and the `:` command palette are built and
-documented in [`docs/config.md`](docs/config.md);
-[`docs/extensibility.md`](docs/extensibility.md) tours them and sketches the
-still-planned user-defined `[[command]]` commands.
+Keymap remapping, transient extension, user-defined `[[command]]` commands, and
+the `:` command palette are built and documented in
+[`docs/config.md`](docs/config.md); [`docs/extensibility.md`](docs/extensibility.md)
+tours them.
 
 ## Development
 
@@ -89,9 +89,9 @@ It is compiled out of normal release builds entirely.
 
 - Not yet code-signed, notarized, or packaged as a `.app`.
 - macOS only; non-UTF-8 paths are handled lossily.
-- Auto-refresh is on-demand (`g r`) and after our own commands; there is no
-  filesystem watcher (intentionally — it's a large-repo hazard magit also
-  avoids).
+- Refresh is on-demand (`g r`), after our own commands, and on window focus
+  (opt-out via `refresh_on_focus`); there is no filesystem watcher (intentionally
+  — it's a large-repo hazard magit also avoids).
 
 ## License
 
