@@ -13,6 +13,17 @@ use gpui::{Context, SharedString, UniformListScrollHandle, Window};
 
 use crate::*;
 
+/// How a status-bar message behaves once shown. Every kind advances the status
+/// sequence; only a `Notice` schedules its own fade.
+pub(crate) enum StatusKind {
+    /// A success notice — fades on its own after a moment.
+    Notice,
+    /// Work in progress ("Pushing…") — stays until the job reports.
+    Progress,
+    /// An error or condition — stays until dismissed (Esc / click).
+    Sticky,
+}
+
 impl StatusView {
     /// Fire a leaf command (a transient suffix) with already-gathered arguments.
     /// Shared by the transient (which passes its toggled switches/options) and
@@ -436,30 +447,35 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        self.status_message = Some("Loading commits…".to_string());
-        cx.notify();
+        let gen = self.next_screen_gen();
+        self.set_progress("Loading commits…".to_string(), cx);
         cx.spawn(async move |this, cx| {
             let for_load = base.clone();
             let loaded = cx
                 .background_executor()
                 .spawn(async move { repo.rebase_todo(&for_load) })
                 .await;
-            this.update(cx, |this, cx| match loaded {
-                Ok(steps) if steps.is_empty() => {
-                    this.set_status("No commits to rebase".to_string(), true, cx);
+            this.update(cx, |this, cx| {
+                // Drop a load a newer screen request superseded.
+                if this.screen_gen != gen {
+                    return;
                 }
-                Ok(steps) => {
-                    this.status_message = None;
-                    this.screen = Screen::RebaseTodo(RebaseTodoView {
-                        base,
-                        args,
-                        steps,
-                        selected: 0,
-                        scroll: UniformListScrollHandle::new(),
-                    });
-                    cx.notify();
+                match loaded {
+                    Ok(steps) if steps.is_empty() => {
+                        this.set_status("No commits to rebase".to_string(), true, cx);
+                    }
+                    Ok(steps) => {
+                        this.screen = Screen::RebaseTodo(RebaseTodoView {
+                            base,
+                            args,
+                            steps,
+                            selected: 0,
+                            scroll: UniformListScrollHandle::new(),
+                        });
+                        this.clear_status(cx);
+                    }
+                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
                 }
-                Err(e) => this.set_status(format!("error: {e}"), false, cx),
             })
             .ok();
         })
@@ -609,42 +625,28 @@ impl StatusView {
         if args.is_empty() {
             return;
         }
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some(format!("git {}…", args.join(" ")));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            // The first non-empty output line (stdout, else stderr) as a summary.
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    repo.run(&args).map(|o| {
-                        let out = String::from_utf8_lossy(&o.stdout);
-                        let line = out.trim().lines().next().unwrap_or("").to_string();
-                        if !line.is_empty() {
-                            line
-                        } else {
-                            o.stderr
-                                .trim()
-                                .lines()
-                                .next()
-                                .map(str::to_string)
-                                .unwrap_or_else(|| "done".to_string())
-                        }
-                    })
+        let progress = format!("git {}…", args.join(" "));
+        // The first non-empty output line (stdout, else stderr) as a summary.
+        self.run_job_reporting(
+            progress,
+            move |repo| {
+                repo.run(&args).map(|o| {
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    let line = out.trim().lines().next().unwrap_or("").to_string();
+                    if !line.is_empty() {
+                        line
+                    } else {
+                        o.stderr
+                            .trim()
+                            .lines()
+                            .next()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "done".to_string())
+                    }
                 })
-                .await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(msg) => this.set_status(msg, true, cx),
-                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
-                }
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+            },
+            cx,
+        );
     }
 
     /// Run the rebase on the background executor, then refresh — a conflict
@@ -741,8 +743,7 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        self.status_message = Some(format!("{}…", describe_command(command)));
-        cx.notify();
+        self.set_progress(format!("{}…", describe_command(command)), cx);
 
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -829,8 +830,11 @@ impl StatusView {
             FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere
         );
         if needs_branch && targets.branch.is_none() {
-            self.status_message = Some("HEAD is detached — can't push/pull a branch".to_string());
-            cx.notify();
+            self.set_status(
+                "HEAD is detached — can't push/pull a branch".to_string(),
+                false,
+                cx,
+            );
             return;
         }
         let branch = targets.branch.clone().unwrap_or_default();
@@ -915,8 +919,7 @@ impl StatusView {
             .unwrap_or_default();
         match remotes.len() {
             0 => {
-                self.status_message = Some("No remotes configured".to_string());
-                cx.notify();
+                self.set_status("No remotes configured".to_string(), false, cx);
             }
             1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
             _ => {
@@ -948,8 +951,7 @@ impl StatusView {
             .and_then(|r| r.remotes().ok())
             .unwrap_or_default();
         if remotes.is_empty() {
-            self.status_message = Some("No remotes configured".to_string());
-            cx.notify();
+            self.set_status("No remotes configured".to_string(), false, cx);
             return;
         }
         remotes.sort_by_key(|r| r != "origin");
@@ -978,8 +980,7 @@ impl StatusView {
         };
         let remotes = repo.remotes().unwrap_or_default();
         if remotes.is_empty() {
-            self.status_message = Some("No remotes configured".to_string());
-            cx.notify();
+            self.set_status("No remotes configured".to_string(), false, cx);
             return;
         }
         let existing = repo.remote_branches().unwrap_or_default();
@@ -1199,15 +1200,17 @@ impl StatusView {
         }
     }
 
-    /// Show a status-bar message. A `transient` one (a success notice) fades on
-    /// its own after a moment; a sticky one (an error) stays until dismissed
-    /// (Esc / click). Either way it can always be dismissed manually.
-    pub(crate) fn set_status(&mut self, msg: String, transient: bool, cx: &mut Context<Self>) {
+    /// Post a status-bar message of a given `kind`. Every post advances
+    /// `status_seq`, which is what an auto-dismiss timer checks before clearing:
+    /// so a newer message of any kind always invalidates an older notice's
+    /// pending fade. Only a `Notice` schedules its own fade; `Progress` stays
+    /// until the job reports, `Sticky` until dismissed (Esc / click).
+    pub(crate) fn status(&mut self, msg: String, kind: StatusKind, cx: &mut Context<Self>) {
         self.status_seq = self.status_seq.wrapping_add(1);
         let seq = self.status_seq;
         self.status_message = Some(msg);
         cx.notify();
-        if transient {
+        if matches!(kind, StatusKind::Notice) {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(STATUS_FADE_SECS))
@@ -1225,6 +1228,41 @@ impl StatusView {
         }
     }
 
+    /// A success notice that fades on its own (`transient`) or a sticky
+    /// condition that stays until dismissed.
+    pub(crate) fn set_status(&mut self, msg: String, transient: bool, cx: &mut Context<Self>) {
+        let kind = if transient {
+            StatusKind::Notice
+        } else {
+            StatusKind::Sticky
+        };
+        self.status(msg, kind, cx);
+    }
+
+    /// Show an in-progress message ("Pushing…") that stays until the job
+    /// reports. Advances the sequence so a stale notice's timer can't clear it.
+    pub(crate) fn set_progress(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.status(msg, StatusKind::Progress, cx);
+    }
+
+    /// Clear the status bar (advancing the sequence so no pending timer fires).
+    pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
+        self.status_seq = self.status_seq.wrapping_add(1);
+        self.status_message = None;
+        cx.notify();
+    }
+
+    /// Surface a failed git operation: cancel/timeout get their own short
+    /// notices, everything else the error text. Always sticky.
+    pub(crate) fn report_error(&mut self, e: magritte_core::Error, cx: &mut Context<Self>) {
+        let msg = match e {
+            magritte_core::Error::Cancelled => "Cancelled".to_string(),
+            magritte_core::Error::TimedOut => "Timed out".to_string(),
+            e => format!("error: {e}"),
+        };
+        self.set_status(msg, false, cx);
+    }
+
     /// Report a git operation's outcome: on success a brief `success` notice
     /// that auto-dismisses (we don't echo git's stderr); on failure the error,
     /// which sticks until dismissed.
@@ -1236,30 +1274,25 @@ impl StatusView {
     ) {
         match result {
             Ok(_) => self.set_status(success.to_string(), true, cx),
-            Err(magritte_core::Error::Cancelled) => {
-                self.set_status("Cancelled".to_string(), false, cx)
-            }
-            Err(magritte_core::Error::TimedOut) => {
-                self.set_status("Timed out".to_string(), false, cx)
-            }
-            Err(e) => self.set_status(format!("error: {e}"), false, cx),
+            Err(e) => self.report_error(e, cx),
         }
     }
 
-    /// Run a git operation off the UI thread, then report and refresh — the
-    /// shape almost every mutating command shares. `progress` shows immediately,
-    /// `op` does the git work on the background executor (so the UI never blocks
-    /// on it), and on completion `report(done, …)` posts the outcome and the
-    /// status is refreshed. Commands needing custom result handling (a recover
-    /// hint, a follow-up) still spawn by hand.
-    pub(crate) fn run_job<F>(
+    /// Run a git operation off the UI thread, then `finish` with its result and
+    /// refresh — the shape almost every mutating command shares. `progress`
+    /// shows immediately; the git work runs on the background executor (so the
+    /// UI never blocks); a cancel flag lives on `self` for its duration so
+    /// `C-g`/Esc can kill it. The `run_job`/`run_job_reporting` wrappers cover
+    /// the common reporting shapes; this core is for anything bespoke.
+    pub(crate) fn run_job_with<F, G>(
         &mut self,
-        progress: &str,
-        done: &'static str,
+        progress: String,
         op: F,
+        finish: G,
         cx: &mut Context<Self>,
     ) where
         F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
+        G: FnOnce(&mut Self, magritte_core::Result<String>, &mut Context<Self>) + 'static,
     {
         let Some(repo) = self.repo.clone() else {
             return;
@@ -1269,8 +1302,7 @@ impl StatusView {
         // for the key handler; cleared when the job finishes.
         let (repo, cancel) = repo.cancellable();
         self.job_cancel = Some(cancel);
-        self.status_message = Some(progress.to_string());
-        cx.notify();
+        self.set_progress(progress, cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1278,12 +1310,48 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 this.job_cancel = None;
-                this.report(done, result, cx);
+                finish(this, result, cx);
                 this.refresh(cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Run a git operation, then post a fixed past-tense `done` notice on
+    /// success (or the error on failure) and refresh.
+    pub(crate) fn run_job<F>(
+        &mut self,
+        progress: &str,
+        done: &'static str,
+        op: F,
+        cx: &mut Context<Self>,
+    ) where
+        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
+    {
+        self.run_job_with(
+            progress.to_string(),
+            op,
+            move |this, result, cx| this.report(done, result, cx),
+            cx,
+        );
+    }
+
+    /// Run a git operation, then on success show the op's own returned summary
+    /// (e.g. git's first output line) instead of a fixed notice, and refresh.
+    pub(crate) fn run_job_reporting<F>(&mut self, progress: String, op: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
+    {
+        self.run_job_with(
+            progress,
+            op,
+            |this, result, cx| match result {
+                Ok(msg) => this.set_status(msg, true, cx),
+                Err(e) => this.report_error(e, cx),
+            },
+            cx,
+        );
     }
 
     /// Cancel the active mutating job, if any — killing its git subprocess.
@@ -1293,8 +1361,7 @@ impl StatusView {
             return false;
         };
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.status_message = Some("Cancelling…".to_string());
-        cx.notify();
+        self.set_progress("Cancelling…".to_string(), cx);
         true
     }
 
@@ -1397,9 +1464,6 @@ impl StatusView {
             return;
         }
 
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let verb = match &action {
             BranchAction::Checkout => "Checking out",
             BranchAction::Create { .. } => "Creating branch",
@@ -1414,56 +1478,30 @@ impl StatusView {
             BranchAction::Delete => "Deleted branch",
             BranchAction::RenameFrom => "Done",
         };
-        self.status_message = Some(format!("{verb}…"));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match action {
-                        BranchAction::Checkout => repo.checkout(&chosen),
-                        BranchAction::Create { checkout: true } => {
-                            repo.create_and_checkout(&chosen, None)
-                        }
-                        BranchAction::Create { checkout: false } => {
-                            repo.create_branch(&chosen, None)
-                        }
-                        BranchAction::RenameTo { old } => repo.rename_branch(&old, &chosen),
-                        BranchAction::Delete => repo.delete_branch(&chosen, false),
-                        BranchAction::RenameFrom => unreachable!("handled above"),
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            &format!("{verb}…"),
+            done,
+            move |repo| match action {
+                BranchAction::Checkout => repo.checkout(&chosen),
+                BranchAction::Create { checkout: true } => repo.create_and_checkout(&chosen, None),
+                BranchAction::Create { checkout: false } => repo.create_branch(&chosen, None),
+                BranchAction::RenameTo { old } => repo.rename_branch(&old, &chosen),
+                BranchAction::Delete => repo.delete_branch(&chosen, false),
+                BranchAction::RenameFrom => unreachable!("handled above"),
+            },
+            cx,
+        );
     }
 
     /// Stash the working tree and index (`Z z` / `Z Z`), on the background
     /// executor, then refresh.
     pub(crate) fn run_stash_push(&mut self, include_untracked: bool, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.status_message = Some("Stashing…".to_string());
-        let done = "Stashed";
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.stash_push(None, include_untracked) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(done, result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job(
+            "Stashing…",
+            "Stashed",
+            move |repo| repo.stash_push(None, include_untracked),
+            cx,
+        );
     }
 
     /// Apply / pop / drop the chosen stash (`chosen` is the picker's display
@@ -1474,9 +1512,6 @@ impl StatusView {
         chosen: String,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let reference = chosen
             .split_whitespace()
             .next()
@@ -1492,35 +1527,24 @@ impl StatusView {
             StashAction::Pop => "Popped stash",
             StashAction::Drop => "Dropped stash",
         };
-        self.status_message = Some(format!("{verb}…"));
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match action {
-                        StashAction::Apply => repo.stash_apply(&reference),
-                        StashAction::Pop => repo.stash_pop(&reference),
-                        StashAction::Drop => repo.stash_drop(&reference),
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                // A dropped stash isn't gone: git echoes the commit it pointed
-                // at ("Dropped refs/stash@{0} (<sha>)"), recoverable via `git
-                // stash store`. Surface that line so the id is visible — like
-                // magit, which echoes it too and (for a single drop) doesn't
-                // prompt; the explicit pick is the safeguard.
-                match (&action, &result) {
-                    (StashAction::Drop, Ok(line)) if !line.is_empty() => {
-                        this.set_status(line.clone(), true, cx);
-                    }
-                    _ => this.report(done, result, cx),
-                }
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+        let is_drop = matches!(action, StashAction::Drop);
+        self.run_job_with(
+            format!("{verb}…"),
+            move |repo| match action {
+                StashAction::Apply => repo.stash_apply(&reference),
+                StashAction::Pop => repo.stash_pop(&reference),
+                StashAction::Drop => repo.stash_drop(&reference),
+            },
+            // A dropped stash isn't gone: git echoes the commit it pointed at
+            // ("Dropped refs/stash@{0} (<sha>)"), recoverable via `git stash
+            // store`. Surface that line so the id is visible — like magit, which
+            // echoes it too and (for a single drop) doesn't prompt; the explicit
+            // pick is the safeguard.
+            move |this, result, cx| match (is_drop, &result) {
+                (true, Ok(line)) if !line.is_empty() => this.set_status(line.clone(), true, cx),
+                _ => this.report(done, result, cx),
+            },
+            cx,
+        );
     }
 }
