@@ -957,11 +957,11 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             map.remove(keystroke);
         } else if !commands().iter().any(|c| c.id == id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
-        } else if keystroke.contains(' ') && !keystroke.starts_with("g ") {
-            // Only single keys and `g <key>` sequences are dispatchable; `g` is
-            // the one prefix. Anything else (e.g. `. c`) would never fire.
+        } else if keystroke.split(' ').count() > 2 {
+            // A sequence is a prefix plus one key (e.g. `g r`); deeper chains
+            // (`g r x`) aren't dispatched.
             warnings.push(format!(
-                "keymap: \"{keystroke}\" isn't a bindable keystroke (only the `g` prefix takes a sequence)"
+                "keymap: \"{keystroke}\" has too many keys (a sequence is a prefix + one key)"
             ));
         } else {
             map.insert(keystroke.clone(), id.clone());
@@ -1395,6 +1395,14 @@ enum SeqOp {
     Abort,
 }
 
+/// A pressed prefix key awaiting the next key of a sequence.
+struct PendingPrefix {
+    /// The prefix keystroke (e.g. `g`).
+    key: String,
+    /// The `prefix_gen` value when entered, so a stale timeout is ignored.
+    gen: u64,
+}
+
 /// Applying a commit selected in the log to the current branch.
 #[derive(Clone, Copy)]
 enum PickOp {
@@ -1468,7 +1476,13 @@ struct StatusView {
     /// before populating the screen, so a superseded load can't land in the
     /// screen a newer request opened.
     screen_gen: u64,
-    pending_g: bool,
+    /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
+    /// with the generation that scopes its timeout. Any key that starts a
+    /// multi-key binding can be a prefix; `None` when none is pending.
+    pending_prefix: Option<PendingPrefix>,
+    /// Bumped each time a prefix is entered, so a stale timeout (a newer prefix,
+    /// or a resolved one) is ignored.
+    prefix_gen: u64,
     /// Whether the Emacs `C-x` prefix is pending (next key resolves it, e.g.
     /// `C-x C-c` to quit).
     pending_cx: bool,
@@ -1578,7 +1592,8 @@ impl StatusView {
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
             screen_gen: 0,
-            pending_g: false,
+            pending_prefix: None,
+            prefix_gen: 0,
             pending_cx: false,
             popup: None,
             screen: Screen::Status,
@@ -2344,15 +2359,6 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        // Second key of a `g` sequence: resolve `g <key>` through the keymap
-        // (any bound command — `g g`/`g j`/`g k` motions and `g r` refresh).
-        if self.pending_g {
-            self.pending_g = false;
-            if let Some(id) = self.keymap.get(&format!("g {key}")).cloned() {
-                self.invoke_command(&id, window, cx);
-            }
-            return true; // `g` always consumes the next key
-        }
         // Fixed aliases — not remappable.
         match key {
             "down" => self.nav_line(1, cx),
@@ -2366,16 +2372,20 @@ impl StatusView {
             "k" if ctrl => self.nav_section(false, cx),
             "]" => self.nav_section(true, cx),
             "[" => self.nav_section(false, cx),
-            "g" if !shift => self.pending_g = true,
             _ => {
-                // A remappable motion key (default j/k/G, or any user binding):
-                // resolve through the keymap and run only if it's a motion, so a
-                // command key (e.g. `s`) isn't fired in a non-status view.
                 let cased = if shift {
                     key.to_uppercase()
                 } else {
                     key.to_string()
                 };
+                // A prefix key (begins a sequence): start the pending state.
+                if self.is_prefix(&cased) {
+                    self.enter_prefix(cased, window, cx);
+                    return true;
+                }
+                // A remappable motion key (default j/k/G, or any user binding):
+                // run only if it's a motion, so a command key (e.g. `s`) isn't
+                // fired in a non-status view.
                 let Some(id) = self.keymap.get(&cased).cloned() else {
                     return false;
                 };
@@ -4139,6 +4149,18 @@ impl StatusView {
             return;
         }
 
+        // A prefix is pending: this key is the second of the sequence. Resolve
+        // it here — before the per-view branches — so prefixes work everywhere.
+        if self.pending_prefix.is_some() {
+            let second = if shift {
+                key.to_uppercase()
+            } else {
+                key.clone()
+            };
+            self.resolve_prefix(&second, window, cx);
+            return;
+        }
+
         // While settings is open the focused Select handles keys; we only watch
         // for Esc (when no dropdown menu is open) to close the screen. Tab is
         // delivered via the ToggleFold action.
@@ -4308,18 +4330,13 @@ impl StatusView {
         // The `?` dispatch popup is modal (like magit's dispatch): a command
         // key runs that command, esc/q/? close it, other keys are ignored.
         if matches!(self.popup, Some(Popup::Dispatch(_))) {
-            if self.pending_g {
-                self.pending_g = false;
-                // Second key of a `g` sequence — dispatch `g <key>`.
-                self.run_dispatch(&format!("g {key}"), window, cx);
-                return;
-            }
+            // (A pending prefix's second key was already resolved above.)
             match cased.as_str() {
                 "escape" | "q" | "?" | "/" => {
                     self.popup = None;
                     cx.notify();
                 }
-                "g" => self.pending_g = true,
+                k if self.is_prefix(k) => self.enter_prefix(k.to_string(), window, cx),
                 k if Self::is_dispatch_key(&self.keymap, k) => {
                     self.run_dispatch(&cased, window, cx)
                 }
@@ -4461,6 +4478,58 @@ impl StatusView {
         if let Some(cmd) = commands().iter().find(|c| c.id == id) {
             (cmd.run)(self, window, cx);
         }
+    }
+
+    /// Whether `key` begins a multi-key binding in the effective keymap — i.e.
+    /// it's a prefix the next keystroke completes.
+    fn is_prefix(&self, key: &str) -> bool {
+        let prefix = format!("{key} ");
+        self.keymap.keys().any(|k| k.starts_with(&prefix))
+    }
+
+    /// Begin a prefix sequence: remember the key, show the indicator, and start
+    /// the timeout. On expiry the indicator clears and — if the prefix key is
+    /// itself bound to a command — that command runs.
+    fn enter_prefix(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.prefix_gen = self.prefix_gen.wrapping_add(1);
+        let gen = self.prefix_gen;
+        self.pending_prefix = Some(PendingPrefix { key, gen });
+        cx.notify();
+        let timeout = Duration::from_millis(self.config.prefix_timeout_ms);
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(timeout).await;
+            this.update_in(cx, |this, window, cx| {
+                // Act only if this exact pending prefix is still waiting (a newer
+                // prefix or a resolved sequence bumps/clears it).
+                let Some(p) = &this.pending_prefix else {
+                    return;
+                };
+                if p.gen != gen {
+                    return;
+                }
+                let key = p.key.clone();
+                this.pending_prefix = None;
+                // The prefix key's own command, if it has one (e.g. a key bound
+                // both directly and as a prefix).
+                if this.keymap.contains_key(&key) {
+                    this.run_dispatch(&key, window, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Resolve the second key of a pending prefix: run `<prefix> <key>` through
+    /// the keymap (dismissing the indicator). Any context — cursor view, popup —
+    /// since `run_dispatch` just invokes the bound command.
+    fn resolve_prefix(&mut self, second: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.pending_prefix.take() else {
+            return;
+        };
+        cx.notify(); // dismiss the indicator
+        self.run_dispatch(&format!("{} {second}", p.key), window, cx);
     }
 
     /// Note a command run *from the palette* for its frecency ranking, and
@@ -6516,6 +6585,51 @@ impl StatusView {
     /// The status/confirmation banner ("Copied …", errors), as a bottom-pinned
     /// bar. The full-window sub-views (settings, commit, log, …) append this so
     /// a copy confirmation is visible there too, not only in the status view.
+    /// A which-key hint for a pending prefix: the prefix keycap and, for each
+    /// `<prefix> <key>` binding, that key and its command's label. Shown until
+    /// the sequence resolves or the timeout fires.
+    fn prefix_indicator(&self) -> Option<gpui::Div> {
+        let pending = self.pending_prefix.as_ref()?;
+        let lead = format!("{} ", pending.key);
+        let mut conts: Vec<(String, &'static str)> = self
+            .keymap
+            .iter()
+            .filter_map(|(k, id)| {
+                let suffix = k.strip_prefix(&lead)?;
+                let title = commands().iter().find(|c| c.id == id).map(|c| c.title)?;
+                Some((suffix.to_string(), title))
+            })
+            .collect();
+        conts.sort();
+        let mut bar = div()
+            .w_full()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
+            .text_color(self.palette.fg)
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(kbd::key_chip(&pending.key, self.palette.dim, &self.font));
+        for (suffix, title) in conts {
+            bar = bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(kbd::key_chip(&suffix, self.palette.dim, &self.font))
+                    .child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(title)),
+                    ),
+            );
+        }
+        Some(bar)
+    }
+
     fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         let msg = self.status_message.clone()?;
         let bar = div()
@@ -6638,6 +6752,12 @@ impl Render for StatusView {
 
         // The title bar sits above every view (status, settings, editor, …).
         root = root.child(self.render_title_bar(&view));
+
+        // A pending prefix shows a which-key hint under the title bar until the
+        // next key resolves it or the timeout dismisses it.
+        if let Some(hint) = self.prefix_indicator() {
+            root = root.child(hint);
+        }
 
         // Each non-Status screen takes over the window. One match defines the
         // active screen (no re-derived priority cascade); Status falls through to
@@ -7279,14 +7399,16 @@ mod tests {
     }
 
     #[test]
-    fn keymap_sequences_only_under_the_g_prefix() {
+    fn keymap_sequences_any_prefix() {
         let mut config = config::Config::default();
-        config.keymap.insert("g x".into(), "stage".into()); // valid g-sequence
-        config.keymap.insert(". c".into(), "commit".into()); // inert: not a prefix
+        config.keymap.insert("g x".into(), "stage".into()); // g sequence
+        config.keymap.insert(". c".into(), "commit".into()); // a `.` prefix
+        config.keymap.insert("g r x".into(), "stage".into()); // too deep
         let (km, warnings) = build_keymap(&config);
         assert_eq!(km.get("g x").map(String::as_str), Some("stage"));
-        assert!(!km.contains_key(". c"), "a non-`g` sequence isn't bound");
-        assert_eq!(warnings.len(), 1, "the inert sequence warns: {warnings:?}");
+        assert_eq!(km.get(". c").map(String::as_str), Some("commit"));
+        assert!(!km.contains_key("g r x"), "a 3-key chain isn't bound");
+        assert_eq!(warnings.len(), 1, "only the deep chain warns: {warnings:?}");
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and

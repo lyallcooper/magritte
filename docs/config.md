@@ -32,6 +32,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
+| `prefix_timeout_ms` | milliseconds | `1000` | How long a prefix key (e.g. `g`) waits for the next key before giving up — see *Keymap*. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
 
@@ -74,15 +75,21 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
 ```
 
 - **Keystrokes** are case-sensitive (`s` vs `S`, `f` fetch vs `F` pull). Most are
-  a single key; a few are `g`-prefixed sequences (`g g`, `g r`). An unknown
-  command id is ignored with a startup warning rather than silently dropped.
+  a single key; the rest are a **prefix + one key** sequence (`g g`, `g r`). An
+  unknown command id is ignored with a startup warning rather than silently
+  dropped, as is a chain deeper than two keys.
+- **Prefixes are implicit**: any key that begins a sequence becomes a prefix.
+  Binding `". c" = "commit"` makes `.` a prefix automatically. Press the prefix
+  and a which-key hint lists the continuations; the next key resolves it. With
+  no follow-up within `prefix_timeout_ms` (default 1000) the hint clears — and
+  if the prefix key is *also* bound to a command, that command then runs.
 - **Motions are remappable too** — they're ordinary commands (see the table),
   resolved through the keymap in every view (status, log, commit, rebase-todo,
   and the `$` pager), so a rebind applies everywhere.
 - **Reserved** (handled before the keymap, so binding them has no effect): the
-  fold key `Tab`, the `g` and `Ctrl-x` prefixes themselves, the fixed motion
-  aliases (arrows, `C-n`/`C-p`, `C-j`/`C-k`, `]`/`[`, `Ctrl-d`/`u`/`f`/`b`,
-  `Space`), and any key inside a transient, picker, or visual mode.
+  fold key `Tab`, the `Ctrl-x` prefix, the fixed motion aliases (arrows,
+  `C-n`/`C-p`, `C-j`/`C-k`, `]`/`[`, `Ctrl-d`/`u`/`f`/`b`, `Space`), and any key
+  inside a transient, picker, or visual mode.
 
 ### Command ids
 

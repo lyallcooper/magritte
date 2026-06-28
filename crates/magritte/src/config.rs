@@ -58,6 +58,15 @@ pub struct Config {
     /// delete-branch binding inside the branch transient.
     #[serde(default)]
     pub transient: BTreeMap<String, BTreeMap<String, String>>,
+    /// How long (ms) a prefix key waits for the next key of a sequence before
+    /// it gives up — and, if the prefix key is also bound to a command, runs
+    /// that command.
+    #[serde(default = "default_prefix_timeout_ms")]
+    pub prefix_timeout_ms: u64,
+}
+
+fn default_prefix_timeout_ms() -> u64 {
+    1000
 }
 
 impl Default for Config {
@@ -78,6 +87,7 @@ impl Default for Config {
             commit_editor: String::new(),
             keymap: BTreeMap::new(),
             transient: BTreeMap::new(),
+            prefix_timeout_ms: default_prefix_timeout_ms(),
         }
     }
 }
