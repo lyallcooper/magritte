@@ -989,28 +989,36 @@ const TRANSIENT_IDS: &[&str] = &[
 /// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
 /// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
 /// has no binding. Lets the `:` palette double as a keymap reference.
-fn command_keys(title: &str) -> Option<String> {
+fn command_keys(keymap: &HashMap<String, String>, title: &str) -> Option<String> {
     let cmd = commands().iter().find(|c| c.title == title)?;
-    if let Some(key) = cmd.key {
-        return Some(key.to_string());
+    // A current top-level key — including a leaf bound directly to one via
+    // `[keymap]`. Reflects remaps and hides what the user unbound.
+    if let Some(key) = current_key(keymap, cmd.id, cmd.key) {
+        return Some(key);
     }
-    // A leaf: locate its suffix in the transients and prepend the prefix key.
+    // Otherwise a leaf reached through its prefix's transient: `<prefix>
+    // <suffix>`, with the prefix's *current* key (the suffix is transient-fixed).
     let leaf = cmd.leaf?;
     let rt = RemoteTargets::default();
     let prefixes: [(&str, Transient); 7] = [
-        ("c", transient::commit_transient()),
-        ("b", transient::branch_transient()),
-        ("Z", transient::stash_transient()),
-        ("l", transient::log_transient()),
-        ("p", transient::push_transient(&rt)),
-        ("F", transient::pull_transient(&rt)),
-        ("f", transient::fetch_transient(&rt)),
+        ("commit", transient::commit_transient()),
+        ("branch", transient::branch_transient()),
+        ("stash", transient::stash_transient()),
+        ("log", transient::log_transient()),
+        ("push", transient::push_transient(&rt)),
+        ("pull", transient::pull_transient(&rt)),
+        ("fetch", transient::fetch_transient(&rt)),
     ];
-    for (prefix_key, t) in &prefixes {
+    for (prefix_id, t) in &prefixes {
         for group in &t.groups {
             for suffix in &group.suffixes {
                 if let Suffix::Action(a) = suffix {
                     if a.command == leaf {
+                        let default = commands()
+                            .iter()
+                            .find(|c| c.id == *prefix_id)
+                            .and_then(|c| c.key);
+                        let prefix_key = current_key(keymap, prefix_id, default)?;
                         return Some(format!("{prefix_key} {}", a.key));
                     }
                 }
@@ -4566,7 +4574,7 @@ impl StatusView {
                             .map(|ix| match p.list.row(ix) {
                                 Some(r) => {
                                     let hint = palette
-                                        .then(|| command_keys(&r.label))
+                                        .then(|| command_keys(&view.read(cx).keymap, &r.label))
                                         .flatten()
                                         .map(SharedString::from);
                                     view.read(cx).render_picker_row(
