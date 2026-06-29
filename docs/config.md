@@ -159,7 +159,8 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   every view (status, log, commit, rebase-todo, and the `$` pager). The default
   *secondary* bindings — arrows and `ctrl-n`/`ctrl-p` (move), `space`/`ctrl-f`/`ctrl-b`
   (page), `ctrl-d`/`ctrl-u` (half-page), `ctrl-j`/`ctrl-k`/`]`/`[` (section),
-  `ctrl-x ctrl-c` (quit) — sit alongside the primary keys below and remap the same way.
+  `V` (visual, alongside `v`), `ctrl-x ctrl-c` (quit) — sit alongside the primary
+  keys below and remap the same way.
 - **Two genuine exceptions**, both Emacs keyboard-quit conventions: `Esc` and
   `Ctrl-g` always cancel/abort (a job, a selection, a pending sequence, a popup),
   and aren't rebindable. Keys typed inside a transient, picker, or the commit
@@ -253,6 +254,9 @@ A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 - **Section** — the table form takes an optional `group` (a section title). By
   default switches land in **Arguments** and actions in a **Custom** group; name
   a `group` to place them elsewhere (a title that doesn't exist is created).
+- **Remove** a built-in suffix with the sentinel `"key" = "unbound"` (like
+  `[keymap]`), e.g. `"-n" = "unbound"` drops commit's `--no-verify`. Pair it with
+  a new binding at the same key to *replace* a default.
 
 A key already used by a built-in suffix is left alone (the built-in wins). A
 section that isn't a real transient, an action naming an unknown command, or a

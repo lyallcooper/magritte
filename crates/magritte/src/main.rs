@@ -1048,6 +1048,9 @@ const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-k", "prev-section"),
     ("]", "next-section"),
     ("[", "prev-section"),
+    // Visual line: `V` mirrors `v` (our selection is already line-wise), as in
+    // evil-collection-magit.
+    ("V", "visual"),
     // Emacs quit.
     ("ctrl-x ctrl-c", "quit"),
 ];
@@ -1166,6 +1169,10 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             continue;
         }
         for (key, spec) in suffixes {
+            // `"key" = "unbound"` removes a built-in suffix; not a command id.
+            if spec.is_unbound() {
+                continue;
+            }
             match spec.kind() {
                 config::SuffixKind::Action { id, .. } if !known(id) => {
                     warnings.push(format!("transient.{tid}: unknown command id \"{id}\""));
@@ -1722,6 +1729,18 @@ fn section_source(section: SectionId) -> Option<DiffSource> {
 /// body at 72.
 const COMMIT_TITLE_LIMIT: usize = 50;
 const COMMIT_BODY_WIDTH: usize = 72;
+/// The key a transient suffix is invoked by, for matching `[transient]`
+/// `"key" = "unbound"` removals. `None` for `Info` rows (no toggle key).
+fn suffix_key(s: &Suffix) -> Option<&str> {
+    match s {
+        Suffix::Switch(sw) => Some(&sw.key),
+        Suffix::Action(a) => Some(a.key),
+        Suffix::Option(o) => Some(o.key),
+        Suffix::Custom(c) => Some(&c.key),
+        Suffix::Info(_) => None,
+    }
+}
+
 /// The repo-relative path of the file a target belongs to.
 fn target_path(target: &Target) -> &str {
     match target {
@@ -4041,6 +4060,27 @@ impl StatusView {
         targets: RemoteTargets,
         cx: &mut Context<Self>,
     ) {
+        // `"key" = "unbound"` removes the built-in suffix at that key
+        // (keymap-style), so a user can drop a default flag/action — or replace
+        // it by also binding their own at the same key.
+        let unbinds: std::collections::HashSet<&str> = self
+            .config
+            .transient
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|(_, spec)| spec.is_unbound())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        if !unbinds.is_empty() {
+            for g in def.groups.iter_mut() {
+                g.suffixes
+                    .retain(|s| suffix_key(s).is_none_or(|k| !unbinds.contains(k)));
+            }
+            // Drop a section emptied by the removals.
+            def.groups.retain(|g| !g.suffixes.is_empty());
+        }
+
         // Each injection resolves to a (target section title, suffix). Switches
         // default into the "Arguments" section (where switches live), actions
         // into "Custom"; an explicit `group` overrides.
@@ -4050,6 +4090,8 @@ impl StatusView {
             .get(id)
             .into_iter()
             .flatten()
+            // Skip the `"unbound"` removal entries (handled above).
+            .filter(|(_, spec)| !spec.is_unbound())
             .filter_map(|(key, spec)| match spec.kind() {
                 // A custom switch (toggleable git flag). Skip if the key collides
                 // with a built-in switch/option (which wins).
