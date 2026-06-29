@@ -1105,7 +1105,7 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         }
         for (key, spec) in suffixes {
             match spec.kind() {
-                config::SuffixKind::Action(id) if !known(id) => {
+                config::SuffixKind::Action { id, .. } if !known(id) => {
                     warnings.push(format!("transient.{tid}: unknown command id \"{id}\""));
                 }
                 config::SuffixKind::Switch { .. } if !key.starts_with('-') => {
@@ -1258,7 +1258,7 @@ fn user_command_keys(
     for (tid, suffixes) in &config.transient {
         for (key, spec) in suffixes {
             // Only an action injection runs this command; a switch has no id.
-            let config::SuffixKind::Action(action_id) = spec.kind() else {
+            let config::SuffixKind::Action { id: action_id, .. } = spec.kind() else {
                 continue;
             };
             if action_id != id {
@@ -1278,6 +1278,18 @@ fn user_command_keys(
 
 /// The built-in transient for an injectable prefix id (the `[transient.<id>]`
 /// sections), for resolving an injected suffix's key against its built-ins.
+/// The plain-text title of a transient group (its text spans joined), for
+/// matching a `[transient.<id>]` injection's target section.
+fn group_text(g: &Group) -> String {
+    g.title
+        .iter()
+        .filter_map(|s| match s {
+            TitleSpan::Text(t) => Some(t.as_str()),
+            TitleSpan::Branch(_) => None,
+        })
+        .collect()
+}
+
 fn transient_for(id: &str) -> Option<Transient> {
     let rt = RemoteTargets::default();
     Some(match id {
@@ -3412,7 +3424,10 @@ impl StatusView {
         targets: RemoteTargets,
         cx: &mut Context<Self>,
     ) {
-        let extra: Vec<transient::Suffix> = self
+        // Each injection resolves to a (target section title, suffix). Switches
+        // default into the "Arguments" section (where switches live), actions
+        // into "Custom"; an explicit `group` overrides.
+        let placements: Vec<(String, transient::Suffix)> = self
             .config
             .transient
             .get(id)
@@ -3421,19 +3436,24 @@ impl StatusView {
             .filter_map(|(key, spec)| match spec.kind() {
                 // A custom switch (toggleable git flag). Skip if the key collides
                 // with a built-in switch/option (which wins).
-                config::SuffixKind::Switch { flag, description } => {
+                config::SuffixKind::Switch {
+                    flag,
+                    description,
+                    group,
+                } => {
                     if def.switches().any(|s| s.key == *key) || def.option_for(key).is_some() {
                         return None;
                     }
-                    Some(transient::Suffix::Switch(transient::Switch::new(
+                    let suffix = transient::Suffix::Switch(transient::Switch::new(
                         key.clone(),
                         flag.to_string(),
                         description.to_string(),
-                    )))
+                    ));
+                    Some((group.unwrap_or("Arguments").to_string(), suffix))
                 }
                 // A custom action runs a command by id. Skip if the key collides
                 // with a built-in action (which wins).
-                config::SuffixKind::Action(id) => {
+                config::SuffixKind::Action { id, group } => {
                     if def.action_for(key).is_some() {
                         return None;
                     }
@@ -3443,19 +3463,24 @@ impl StatusView {
                         .find(|c| c.id == id)
                         .map(|c| c.title.to_string())
                         .unwrap_or_else(|| id.to_string());
-                    Some(transient::Suffix::Custom(transient::Custom {
+                    let suffix = transient::Suffix::Custom(transient::Custom {
                         key: key.clone(),
                         description,
                         id: id.to_string(),
-                    }))
+                    });
+                    Some((group.unwrap_or("Custom").to_string(), suffix))
                 }
             })
             .collect();
-        if !extra.is_empty() {
-            def.groups.push(transient::Group {
-                title: transient::plain_title("Custom"),
-                suffixes: extra,
-            });
+        // Append into the named section if it exists, else create it.
+        for (group_title, suffix) in placements {
+            match def.groups.iter_mut().find(|g| group_text(g) == group_title) {
+                Some(g) => g.suffixes.push(suffix),
+                None => def.groups.push(transient::Group {
+                    title: transient::plain_title(group_title),
+                    suffixes: vec![suffix],
+                }),
+            }
         }
         self.popup = Some(Popup::Transient(TransientState::new(def, targets)));
         cx.notify();
@@ -7947,6 +7972,7 @@ mod tests {
             Sfx::Switch {
                 flag: "--no-verify".into(),
                 description: "Skip hooks".into(),
+                group: None,
             },
         ); // table form, ok
         commit.insert("x".into(), Sfx::Bare("--depth=1".into())); // flag, non-dash key

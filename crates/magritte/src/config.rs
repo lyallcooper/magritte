@@ -94,43 +94,79 @@ pub struct CustomCommand {
 }
 
 /// A `[transient.<id>]` injection. A bare string is a command id (an action),
-/// or — if it starts with `-` — a git flag (a switch). An inline table is a
-/// switch with a description:
+/// or — if it starts with `-` — a git flag (a switch). The table forms add a
+/// switch description and/or a target `group` (the section title to place it in;
+/// switches default to "Arguments", actions to "Custom"):
 ///
 /// ```toml
 /// [transient.commit]
 /// "A" = "commit-amend"                                # action (command id)
 /// "-d" = "--depth=1"                                  # switch (bare flag)
 /// "-n" = { flag = "--no-verify", description = "Skip hooks" }  # switch + label
+/// "-v" = { flag = "--verbose", group = "Arguments" }  # placed in a section
+/// "X" = { command = "branch-delete", group = "Create" }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TransientSuffix {
     /// A bare string: a command id, or a `-`-prefixed git flag.
     Bare(String),
-    /// An inline table: a git flag with a description.
+    /// A table naming a command to run, optionally in a given section.
+    Action {
+        command: String,
+        #[serde(default)]
+        group: Option<String>,
+    },
+    /// A table: a git flag, optionally with a description and target section.
     Switch {
         flag: String,
         #[serde(default)]
         description: String,
+        #[serde(default)]
+        group: Option<String>,
     },
 }
 
 /// A [`TransientSuffix`] interpreted: an action (command id) or a switch (flag +
-/// description). A bare `-`-prefixed string resolves to a switch.
+/// description), each with an optional target `group`. A bare `-`-prefixed
+/// string resolves to a switch.
 pub enum SuffixKind<'a> {
-    Action(&'a str),
-    Switch { flag: &'a str, description: &'a str },
+    Action {
+        id: &'a str,
+        group: Option<&'a str>,
+    },
+    Switch {
+        flag: &'a str,
+        description: &'a str,
+        group: Option<&'a str>,
+    },
 }
 
 impl TransientSuffix {
     pub fn kind(&self) -> SuffixKind<'_> {
         match self {
-            TransientSuffix::Switch { flag, description } => SuffixKind::Switch { flag, description },
-            TransientSuffix::Bare(s) if s.starts_with('-') => {
-                SuffixKind::Switch { flag: s, description: "" }
-            }
-            TransientSuffix::Bare(s) => SuffixKind::Action(s),
+            TransientSuffix::Bare(s) if s.starts_with('-') => SuffixKind::Switch {
+                flag: s,
+                description: "",
+                group: None,
+            },
+            TransientSuffix::Bare(s) => SuffixKind::Action {
+                id: s,
+                group: None,
+            },
+            TransientSuffix::Action { command, group } => SuffixKind::Action {
+                id: command,
+                group: group.as_deref(),
+            },
+            TransientSuffix::Switch {
+                flag,
+                description,
+                group,
+            } => SuffixKind::Switch {
+                flag,
+                description,
+                group: group.as_deref(),
+            },
         }
     }
 }
