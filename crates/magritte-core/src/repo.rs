@@ -639,4 +639,13 @@ impl Repo {
             (!v.is_empty()).then_some(v)
         }))
     }
+
+    /// Read a boolean git config value (`git config --type=bool --get <key>`),
+    /// canonicalized by git to `true`/`false`. `false` if unset or unreadable.
+    pub fn config_bool(&self, key: &str) -> bool {
+        self.run_optional(["config", "--type=bool", "--get", key])
+            .ok()
+            .flatten()
+            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+    }
 }

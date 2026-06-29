@@ -110,8 +110,19 @@ pub struct Switch {
     pub description: String,
     /// Whether the flag starts toggled on when the transient opens (the user can
     /// still turn it off), like magit's `--autostash` on the rebase popup. Most
-    /// switches start off.
+    /// switches start off. For a switch with a [`config_key`](Self::config_key)
+    /// the frontend overwrites this from the git-config value at open time.
     pub default_on: bool,
+    /// The negated flag (e.g. `--no-gpg-sign`) for a switch whose default comes
+    /// from git config: when the toggle differs from the configured default, the
+    /// frontend emits the positive `arg` (turned on) or this `negation` (turned
+    /// off), so the user can override the default either way. `None` for a plain
+    /// switch, which simply emits `arg` when on and nothing when off.
+    pub negation: Option<String>,
+    /// The git-config key whose value seeds [`default_on`](Self::default_on)
+    /// (e.g. `commit.gpgSign`), resolved by the frontend at open time. `None` for
+    /// a switch with a fixed default.
+    pub config_key: Option<String>,
 }
 
 impl Switch {
@@ -126,6 +137,8 @@ impl Switch {
             arg: arg.into(),
             description: description.into(),
             default_on: false,
+            negation: None,
+            config_key: None,
         }
     }
 
@@ -137,6 +150,24 @@ impl Switch {
     ) -> Self {
         Switch {
             default_on: true,
+            ..Switch::new(key, arg, description)
+        }
+    }
+
+    /// A switch whose default reflects a git-config value (`config_key`): it
+    /// starts on when that config is enabled, and toggling it then emits the
+    /// `negation` flag (e.g. `--no-gpg-sign`) rather than dropping the positive
+    /// one — so the user can override the configured default in either direction.
+    pub fn negatable(
+        key: impl Into<String>,
+        arg: impl Into<String>,
+        negation: impl Into<String>,
+        config_key: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Switch {
+            negation: Some(negation.into()),
+            config_key: Some(config_key.into()),
             ..Switch::new(key, arg, description)
         }
     }
@@ -565,6 +596,13 @@ pub fn commit_transient() -> Transient {
                         pathspec: false,
                     }),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
+                    Suffix::Switch(Switch::negatable(
+                        "-S",
+                        "--gpg-sign",
+                        "--no-gpg-sign",
+                        "commit.gpgSign",
+                        "Sign using gpg",
+                    )),
                     Suffix::Switch(Switch::new("-D", "--date=now", "Use current time as author date")),
                 ],
             },
