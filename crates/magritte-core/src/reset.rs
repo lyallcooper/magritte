@@ -44,16 +44,9 @@ impl Repo {
             ResetMode::Index => return self.reset_index(target),
             ResetMode::Worktree => return self.reset_worktree(target),
         };
-        let out = self.run(["reset", flag, target])?;
-        // reset narrates on stdout ("Unstaged changes after reset:"); fall back
-        // to stderr.
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let summary = stdout.trim();
-        Ok(if summary.is_empty() {
-            out.stderr.trim().to_string()
-        } else {
-            summary.lines().next().unwrap_or("").to_string()
-        })
+        // reset narrates on stdout ("Unstaged changes after reset:"), falling
+        // back to stderr — exactly `GitOutput::first_line`.
+        Ok(self.run(["reset", flag, target])?.first_line())
     }
 
     /// Reset only the index to `target`, leaving HEAD and the working tree

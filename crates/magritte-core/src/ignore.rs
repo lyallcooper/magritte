@@ -41,7 +41,7 @@ impl Repo {
         let (path, stage) = match dest {
             IgnoreDest::Toplevel => (self.workdir().join(".gitignore"), true),
             IgnoreDest::Subdir(dir) => (self.workdir().join(dir).join(".gitignore"), true),
-            IgnoreDest::Private => (self.ignore_git_dir()?.join("info").join("exclude"), false),
+            IgnoreDest::Private => (self.git_dir()?.join("info").join("exclude"), false),
             IgnoreDest::Global => match self.global_excludes_file()? {
                 Some(path) => (path, false),
                 None => return Err(Error::Message("core.excludesFile is not set".into())),
@@ -53,14 +53,6 @@ impl Repo {
             self.run(["add", path.as_str()])?;
         }
         Ok(())
-    }
-
-    /// `$GIT_DIR` as an absolute path (handles worktrees and `.git` files).
-    fn ignore_git_dir(&self) -> Result<PathBuf> {
-        let out = self.run(["rev-parse", "--absolute-git-dir"])?;
-        Ok(PathBuf::from(
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        ))
     }
 }
 

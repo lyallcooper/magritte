@@ -7,6 +7,23 @@
 use crate::error::Result;
 use crate::repo::Repo;
 
+/// The `commit [--amend [--only --allow-empty]]` argv prefix for a mode, shared
+/// by the stdin-message and external-editor commit paths.
+fn commit_mode_args(mode: CommitMode) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["commit".into()];
+    match mode {
+        CommitMode::Create => {}
+        CommitMode::Amend => argv.push("--amend".into()),
+        CommitMode::Reword => {
+            argv.push("--amend".into());
+            argv.push("--only".into());
+            // Match magit: a reword may legitimately end up empty-diff.
+            argv.push("--allow-empty".into());
+        }
+    }
+    argv
+}
+
 /// Which kind of commit to make with an edited message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitMode {
@@ -29,17 +46,7 @@ impl Repo {
     /// Commit `message` according to `mode`, with the given extra arguments
     /// (e.g. `--signoff`, `--all`). Returns git's summary line.
     pub fn commit(&self, message: &str, mode: CommitMode, args: &[String]) -> Result<String> {
-        let mut argv: Vec<String> = vec!["commit".into()];
-        match mode {
-            CommitMode::Create => {}
-            CommitMode::Amend => argv.push("--amend".into()),
-            CommitMode::Reword => {
-                argv.push("--amend".into());
-                argv.push("--only".into());
-                // Match magit: a reword may legitimately end up empty-diff.
-                argv.push("--allow-empty".into());
-            }
-        }
+        let mut argv = commit_mode_args(mode);
         // Read the message from stdin.
         argv.push("--file".into());
         argv.push("-".into());
@@ -62,16 +69,7 @@ impl Repo {
         args: &[String],
         git_editor: &str,
     ) -> Result<String> {
-        let mut argv: Vec<String> = vec!["commit".into()];
-        match mode {
-            CommitMode::Create => {}
-            CommitMode::Amend => argv.push("--amend".into()),
-            CommitMode::Reword => {
-                argv.push("--amend".into());
-                argv.push("--only".into());
-                argv.push("--allow-empty".into());
-            }
-        }
+        let mut argv = commit_mode_args(mode);
         argv.extend(args.iter().cloned());
         let out = self.run_with_env(&argv, "GIT_EDITOR", git_editor)?;
         Ok(out.first_line())
