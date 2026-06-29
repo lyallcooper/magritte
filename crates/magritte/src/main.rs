@@ -87,7 +87,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, IndexPath, Sizable};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest, LineKind,
-    RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status,
+    LogEntry, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Stash, Status,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -1202,6 +1202,12 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
             }
         }
     }
+    // Validate `[status].sections`: each id must name a real section.
+    for id in &config.status.sections {
+        if SectionId::from_config_id(id).is_none() {
+            warnings.push(format!("status: unknown section \"{id}\""));
+        }
+    }
     (map, warnings)
 }
 
@@ -1550,12 +1556,62 @@ const PREFETCH_FILE_CAP: usize = 16;
 /// only computed when the user actually expands them.
 const PREFETCH_LINE_CAP: u32 = 2000;
 
-/// Which top-level section a row belongs to. Used as a stable fold key.
+/// The commit/stash listings for the non-file status sections, refreshed off
+/// the UI thread (cheap `git log`/`stash list`). Empty lists (e.g. no upstream)
+/// simply render no section.
+#[derive(Debug, Clone, Default)]
+struct StatusSections {
+    /// Commits on HEAD not yet pushed (push target, else upstream).
+    unpushed: Vec<LogEntry>,
+    /// Commits on the upstream not yet pulled into HEAD.
+    unpulled: Vec<LogEntry>,
+    /// The most recent commits (count from `[status].recent_count`).
+    recent: Vec<LogEntry>,
+    stashes: Vec<Stash>,
+}
+
+/// Which top-level section a row belongs to. Used as a stable fold key. The file
+/// sections (Untracked/Unstaged/Staged) carry staging; the commit/stash sections
+/// are read-only listings with act-at-point (open/yank/apply).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SectionId {
     Untracked,
     Unstaged,
     Staged,
+    Stashes,
+    Unpushed,
+    Unpulled,
+    Recent,
+}
+
+impl SectionId {
+    /// The config id (`[status].sections` entry) for this section.
+    fn config_id(self) -> &'static str {
+        match self {
+            SectionId::Untracked => "untracked",
+            SectionId::Unstaged => "unstaged",
+            SectionId::Staged => "staged",
+            SectionId::Stashes => "stashes",
+            SectionId::Unpushed => "unpushed",
+            SectionId::Unpulled => "unpulled",
+            SectionId::Recent => "recent",
+        }
+    }
+
+    /// The section for a config id, or `None` if unknown.
+    fn from_config_id(id: &str) -> Option<SectionId> {
+        [
+            SectionId::Untracked,
+            SectionId::Unstaged,
+            SectionId::Staged,
+            SectionId::Stashes,
+            SectionId::Unpushed,
+            SectionId::Unpulled,
+            SectionId::Recent,
+        ]
+        .into_iter()
+        .find(|s| s.config_id() == id)
+    }
 }
 
 /// Identity of a foldable node.
@@ -1601,6 +1657,11 @@ enum AnchorIdent {
     File(SectionId, String),
     Hunk(SectionId, String, usize),
     Line(SectionId, String, usize, usize),
+    /// A commit row, by its section + full hash (the same commit can appear in
+    /// more than one section, e.g. recent and unpushed).
+    Commit(SectionId, String),
+    /// A stash row, by its reference (`stash@{N}`).
+    Stash(String),
 }
 
 impl AnchorIdent {
@@ -1610,7 +1671,9 @@ impl AnchorIdent {
             AnchorIdent::Section(s)
             | AnchorIdent::File(s, _)
             | AnchorIdent::Hunk(s, _, _)
-            | AnchorIdent::Line(s, _, _, _) => Some(*s),
+            | AnchorIdent::Line(s, _, _, _)
+            | AnchorIdent::Commit(s, _) => Some(*s),
+            AnchorIdent::Stash(_) => Some(SectionId::Stashes),
         }
     }
 }
@@ -1625,9 +1688,14 @@ struct SelAnchor {
 
 fn section_source(section: SectionId) -> Option<DiffSource> {
     match section {
-        SectionId::Untracked => None,
         SectionId::Unstaged => Some(DiffSource::Unstaged),
         SectionId::Staged => Some(DiffSource::Staged),
+        // Untracked and the commit/stash sections have no diff source.
+        SectionId::Untracked
+        | SectionId::Stashes
+        | SectionId::Unpushed
+        | SectionId::Unpulled
+        | SectionId::Recent => None,
     }
 }
 
@@ -1655,6 +1723,11 @@ fn target_ops(target: &Target) -> (bool, bool, bool) {
         SectionId::Untracked | SectionId::Unstaged => (true, false, true),
         // Staged content can be unstaged or discarded.
         SectionId::Staged => (false, true, true),
+        // Commit/stash sections carry no file-staging verbs (never reached via a
+        // file Target, but the match must be exhaustive).
+        SectionId::Stashes | SectionId::Unpushed | SectionId::Unpulled | SectionId::Recent => {
+            (false, false, false)
+        }
     }
 }
 
@@ -1703,6 +1776,18 @@ enum RowKind {
         kind: LineKind,
         /// Syntax-highlighted (or fallback) content runs.
         spans: Vec<Span>,
+    },
+    /// A commit row in a non-file section (unpushed/unpulled/recent): dim short
+    /// hash + subject, like the log view. `hash` (full) drives act-at-point.
+    Commit {
+        hash: String,
+        short_hash: String,
+        subject: String,
+    },
+    /// A stash row: dim reference + message.
+    Stash {
+        reference: String,
+        message: String,
     },
 }
 
@@ -1798,6 +1883,9 @@ struct StatusView {
     root: PathBuf,
     repo: Option<Repo>,
     status: Option<Status>,
+    /// Commit/stash lists for the non-file status sections (unpushed/unpulled/
+    /// recent/stashes), refreshed alongside `status` off the UI thread.
+    status_sections: StatusSections,
     /// The in-progress merge/rebase/cherry-pick/revert/am, surfaced as a banner.
     sequence: Option<Sequence>,
     error: Option<String>,
@@ -1967,11 +2055,16 @@ impl StatusView {
         expanded.insert(FoldKey::Section(SectionId::Untracked));
         expanded.insert(FoldKey::Section(SectionId::Unstaged));
         expanded.insert(FoldKey::Section(SectionId::Staged));
+        expanded.insert(FoldKey::Section(SectionId::Stashes));
+        expanded.insert(FoldKey::Section(SectionId::Unpushed));
+        expanded.insert(FoldKey::Section(SectionId::Unpulled));
+        expanded.insert(FoldKey::Section(SectionId::Recent));
 
         let mut view = StatusView {
             root,
             repo,
             status: None,
+            status_sections: StatusSections::default(),
             sequence: None,
             error: None,
             expanded,
@@ -2383,16 +2476,30 @@ impl StatusView {
             return;
         };
 
+        let recent_count = self.config.status.recent_count;
         cx.spawn(async move |this, cx| {
-            let (result, sequence) = cx
+            let (result, sequence, sections) = cx
                 .background_executor()
-                .spawn(async move { (repo.status(), repo.sequence()) })
+                .spawn(async move {
+                    let status = repo.status();
+                    let sequence = repo.sequence();
+                    // The non-file section listings (cheap git log / stash list).
+                    // A missing upstream/push just yields an empty list.
+                    let sections = StatusSections {
+                        unpushed: repo.unpushed().unwrap_or_default(),
+                        unpulled: repo.unpulled().unwrap_or_default(),
+                        recent: repo.log("HEAD", recent_count).unwrap_or_default(),
+                        stashes: repo.stash_list().unwrap_or_default(),
+                    };
+                    (status, sequence, sections)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 if this.generation != generation {
                     return;
                 }
                 this.sequence = sequence;
+                this.status_sections = sections;
                 match result {
                     Ok(status) => {
                         this.status = Some(status);
@@ -2551,29 +2658,83 @@ impl StatusView {
             return;
         };
 
-        // The branch and its upstream/push tracking now live in the title bar
-        // (see `render_title_bar`), not in header rows here.
-        self.push_section(
-            &mut rows,
-            SectionId::Untracked,
-            "Untracked files",
-            status.untracked().collect(),
-            None,
-        );
-        self.push_section(
-            &mut rows,
-            SectionId::Unstaged,
-            "Unstaged changes",
-            status.unstaged().collect(),
-            Some(DiffSource::Unstaged),
-        );
-        self.push_section(
-            &mut rows,
-            SectionId::Staged,
-            "Staged changes",
-            status.staged().collect(),
-            Some(DiffSource::Staged),
-        );
+        // The branch and its upstream/push tracking live in the title bar (see
+        // `render_title_bar`), not in header rows here. Sections render in the
+        // configured order (`[status].sections`); an unknown id was warned about
+        // at startup and is skipped here.
+        let head = &status.head;
+        let upstream = head.upstream.as_deref();
+        // Unpushed is measured against the push target (triangular), else upstream.
+        let push_target = head.push.as_deref().or(upstream);
+        for id in self.config.status.section_ids() {
+            let Some(section) = SectionId::from_config_id(&id) else {
+                continue;
+            };
+            match section {
+                SectionId::Untracked => self.push_section(
+                    &mut rows,
+                    section,
+                    "Untracked files",
+                    status.untracked().collect(),
+                    None,
+                ),
+                SectionId::Unstaged => self.push_section(
+                    &mut rows,
+                    section,
+                    "Unstaged changes",
+                    status.unstaged().collect(),
+                    Some(DiffSource::Unstaged),
+                ),
+                SectionId::Staged => self.push_section(
+                    &mut rows,
+                    section,
+                    "Staged changes",
+                    status.staged().collect(),
+                    Some(DiffSource::Staged),
+                ),
+                SectionId::Stashes => self.push_stash_section(&mut rows),
+                SectionId::Unpushed => {
+                    let title = match push_target {
+                        Some(t) => format!("Unpushed to {t}"),
+                        None => "Unpushed".to_string(),
+                    };
+                    self.push_commit_section(
+                        &mut rows,
+                        section,
+                        &title,
+                        &self.status_sections.unpushed,
+                    );
+                }
+                SectionId::Unpulled => {
+                    let title = match upstream {
+                        Some(t) => format!("Unpulled from {t}"),
+                        None => "Unpulled".to_string(),
+                    };
+                    self.push_commit_section(
+                        &mut rows,
+                        section,
+                        &title,
+                        &self.status_sections.unpulled,
+                    );
+                }
+                SectionId::Recent => {
+                    // Honor recent_count at render too, so lowering it takes
+                    // effect on the next reload (the list is fetched at the
+                    // count from the last status refresh).
+                    let n = self
+                        .config
+                        .status
+                        .recent_count
+                        .min(self.status_sections.recent.len());
+                    self.push_commit_section(
+                        &mut rows,
+                        section,
+                        "Recent commits",
+                        &self.status_sections.recent[..n],
+                    );
+                }
+            }
+        }
 
         if status.is_clean() {
             rows.push(spacer());
@@ -2642,6 +2803,82 @@ impl StatusView {
             if let (Some(src), Some(true)) = (source, file_expanded) {
                 self.push_file_body(rows, src, &file_ref);
             }
+        }
+    }
+
+    /// A commit-listing section (unpushed/unpulled/recent): a foldable header
+    /// over one `RowKind::Commit` per commit. Skipped when empty, like
+    /// [`push_section`].
+    fn push_commit_section(&self, rows: &mut Vec<Row>, id: SectionId, title: &str, commits: &[LogEntry]) {
+        if commits.is_empty() {
+            return;
+        }
+        rows.push(spacer());
+        let expanded = self.expanded.contains(&FoldKey::Section(id));
+        rows.push(Row {
+            indent: 0,
+            selectable: true,
+            fold: Some(FoldKey::Section(id)),
+            target: None,
+            kind: RowKind::Section {
+                title: title.to_string(),
+                count: commits.len(),
+                expanded,
+            },
+        });
+        if !expanded {
+            return;
+        }
+        for c in commits {
+            rows.push(Row {
+                indent: 1,
+                selectable: true,
+                fold: None,
+                target: None,
+                kind: RowKind::Commit {
+                    hash: c.hash.clone(),
+                    short_hash: c.short_hash.clone(),
+                    subject: c.subject.clone(),
+                },
+            });
+        }
+    }
+
+    /// The stashes section: a foldable header over one `RowKind::Stash` per
+    /// entry. Skipped when there are no stashes.
+    fn push_stash_section(&self, rows: &mut Vec<Row>) {
+        let stashes = &self.status_sections.stashes;
+        if stashes.is_empty() {
+            return;
+        }
+        let id = SectionId::Stashes;
+        rows.push(spacer());
+        let expanded = self.expanded.contains(&FoldKey::Section(id));
+        rows.push(Row {
+            indent: 0,
+            selectable: true,
+            fold: Some(FoldKey::Section(id)),
+            target: None,
+            kind: RowKind::Section {
+                title: "Stashes".to_string(),
+                count: stashes.len(),
+                expanded,
+            },
+        });
+        if !expanded {
+            return;
+        }
+        for s in stashes {
+            rows.push(Row {
+                indent: 1,
+                selectable: true,
+                fold: None,
+                target: None,
+                kind: RowKind::Stash {
+                    reference: s.reference.clone(),
+                    message: s.message.clone(),
+                },
+            });
         }
     }
 
@@ -2963,8 +3200,30 @@ impl StatusView {
                 fold: Some(FoldKey::Section(s)),
                 ..
             }) => AnchorIdent::Section(*s),
+            // Commit/stash rows carry no Target/fold; anchor by content, finding
+            // the enclosing section header for the commit case.
+            Some(Row {
+                kind: RowKind::Commit { hash, .. },
+                ..
+            }) => match self.enclosing_section(ix) {
+                Some(s) => AnchorIdent::Commit(s, hash.clone()),
+                None => AnchorIdent::Top,
+            },
+            Some(Row {
+                kind: RowKind::Stash { reference, .. },
+                ..
+            }) => AnchorIdent::Stash(reference.clone()),
             _ => AnchorIdent::Top,
         }
+    }
+
+    /// The section a row belongs to, by scanning back to the nearest section
+    /// header at or above it.
+    fn enclosing_section(&self, ix: usize) -> Option<SectionId> {
+        (0..=ix).rev().find_map(|i| match self.rows.get(i).map(|r| &r.fold) {
+            Some(Some(FoldKey::Section(s))) => Some(*s),
+            _ => None,
+        })
     }
 
     /// The row indices belonging to a section: its header through the row before
@@ -3170,7 +3429,8 @@ impl StatusView {
             (Op::Discard, Target::Hunk { file, hunk }) => match file.section {
                 SectionId::Unstaged => Some(Action::DiscardHunk(self.diff_for(&file)?, hunk)),
                 SectionId::Staged => Some(Action::DiscardStagedHunk(self.diff_for(&file)?, hunk)),
-                SectionId::Untracked => None,
+                // Untracked has no hunks; commit/stash sections never reach here.
+                _ => None,
             },
             (Op::Discard, Target::Line { file, hunk, line }) => match file.section {
                 SectionId::Unstaged => Some(Action::DiscardLines(
@@ -3183,7 +3443,7 @@ impl StatusView {
                     hunk,
                     vec![line],
                 )),
-                SectionId::Untracked => None,
+                _ => None,
             },
 
             _ => None,
@@ -7170,7 +7430,11 @@ impl StatusView {
         // UI font from the root.
         if matches!(
             row.kind,
-            RowKind::Diff { .. } | RowKind::HunkHeader { .. } | RowKind::File { .. }
+            RowKind::Diff { .. }
+                | RowKind::HunkHeader { .. }
+                | RowKind::File { .. }
+                | RowKind::Commit { .. }
+                | RowKind::Stash { .. }
         ) {
             el = el.font_family(self.font.clone());
         }
@@ -7253,6 +7517,28 @@ impl StatusView {
                 }
                 el.child(line)
             }
+            // Commit/stash rows: a lead spacer to align under the section's
+            // chevron, then a dim short hash / reference and the subject / message.
+            RowKind::Commit {
+                short_hash,
+                subject,
+                ..
+            } => el
+                .child(div().w(px(14.0)))
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(short_hash.clone())),
+                )
+                .child(SharedString::from(subject.clone())),
+            RowKind::Stash { reference, message } => el
+                .child(div().w(px(14.0)))
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(reference.clone())),
+                )
+                .child(SharedString::from(message.clone())),
         };
         if clickable {
             let el = content
@@ -7879,6 +8165,12 @@ fn row_text(row: &Row) -> String {
         }
         RowKind::HunkHeader { text, .. } => text.clone(),
         RowKind::Diff { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
+        RowKind::Commit {
+            short_hash,
+            subject,
+            ..
+        } => format!("{short_hash}  {subject}"),
+        RowKind::Stash { reference, message } => format!("{reference}  {message}"),
     }
 }
 
@@ -8367,6 +8659,17 @@ mod tests {
         assert_eq!(
             s.saved_overrides(),
             vec!["--no-gpg-sign".to_string(), "-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn status_unknown_section_warns() {
+        let mut config = config::Config::default();
+        config.status.sections = vec!["staged".into(), "bogus".into()];
+        let (_, warnings) = build_keymap(&config);
+        assert!(
+            warnings.iter().any(|w| w.contains("unknown section \"bogus\"")),
+            "expected an unknown-section warning, got {warnings:?}"
         );
     }
 

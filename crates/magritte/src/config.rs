@@ -72,6 +72,52 @@ pub struct Config {
     /// `:` palette and bindable in `[keymap]` by `id`.
     #[serde(default, rename = "command")]
     pub commands: Vec<CustomCommand>,
+    /// Status-view section selection and order (`[status]`).
+    #[serde(default)]
+    pub status: StatusConfig,
+}
+
+/// The status view's sections and their order (`[status]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusConfig {
+    /// Section ids in display order — order is display order, presence includes,
+    /// omission hides. Empty falls back to [`DEFAULT_STATUS_SECTIONS`].
+    pub sections: Vec<String>,
+    /// How many commits the `recent` section shows.
+    pub recent_count: usize,
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        StatusConfig {
+            sections: Vec::new(),
+            recent_count: 10,
+        }
+    }
+}
+
+/// The built-in section order, used when `[status].sections` is empty/unset.
+pub const DEFAULT_STATUS_SECTIONS: &[&str] = &[
+    "untracked",
+    "unstaged",
+    "staged",
+    "stashes",
+    "unpulled",
+    "unpushed",
+    "recent",
+];
+
+impl StatusConfig {
+    /// The effective ordered section ids: the configured list, or the default
+    /// when none is set.
+    pub fn section_ids(&self) -> Vec<String> {
+        if self.sections.is_empty() {
+            DEFAULT_STATUS_SECTIONS.iter().map(|s| s.to_string()).collect()
+        } else {
+            self.sections.clone()
+        }
+    }
 }
 
 /// A user-defined command from a `[[command]]` table: a shell command the
@@ -200,6 +246,7 @@ impl Default for Config {
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
             commands: Vec::new(),
+            status: StatusConfig::default(),
         }
     }
 }
@@ -511,6 +558,34 @@ mod tests {
         assert_eq!(km.get("x").and_then(|v| v.as_str()), Some("unbound")); // overridden
         assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
         assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete")); // added by repo
+    }
+
+    #[test]
+    fn status_config_defaults_and_section_ids() {
+        let c = StatusConfig::default();
+        assert_eq!(c.recent_count, 10);
+        assert!(c.sections.is_empty());
+        // Empty falls back to the built-in ordered set.
+        let default: Vec<String> = DEFAULT_STATUS_SECTIONS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(c.section_ids(), default);
+        // A set list is used verbatim (order preserved).
+        let c2 = StatusConfig {
+            sections: vec!["staged".into(), "recent".into()],
+            recent_count: 5,
+        };
+        assert_eq!(c2.section_ids(), vec!["staged".to_string(), "recent".to_string()]);
+    }
+
+    #[test]
+    fn status_config_deserializes_with_partial_table() {
+        // `[status]` with only recent_count keeps the default recent_count? No —
+        // it sets it; the missing `sections` defaults to empty (→ default set).
+        let cfg: Config = toml::from_str("[status]\nrecent_count = 3\n").unwrap();
+        assert_eq!(cfg.status.recent_count, 3);
+        assert!(cfg.status.sections.is_empty());
+        // No `[status]` at all → default (recent_count 10).
+        let cfg2: Config = toml::from_str("dark_theme = \"X\"\n").unwrap();
+        assert_eq!(cfg2.status.recent_count, 10);
     }
 
     #[test]
