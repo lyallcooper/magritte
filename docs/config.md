@@ -154,17 +154,34 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   into a which-key list of the available continuations.
 - **Unbound keys** report themselves: pressing a key or sequence with no binding
   shows a brief "… is unbound" notice (emacs' echo-area feedback).
-- **One unified keymap** — there are no hardcoded keys. Motions, paging, `Tab`,
-  and `ctrl-x ctrl-c` are all ordinary keymap entries you can remap or unbind, in
-  every view (status, log, commit, rebase-todo, and the `$` pager). The default
-  *secondary* bindings — arrows and `ctrl-n`/`ctrl-p` (move), `space`/`ctrl-f`/`ctrl-b`
-  (page), `ctrl-d`/`ctrl-u` (half-page), `ctrl-j`/`ctrl-k`/`]`/`[` (section),
-  `V` (visual, alongside `v`), `ctrl-x ctrl-c` (quit) — sit alongside the primary
-  keys below and remap the same way.
-- **Two genuine exceptions**, both Emacs keyboard-quit conventions: `Esc` and
-  `Ctrl-g` always cancel/abort (a job, a selection, a pending sequence, a popup),
-  and aren't rebindable. Keys typed inside a transient, picker, or the commit
-  editor are consumed by that mode, not the keymap.
+- **One unified keymap** — the motions, paging, section jumps, quit, and every
+  command id below are ordinary keymap entries you can remap or unbind, in every
+  view (status, log, commit, rebase-todo, and the `$` pager). The default
+  *secondary* bindings remap the same way:
+
+  | keys | does |
+  |------|------|
+  | arrows, `ctrl-n` / `ctrl-p` | move the cursor (alongside `j`/`k`) |
+  | `space` | page down |
+  | `ctrl-d` / `ctrl-u` | half-page down / up |
+  | `ctrl-j` / `ctrl-k` / `]` / `[` | previous / next section |
+  | `V` | visual selection (alongside `v`) |
+  | `ctrl-x ctrl-c` | quit |
+
+  (`ctrl-f` / `ctrl-b` page down / up too — they're the *primary* keys for
+  `page-down` / `page-up`, listed below.)
+- **Fixed keys** (always act; not rebindable):
+  - `Esc` and `Ctrl-g` cancel/abort — a job, a selection, a pending sequence, a
+    popup (Emacs keyboard-quit).
+  - `Tab` folds/unfolds. (You can bind another key to the `fold` command, but
+    `Tab` itself stays fold.)
+  - The accelerators `?` (help), `:` (palette), `!` (run a command), `$`
+    (command log), and `Cmd+C` (yank) always reach those, regardless of remaps.
+  - On a commit or stash row, the act-at-point verbs (`Return`, `y`, and for a
+    stash `a` apply / `A` pop / `x` drop) act on the item at point.
+
+  Keys typed inside a transient, picker, or the commit editor are consumed by
+  that mode, not the keymap.
 
 ### Command ids
 
