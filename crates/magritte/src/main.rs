@@ -1561,13 +1561,19 @@ const PREFETCH_LINE_CAP: u32 = 2000;
 /// simply render no section.
 #[derive(Debug, Clone, Default)]
 struct StatusSections {
-    /// Commits on HEAD not yet pushed (push target, else upstream).
+    /// Commits on HEAD not yet on the upstream.
     unpushed: Vec<LogEntry>,
     /// Commits on the upstream not yet pulled into HEAD.
     unpulled: Vec<LogEntry>,
+    /// The triangular-workflow counterparts, vs the push target (empty unless a
+    /// distinct push target is configured).
+    unpushed_pushremote: Vec<LogEntry>,
+    unpulled_pushremote: Vec<LogEntry>,
     /// The most recent commits (count from `[status].recent_count`).
     recent: Vec<LogEntry>,
     stashes: Vec<Stash>,
+    /// Ignored file paths — fetched only when the `ignored` section is enabled.
+    ignored: Vec<String>,
 }
 
 /// Which top-level section a row belongs to. Used as a stable fold key. The file
@@ -1581,7 +1587,11 @@ enum SectionId {
     Stashes,
     Unpushed,
     Unpulled,
+    /// Unpushed to / unpulled from the *push* target (triangular workflows).
+    UnpushedPushremote,
+    UnpulledPushremote,
     Recent,
+    Ignored,
 }
 
 impl SectionId {
@@ -1594,7 +1604,10 @@ impl SectionId {
             SectionId::Stashes => "stashes",
             SectionId::Unpushed => "unpushed",
             SectionId::Unpulled => "unpulled",
+            SectionId::UnpushedPushremote => "unpushed-pushremote",
+            SectionId::UnpulledPushremote => "unpulled-pushremote",
             SectionId::Recent => "recent",
+            SectionId::Ignored => "ignored",
         }
     }
 
@@ -1607,7 +1620,10 @@ impl SectionId {
             SectionId::Stashes,
             SectionId::Unpushed,
             SectionId::Unpulled,
+            SectionId::UnpushedPushremote,
+            SectionId::UnpulledPushremote,
             SectionId::Recent,
+            SectionId::Ignored,
         ]
         .into_iter()
         .find(|s| s.config_id() == id)
@@ -1690,12 +1706,15 @@ fn section_source(section: SectionId) -> Option<DiffSource> {
     match section {
         SectionId::Unstaged => Some(DiffSource::Unstaged),
         SectionId::Staged => Some(DiffSource::Staged),
-        // Untracked and the commit/stash sections have no diff source.
+        // Untracked, ignored, and the commit/stash sections have no diff source.
         SectionId::Untracked
         | SectionId::Stashes
         | SectionId::Unpushed
         | SectionId::Unpulled
-        | SectionId::Recent => None,
+        | SectionId::UnpushedPushremote
+        | SectionId::UnpulledPushremote
+        | SectionId::Recent
+        | SectionId::Ignored => None,
     }
 }
 
@@ -1723,11 +1742,15 @@ fn target_ops(target: &Target) -> (bool, bool, bool) {
         SectionId::Untracked | SectionId::Unstaged => (true, false, true),
         // Staged content can be unstaged or discarded.
         SectionId::Staged => (false, true, true),
-        // Commit/stash sections carry no file-staging verbs (never reached via a
-        // file Target, but the match must be exhaustive).
-        SectionId::Stashes | SectionId::Unpushed | SectionId::Unpulled | SectionId::Recent => {
-            (false, false, false)
-        }
+        // Commit/stash/ignored sections carry no file-staging verbs (never
+        // reached via a file Target, but the match must be exhaustive).
+        SectionId::Stashes
+        | SectionId::Unpushed
+        | SectionId::Unpulled
+        | SectionId::UnpushedPushremote
+        | SectionId::UnpulledPushremote
+        | SectionId::Recent
+        | SectionId::Ignored => (false, false, false),
     }
 }
 
@@ -2063,7 +2086,10 @@ impl StatusView {
         expanded.insert(FoldKey::Section(SectionId::Stashes));
         expanded.insert(FoldKey::Section(SectionId::Unpushed));
         expanded.insert(FoldKey::Section(SectionId::Unpulled));
+        expanded.insert(FoldKey::Section(SectionId::UnpushedPushremote));
+        expanded.insert(FoldKey::Section(SectionId::UnpulledPushremote));
         expanded.insert(FoldKey::Section(SectionId::Recent));
+        expanded.insert(FoldKey::Section(SectionId::Ignored));
 
         let mut view = StatusView {
             root,
@@ -2482,19 +2508,43 @@ impl StatusView {
         };
 
         let recent_count = self.config.status.recent_count;
+        let want_ignored = self
+            .config
+            .status
+            .section_ids()
+            .iter()
+            .any(|s| s == "ignored");
         cx.spawn(async move |this, cx| {
             let (result, sequence, sections) = cx
                 .background_executor()
                 .spawn(async move {
                     let status = repo.status();
                     let sequence = repo.sequence();
+                    // The push target's listings only matter (and only resolve)
+                    // in a triangular workflow — skip the git calls otherwise.
+                    let triangular = status.as_ref().is_ok_and(|s| s.head.push.is_some());
                     // The non-file section listings (cheap git log / stash list).
                     // A missing upstream/push just yields an empty list.
                     let sections = StatusSections {
                         unpushed: repo.unpushed().unwrap_or_default(),
                         unpulled: repo.unpulled().unwrap_or_default(),
+                        unpushed_pushremote: if triangular {
+                            repo.unpushed_to_push().unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        },
+                        unpulled_pushremote: if triangular {
+                            repo.unpulled_from_push().unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        },
                         recent: repo.log("HEAD", recent_count).unwrap_or_default(),
                         stashes: repo.stash_list().unwrap_or_default(),
+                        ignored: if want_ignored {
+                            repo.ignored_files().unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        },
                     };
                     (status, sequence, sections)
                 })
@@ -2669,8 +2719,9 @@ impl StatusView {
         // at startup and is skipped here.
         let head = &status.head;
         let upstream = head.upstream.as_deref();
-        // Unpushed is measured against the push target (triangular), else upstream.
-        let push_target = head.push.as_deref().or(upstream);
+        // The distinct push target (triangular workflow), for the pushremote
+        // sections; `None` when the push target is the upstream.
+        let push = head.push.as_deref();
         for id in self.config.status.section_ids() {
             let Some(section) = SectionId::from_config_id(&id) else {
                 continue;
@@ -2699,7 +2750,7 @@ impl StatusView {
                 ),
                 SectionId::Stashes => self.push_stash_section(&mut rows),
                 SectionId::Unpushed => {
-                    let title = match push_target {
+                    let title = match upstream {
                         Some(t) => format!("Unpushed to {t}"),
                         None => "Unpushed".to_string(),
                     };
@@ -2744,6 +2795,35 @@ impl StatusView {
                         None,
                     );
                 }
+                SectionId::UnpushedPushremote => {
+                    let title = match push {
+                        Some(t) => format!("Unpushed to {t}"),
+                        None => "Unpushed to pushremote".to_string(),
+                    };
+                    let n = self.status_sections.unpushed_pushremote.len();
+                    self.push_commit_section(
+                        &mut rows,
+                        section,
+                        &title,
+                        &self.status_sections.unpushed_pushremote,
+                        Some(n),
+                    );
+                }
+                SectionId::UnpulledPushremote => {
+                    let title = match push {
+                        Some(t) => format!("Unpulled from {t}"),
+                        None => "Unpulled from pushremote".to_string(),
+                    };
+                    let n = self.status_sections.unpulled_pushremote.len();
+                    self.push_commit_section(
+                        &mut rows,
+                        section,
+                        &title,
+                        &self.status_sections.unpulled_pushremote,
+                        Some(n),
+                    );
+                }
+                SectionId::Ignored => self.push_ignored_section(&mut rows),
             }
         }
 
@@ -2896,6 +2976,46 @@ impl StatusView {
                 kind: RowKind::Stash {
                     reference: s.reference.clone(),
                     message: s.message.clone(),
+                },
+            });
+        }
+    }
+
+    /// The ignored-files section (opt-in): a foldable header over dim path rows
+    /// (no staging — they're display-only). Skipped when there are none.
+    fn push_ignored_section(&self, rows: &mut Vec<Row>) {
+        let ignored = &self.status_sections.ignored;
+        if ignored.is_empty() {
+            return;
+        }
+        let id = SectionId::Ignored;
+        rows.push(spacer());
+        let expanded = self.expanded.contains(&FoldKey::Section(id));
+        rows.push(Row {
+            indent: 0,
+            selectable: true,
+            fold: Some(FoldKey::Section(id)),
+            target: None,
+            kind: RowKind::Section {
+                title: "Ignored files".to_string(),
+                count: Some(ignored.len()),
+                expanded,
+            },
+        });
+        if !expanded {
+            return;
+        }
+        for path in ignored {
+            rows.push(Row {
+                indent: 1,
+                selectable: true,
+                fold: None,
+                target: None,
+                kind: RowKind::File {
+                    status: String::new(),
+                    status_color: self.palette.dim,
+                    label: path.clone(),
+                    expanded: None,
                 },
             });
         }

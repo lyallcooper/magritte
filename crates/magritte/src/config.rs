@@ -104,8 +104,11 @@ pub const DEFAULT_STATUS_SECTIONS: &[&str] = &[
     "staged",
     "stashes",
     "unpulled",
+    "unpulled-pushremote",
     "unpushed",
+    "unpushed-pushremote",
     "recent",
+    // "ignored" is available but off by default.
 ];
 
 impl StatusConfig {
