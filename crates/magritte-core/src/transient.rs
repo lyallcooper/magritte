@@ -552,7 +552,20 @@ pub fn commit_transient() -> Transient {
                     Suffix::Switch(Switch::new("-a", "--all", "Stage all modified and deleted files")),
                     Suffix::Switch(Switch::new("-e", "--allow-empty", "Allow empty commit")),
                     Suffix::Switch(Switch::new("-n", "--no-verify", "Disable hooks")),
+                    Suffix::Switch(Switch::new(
+                        "-R",
+                        "--reset-author",
+                        "Claim authorship and reset author date",
+                    )),
+                    Suffix::Option(Opt {
+                        key: "-A",
+                        arg: "--author=",
+                        description: "Override the author",
+                        completion: Completion::Authors,
+                        pathspec: false,
+                    }),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
+                    Suffix::Switch(Switch::new("-D", "--date=now", "Use current time as author date")),
                 ],
             },
             Group {
