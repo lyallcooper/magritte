@@ -1758,7 +1758,9 @@ enum RowKind {
     },
     Section {
         title: String,
-        count: usize,
+        /// The item count shown after the title, or `None` to omit it (e.g. the
+        /// recent-commits section, which is capped to a fixed number anyway).
+        count: Option<usize>,
         expanded: bool,
     },
     File {
@@ -2701,11 +2703,13 @@ impl StatusView {
                         Some(t) => format!("Unpushed to {t}"),
                         None => "Unpushed".to_string(),
                     };
+                    let n = self.status_sections.unpushed.len();
                     self.push_commit_section(
                         &mut rows,
                         section,
                         &title,
                         &self.status_sections.unpushed,
+                        Some(n),
                     );
                 }
                 SectionId::Unpulled => {
@@ -2713,11 +2717,13 @@ impl StatusView {
                         Some(t) => format!("Unpulled from {t}"),
                         None => "Unpulled".to_string(),
                     };
+                    let n = self.status_sections.unpulled.len();
                     self.push_commit_section(
                         &mut rows,
                         section,
                         &title,
                         &self.status_sections.unpulled,
+                        Some(n),
                     );
                 }
                 SectionId::Recent => {
@@ -2734,6 +2740,8 @@ impl StatusView {
                         section,
                         "Recent commits",
                         &self.status_sections.recent[..n],
+                        // No count — the recent list is capped to recent_count.
+                        None,
                     );
                 }
             }
@@ -2770,7 +2778,7 @@ impl StatusView {
             target: None,
             kind: RowKind::Section {
                 title: title.to_string(),
-                count: entries.len(),
+                count: Some(entries.len()),
                 expanded,
             },
         });
@@ -2811,8 +2819,16 @@ impl StatusView {
 
     /// A commit-listing section (unpushed/unpulled/recent): a foldable header
     /// over one `RowKind::Commit` per commit. Skipped when empty, like
-    /// [`push_section`].
-    fn push_commit_section(&self, rows: &mut Vec<Row>, id: SectionId, title: &str, commits: &[LogEntry]) {
+    /// [`push_section`]. `count` is shown after the title when `Some` — `None`
+    /// for the recent section, which is capped to a fixed number anyway.
+    fn push_commit_section(
+        &self,
+        rows: &mut Vec<Row>,
+        id: SectionId,
+        title: &str,
+        commits: &[LogEntry],
+        count: Option<usize>,
+    ) {
         if commits.is_empty() {
             return;
         }
@@ -2825,7 +2841,7 @@ impl StatusView {
             target: None,
             kind: RowKind::Section {
                 title: title.to_string(),
-                count: commits.len(),
+                count,
                 expanded,
             },
         });
@@ -2864,7 +2880,7 @@ impl StatusView {
             target: None,
             kind: RowKind::Section {
                 title: "Stashes".to_string(),
-                count: stashes.len(),
+                count: Some(stashes.len()),
                 expanded,
             },
         });
@@ -7519,11 +7535,14 @@ impl StatusView {
                         .child(SharedString::from(title.clone())),
                 )
                 // The section count: just a dim number, no badge/tag chrome.
-                .child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(count.to_string())),
-                ),
+                // Omitted (None) for sections capped to a fixed size (recent).
+                .when_some(*count, |el, count| {
+                    el.child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(count.to_string())),
+                    )
+                }),
             RowKind::File {
                 status,
                 status_color,
