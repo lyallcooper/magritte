@@ -13,20 +13,6 @@ use gpui::{Context, SharedString, UniformListScrollHandle, Window};
 
 use crate::*;
 
-/// The toast text for a finished user command: its full output (trimmed stdout,
-/// then stderr), or a short fallback when it printed nothing.
-fn command_output_text(run: &magritte_core::CommandRun) -> String {
-    let parts: Vec<&str> = [run.stdout.trim(), run.stderr.trim()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
-        if run.ok { "done" } else { "command failed" }.to_string()
-    } else {
-        parts.join("\n")
-    }
-}
-
 /// How a status-bar message behaves once shown. Every kind advances the status
 /// sequence; only a `Notice` schedules its own fade.
 pub(crate) enum StatusKind {
@@ -1490,7 +1476,13 @@ impl StatusView {
             this.update(cx, |this, cx| {
                 this.job_cancel = None;
                 match result {
-                    Ok(run) => this.set_status(command_output_text(&run), run.ok, cx),
+                    Ok(run) => {
+                        // Cap the toast, pointing to the `$` log (with its
+                        // current key) for the rest when the output is long.
+                        let log_key = current_key(&this.keymap, "git-log", Some("$"));
+                        let toast = command_toast(&run, log_key.as_deref());
+                        this.set_status(toast, run.ok, cx);
+                    }
                     Err(e) => this.report_error(e, cx),
                 }
                 if refresh {

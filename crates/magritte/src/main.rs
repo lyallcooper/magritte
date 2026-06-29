@@ -1134,6 +1134,38 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
     (map, warnings)
 }
 
+/// Most output lines a command's toast shows before it's cut off (with a
+/// pointer to the `$` log for the rest).
+const MAX_TOAST_LINES: usize = 10;
+
+/// The toast text for a finished user command (`!` or `[[command]]`): its output
+/// (trimmed stdout, then stderr), or a short fallback when it printed nothing.
+/// Output longer than [`MAX_TOAST_LINES`] is cut off with a pointer to the full
+/// record in the `$` log — shown with its current key (`log_key`) when bound.
+fn command_toast(run: &magritte_core::CommandRun, log_key: Option<&str>) -> String {
+    let parts: Vec<&str> = [run.stdout.trim(), run.stderr.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return if run.ok { "done" } else { "command failed" }.to_string();
+    }
+    let text = parts.join("\n");
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= MAX_TOAST_LINES {
+        return text;
+    }
+    let more = lines.len() - MAX_TOAST_LINES;
+    let hint = match log_key {
+        Some(key) => format!("press {key} for the full output"),
+        None => "open the command log for the full output".to_string(),
+    };
+    format!(
+        "{}\n… {more} more lines ({hint})",
+        lines[..MAX_TOAST_LINES].join("\n")
+    )
+}
+
 /// Whether a custom command looks like it could throw away work — so the
 /// frontend confirms first, like the built-in destructive ops. A word-level
 /// scan for `clean`, `--hard`, or `--force`/`--force-with-lease`.
@@ -7940,6 +7972,31 @@ mod tests {
             !warnings.iter().any(|w| w.contains("unreachable")),
             "unbinding the prefix clears the shadow: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn command_toast_caps_long_output() {
+        let run = |out: &str| magritte_core::CommandRun {
+            ok: true,
+            stdout: out.to_string(),
+            stderr: String::new(),
+        };
+        // Short output passes through unchanged.
+        assert_eq!(command_toast(&run("a\nb\nc"), Some("$")), "a\nb\nc");
+
+        // Long output is cut to the cap plus one hint line pointing at the log.
+        let long = (1..=30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let toast = command_toast(&run(&long), Some("$"));
+        assert_eq!(toast.lines().count(), MAX_TOAST_LINES + 1);
+        assert!(toast.contains("line 1\n") && toast.contains(&format!("line {MAX_TOAST_LINES}")));
+        assert!(!toast.contains(&format!("line {}", MAX_TOAST_LINES + 1)));
+        assert!(toast.contains("more lines") && toast.contains("press $"));
+
+        // No `$` binding → directs to the command log without a key.
+        assert!(command_toast(&run(&long), None).contains("open the command log"));
     }
 
     #[test]
