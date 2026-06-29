@@ -7086,7 +7086,23 @@ impl StatusView {
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.clear_status(cx);
-            }));
+            }))
+            // Right-click copies the message — handy for a warning or error you
+            // want to paste elsewhere. Includes the keycap prefix (e.g. the
+            // `g x` of "g x is unbound") so the copied text reads in full.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, _window, cx| {
+                    let Some(msg) = this.status_message.clone() else {
+                        return;
+                    };
+                    let text = match &this.status_keys {
+                        Some(keys) => format!("{keys} {msg}"),
+                        None => msg,
+                    };
+                    this.copy_to_clipboard(text, cx);
+                }),
+            );
         // A keys-led message (e.g. "g x is unbound") renders each typed key as a
         // keycap before the text, matching the which-key strip.
         if let Some(keys) = self.status_keys.clone() {
