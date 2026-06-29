@@ -1814,6 +1814,8 @@ enum Confirm {
     /// A user `[[command]]` that looks destructive (resolved command): on `y`,
     /// run it via the shell, refreshing unless opted out.
     CustomShell { command: String, refresh: bool },
+    /// Drop the stash at point (`x` on a stash row): on `y`, drop the reference.
+    DropStash(String),
 }
 
 /// The three controls for an in-progress sequence.
@@ -1871,9 +1873,10 @@ enum Screen {
     GitLog(ScrollView),
     /// The commit-log view (`l`).
     Log(LogState),
-    /// A commit's diff detail, opened from the log with Enter. It overlays the
-    /// log it came from (closing returns there), so it carries that `LogState`.
-    Commit { view: CommitView, log: LogState },
+    /// A commit's diff detail, opened with Enter from the log or a status
+    /// commit row. It overlays the screen it came from; `back` is that screen,
+    /// restored on close (the log, or the status view).
+    Commit { view: CommitView, back: Box<Screen> },
     /// The interactive-rebase todo editor (`r i`).
     RebaseTodo(RebaseTodoView),
 }
@@ -3217,6 +3220,28 @@ impl StatusView {
         }
     }
 
+    /// The commit at point in a status section, as `(hash, short_hash, subject)`.
+    fn point_commit(&self) -> Option<(String, String, String)> {
+        match self.rows.get(self.selected).map(|r| &r.kind) {
+            Some(RowKind::Commit {
+                hash,
+                short_hash,
+                subject,
+            }) => Some((hash.clone(), short_hash.clone(), subject.clone())),
+            _ => None,
+        }
+    }
+
+    /// The stash at point in the Stashes section, as `(reference, message)`.
+    fn point_stash(&self) -> Option<(String, String)> {
+        match self.rows.get(self.selected).map(|r| &r.kind) {
+            Some(RowKind::Stash { reference, message }) => {
+                Some((reference.clone(), message.clone()))
+            }
+            _ => None,
+        }
+    }
+
     /// The section a row belongs to, by scanning back to the nearest section
     /// header at or above it.
     fn enclosing_section(&self, ix: usize) -> Option<SectionId> {
@@ -3823,6 +3848,9 @@ impl StatusView {
             }
             Some((_, Confirm::CustomShell { command, refresh })) => {
                 self.run_custom_shell(command, refresh, cx)
+            }
+            Some((_, Confirm::DropStash(reference))) => {
+                self.run_stash_action(StashAction::Drop, reference, cx)
             }
             None => {}
         }
@@ -4833,30 +4861,35 @@ impl StatusView {
         self.screen_gen
     }
 
+    /// Open the commit selected in the log (Enter in the log view).
     fn open_commit_view(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let Some(entry) = self.log().and_then(|l| l.entries.get(l.selected).cloned()) else {
             return;
         };
-        let gen = self.next_screen_gen();
-        // Move the log into the commit screen so closing returns to it.
-        let Screen::Log(log) = std::mem::take(&mut self.screen) else {
+        self.open_commit(entry.hash, entry.short_hash, entry.subject, cx);
+    }
+
+    /// Open a commit's diff detail, overlaying the current screen (restored on
+    /// close). Shared by the log view and status commit rows.
+    fn open_commit(&mut self, hash: String, short: String, subject: String, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
             return;
         };
-        let rev = entry.hash.clone();
+        let gen = self.next_screen_gen();
+        // Carry the screen we came from so closing returns there (log or status).
+        let back = Box::new(std::mem::take(&mut self.screen));
+        let rev = hash.clone();
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
-                short: SharedString::from(entry.short_hash.clone()),
-                subject: SharedString::from(entry.subject.clone()),
+                short: SharedString::from(short),
+                subject: SharedString::from(subject),
                 rows: vec![CommitDiffRow::Note("Loading…".to_string())],
                 scroll: UniformListScrollHandle::new(),
                 selected: 0,
                 visual: None,
             },
-            log,
+            back,
         };
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -4898,9 +4931,9 @@ impl StatusView {
     }
 
     fn close_commit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Return to the log the commit view was opened from.
-        if let Screen::Commit { log, .. } = std::mem::take(&mut self.screen) {
-            self.screen = Screen::Log(log);
+        // Return to the screen the commit view was opened from (log or status).
+        if let Screen::Commit { back, .. } = std::mem::take(&mut self.screen) {
+            self.screen = *back;
         }
         self.focus.focus(window, cx);
         cx.notify();
@@ -5233,6 +5266,37 @@ impl StatusView {
         // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
         if self.try_nav(&key, shift, ctrl, window, cx) {
             return;
+        }
+        // Act on the commit/stash at point in a status section (after motions, so
+        // j/k/g still work; only these verbs are intercepted — anything else falls
+        // through to the keymap). On a commit row `Enter` opens its diff and
+        // `y`/Cmd-C yanks the hash; on a stash row `Enter` shows it, `a` applies,
+        // `A` pops, `x` drops (confirmed), `y`/Cmd-C yanks the reference.
+        if let Some((hash, short, subject)) = self.point_commit() {
+            match key.as_str() {
+                "enter" => return self.open_commit(hash, short, subject, cx),
+                "y" => return self.copy_to_clipboard(hash, cx),
+                "c" if cmd => return self.copy_to_clipboard(hash, cx),
+                _ => {}
+            }
+        }
+        if let Some((reference, message)) = self.point_stash() {
+            match key.as_str() {
+                "enter" => return self.open_commit(reference.clone(), reference, message, cx),
+                "a" if shift => return self.run_stash_action(StashAction::Pop, reference, cx),
+                "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
+                "x" => {
+                    self.confirm = Some((
+                        format!("Drop {reference}? (y/n)"),
+                        Confirm::DropStash(reference),
+                    ));
+                    cx.notify();
+                    return;
+                }
+                "y" => return self.copy_to_clipboard(reference, cx),
+                "c" if cmd => return self.copy_to_clipboard(reference, cx),
+                _ => {}
+            }
         }
         match key.as_str() {
             // Tab toggles a fold (also delivered via the ToggleFold action, since
