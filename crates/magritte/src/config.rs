@@ -412,26 +412,26 @@ pub fn save_usage(usage: &Usage) {
 
 /// Saved default switch sets per transient (magit's `transient-save`), keyed by
 /// transient command id → the active switch keys. Persisted next to the config
-/// as `transient-values.toml` (e.g. `commit = ["-a", "-s"]`).
-pub type TransientValues = BTreeMap<String, Vec<String>>;
+/// as `transient-switches.toml` (e.g. `commit = ["-a", "-s"]`).
+pub type TransientSwitches = BTreeMap<String, Vec<String>>;
 
 /// The magritte settings directory inside a repo's git dir — the repo "scope",
 /// a sibling layout to the global config dir (so `config.toml` /
-/// `transient-values.toml` carry the same formats, just rooted here and
+/// `transient-switches.toml` carry the same formats, just rooted here and
 /// overlaid on the global ones). `git_common_dir` is the repo's common git
 /// directory, shared across worktrees.
 pub fn repo_dir(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("magritte")
 }
 
-/// Path to the global saved-transient-values file (a sibling of the config).
-pub fn transient_values_path() -> Option<PathBuf> {
-    path().map(|p| p.with_file_name("transient-values.toml"))
+/// Path to the global saved-transient-switches file (a sibling of the config).
+pub fn transient_switches_path() -> Option<PathBuf> {
+    path().map(|p| p.with_file_name("transient-switches.toml"))
 }
 
 /// Load the saved transient switch sets from a specific file, or empty if it's
 /// missing/unreadable. Used for both scopes (global and a repo's `.git/magritte`).
-pub fn load_transient_values_at(path: &Path) -> TransientValues {
+pub fn load_transient_switches_at(path: &Path) -> TransientSwitches {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|text| toml::from_str(&text).ok())
@@ -440,7 +440,7 @@ pub fn load_transient_values_at(path: &Path) -> TransientValues {
 
 /// Persist the saved transient switch sets to a specific file (atomic temp-file
 /// + rename), creating its directory as needed. Best-effort.
-pub fn save_transient_values_at(path: &Path, values: &TransientValues) {
+pub fn save_transient_switches_at(path: &Path, values: &TransientSwitches) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -453,9 +453,9 @@ pub fn save_transient_values_at(path: &Path, values: &TransientValues) {
 }
 
 /// Load the global saved transient switch sets, or empty if missing.
-pub fn load_transient_values() -> TransientValues {
-    transient_values_path()
-        .map(|p| load_transient_values_at(&p))
+pub fn load_transient_switches() -> TransientSwitches {
+    transient_switches_path()
+        .map(|p| load_transient_switches_at(&p))
         .unwrap_or_default()
 }
 
