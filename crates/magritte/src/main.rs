@@ -7026,7 +7026,7 @@ impl StatusView {
             // A next key that completes a binding shows its command's label; one
             // that only leads deeper shows "…" to mark a further sub-sequence.
             let lead = format!("{} ", pending.seq);
-            let mut conts: std::collections::BTreeMap<String, Option<&'static str>> =
+            let mut conts: std::collections::BTreeMap<String, Option<String>> =
                 std::collections::BTreeMap::new();
             for (k, id) in &self.keymap {
                 let Some(rest) = k.strip_prefix(&lead) else {
@@ -7034,8 +7034,14 @@ impl StatusView {
                 };
                 let token = rest.split(' ').next().unwrap_or(rest).to_string();
                 let completes = format!("{lead}{token}") == *k;
+                // The command's label (built-in or user `[[command]]`); a token
+                // that only leads deeper has no completing binding yet.
                 let title = completes
-                    .then(|| commands().iter().find(|c| c.id == id).map(|c| c.title))
+                    .then(|| {
+                        all_commands(&self.config)
+                            .find(|c| c.id == id)
+                            .map(|c| c.title.to_string())
+                    })
                     .flatten();
                 // A completing binding's label wins over a sibling sub-prefix.
                 let entry = conts.entry(token).or_insert(None);
@@ -7053,7 +7059,9 @@ impl StatusView {
                         .child(
                             div()
                                 .text_color(self.palette.dim)
-                                .child(SharedString::from(title.unwrap_or("…"))),
+                                .child(SharedString::from(
+                                    title.unwrap_or_else(|| "…".to_string()),
+                                )),
                         ),
                 );
             }
