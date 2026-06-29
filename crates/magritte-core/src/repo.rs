@@ -648,4 +648,24 @@ impl Repo {
             .flatten()
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
+
+    /// Whether `git pull` rebases by default, mirroring git's own resolution:
+    /// `branch.<name>.rebase` overrides `pull.rebase`, and a value counts as
+    /// rebase when it's `true`/`interactive`/`merges` (or the deprecated
+    /// `preserve`) — so it can't go through [`config_bool`], whose `--type=bool`
+    /// rejects those enum values.
+    pub fn pull_rebase_default(&self, branch: Option<&str>) -> bool {
+        fn rebase_ish(v: &str) -> bool {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "on" | "1" | "interactive" | "merges" | "preserve"
+            )
+        }
+        if let Some(b) = branch {
+            if let Ok(Some(v)) = self.config_get(&format!("branch.{b}.rebase")) {
+                return rebase_ish(&v);
+            }
+        }
+        matches!(self.config_get("pull.rebase"), Ok(Some(v)) if rebase_ish(&v))
+    }
 }

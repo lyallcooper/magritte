@@ -197,6 +197,50 @@ impl TransientState {
             .filter_map(|o| self.values.get(o.key).cloned())
             .collect()
     }
+
+    /// The active switch set from a saved set (magit's `transient-save`),
+    /// reconciled against the transient's switches. A plain switch is on iff the
+    /// set names its key. A *negatable* (config-derived) switch is forced on or
+    /// off only when the set names its key or its negation flag explicitly —
+    /// otherwise it keeps its config default, so an old or empty saved set can't
+    /// silently flip e.g. gpg-signing off by mere omission.
+    fn apply_saved(def: &Transient, saved: &[String]) -> std::collections::HashSet<String> {
+        let saved: std::collections::HashSet<&str> = saved.iter().map(String::as_str).collect();
+        let mut active = std::collections::HashSet::new();
+        for sw in def.switches() {
+            let on = match &sw.negation {
+                Some(_) if saved.contains(sw.key.as_str()) => true,
+                Some(neg) if saved.contains(neg.as_str()) => false,
+                Some(_) => sw.default_on,
+                None => saved.contains(sw.key.as_str()),
+            };
+            if on {
+                active.insert(sw.key.clone());
+            }
+        }
+        active
+    }
+
+    /// The switch overrides to persist: a plain switch when on, and a negatable
+    /// switch only when it differs from its config default — recorded as the key
+    /// (forced on) or the negation flag (forced off), so omission round-trips as
+    /// "follow config". The inverse of [`apply_saved`](Self::apply_saved).
+    fn saved_overrides(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for sw in self.def.switches() {
+            let on = self.active.contains(&sw.key);
+            match &sw.negation {
+                Some(neg) if on != sw.default_on => {
+                    out.push(if on { sw.key.clone() } else { neg.clone() })
+                }
+                Some(_) => {}
+                None if on => out.push(sw.key.clone()),
+                None => {}
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 /// A bottom popup overlay. Both the command transients (push/commit/…) and the
@@ -3512,18 +3556,30 @@ impl StatusView {
                 for suffix in group.suffixes.iter_mut() {
                     if let transient::Suffix::Switch(sw) = suffix {
                         if let Some(key) = sw.config_key.clone() {
-                            sw.default_on = repo.config_bool(&key);
+                            sw.default_on = match key.as_str() {
+                                // pull.rebase is an enum (true/interactive/merges)
+                                // with a per-branch override, so it needs git's
+                                // own resolution rather than a plain bool read.
+                                "pull.rebase" => {
+                                    repo.pull_rebase_default(targets.branch.as_deref())
+                                }
+                                _ => repo.config_bool(&key),
+                            };
                         }
                     }
                 }
             }
         }
         let mut state = TransientState::new(id, def, targets);
-        // A saved switch set (magit's `transient-save`) overrides the built-in
-        // default-on switches for this transient; that becomes the baseline, so
-        // the save hint only appears once the user changes it.
+        // A saved switch set (magit's `transient-save`) overrides this
+        // transient's defaults; that becomes the baseline, so the save hint only
+        // appears once the user changes it. A negatable (config-derived) switch
+        // is overridden only when the saved set names it *explicitly* — its key
+        // (force on) or its negation flag (force off); otherwise it keeps the
+        // config default, so an old/empty saved set can't silently flip e.g.
+        // gpg-signing off.
         if let Some(saved) = self.transient_values.get(id) {
-            state.active = saved.iter().cloned().collect();
+            state.active = TransientState::apply_saved(&state.def, saved);
             state.baseline = state.active.clone();
         }
         self.popup = Some(Popup::Transient(state));
@@ -3551,14 +3607,18 @@ impl StatusView {
         if key == TRANSIENT_SAVE_KEY {
             let to_save = match &self.popup {
                 Some(Popup::Transient(s)) if !s.id.is_empty() => {
-                    let mut switches: Vec<String> = s.active.iter().cloned().collect();
-                    switches.sort();
-                    Some((s.id.clone(), switches))
+                    Some((s.id.clone(), s.saved_overrides()))
                 }
                 _ => None,
             };
             if let Some((id, switches)) = to_save {
-                self.transient_values.insert(id, switches);
+                // An empty set carries no overrides — drop the entry rather than
+                // writing `id = []`, which used to read as "force everything off".
+                if switches.is_empty() {
+                    self.transient_values.remove(&id);
+                } else {
+                    self.transient_values.insert(id, switches);
+                }
                 config::save_transient_values(&self.transient_values);
                 // The saved set is the new baseline, so the hint hides again.
                 if let Some(Popup::Transient(s)) = self.popup.as_mut() {
@@ -5459,16 +5519,26 @@ impl StatusView {
         match suffix {
             Suffix::Switch(sw) => {
                 let on = state.is_some_and(|s| s.active.contains(sw.key.as_str()));
+                // A negatable, config-derived switch (e.g. --gpg-sign) turned off
+                // against an enabled config default shows its explicit negation
+                // (--no-gpg-sign) — that's the flag we'll actually pass, so it
+                // reads as an active override rather than a dim "off".
+                let negated = !on && sw.default_on && sw.negation.is_some();
+                let shown_flag = match (&sw.negation, negated) {
+                    (Some(neg), true) => neg.clone(),
+                    _ => sw.arg.clone(),
+                };
                 // magit layout: key, description, then the literal git flag
-                // in parens. Only the flag itself dims (off) or highlights
-                // bold in the `modified` accent (on) — the parens stay a
-                // constant neutral color.
-                let flag_color = if on {
+                // in parens. Only the flag itself dims (inactive) or highlights
+                // bold in the `modified` accent (the active choice — on, or an
+                // explicit negation) — the parens stay a constant neutral color.
+                let active_flag = on || negated;
+                let flag_color = if active_flag {
                     self.palette.modified
                 } else {
                     self.palette.dim
                 };
-                let flag = if on {
+                let flag = if active_flag {
                     div().text_color(flag_color).font_weight(FontWeight::BOLD)
                 } else {
                     div().text_color(flag_color)
@@ -5503,7 +5573,7 @@ impl StatusView {
                             .flex()
                             .items_center()
                             .child(paren().child(SharedString::from("(")))
-                            .child(flag.child(SharedString::from(sw.arg.clone())))
+                            .child(flag.child(SharedString::from(shown_flag)))
                             .child(paren().child(SharedString::from(")"))),
                     )
                     .on_click(move |_, window, cx: &mut App| {
@@ -8039,6 +8109,66 @@ mod tests {
         // the user turns it off.
         assert!(args(true, true).is_empty());
         assert_eq!(args(true, false), vec!["--no-gpg-sign"]);
+    }
+
+    #[test]
+    fn saved_set_reconciles_with_config_defaults() {
+        // A transient with one plain switch (-a) and one negatable, config-derived
+        // switch (-S, e.g. --gpg-sign). Build it with a given config default.
+        let build = |gpg_default: bool, saved: &[&str]| {
+            let mut gpg = transient::Switch::negatable(
+                "-S",
+                "--gpg-sign",
+                "--no-gpg-sign",
+                "commit.gpgSign",
+                "Sign using gpg",
+            );
+            gpg.default_on = gpg_default;
+            let def = Transient {
+                title: transient::plain_title("Commit"),
+                groups: vec![transient::Group {
+                    title: transient::plain_title("Arguments"),
+                    suffixes: vec![
+                        Suffix::Switch(transient::Switch::new("-a", "--all", "Stage all")),
+                        Suffix::Switch(gpg),
+                    ],
+                }],
+            };
+            let saved: Vec<String> = saved.iter().map(|s| s.to_string()).collect();
+            let active = TransientState::apply_saved(&def, &saved);
+            let mut state = TransientState::new("commit", def, RemoteTargets::default());
+            state.active = active;
+            state
+        };
+        let on = |s: &TransientState, k: &str| s.active.contains(k);
+
+        // The reported bug: an empty saved set must NOT force a config-on switch
+        // off — it keeps the config default.
+        let s = build(true, &[]);
+        assert!(on(&s, "-S"), "empty saved set keeps gpg-sign on when config enables it");
+        assert!(!on(&s, "-a"));
+        // Config off + empty: stays off.
+        assert!(!on(&build(false, &[]), "-S"));
+
+        // Explicit forms override the config default either way, and round-trip.
+        let off = build(true, &["--no-gpg-sign"]); // forced off against config-on
+        assert!(!on(&off, "-S"));
+        assert_eq!(off.saved_overrides(), vec!["--no-gpg-sign".to_string()]);
+        let forced_on = build(false, &["-S"]); // forced on against config-off
+        assert!(on(&forced_on, "-S"));
+        assert_eq!(forced_on.saved_overrides(), vec!["-S".to_string()]);
+
+        // A switch matching its config default isn't persisted (config drives it);
+        // a plain switch persists by its key.
+        let mut s = build(true, &["-a"]);
+        assert!(on(&s, "-S") && on(&s, "-a"));
+        assert_eq!(s.saved_overrides(), vec!["-a".to_string()]);
+        // Turn the config-on switch off → it now persists as the negation.
+        s.active.remove("-S");
+        assert_eq!(
+            s.saved_overrides(),
+            vec!["--no-gpg-sign".to_string(), "-a".to_string()]
+        );
     }
 
     #[test]

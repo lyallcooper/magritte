@@ -198,12 +198,26 @@ A key already used by a built-in suffix is left alone (the built-in wins). A
 section that isn't a real transient, an action naming an unknown command, or a
 switch whose key isn't dash-prefixed warns at startup.
 
+### Config-derived switches
+
+Some built-in switches reflect a git config that git itself honors, so they
+open already enabled when that config is set: commit `--gpg-sign`
+(`commit.gpgSign`), pull `--rebase` (`pull.rebase`, including a per-branch
+`branch.<name>.rebase` override), fetch `--prune` (`fetch.prune`), and rebase
+`--autosquash` (`rebase.autoSquash`). Toggling such a switch *off* sends the
+negation explicitly (e.g. `--no-gpg-sign`), shown highlighted so it's clear
+you're overriding the configured default.
+
 ### Saved switch defaults
 
 Inside any transient, **`Ctrl-s`** saves the current switch toggles as that
 transient's defaults (magit's `transient-save`); reopening it starts from them.
 Saved sets are written to `transient-values.toml` beside the config (e.g.
 `commit = ["-a", "-s"]`) — delete an entry to return to the built-in defaults.
+A config-derived switch (above) is only recorded when it differs from the
+configured default — as its flag (forced on) or its negation (forced off, e.g.
+`commit = ["--no-gpg-sign"]`); leaving it untouched keeps following the config,
+so an old or empty saved set never silently disables it.
 
 ## Commands
 
