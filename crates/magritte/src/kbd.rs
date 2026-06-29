@@ -32,6 +32,13 @@ fn is_modifier(token: &str) -> bool {
     )
 }
 
+/// Whether a `-`-split keystroke is a chord: ≥2 parts where every part but the
+/// last is a modifier (`ctrl-d`, `cmd-shift-x`), vs. a lone key or a literal
+/// `-`.
+fn is_chord(parts: &[&str]) -> bool {
+    parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p))
+}
+
 /// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
 /// label (or, for switches, a multi-span label). The border makes adjacent
 /// chips read as distinct keys rather than blending together. `font` is the
@@ -60,8 +67,7 @@ pub(crate) fn format_keys(key: &str) -> String {
         return key.split(' ').map(format_keys).collect::<Vec<_>>().join(" ");
     }
     let parts: Vec<&str> = key.split('-').collect();
-    let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
-    if is_chord {
+    if is_chord(&parts) {
         parts
             .iter()
             .map(|p| key_word(p))
@@ -87,8 +93,7 @@ pub(crate) fn key_chip(key: &str, color: Hsla, font: &SharedString) -> AnyElemen
 /// One keystroke step (possibly a chord) as caps joined by `+`.
 fn chord_caps(step: &str, color: Hsla, font: &SharedString) -> gpui::Div {
     let parts: Vec<&str> = step.split('-').collect();
-    let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
-    let labels: Vec<String> = if is_chord {
+    let labels: Vec<String> = if is_chord(&parts) {
         parts.iter().map(|p| key_word(p)).collect()
     } else {
         vec![key_word(step)]

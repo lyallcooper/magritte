@@ -459,19 +459,28 @@ pub fn load_usage() -> Usage {
         .unwrap_or_default()
 }
 
-/// Persist command usage (atomic temp-file + rename). Best-effort.
-pub fn save_usage(usage: &Usage) {
-    let Some(path) = usage_path() else {
-        return;
-    };
+/// Serialize `value` to TOML and write it to `path` atomically — temp file +
+/// rename, creating parent dirs — so an interrupted write can't corrupt the
+/// target. On a rename failure the temp file is removed rather than leaked.
+fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    if let Ok(text) = toml::to_string_pretty(usage) {
-        let tmp = path.with_extension("toml.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+    let text = toml::to_string_pretty(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Persist command usage (atomic). Best-effort.
+pub fn save_usage(usage: &Usage) {
+    if let Some(path) = usage_path() {
+        let _ = atomic_write_toml(&path, usage);
     }
 }
 
@@ -506,15 +515,7 @@ pub fn load_transient_switches_at(path: &Path) -> TransientSwitches {
 /// Persist the saved transient switch sets to a specific file (atomic temp-file
 /// + rename), creating its directory as needed. Best-effort.
 pub fn save_transient_switches_at(path: &Path, values: &TransientSwitches) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(text) = toml::to_string_pretty(values) {
-        let tmp = path.with_extension("toml.tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
-    }
+    let _ = atomic_write_toml(path, values);
 }
 
 /// Load the global saved transient switch sets, or empty if missing.
@@ -532,28 +533,8 @@ pub fn save(config: &Config) {
     let Some(path) = path() else {
         return;
     };
-    if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("magritte: could not create config dir: {e}");
-            return;
-        }
-    }
-    let text = match toml::to_string_pretty(config) {
-        Ok(text) => text,
-        Err(e) => {
-            eprintln!("magritte: could not serialize config: {e}");
-            return;
-        }
-    };
-    // Write to a sibling temp file, then atomically rename it into place.
-    let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, text) {
-        eprintln!("magritte: could not write config: {e}");
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        eprintln!("magritte: could not replace config: {e}");
-        let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = atomic_write_toml(&path, config) {
+        eprintln!("magritte: could not save config: {e}");
     }
 }
 

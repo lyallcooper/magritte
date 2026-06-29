@@ -1604,19 +1604,12 @@ impl StatusView {
             return;
         }
 
-        let verb = match &action {
-            BranchAction::Checkout => "Checking out",
-            BranchAction::Create { .. } => "Creating branch",
-            BranchAction::RenameTo { .. } => "Renaming branch",
-            BranchAction::Delete => "Deleting branch",
+        let (verb, done) = match &action {
+            BranchAction::Checkout => ("Checking out", "Checked out"),
+            BranchAction::Create { .. } => ("Creating branch", "Created branch"),
+            BranchAction::RenameTo { .. } => ("Renaming branch", "Renamed branch"),
+            BranchAction::Delete => ("Deleting branch", "Deleted branch"),
             BranchAction::RenameFrom => unreachable!("handled above"),
-        };
-        let done = match &action {
-            BranchAction::Checkout => "Checked out",
-            BranchAction::Create { .. } => "Created branch",
-            BranchAction::RenameTo { .. } => "Renamed branch",
-            BranchAction::Delete => "Deleted branch",
-            BranchAction::RenameFrom => "Done",
         };
         self.run_job(
             &format!("{verb}…"),
@@ -1657,15 +1650,10 @@ impl StatusView {
             .next()
             .unwrap_or(&chosen)
             .to_string();
-        let verb = match action {
-            StashAction::Apply => "Applying stash",
-            StashAction::Pop => "Popping stash",
-            StashAction::Drop => "Dropping stash",
-        };
-        let done = match action {
-            StashAction::Apply => "Applied stash",
-            StashAction::Pop => "Popped stash",
-            StashAction::Drop => "Dropped stash",
+        let (verb, done) = match action {
+            StashAction::Apply => ("Applying stash", "Applied stash"),
+            StashAction::Pop => ("Popping stash", "Popped stash"),
+            StashAction::Drop => ("Dropping stash", "Dropped stash"),
         };
         let is_drop = matches!(action, StashAction::Drop);
         self.run_job_with(
