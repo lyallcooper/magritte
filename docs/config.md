@@ -167,20 +167,30 @@ are reachable today only through their prefix's transient or the `:` palette.
 A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 `transient-append-suffix`. The section id is the transient's command id
 (`commit`, `branch`, `stash`, `reset`, `rebase`, `merge`, `ignore`, `log`,
-`push`, `pull`, `fetch`); each entry maps a suffix key to a command id to run.
+`push`, `pull`, `fetch`); each entry maps a suffix key to either a **command id**
+(an action) or a **`-`-prefixed git flag** (a toggleable switch).
 
 ```toml
 [transient.branch]
-"X" = "branch-delete"   # `b X` deletes a branch, shown in a "Custom" group
+"X" = "branch-delete"          # action: `b X` deletes a branch
 
 [transient.commit]
-"A" = "commit-amend"    # `c A` amends
+"A" = "commit-amend"           # action: `c A` amends
+"-n" = "--no-verify Skip hooks" # switch: `c - n` toggles --no-verify
+
+[transient.fetch]
+"-d" = "--depth=1"             # switch with no description — shows just the flag
 ```
 
-The injected suffixes appear in a **Custom** group at the bottom of the menu and
-run with default arguments. A key that already exists in the transient is left
-alone (the built-in binding wins). Unknown command ids — and a section that
-isn't a real transient — warn at startup.
+- **Actions** (value is a command id) run with default arguments.
+- **Switches** (value starts with `-`) toggle a git flag for that transient,
+  like the built-in ones — keyed dash-first (`-n`, toggled with `- n`), with the
+  value being `<flag>` or `<flag> <description>`.
+
+Injected suffixes appear in a **Custom** group at the bottom of the menu. A key
+already used by a built-in suffix is left alone (the built-in wins). A section
+that isn't a real transient, an unknown command id, or a switch whose key isn't
+dash-prefixed warns at startup.
 
 ## Commands
 
