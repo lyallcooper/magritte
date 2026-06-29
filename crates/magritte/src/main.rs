@@ -5350,18 +5350,12 @@ impl StatusView {
             body = body.child(command_row);
         }
 
-        // The "save these switches" hint. Reserve its row whenever the transient
-        // has switches to save (a real, id-bearing transient — not the `?`
-        // dispatch), but only reveal it once the switches differ from their
-        // saved/built-in baseline. Reserving + `invisible` keeps toggling from
-        // shifting the layout.
-        let has_switches = def
-            .groups
-            .iter()
-            .flat_map(|g| &g.suffixes)
-            .any(|s| matches!(s, Suffix::Switch(_)));
-        let reserve_save = has_switches && state.is_some_and(|s| !s.id.is_empty());
-        let modified = state.is_some_and(|s| s.active != s.baseline);
+        // The "save these switches" hint, shown once the toggles differ from
+        // their saved/built-in baseline. It sits at the *top* of the panel: the
+        // popup is bottom-anchored, so adding a row here grows it upward into
+        // empty space without shifting the title/groups — no reserved dead space
+        // and no layout shift either way (a bottom row would push them up).
+        let show_save = state.is_some_and(|s| !s.id.is_empty() && s.active != s.baseline);
 
         div()
             .w_full()
@@ -5373,9 +5367,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .gap_2()
-            .child(self.render_title(&def.title, self.palette.section))
-            .child(body)
-            .when(reserve_save, |el| {
+            .when(show_save, |el| {
                 el.child(
                     div()
                         .flex()
@@ -5383,11 +5375,12 @@ impl StatusView {
                         .gap_2()
                         .text_xs()
                         .text_color(self.palette.dim)
-                        .when(!modified, |row| row.invisible())
                         .child(kbd::key_chip(TRANSIENT_SAVE_KEY, self.palette.dim, &self.font))
                         .child(SharedString::from("save these switches as the default")),
                 )
             })
+            .child(self.render_title(&def.title, self.palette.section))
+            .child(body)
     }
 
     /// One transient group as a left-aligned band: its dim title above its
