@@ -649,6 +649,51 @@ impl Repo {
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
 
+    /// The nearest tag reachable from HEAD (with commits-since) and the nearest
+    /// tag that *contains* HEAD (with commits-until) — magit's status "Tag/Tags"
+    /// header (`magit-get-current-tag` / `magit-get-next-tag`). Either is `None`
+    /// when there's no such tag.
+    pub fn tags_around(&self) -> (Option<(String, usize)>, Option<(String, usize)>) {
+        let current = self.current_tag();
+        let next = self.next_tag(current.as_ref().map(|(t, _)| t.as_str()));
+        (current, next)
+    }
+
+    /// `git describe --long --tags` → `(tag, commits-since)`; `None` if untagged.
+    fn current_tag(&self) -> Option<(String, usize)> {
+        let out = self
+            .run_optional(["describe", "--long", "--tags"])
+            .ok()
+            .flatten()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // "<tag>-<count>-g<hash>": strip the "-g<hash>", then split the count.
+        let without_hash = s.rsplit_once("-g")?.0;
+        let (tag, count) = without_hash.rsplit_once('-')?;
+        Some((tag.to_string(), count.parse().ok()?))
+    }
+
+    /// `git describe --contains HEAD` → `(tag, commits-until)` for the nearest
+    /// tag HEAD is an ancestor of; `None` if none, or if it's the current tag.
+    fn next_tag(&self, current: Option<&str>) -> Option<(String, usize)> {
+        let out = self
+            .run_optional(["describe", "--contains", "HEAD"])
+            .ok()
+            .flatten()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // "<tag>" possibly suffixed with `~N` / `^N`.
+        let tag = s.split(['~', '^']).next().unwrap_or("").to_string();
+        if tag.is_empty() || Some(tag.as_str()) == current {
+            return None;
+        }
+        let count = self
+            .run_optional(["rev-list", "--count", &format!("HEAD..{tag}")])
+            .ok()
+            .flatten()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .unwrap_or(0);
+        Some((tag, count))
+    }
+
     /// Ignored file paths (`git ls-files --others --ignored --exclude-standard`),
     /// repo-relative. For the opt-in `ignored` status section.
     pub fn ignored_files(&self) -> Result<Vec<String>> {

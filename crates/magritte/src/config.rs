@@ -68,6 +68,10 @@ pub struct Config {
     /// show up without a manual refresh. On by default; set false to opt out.
     #[serde(default = "default_true")]
     pub refresh_on_focus: bool,
+    /// Show the nearest tag(s) (a "Tag/Tags" segment) in the title bar. On by
+    /// default; set false to hide it.
+    #[serde(default = "default_true")]
+    pub show_tags: bool,
     /// User-defined commands (`[[command]]`): a shell command surfaced in the
     /// `:` palette and bindable in `[keymap]` by `id`.
     #[serde(default, rename = "command")]
@@ -248,6 +252,7 @@ impl Default for Config {
             transient: BTreeMap::new(),
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
+            show_tags: true,
             commands: Vec::new(),
             status: StatusConfig::default(),
         }

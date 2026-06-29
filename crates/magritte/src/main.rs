@@ -1995,6 +1995,9 @@ struct StatusView {
     /// This repo's settings dir (`.git/magritte`), for repo-scoped saves and the
     /// live-reload watcher. `None` with no repo.
     repo_scope_dir: Option<PathBuf>,
+    /// The title-bar tag display: (nearest tag behind + commits-since, nearest
+    /// tag ahead + commits-until). Refreshed with status when `show_tags` is on.
+    tag_info: (Option<(String, usize)>, Option<(String, usize)>),
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Cached list of all font families, for the UI-font picker.
@@ -2098,6 +2101,7 @@ impl StatusView {
             repo,
             status: None,
             status_sections: StatusSections::default(),
+            tag_info: (None, None),
             sequence: None,
             error: None,
             expanded,
@@ -2516,12 +2520,18 @@ impl StatusView {
             .section_ids()
             .iter()
             .any(|s| s == "ignored");
+        let want_tags = self.config.show_tags;
         cx.spawn(async move |this, cx| {
-            let (result, sequence, sections) = cx
+            let (result, sequence, sections, tag_info) = cx
                 .background_executor()
                 .spawn(async move {
                     let status = repo.status();
                     let sequence = repo.sequence();
+                    let tag_info = if want_tags {
+                        repo.tags_around()
+                    } else {
+                        (None, None)
+                    };
                     // The push target's listings only matter (and only resolve)
                     // in a triangular workflow — skip the git calls otherwise.
                     let triangular = status.as_ref().is_ok_and(|s| s.head.push.is_some());
@@ -2548,7 +2558,7 @@ impl StatusView {
                             Vec::new()
                         },
                     };
-                    (status, sequence, sections)
+                    (status, sequence, sections, tag_info)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -2557,6 +2567,7 @@ impl StatusView {
                 }
                 this.sequence = sequence;
                 this.status_sections = sections;
+                this.tag_info = tag_info;
                 match result {
                     Ok(status) => {
                         this.status = Some(status);
@@ -6709,6 +6720,41 @@ impl StatusView {
                         info.child(self.track_chunk(view, "up", "", up, head.ahead, head.behind));
                 }
                 (None, None) => {}
+            }
+
+            // Nearest tag(s): "Tag: v1 (5)" (behind) or "Tags: v1 (5), v2 (2)"
+            // (behind + ahead), magit's status tag header. Gated by `show_tags`
+            // (when off, `tag_info` is left empty so this is skipped).
+            let (cur, next) = &self.tag_info;
+            let entries: Vec<&(String, usize)> = [cur.as_ref(), next.as_ref()]
+                .into_iter()
+                .flatten()
+                .collect();
+            // Gate on the live config too, so toggling `show_tags` off hides the
+            // segment immediately (not just after the next status refresh clears
+            // `tag_info`).
+            if self.config.show_tags && !entries.is_empty() {
+                let label = if entries.len() > 1 { "Tags:" } else { "Tag:" };
+                let mut seg = div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().text_color(self.palette.dim).child(SharedString::from(label)));
+                for (i, (name, count)) in entries.iter().enumerate() {
+                    let mut text = name.clone();
+                    if *count > 0 {
+                        text.push_str(&format!(" ({count})"));
+                    }
+                    if i + 1 < entries.len() {
+                        text.push(',');
+                    }
+                    seg = seg.child(
+                        div()
+                            .text_color(self.palette.modified)
+                            .child(SharedString::from(text)),
+                    );
+                }
+                info = info.child(seg);
             }
 
             if !status.is_clean() {
