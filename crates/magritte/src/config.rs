@@ -196,6 +196,12 @@ pub enum SuffixKind<'a> {
 }
 
 impl TransientSuffix {
+    /// Whether this entry *removes* the built-in suffix at its key — the
+    /// keymap-style `"key" = "unbound"` sentinel — rather than adding one.
+    pub fn is_unbound(&self) -> bool {
+        matches!(self, TransientSuffix::Bare(s) if s == "unbound")
+    }
+
     pub fn kind(&self) -> SuffixKind<'_> {
         match self {
             TransientSuffix::Bare(s) if s.starts_with('-') => SuffixKind::Switch {
