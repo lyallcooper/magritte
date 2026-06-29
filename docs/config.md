@@ -20,6 +20,28 @@ fall back to their default rather than failing the whole file. A successful
 live reload confirms with a brief "Settings reloaded from disk"; fixing a
 flagged value and saving again clears its warning.
 
+A repository can override these settings for itself — see *Per-repo settings*.
+
+## Per-repo settings
+
+Drop a `config.toml` (and/or `transient-values.toml`) in **`.git/magritte/`** to
+override settings for one repository. It's a *sparse overlay* on your global
+config — set only the keys you want to change; everything else falls through.
+The file lives in the repo's git dir, so it's private (never committed) and
+shared across the repo's worktrees, and it's re-read live like the global one.
+
+Merge rules — global first, repo on top:
+
+- **Scalars** (theme, font, editor, commit options, …): the repo value wins.
+- **`[keymap]`** and **`[transient.*]`**: merged entry by entry — the repo adds
+  or overrides individual bindings/suffixes; `"x" = "unbound"` still removes one.
+- **`[[command]]`**: concatenated, a repo command replacing a global one of the
+  same `id` (so a repo adds commands, or overrides one by id).
+
+Handy for a distinct theme per repo (tell work from personal at a glance),
+repo-specific keybindings or commands, or — via `transient-values.toml` —
+per-repo switch defaults (see *Saved switch defaults*).
+
 ## Settings
 
 All scalar keys are top-level. Every key is optional; omit one for its default.

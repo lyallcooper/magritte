@@ -230,36 +230,106 @@ pub fn path() -> Option<PathBuf> {
     Some(base.join("magritte").join("config.toml"))
 }
 
-/// Load the config, returning defaults if it's missing or unreadable, plus a
-/// warning when the config file *exists* yet fails to parse — so we can tell the
-/// user their settings were ignored rather than silently falling back to
-/// defaults. A missing/unreadable file is not a warning (defaulting is the
-/// intended behavior there).
+/// Load the global config, returning defaults if it's missing or unreadable,
+/// plus a warning when a file *exists* yet fails to parse. Equivalent to
+/// [`load_merged`] with no repo overlay.
 pub fn load_reporting() -> (Config, Option<String>) {
-    let Some(path) = path() else {
-        return (Config::default(), None);
-    };
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    load_merged(None)
+}
+
+/// Resolve the effective config: the global file, with a repo scope's
+/// `config.toml` (when present) deep-merged on top — scalars and `[keymap]` /
+/// `[transient]` entries the repo sets win, `[[command]]`s concatenate. Same
+/// per-file warning semantics as before: an existing-but-unreadable or invalid
+/// file is reported and skipped rather than failing the whole load.
+pub fn load_merged(repo_config: Option<&Path>) -> (Config, Option<String>) {
+    let mut warnings: Vec<String> = Vec::new();
+    let mut merged = path()
+        .map(|p| read_config_value(&p, &mut warnings))
+        .unwrap_or_else(empty_table);
+    if let Some(p) = repo_config {
+        if p.exists() {
+            let overlay = read_config_value(p, &mut warnings);
+            deep_merge(&mut merged, overlay);
+        }
+    }
+    let parsed: Result<Config, _> = merged.try_into();
+    let config = parsed.unwrap_or_else(|e| {
+        warnings.push(format!("Ignoring invalid config: {e}"));
+        Config::default()
+    });
+    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    (config, warning)
+}
+
+fn empty_table() -> toml::Value {
+    toml::Value::Table(toml::map::Map::new())
+}
+
+/// Read a config file as a raw TOML table: an empty table if missing, and a
+/// recorded warning if it exists but can't be read or parsed (so the rest of the
+/// load proceeds).
+fn read_config_value(path: &Path, warnings: &mut Vec<String>) -> toml::Value {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match toml::from_str::<toml::Value>(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!("Ignoring invalid config at {}: {e}", path.display()));
+                empty_table()
+            }
+        },
         // A missing file is the normal "use defaults" case; an existing but
         // unreadable one (permissions, etc.) is worth telling the user about.
         Err(e) => {
-            let warning = path
-                .exists()
-                .then(|| format!("Could not read config at {}: {e}", path.display()));
-            return (Config::default(), warning);
+            if path.exists() {
+                warnings.push(format!("Could not read config at {}: {e}", path.display()));
+            }
+            empty_table()
         }
-    };
-    match toml::from_str(&text) {
-        Ok(config) => (config, None),
-        Err(e) => (
-            Config::default(),
-            Some(format!(
-                "Ignoring invalid config at {}: {e}",
-                path.display()
-            )),
-        ),
     }
+}
+
+/// Deep-merge `overlay` onto `base` (both TOML tables): tables merge key by key
+/// with the overlay winning; the top-level `command` array concatenates with
+/// dedup by `id` (so a repo adds or overrides commands); other scalars and
+/// arrays are replaced by the overlay.
+fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(b), toml::Value::Table(o)) => {
+            for (k, ov) in o {
+                if k == "command" {
+                    let merged = merge_commands(b.get("command"), ov);
+                    b.insert(k, merged);
+                } else if let Some(bv) = b.get_mut(&k) {
+                    deep_merge(bv, ov);
+                } else {
+                    b.insert(k, ov);
+                }
+            }
+        }
+        (slot, o) => *slot = o,
+    }
+}
+
+/// Concatenate the global and repo `[[command]]` arrays, a repo entry replacing
+/// a global one of the same `id` (so a repo adds new commands or overrides
+/// existing ones by id, with no spurious duplicate-id warning).
+fn merge_commands(base: Option<&toml::Value>, overlay: toml::Value) -> toml::Value {
+    let id_of = |c: &toml::Value| c.get("id").and_then(|v| v.as_str()).map(str::to_owned);
+    let mut out: Vec<toml::Value> = base
+        .and_then(toml::Value::as_array)
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let toml::Value::Array(overlay) = overlay else {
+        return toml::Value::Array(out);
+    };
+    for cmd in overlay {
+        if let Some(id) = id_of(&cmd) {
+            out.retain(|c| id_of(c).as_deref() != Some(id.as_str()));
+        }
+        out.push(cmd);
+    }
+    toml::Value::Array(out)
 }
 
 /// Command-usage record for the palette's frecency ranking, persisted next to
@@ -419,5 +489,53 @@ pub fn save(config: &Config) {
     if let Err(e) = std::fs::rename(&tmp, &path) {
         eprintln!("magritte: could not replace config: {e}");
         let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn val(s: &str) -> toml::Value {
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn deep_merge_overlays_scalars_and_tables() {
+        let mut base = val("dark_theme = \"A\"\nfont = \"F\"\n[keymap]\nx = \"commit\"\nk = \"move-up\"\n");
+        let overlay = val("dark_theme = \"B\"\n[keymap]\nx = \"unbound\"\nK = \"branch-delete\"\n");
+        deep_merge(&mut base, overlay);
+        assert_eq!(base.get("dark_theme").and_then(|v| v.as_str()), Some("B")); // overridden
+        assert_eq!(base.get("font").and_then(|v| v.as_str()), Some("F")); // kept
+        let km = base.get("keymap").unwrap();
+        assert_eq!(km.get("x").and_then(|v| v.as_str()), Some("unbound")); // overridden
+        assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
+        assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete")); // added by repo
+    }
+
+    #[test]
+    fn deep_merge_concats_commands_dedup_by_id() {
+        let mut base = val(
+            "[[command]]\nid = \"a\"\ntitle = \"A\"\nrun = \"ga\"\n\
+             [[command]]\nid = \"b\"\ntitle = \"B\"\nrun = \"gb\"\n",
+        );
+        let overlay = val(
+            "[[command]]\nid = \"b\"\ntitle = \"B2\"\nrun = \"gb2\"\n\
+             [[command]]\nid = \"c\"\ntitle = \"C\"\nrun = \"gc\"\n",
+        );
+        deep_merge(&mut base, overlay);
+        let cmds = base.get("command").and_then(|v| v.as_array()).unwrap();
+        let ids: Vec<&str> = cmds
+            .iter()
+            .map(|c| c.get("id").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["a", "b", "c"]); // b overridden in place, c appended
+        let b = cmds
+            .iter()
+            .find(|c| c.get("id").and_then(|v| v.as_str()) == Some("b"))
+            .unwrap();
+        assert_eq!(b.get("title").and_then(|v| v.as_str()), Some("B2")); // repo wins
+        let parsed: Result<Config, _> = base.try_into();
+        assert!(parsed.is_ok(), "merged config deserializes");
     }
 }

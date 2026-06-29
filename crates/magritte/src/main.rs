@@ -1933,6 +1933,20 @@ impl StatusView {
             .as_ref()
             .map(|d| config::load_transient_values_at(&d.join("transient-values.toml")))
             .unwrap_or_default();
+        // Overlay this repo's config.toml (if any) on the global config. Done
+        // here, after repo discovery, since the repo isn't known until now; the
+        // re-resolved warning supersedes the global-only one from startup, and we
+        // re-apply appearance so a repo theme override paints from the first frame
+        // (main applied the global theme pre-window).
+        let (config, startup_warning) = match repo_scope_dir.as_ref().map(|d| d.join("config.toml"))
+        {
+            Some(p) if p.exists() => {
+                let (merged, warning) = config::load_merged(Some(&p));
+                theme::apply_appearance(&merged, cx);
+                (merged, warning)
+            }
+            _ => (config, startup_warning),
+        };
         let font = theme::resolve_font(&config, cx);
         let ui_font = theme::resolve_ui_font(&config, cx);
 
@@ -2162,19 +2176,27 @@ impl StatusView {
         let tv_target = config::transient_values_path()
             .and_then(|p| p.file_name().map(|n| dir.join(n)));
         // The repo scope's settings dir, if it exists yet (canonicalize fails
-        // otherwise) — so we can watch its transient-values.toml. Created lazily
-        // on the first repo-scoped save, so a brand-new repo picks it up next
-        // launch; an in-app save updates memory directly and needs no reload.
+        // otherwise) — so we can watch its config.toml / transient-values.toml.
+        // Created lazily on the first repo-scoped save, so a brand-new repo picks
+        // it up next launch; an in-app save updates memory directly anyway.
         let repo_scope = self
             .repo_scope_dir
             .as_ref()
             .and_then(|d| std::fs::canonicalize(d).ok());
         let repo_tv_target = repo_scope.as_ref().map(|d| d.join("transient-values.toml"));
+        // For re-resolving the merged config: the plain repo config path (its
+        // existence is checked at load time, so it works even if created later).
+        let repo_config_load = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml"));
         let cb_repo_tv = repo_tv_target.clone();
+        let cb_repo_config = repo_scope.as_ref().map(|d| d.join("config.toml"));
         let (tx, rx) = async_channel::unbounded::<Changed>();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
-                if event.paths.contains(&watch_target) {
+                // Either config file (global or repo scope) re-resolves the merged
+                // config — one path for both.
+                if event.paths.contains(&watch_target)
+                    || cb_repo_config.as_ref().is_some_and(|t| event.paths.contains(t))
+                {
                     let _ = tx.send_blocking(Changed::Config);
                 } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
                     let _ = tx.send_blocking(Changed::TransientValues);
@@ -2205,7 +2227,7 @@ impl StatusView {
             while let Ok(changed) = rx.recv().await {
                 let updated = match changed {
                     Changed::Config => {
-                        let (cfg, warning) = config::load_reporting();
+                        let (cfg, warning) = config::load_merged(repo_config_load.as_deref());
                         this.update_in(cx, |view, window, cx| {
                             if let Some(warning) = warning {
                                 // The file is now invalid/unreadable. Keep the
