@@ -221,7 +221,8 @@ pub struct Action {
 #[derive(Debug, Clone)]
 pub struct Info {
     pub keys: String,
-    pub description: &'static str,
+    /// Owned so user `[[command]]` titles (not `'static`) can appear too.
+    pub description: String,
 }
 
 /// A user-injected suffix (from the `[transient]` config): a key + label that
