@@ -649,6 +649,24 @@ impl Repo {
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
 
+    /// The repository's common git directory (`git rev-parse --git-common-dir`),
+    /// as an absolute path. It's shared across linked worktrees, so per-repo
+    /// state keyed off it lands in one place for the whole repo. `None` on error.
+    pub fn git_common_dir(&self) -> Option<PathBuf> {
+        let out = self.run(["rev-parse", "--git-common-dir"]).ok()?;
+        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if raw.is_empty() {
+            return None;
+        }
+        // git reports it relative to the working tree we ran in (`-C workdir`).
+        let dir = PathBuf::from(&raw);
+        Some(if dir.is_absolute() {
+            dir
+        } else {
+            self.workdir.join(dir)
+        })
+    }
+
     /// Whether `git pull` rebases by default, mirroring git's own resolution:
     /// `branch.<name>.rebase` overrides `pull.rebase`, and a value counts as
     /// rebase when it's `true`/`interactive`/`merges` (or the deprecated

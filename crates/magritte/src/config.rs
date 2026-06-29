@@ -4,7 +4,7 @@
 //! font; written when the settings screen closes, loaded at startup.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -345,36 +345,48 @@ pub fn save_usage(usage: &Usage) {
 /// as `transient-values.toml` (e.g. `commit = ["-a", "-s"]`).
 pub type TransientValues = BTreeMap<String, Vec<String>>;
 
-/// Path to the saved-transient-values file (a sibling of the config).
+/// The magritte settings directory inside a repo's git dir — the repo "scope",
+/// a sibling layout to the global config dir (so `config.toml` /
+/// `transient-values.toml` carry the same formats, just rooted here and
+/// overlaid on the global ones). `git_common_dir` is the repo's common git
+/// directory, shared across worktrees.
+pub fn repo_dir(git_common_dir: &Path) -> PathBuf {
+    git_common_dir.join("magritte")
+}
+
+/// Path to the global saved-transient-values file (a sibling of the config).
 pub fn transient_values_path() -> Option<PathBuf> {
     path().map(|p| p.with_file_name("transient-values.toml"))
 }
 
-/// Load the saved transient switch sets, or empty if missing/unreadable.
-pub fn load_transient_values() -> TransientValues {
-    let Some(path) = transient_values_path() else {
-        return TransientValues::new();
-    };
-    std::fs::read_to_string(&path)
+/// Load the saved transient switch sets from a specific file, or empty if it's
+/// missing/unreadable. Used for both scopes (global and a repo's `.git/magritte`).
+pub fn load_transient_values_at(path: &Path) -> TransientValues {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|text| toml::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-/// Persist the saved transient switch sets (atomic temp-file + rename).
-pub fn save_transient_values(values: &TransientValues) {
-    let Some(path) = transient_values_path() else {
-        return;
-    };
+/// Persist the saved transient switch sets to a specific file (atomic temp-file
+/// + rename), creating its directory as needed. Best-effort.
+pub fn save_transient_values_at(path: &Path, values: &TransientValues) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(text) = toml::to_string_pretty(values) {
         let tmp = path.with_extension("toml.tmp");
         if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
+            let _ = std::fs::rename(&tmp, path);
         }
     }
+}
+
+/// Load the global saved transient switch sets, or empty if missing.
+pub fn load_transient_values() -> TransientValues {
+    transient_values_path()
+        .map(|p| load_transient_values_at(&p))
+        .unwrap_or_default()
 }
 
 /// Write the config, creating parent directories as needed. Written

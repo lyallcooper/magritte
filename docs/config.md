@@ -212,14 +212,25 @@ you're overriding the configured default.
 
 Inside any transient, **`Ctrl-s`** saves the current switch toggles as that
 transient's defaults (magit's `transient-save`); reopening it starts from them.
-Saved sets are written to `transient-values.toml` beside the config (e.g.
-`commit = ["-a", "-s"]`) — delete an entry to return to the built-in defaults.
-The file is re-read live, like the config: editing it by hand takes effect on
-the next transient you open, no restart needed.
+`Ctrl-s` then asks for a **scope** — press **`g`** to save *globally* or **`l`**
+to save *for this repo* (anything else, incl. `Esc`, cancels):
+
+- **Global** → `transient-values.toml` beside the config (e.g. `commit = ["-a", "-s"]`).
+- **This repo** → `.git/magritte/transient-values.toml` in the repo (shared
+  across its worktrees, never committed).
+
+When a transient opens, the repo scope wins over the global one **per transient
+id**: a repo's `commit = [...]` entry fully defines commit's defaults, while the
+global file still supplies the transients the repo doesn't mention. Delete an
+entry (or its file) to fall back to the lower scope, then the built-in defaults.
+
 A config-derived switch (above) is only recorded when it differs from the
 configured default — as its flag (forced on) or its negation (forced off, e.g.
 `commit = ["--no-gpg-sign"]`); leaving it untouched keeps following the config,
 so an old or empty saved set never silently disables it.
+
+Both files are re-read live, like the config: editing one by hand takes effect
+on the next transient you open, no restart needed.
 
 ## Commands
 

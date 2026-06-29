@@ -140,6 +140,9 @@ struct TransientState {
     values: std::collections::HashMap<String, String>,
     /// True after `-` is pressed, awaiting the switch/option letter (magit `-f`).
     pending_dash: bool,
+    /// True after the save key is pressed, awaiting the scope letter (`g`lobal /
+    /// `l`ocal) — magit-style two-step save.
+    pending_save: bool,
     /// Resolved push/pull/fetch targets, so dispatch can route to the right
     /// remote without recomputing (empty for non-remote transients).
     targets: RemoteTargets,
@@ -161,6 +164,7 @@ impl TransientState {
             active,
             values: std::collections::HashMap::new(),
             pending_dash: false,
+            pending_save: false,
             targets,
         }
     }
@@ -1865,8 +1869,14 @@ struct StatusView {
     _activation_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
-    /// Saved per-transient switch defaults (magit's `transient-save`).
+    /// Saved per-transient switch defaults (magit's `transient-save`), global scope.
     transient_values: config::TransientValues,
+    /// The same, scoped to this repo (`.git/magritte/transient-values.toml`),
+    /// overlaid on the global ones (repo wins per transient id). Empty with no repo.
+    repo_transient_values: config::TransientValues,
+    /// This repo's settings dir (`.git/magritte`), for repo-scoped saves and the
+    /// live-reload watcher. `None` with no repo.
+    repo_scope_dir: Option<PathBuf>,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Cached list of all font families, for the UI-font picker.
@@ -1913,6 +1923,16 @@ impl StatusView {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
+        // The repo's settings scope (`.git/magritte`) and its saved switch sets,
+        // overlaid on the global ones when a transient opens.
+        let repo_scope_dir = repo
+            .as_ref()
+            .and_then(|r| r.git_common_dir())
+            .map(|d| config::repo_dir(&d));
+        let repo_transient_values = repo_scope_dir
+            .as_ref()
+            .map(|d| config::load_transient_values_at(&d.join("transient-values.toml")))
+            .unwrap_or_default();
         let font = theme::resolve_font(&config, cx);
         let ui_font = theme::resolve_ui_font(&config, cx);
 
@@ -1967,6 +1987,8 @@ impl StatusView {
             _activation_sub: None,
             usage: config::load_usage(),
             transient_values: config::load_transient_values(),
+            repo_transient_values,
+            repo_scope_dir,
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
             editors: Vec::new(),
@@ -2131,13 +2153,24 @@ impl StatusView {
         };
         // Which watched file changed — kept distinct so a transient-values edit
         // doesn't run the config-reload path (theme rebuild, "Settings reloaded"
-        // toast). Both files reload live, like the config always has.
+        // toast). All reload live, like the config always has.
         enum Changed {
             Config,
             TransientValues,
+            RepoTransientValues,
         }
         let tv_target = config::transient_values_path()
             .and_then(|p| p.file_name().map(|n| dir.join(n)));
+        // The repo scope's settings dir, if it exists yet (canonicalize fails
+        // otherwise) — so we can watch its transient-values.toml. Created lazily
+        // on the first repo-scoped save, so a brand-new repo picks it up next
+        // launch; an in-app save updates memory directly and needs no reload.
+        let repo_scope = self
+            .repo_scope_dir
+            .as_ref()
+            .and_then(|d| std::fs::canonicalize(d).ok());
+        let repo_tv_target = repo_scope.as_ref().map(|d| d.join("transient-values.toml"));
+        let cb_repo_tv = repo_tv_target.clone();
         let (tx, rx) = async_channel::unbounded::<Changed>();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
@@ -2145,6 +2178,8 @@ impl StatusView {
                     let _ = tx.send_blocking(Changed::Config);
                 } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
                     let _ = tx.send_blocking(Changed::TransientValues);
+                } else if cb_repo_tv.as_ref().is_some_and(|t| event.paths.contains(t)) {
+                    let _ = tx.send_blocking(Changed::RepoTransientValues);
                 }
             }
         });
@@ -2153,6 +2188,14 @@ impl StatusView {
         if notify::Watcher::watch(&mut watcher, &dir, notify::RecursiveMode::NonRecursive).is_err()
         {
             return;
+        }
+        // Also watch the repo's settings dir (a different directory) when present.
+        if let Some(repo_scope) = &repo_scope {
+            let _ = notify::Watcher::watch(
+                &mut watcher,
+                repo_scope,
+                notify::RecursiveMode::NonRecursive,
+            );
         }
         self._config_watcher = Some(watcher);
 
@@ -2184,6 +2227,22 @@ impl StatusView {
                             // so the reload reads back identical values).
                             if values != view.transient_values {
                                 view.transient_values = values;
+                                view.set_status(
+                                    "Switch defaults reloaded from disk".to_string(),
+                                    true,
+                                    cx,
+                                );
+                            }
+                        })
+                    }
+                    Changed::RepoTransientValues => {
+                        let values = repo_tv_target
+                            .as_ref()
+                            .map(|p| config::load_transient_values_at(p))
+                            .unwrap_or_default();
+                        this.update_in(cx, |view, _window, cx| {
+                            if values != view.repo_transient_values {
+                                view.repo_transient_values = values;
                                 view.set_status(
                                     "Switch defaults reloaded from disk".to_string(),
                                     true,
@@ -3610,12 +3669,64 @@ impl StatusView {
         // (force on) or its negation flag (force off); otherwise it keeps the
         // config default, so an old/empty saved set can't silently flip e.g.
         // gpg-signing off.
-        if let Some(saved) = self.transient_values.get(id) {
+        if let Some(saved) = self.saved_switches(id) {
             state.active = TransientState::apply_saved(&state.def, saved);
             state.baseline = state.active.clone();
         }
         self.popup = Some(Popup::Transient(state));
         cx.notify();
+    }
+
+    /// The saved switch set in effect for a transient id: the repo scope wins
+    /// wholesale over the global scope (per-id replace), so a repo's entry fully
+    /// defines that transient's defaults while global still covers the rest.
+    fn saved_switches(&self, id: &str) -> Option<&Vec<String>> {
+        self.repo_transient_values
+            .get(id)
+            .or_else(|| self.transient_values.get(id))
+    }
+
+    /// Persist the open transient's switch overrides to a scope (magit's
+    /// `transient-save`), updating the in-memory set and the scope's file, and
+    /// re-baselining so the save hint hides. Repo scope is a no-op with no repo.
+    fn save_transient_defaults(&mut self, repo_scope: bool, cx: &mut Context<Self>) {
+        let to_save = match &self.popup {
+            Some(Popup::Transient(s)) if !s.id.is_empty() => Some((s.id.clone(), s.saved_overrides())),
+            _ => None,
+        };
+        let Some((id, switches)) = to_save else {
+            return;
+        };
+        let path = if repo_scope {
+            let Some(dir) = self.repo_scope_dir.clone() else {
+                return; // no repo to save into
+            };
+            dir.join("transient-values.toml")
+        } else {
+            let Some(path) = config::transient_values_path() else {
+                return;
+            };
+            path
+        };
+        let values = if repo_scope {
+            &mut self.repo_transient_values
+        } else {
+            &mut self.transient_values
+        };
+        // An empty set carries no overrides — drop the entry rather than writing
+        // `id = []`, which used to read as "force everything off".
+        if switches.is_empty() {
+            values.remove(&id);
+        } else {
+            values.insert(id, switches);
+        }
+        config::save_transient_values_at(&path, values);
+        // The saved set is the new baseline, so the hint hides again.
+        if let Some(Popup::Transient(s)) = self.popup.as_mut() {
+            s.baseline = s.active.clone();
+        }
+        let scope = if repo_scope { "for this repo" } else { "globally" };
+        self.set_status(format!("Saved switches {scope}"), true, cx);
     }
 
     /// The current branch's resolved push/pull/fetch targets (empty on error or
@@ -3628,35 +3739,37 @@ impl StatusView {
     }
 
     fn handle_transient_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A save is in progress (the save key was pressed): this key picks the
+        // scope — `g`lobal or `l`ocal (this repo). Any other key, including
+        // Esc/C-g, cancels and stays in the transient. Handled first so it
+        // captures the next keystroke before the close/dispatch paths below.
+        let pending_save = matches!(&self.popup, Some(Popup::Transient(s)) if s.pending_save);
+        if pending_save {
+            if let Some(Popup::Transient(s)) = self.popup.as_mut() {
+                s.pending_save = false;
+            }
+            match key {
+                "g" => self.save_transient_defaults(false, cx),
+                "l" if self.repo_scope_dir.is_some() => self.save_transient_defaults(true, cx),
+                _ => {}
+            }
+            cx.notify();
+            return;
+        }
         if key == "escape" || key == "q" {
             self.popup = None;
             cx.notify();
             return;
         }
-        // `C-s` saves the current switch toggles as this transient's defaults
-        // (magit's `transient-save`); reopening it starts from them. Skipped for
+        // The save key (`C-s`) begins a two-step save (magit's `transient-save`):
+        // it doesn't save yet — the next key chooses the scope. Skipped for
         // ad-hoc transients (empty id), which have nothing to key the save by.
         if key == TRANSIENT_SAVE_KEY {
-            let to_save = match &self.popup {
-                Some(Popup::Transient(s)) if !s.id.is_empty() => {
-                    Some((s.id.clone(), s.saved_overrides()))
+            if let Some(Popup::Transient(s)) = self.popup.as_mut() {
+                if !s.id.is_empty() {
+                    s.pending_save = true;
+                    cx.notify();
                 }
-                _ => None,
-            };
-            if let Some((id, switches)) = to_save {
-                // An empty set carries no overrides — drop the entry rather than
-                // writing `id = []`, which used to read as "force everything off".
-                if switches.is_empty() {
-                    self.transient_values.remove(&id);
-                } else {
-                    self.transient_values.insert(id, switches);
-                }
-                config::save_transient_values(&self.transient_values);
-                // The saved set is the new baseline, so the hint hides again.
-                if let Some(Popup::Transient(s)) = self.popup.as_mut() {
-                    s.baseline = s.active.clone();
-                }
-                self.set_status("Saved switches as default".to_string(), true, cx);
             }
             return;
         }
@@ -5466,12 +5579,16 @@ impl StatusView {
             body = body.child(command_row);
         }
 
-        // The "save these switches" hint, shown once the toggles differ from
-        // their saved/built-in baseline. It sits at the *top* of the panel: the
-        // popup is bottom-anchored, so adding a row here grows it upward into
-        // empty space without shifting the title/groups — no reserved dead space
-        // and no layout shift either way (a bottom row would push them up).
+        // The save hint sits at the *top* of the panel: the popup is
+        // bottom-anchored, so adding a row here grows it upward into empty space
+        // without shifting the title/groups — no reserved dead space and no
+        // layout shift either way (a bottom row would push them up). It shows the
+        // `C-s` prompt once the toggles differ from their saved/built-in
+        // baseline, and turns into a scope chooser (`g`lobal / `l`ocal) once the
+        // save key is pressed.
+        let saving = state.is_some_and(|s| s.pending_save);
         let show_save = state.is_some_and(|s| !s.id.is_empty() && s.active != s.baseline);
+        let has_repo = self.repo_scope_dir.is_some();
 
         div()
             .w_full()
@@ -5483,7 +5600,35 @@ impl StatusView {
             .flex()
             .flex_col()
             .gap_2()
-            .when(show_save, |el| {
+            .when(saving, |el| {
+                let mut row = div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_xs()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("save as default:"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(kbd::key_chip("g", self.palette.dim, &self.font))
+                            .child(SharedString::from("global")),
+                    );
+                if has_repo {
+                    row = row.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(kbd::key_chip("l", self.palette.dim, &self.font))
+                            .child(SharedString::from("this repo")),
+                    );
+                }
+                el.child(row)
+            })
+            .when(show_save && !saving, |el| {
                 el.child(
                     div()
                         .flex()
