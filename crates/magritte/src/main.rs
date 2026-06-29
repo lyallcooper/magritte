@@ -7581,6 +7581,36 @@ impl StatusView {
         config::path()
     }
 
+    /// A button that opens this repo's `.git/magritte/config.toml` (the per-repo
+    /// overlay), creating it if absent. Shown only when there's a repo.
+    fn open_repo_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
+        Button::new("open-repo-config")
+            .label("Open repo config")
+            .ghost()
+            .small()
+            .icon(IconName::ExternalLink)
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    view.update(cx, |this, _| this.open_repo_config_file());
+                }
+            })
+    }
+
+    /// Open the repo-scoped config (`.git/magritte/config.toml`), creating an
+    /// empty file (and its dir) first so the editor has something to open.
+    fn open_repo_config_file(&self) {
+        let Some(dir) = self.repo_scope_dir.clone() else {
+            return;
+        };
+        let path = dir.join("config.toml");
+        if !path.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, "");
+        }
+        self.launch_editor(&path, None);
+    }
+
     /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
     /// an info icon whose tooltip explains the setting. The tooltip shows
     /// immediately on hover (zero show-delay, unlike the library's 500ms managed

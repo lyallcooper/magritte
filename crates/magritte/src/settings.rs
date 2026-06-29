@@ -429,6 +429,9 @@ impl StatusView {
                             .items_center()
                             .gap_3()
                             .child(self.open_config_button(view))
+                            .when(self.repo_scope_dir.is_some(), |el| {
+                                el.child(self.open_repo_config_button(view))
+                            })
                             .child(self.key_action(
                                 "settings-close",
                                 "esc",
@@ -490,6 +493,34 @@ impl StatusView {
                     )),
                 ]
             }))
+            .child(section(
+                "Behavior",
+                vec![
+                    field(
+                        "refresh-on-focus",
+                        "Refresh on focus",
+                        self.toggle_control(
+                            "refresh-on-focus",
+                            self.config.refresh_on_focus,
+                            "Re-run `git status` when the window regains focus, picking up \
+                             changes made outside the app.",
+                            view,
+                            |cfg, on| cfg.refresh_on_focus = on,
+                        ),
+                    ),
+                    field(
+                        "show-tags",
+                        "Tags in title bar",
+                        self.toggle_control(
+                            "show-tags",
+                            self.config.show_tags,
+                            "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
+                            view,
+                            |cfg, on| cfg.show_tags = on,
+                        ),
+                    ),
+                ],
+            ))
             .child(section("Commit editor", {
                 let mut rows = vec![field(
                     "commit-in-editor",
