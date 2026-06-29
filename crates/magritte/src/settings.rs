@@ -352,7 +352,7 @@ impl StatusView {
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
-    pub(crate) fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> gpui::Div {
+    pub(crate) fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> impl IntoElement {
         // A labelled control row: fixed-width label + the control.
         let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
@@ -401,12 +401,16 @@ impl StatusView {
         };
 
         div()
+            // An id makes this a stateful element so it can scroll (and remember
+            // the offset) when the sections exceed the window height.
+            .id("settings-scroll")
             .flex()
             .flex_col()
             // Fill the height (like the other full-window screens) so the
             // status bar pins to the window bottom instead of floating under
-            // the content.
+            // the content; scroll when the sections exceed the window height.
             .flex_grow(1.0)
+            .overflow_y_scroll()
             .w_full()
             .max_w(px(620.0))
             .p_4()
@@ -502,8 +506,7 @@ impl StatusView {
                         self.toggle_control(
                             "refresh-on-focus",
                             self.config.refresh_on_focus,
-                            "Re-run `git status` when the window regains focus, picking up \
-                             changes made outside the app.",
+                            "Refresh the status view automatically when window regains focus.",
                             view,
                             |cfg, on| cfg.refresh_on_focus = on,
                         ),
@@ -582,20 +585,6 @@ impl StatusView {
         }
     }
 
-    /// Open the config file with a specific editor app (a `.app` path on macOS).
-    pub(crate) fn open_config_with(&self, app: &str) {
-        let Some(path) = self.saved_config_path() else {
-            return;
-        };
-        #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open")
-            .arg("-a")
-            .arg(app)
-            .arg(&path)
-            .spawn();
-        #[cfg(not(target_os = "macos"))]
-        let _ = std::process::Command::new(app).arg(&path).spawn();
-    }
 
     /// Copy the config file's path to the clipboard.
     pub(crate) fn copy_config_path(&mut self, cx: &mut Context<Self>) {

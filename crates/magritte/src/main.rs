@@ -70,10 +70,7 @@ actions!(
 // Settings "Open config file" dropdown actions: copy the path, or open the
 // config with a specific editor (carries the editor's app path). `no_json`
 // avoids the serde/schemars requirement of keymap-loadable actions.
-actions!(magritte, [CopyConfigPath]);
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = magritte, no_json)]
-struct OpenConfigWith(SharedString);
+actions!(magritte, [CopyConfigPath, CopyRepoConfigPath]);
 use gpui::Subscription;
 use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
@@ -7585,7 +7582,6 @@ impl StatusView {
     /// hatch for settings the UI doesn't expose, and a way to see where the file
     /// lives. Menu items dispatch actions routed to the status view's focus.
     fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
-        let editors = self.editors.clone();
         let focus = self.focus.clone();
         let main = Button::new("open-config-main")
             .label("Open config file")
@@ -7603,16 +7599,8 @@ impl StatusView {
             .small()
             .button(main)
             .dropdown_menu(move |menu, _window, _cx| {
-                let mut menu = menu
-                    .action_context(focus.clone())
-                    .menu("Copy path", Box::new(CopyConfigPath));
-                if !editors.is_empty() {
-                    menu = menu.separator().label("Open in");
-                    for (name, path) in &editors {
-                        menu = menu.menu(name.clone(), Box::new(OpenConfigWith(path.clone())));
-                    }
-                }
-                menu
+                menu.action_context(focus.clone())
+                    .menu("Copy path", Box::new(CopyConfigPath))
             })
     }
 
@@ -7624,9 +7612,11 @@ impl StatusView {
     }
 
     /// A button that opens this repo's `.git/magritte/config.toml` (the per-repo
-    /// overlay), creating it if absent. Shown only when there's a repo.
+    /// overlay), creating it if absent, with a "Copy path" dropdown item. Shown
+    /// only when there's a repo.
     fn open_repo_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
-        Button::new("open-repo-config")
+        let focus = self.focus.clone();
+        let main = Button::new("open-repo-config-main")
             .label("Open repo config")
             .ghost()
             .small()
@@ -7636,7 +7626,23 @@ impl StatusView {
                 move |_, _window, cx| {
                     view.update(cx, |this, _| this.open_repo_config_file());
                 }
+            });
+        DropdownButton::new("open-repo-config")
+            .ghost()
+            .small()
+            .button(main)
+            .dropdown_menu(move |menu, _window, _cx| {
+                menu.action_context(focus.clone())
+                    .menu("Copy path", Box::new(CopyRepoConfigPath))
             })
+    }
+
+    /// Copy the repo-scoped config's path to the clipboard.
+    fn copy_repo_config_path(&mut self, cx: &mut Context<Self>) {
+        if let Some(dir) = &self.repo_scope_dir {
+            let path = dir.join("config.toml").to_string_lossy().into_owned();
+            self.copy_to_clipboard(path, cx);
+        }
     }
 
     /// Open the repo-scoped config (`.git/magritte/config.toml`), creating an
@@ -8245,8 +8251,8 @@ impl Render for StatusView {
             .on_action(
                 cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),
             )
-            .on_action(cx.listener(|this, action: &OpenConfigWith, _window, _cx| {
-                this.open_config_with(&action.0)
+            .on_action(cx.listener(|this, _: &CopyRepoConfigPath, _window, cx| {
+                this.copy_repo_config_path(cx)
             }))
             .capture_key_down(cx.listener(Self::on_capture_key))
             .on_key_down(cx.listener(Self::on_key))
