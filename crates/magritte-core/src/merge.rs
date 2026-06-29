@@ -14,12 +14,8 @@ impl Repo {
         let mut argv = vec!["merge".to_string(), "--no-edit".to_string()];
         argv.extend(args.iter().cloned());
         argv.push(target.to_string());
-        let out = self.run(&argv)?;
-        let stderr = out.stderr.trim();
-        Ok(if stderr.is_empty() {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        } else {
-            stderr.lines().next_back().unwrap_or("").to_string()
-        })
+        // merge reports on stderr ("Merge made by…", conflict notices), falling
+        // back to stdout — exactly `GitOutput::status_line`.
+        Ok(self.run(&argv)?.status_line())
     }
 }

@@ -77,19 +77,22 @@ impl FileDiff {
     }
 }
 
+/// The flags every content diff requests. `--default-prefix` forces `a/`,`b/`
+/// prefixes regardless of the user's diff.mnemonicPrefix / diff.noprefix config,
+/// so parsing is stable; `--no-color`/`--no-ext-diff` keep the output plain.
+const DIFF_BASE: &[&str] = &[
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--default-prefix",
+    "--find-renames",
+];
+
 impl Repo {
     /// Diff a single path against the index or HEAD. Returns `None` when there
     /// is no diff (e.g. the path is unchanged for that source).
     pub fn diff_path(&self, source: DiffSource, path: &str) -> Result<Option<FileDiff>> {
-        let mut args = vec![
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            // Force `a/`,`b/` prefixes regardless of the user's
-            // diff.mnemonicPrefix / diff.noprefix config, so parsing is stable.
-            "--default-prefix",
-            "--find-renames",
-        ];
+        let mut args = DIFF_BASE.to_vec();
         if source == DiffSource::Staged {
             args.push("--cached");
         }
@@ -109,13 +112,7 @@ impl Repo {
     /// --cached` for all staged changes). Used to show the full staged diff in
     /// the commit editor.
     pub fn diff_all(&self, source: DiffSource) -> Result<Vec<FileDiff>> {
-        let mut args = vec![
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--default-prefix",
-            "--find-renames",
-        ];
+        let mut args = DIFF_BASE.to_vec();
         if source == DiffSource::Staged {
             args.push("--cached");
         }
@@ -133,14 +130,9 @@ impl Repo {
         if !self.succeeds(["rev-parse", "--verify", "--quiet", "HEAD"])? {
             return self.diff_all(DiffSource::Staged);
         }
-        let out = self.run([
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--default-prefix",
-            "--find-renames",
-            "HEAD",
-        ])?;
+        let mut args = DIFF_BASE.to_vec();
+        args.push("HEAD");
+        let out = self.run(args)?;
         parse_diff(&out.stdout)
     }
 
@@ -156,15 +148,10 @@ impl Repo {
         } else {
             EMPTY_TREE.to_string()
         };
-        let out = self.run([
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--default-prefix",
-            "--find-renames",
-            &base,
-            rev,
-        ])?;
+        let mut args = DIFF_BASE.to_vec();
+        args.push(&base);
+        args.push(rev);
+        let out = self.run(args)?;
         parse_diff(&out.stdout)
     }
 
