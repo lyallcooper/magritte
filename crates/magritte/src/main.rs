@@ -1180,7 +1180,7 @@ fn command_toast(run: &magritte_core::CommandRun, log_key: Option<&str>) -> Stri
     }
     let more = lines.len() - MAX_TOAST_LINES;
     let hint = match log_key {
-        Some(key) => format!("press {key} for the full output"),
+        Some(key) => format!("press {} for the full output", kbd::format_keys(key)),
         None => "open the command log for the full output".to_string(),
     };
     format!(
@@ -7269,8 +7269,12 @@ impl StatusView {
                 .child(SharedString::from(msg))
                 .child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
                         .text_color(self.palette.dim)
-                        .child(SharedString::from("Ctrl+g to cancel")),
+                        .child(kbd::key_chip("ctrl-g", self.palette.dim, &self.font))
+                        .child(SharedString::from("to cancel")),
                 ),
             // A plain message, possibly multi-line (a command's full output):
             // one row per line so it renders as a block, not run together.
