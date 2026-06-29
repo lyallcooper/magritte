@@ -3951,24 +3951,6 @@ impl StatusView {
         cx.notify();
     }
 
-    /// How many non-empty output lines the most recent user (`!`) command
-    /// produced — to decide whether its result warrants opening the `$` log.
-    /// Called right after the command (before the post-job refresh appends its
-    /// own queries), so the last user-flagged entry is that command.
-    fn last_user_output_lines(&self) -> usize {
-        self.repo
-            .as_ref()
-            .and_then(|r| r.command_log().into_iter().rev().find(|c| c.user))
-            .map(|c| {
-                c.stdout
-                    .lines()
-                    .chain(c.stderr.lines())
-                    .filter(|l| !l.trim().is_empty())
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
     /// Open the git command-log view (magit's `$` process buffer), scrolled to
     /// the most recent command.
     fn open_git_log(&mut self, cx: &mut Context<Self>) {
@@ -4802,49 +4784,15 @@ impl StatusView {
         }
     }
 
-    /// Run a resolved custom command as one background job (`sh -c`), showing the
-    /// first output line (or opening the `$` log for multi-line output) and
-    /// refreshing unless opted out.
+    /// Run a resolved custom command (`sh -c`), surfacing its full output as a
+    /// toast and refreshing unless opted out — like the `!` prompt.
     fn run_custom_shell(&mut self, command: String, refresh: bool, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
-        self.set_progress(format!("{command}…"), cx);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.run_shell(&command) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.job_cancel = None;
-                match result {
-                    Ok(run) => {
-                        let summary = run
-                            .stdout
-                            .lines()
-                            .chain(run.stderr.lines())
-                            .map(str::trim)
-                            .find(|l| !l.is_empty())
-                            .unwrap_or(if run.ok { "done" } else { "command failed" })
-                            .to_string();
-                        // A failure stays up (sticky); success fades.
-                        this.set_status(summary, run.ok, cx);
-                    }
-                    Err(e) => this.report_error(e, cx),
-                }
-                if refresh {
-                    this.refresh(cx);
-                }
-                // Show the whole thing when it spans more than a line.
-                if this.last_user_output_lines() > 1 {
-                    this.open_git_log(cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
+        self.run_command_job(
+            format!("{command}…"),
+            refresh,
+            move |repo| repo.run_shell(&command),
+            cx,
+        );
     }
 
     /// Classify a keystroke sequence against the effective keymap: a complete
@@ -7140,7 +7088,13 @@ impl StatusView {
                         .text_color(self.palette.dim)
                         .child(SharedString::from("C-g to cancel")),
                 ),
-            _ => bar.child(SharedString::from(msg)),
+            // A plain message, possibly multi-line (a command's full output):
+            // one row per line so it renders as a block, not run together.
+            _ => bar.flex().flex_col().children(
+                msg.lines()
+                    .map(|l| SharedString::from(l.to_string()))
+                    .collect::<Vec<_>>(),
+            ),
         })
     }
 }

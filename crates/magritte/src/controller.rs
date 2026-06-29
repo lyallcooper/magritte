@@ -13,6 +13,20 @@ use gpui::{Context, SharedString, UniformListScrollHandle, Window};
 
 use crate::*;
 
+/// The toast text for a finished user command: its full output (trimmed stdout,
+/// then stderr), or a short fallback when it printed nothing.
+fn command_output_text(run: &magritte_core::CommandRun) -> String {
+    let parts: Vec<&str> = [run.stdout.trim(), run.stderr.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        if run.ok { "done" } else { "command failed" }.to_string()
+    } else {
+        parts.join("\n")
+    }
+}
+
 /// How a status-bar message behaves once shown. Every kind advances the status
 /// sequence; only a `Notice` schedules its own fade.
 pub(crate) enum StatusKind {
@@ -739,33 +753,10 @@ impl StatusView {
             Some(p) => format!("{p} {}…", rest.join(" ")),
             None => format!("git {}…", rest.join(" ")),
         };
-        self.run_job_with(
+        self.run_command_job(
             progress,
-            move |repo| {
-                repo.run_user(program.as_deref(), &rest).map(|run| {
-                    // First non-empty line (stdout, else stderr) as the summary.
-                    let summary = run
-                        .stdout
-                        .lines()
-                        .chain(run.stderr.lines())
-                        .map(str::trim)
-                        .find(|l| !l.is_empty())
-                        .unwrap_or(if run.ok { "done" } else { "command failed" })
-                        .to_string();
-                    summary
-                })
-            },
-            |this, result, cx| {
-                match result {
-                    Ok(summary) => this.set_status(summary, true, cx),
-                    Err(e) => this.report_error(e, cx),
-                }
-                // Open the `$` log when the result spans more than one line, so
-                // the user sees the whole thing (it's recorded there in full).
-                if this.last_user_output_lines() > 1 {
-                    this.open_git_log(cx);
-                }
-            },
+            true,
+            move |repo| repo.run_user(program.as_deref(), &rest),
             cx,
         );
     }
@@ -1469,6 +1460,46 @@ impl StatusView {
             move |this, result, cx| this.report(done, result, cx),
             cx,
         );
+    }
+
+    /// Run a user command (the `!` prompt or a `[[command]]`) on the background
+    /// path, then show its full output as a toast and refresh (unless opted
+    /// out). A failure's output stays up (sticky); success fades. Output isn't a
+    /// one-liner and we don't jump to the `$` log — the command behaves like any
+    /// other action, just with its output surfaced.
+    pub(crate) fn run_command_job<F>(
+        &mut self,
+        progress: String,
+        refresh: bool,
+        run: F,
+        cx: &mut Context<Self>,
+    ) where
+        F: FnOnce(Repo) -> magritte_core::Result<magritte_core::CommandRun> + Send + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        self.set_progress(progress, cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { run(repo) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.job_cancel = None;
+                match result {
+                    Ok(run) => this.set_status(command_output_text(&run), run.ok, cx),
+                    Err(e) => this.report_error(e, cx),
+                }
+                if refresh {
+                    this.refresh(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Cancel the active mutating job, if any — killing its git subprocess.
