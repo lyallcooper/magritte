@@ -54,10 +54,11 @@ pub struct Config {
     pub keymap: BTreeMap<String, String>,
     /// Extra suffixes to add into a transient, keyed by the transient's command
     /// id (`branch`, `commit`, `push`, …): each inner entry maps a suffix
-    /// keystroke to the command id it runs. Lets users add e.g. a `b X` →
-    /// delete-branch binding inside the branch transient.
+    /// keystroke to a [`TransientSuffix`] — a command to run, or a toggleable git
+    /// flag. Lets users add e.g. a `b X` → delete-branch action, or a custom
+    /// switch, inside a built-in transient.
     #[serde(default)]
-    pub transient: BTreeMap<String, BTreeMap<String, String>>,
+    pub transient: BTreeMap<String, BTreeMap<String, TransientSuffix>>,
     /// How long (ms) after a prefix key is pressed before the which-key popup
     /// of possible continuations appears. The prefix itself waits indefinitely
     /// for the next key; this only delays the help.
@@ -90,6 +91,48 @@ pub struct CustomCommand {
     /// Re-read status after running (default true).
     #[serde(default = "default_true")]
     pub refresh: bool,
+}
+
+/// A `[transient.<id>]` injection. A bare string is a command id (an action),
+/// or — if it starts with `-` — a git flag (a switch). An inline table is a
+/// switch with a description:
+///
+/// ```toml
+/// [transient.commit]
+/// "A" = "commit-amend"                                # action (command id)
+/// "-d" = "--depth=1"                                  # switch (bare flag)
+/// "-n" = { flag = "--no-verify", description = "Skip hooks" }  # switch + label
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TransientSuffix {
+    /// A bare string: a command id, or a `-`-prefixed git flag.
+    Bare(String),
+    /// An inline table: a git flag with a description.
+    Switch {
+        flag: String,
+        #[serde(default)]
+        description: String,
+    },
+}
+
+/// A [`TransientSuffix`] interpreted: an action (command id) or a switch (flag +
+/// description). A bare `-`-prefixed string resolves to a switch.
+pub enum SuffixKind<'a> {
+    Action(&'a str),
+    Switch { flag: &'a str, description: &'a str },
+}
+
+impl TransientSuffix {
+    pub fn kind(&self) -> SuffixKind<'_> {
+        match self {
+            TransientSuffix::Switch { flag, description } => SuffixKind::Switch { flag, description },
+            TransientSuffix::Bare(s) if s.starts_with('-') => {
+                SuffixKind::Switch { flag: s, description: "" }
+            }
+            TransientSuffix::Bare(s) => SuffixKind::Action(s),
+        }
+    }
 }
 
 fn default_true() -> bool {

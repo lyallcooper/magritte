@@ -167,30 +167,32 @@ are reachable today only through their prefix's transient or the `:` palette.
 A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 `transient-append-suffix`. The section id is the transient's command id
 (`commit`, `branch`, `stash`, `reset`, `rebase`, `merge`, `ignore`, `log`,
-`push`, `pull`, `fetch`); each entry maps a suffix key to either a **command id**
-(an action) or a **`-`-prefixed git flag** (a toggleable switch).
+`push`, `pull`, `fetch`); each entry maps a suffix key to either an **action**
+(a command to run) or a **switch** (a toggleable git flag).
 
 ```toml
 [transient.branch]
-"X" = "branch-delete"          # action: `b X` deletes a branch
-
-[transient.commit]
-"A" = "commit-amend"           # action: `c A` amends
-"-n" = "--no-verify Skip hooks" # switch: `c - n` toggles --no-verify
+"X" = "branch-delete"          # action: a command id → `b X` deletes a branch
 
 [transient.fetch]
-"-d" = "--depth=1"             # switch with no description — shows just the flag
+"-d" = "--depth=1"             # switch: a bare `-`-prefixed flag, no label
+
+[transient.commit]
+"A" = "commit-amend"           # action
+# switch with a description — use a table:
+"-v" = { flag = "--verbose", description = "Show diff in message" }
 ```
 
-- **Actions** (value is a command id) run with default arguments.
-- **Switches** (value starts with `-`) toggle a git flag for that transient,
-  like the built-in ones — keyed dash-first (`-n`, toggled with `- n`), with the
-  value being `<flag>` or `<flag> <description>`.
+- **Actions** — the value is a **command id** (no leading `-`); runs with
+  default arguments.
+- **Switches** — the value is a **git flag**: a bare string like `"--depth=1"`,
+  or a table `{ flag = "…", description = "…" }` to add a label. Keyed dash-first
+  (`-d`, toggled with `- d`), like the built-in switches.
 
 Injected suffixes appear in a **Custom** group at the bottom of the menu. A key
 already used by a built-in suffix is left alone (the built-in wins). A section
-that isn't a real transient, an unknown command id, or a switch whose key isn't
-dash-prefixed warns at startup.
+that isn't a real transient, an action naming an unknown command, or a switch
+whose key isn't dash-prefixed warns at startup.
 
 ## Commands
 
