@@ -1803,11 +1803,13 @@ enum RowKind {
         spans: Vec<Span>,
     },
     /// A commit row in a non-file section (unpushed/unpulled/recent): dim short
-    /// hash + subject, like the log view. `hash` (full) drives act-at-point.
+    /// hash, ref labels, and subject, like the log view. `hash` (full) drives
+    /// act-at-point; `refs` is the raw `%D` decoration (branches/tags/remotes).
     Commit {
         hash: String,
         short_hash: String,
         subject: String,
+        refs: String,
     },
     /// A stash row: dim reference + message.
     Stash {
@@ -2938,6 +2940,7 @@ impl StatusView {
                     hash: c.hash.clone(),
                     short_hash: c.short_hash.clone(),
                     subject: c.subject.clone(),
+                    refs: c.refs.clone(),
                 },
             });
         }
@@ -3363,6 +3366,7 @@ impl StatusView {
                 hash,
                 short_hash,
                 subject,
+                ..
             }) => Some((hash.clone(), short_hash.clone(), subject.clone())),
             _ => None,
         }
@@ -7725,15 +7729,32 @@ impl StatusView {
             RowKind::Commit {
                 short_hash,
                 subject,
+                refs,
                 ..
-            } => el
-                .child(div().w(px(14.0)))
-                .child(
+            } => {
+                let mut el = el.child(div().w(px(14.0))).child(
                     div()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(short_hash.clone())),
-                )
-                .child(SharedString::from(subject.clone())),
+                );
+                // Ref labels (branches/tags/remotes), colored magit-style: tags
+                // accent, branches added-green (current branch bold), remotes
+                // section-blue.
+                for (label, kind) in parse_refs(refs) {
+                    let (color, bold) = match kind {
+                        RefKind::Tag => (self.palette.modified, false),
+                        RefKind::Head => (self.palette.added, true),
+                        RefKind::Local => (self.palette.added, false),
+                        RefKind::Remote => (self.palette.section, false),
+                    };
+                    let mut chip = div().text_color(color).child(SharedString::from(label));
+                    if bold {
+                        chip = chip.font_weight(FontWeight::BOLD);
+                    }
+                    el = el.child(chip);
+                }
+                el.child(SharedString::from(subject.clone()))
+            }
             RowKind::Stash { reference, message } => el
                 .child(div().w(px(14.0)))
                 .child(
@@ -8375,6 +8396,37 @@ fn row_text(row: &Row) -> String {
         } => format!("{short_hash}  {subject}"),
         RowKind::Stash { reference, message } => format!("{reference}  {message}"),
     }
+}
+
+/// How a `%D` ref decoration entry is classified, for coloring.
+enum RefKind {
+    /// The current branch (`HEAD -> main`) or a detached `HEAD`.
+    Head,
+    Local,
+    Remote,
+    Tag,
+}
+
+/// Parse a commit's `%D` decoration (e.g. `HEAD -> main, origin/main, tag: v1`)
+/// into labeled, classified entries for rendering.
+fn parse_refs(refs: &str) -> Vec<(String, RefKind)> {
+    refs.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| {
+            if let Some(tag) = entry.strip_prefix("tag: ") {
+                (tag.to_string(), RefKind::Tag)
+            } else if let Some(branch) = entry.strip_prefix("HEAD -> ") {
+                (branch.to_string(), RefKind::Head)
+            } else if entry == "HEAD" {
+                ("HEAD".to_string(), RefKind::Head)
+            } else if entry.contains('/') {
+                (entry.to_string(), RefKind::Remote)
+            } else {
+                (entry.to_string(), RefKind::Local)
+            }
+        })
+        .collect()
 }
 
 /// The plain text of a commit-view row, for copying (diff line content without
