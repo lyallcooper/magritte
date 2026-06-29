@@ -3986,6 +3986,9 @@ impl StatusView {
     /// Open the git command-log view (magit's `$` process buffer), scrolled to
     /// the most recent command.
     fn open_git_log(&mut self, cx: &mut Context<Self>) {
+        // Dismiss any status toast — you came here to read the full output it
+        // pointed at, and it would otherwise just float over this view.
+        self.clear_status(cx);
         let scroll = UniformListScrollHandle::new();
         let last = self.git_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
