@@ -855,8 +855,8 @@ fn commands() -> &'static [Command] {
             |t, w, cx| { t.open_settings(w, cx) }
         ),
         top!(
-            "git-log",
-            "Git command log",
+            "command-log",
+            "Command log",
             Category::Application,
             "$",
             |t, _w, cx| { t.open_git_log(cx) }
@@ -4648,7 +4648,7 @@ impl StatusView {
             "x" if alt => return self.open_command_palette(window, cx),
             "!" | "|" => return self.invoke_command("git-command", window, cx),
             "1" | "\\" if shift => return self.invoke_command("git-command", window, cx),
-            "4" if shift => return self.invoke_command("git-log", window, cx),
+            "4" if shift => return self.invoke_command("command-log", window, cx),
             ":" => return self.open_command_palette(window, cx),
             ";" if shift => return self.open_command_palette(window, cx),
             "?" => {
@@ -6067,10 +6067,10 @@ impl StatusView {
         let body = if count == 0 {
             div()
                 .text_color(self.palette.dim)
-                .child(SharedString::from("No git commands have run yet."))
+                .child(SharedString::from("No commands have run yet."))
                 .into_any_element()
         } else {
-            uniform_list("git-log-rows", count, {
+            uniform_list("command-log-rows", count, {
                 let view = view.clone();
                 move |range, _window, cx| {
                     let this = view.read(cx);
@@ -6103,7 +6103,7 @@ impl StatusView {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.section)
-                            .child(SharedString::from("Git command log")),
+                            .child(SharedString::from("Command log")),
                     )
                     .child(
                         div()
@@ -6111,7 +6111,7 @@ impl StatusView {
                             .items_center()
                             .gap_3()
                             .child(self.key_action(
-                                "git-log-all",
+                                "command-log-all",
                                 "a",
                                 if self.git_log_show_all {
                                     "hide queries"
@@ -6122,7 +6122,7 @@ impl StatusView {
                                 Self::toggle_git_log_all,
                             ))
                             .child(self.key_action(
-                                "git-log-close",
+                                "command-log-close",
                                 "esc",
                                 "close",
                                 view,
