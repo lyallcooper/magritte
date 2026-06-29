@@ -24,6 +24,15 @@ pub(crate) fn hunk_header_text(hunk: &magritte_core::Hunk) -> String {
 /// The change relevant to a file within a given section: a staged row reflects
 /// the index status, everything else the worktree status.
 fn section_change(entry: &FileEntry, section: SectionId) -> Change {
+    // Intent-to-add shows in both sections (magit-style): a staged *new file*
+    // (the empty index placeholder) and an unstaged *modification* (the content
+    // against that placeholder).
+    if entry.is_intent_to_add() {
+        return match section {
+            SectionId::Staged => Change::Added,
+            _ => Change::Modified,
+        };
+    }
     match section {
         SectionId::Staged => entry.index,
         _ => entry.worktree,
@@ -92,6 +101,16 @@ mod tests {
 
         let conflicted = entry(EntryKind::Unmerged, Change::Unmodified, Change::Unmerged);
         assert_eq!(status_label(&conflicted, SectionId::Unstaged), "conflicted");
+    }
+
+    #[test]
+    fn intent_to_add_shows_new_file_staged_and_modified_unstaged() {
+        // `git add -N`: porcelain `.A` (index unmodified, worktree added).
+        let ita = entry(EntryKind::Tracked, Change::Unmodified, Change::Added);
+        assert!(ita.is_intent_to_add());
+        assert!(ita.is_staged() && ita.is_unstaged(), "appears in both sections");
+        assert_eq!(status_label(&ita, SectionId::Staged), "new file");
+        assert_eq!(status_label(&ita, SectionId::Unstaged), "modified");
     }
 
     #[test]

@@ -74,9 +74,22 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
+    /// An intent-to-add file (`git add -N`): a tracked entry with an empty
+    /// placeholder in the index (`X` unmodified) but added content in the
+    /// worktree (`Y` added). Git hides the placeholder from `diff --cached`, but
+    /// like magit we surface it as a staged *new file* — plus the worktree
+    /// content as an unstaged *modification*, so it shows in both sections.
+    pub fn is_intent_to_add(&self) -> bool {
+        self.kind == EntryKind::Tracked
+            && self.index == Change::Unmodified
+            && self.worktree == Change::Added
+    }
+
     /// Whether this entry has content staged for the next commit.
     pub fn is_staged(&self) -> bool {
-        matches!(self.kind, EntryKind::RenamedOrCopied) || self.index.is_modified()
+        matches!(self.kind, EntryKind::RenamedOrCopied)
+            || self.index.is_modified()
+            || self.is_intent_to_add()
     }
 
     /// Whether this entry has changes not yet staged.
