@@ -44,6 +44,20 @@ impl Repo {
         Ok(parse_log(&out.stdout))
     }
 
+    /// Commits on `HEAD` not yet on its push/upstream target (`@{push}..HEAD`,
+    /// falling back to `@{upstream}`). `Err` when neither is configured — callers
+    /// treat that as an empty list.
+    pub fn unpushed(&self) -> Result<Vec<LogEntry>> {
+        self.log_with(&["@{push}..HEAD".to_string()])
+            .or_else(|_| self.log_with(&["@{upstream}..HEAD".to_string()]))
+    }
+
+    /// Commits on the upstream not yet on `HEAD` (`HEAD..@{upstream}`). `Err`
+    /// when there's no upstream — callers treat that as an empty list.
+    pub fn unpulled(&self) -> Result<Vec<LogEntry>> {
+        self.log_with(&["HEAD..@{upstream}".to_string()])
+    }
+
     /// `git log -g` (the reflog), newest first. The reflog selector
     /// (`HEAD@{N}`) is surfaced via the `refs` field and the reflog subject via
     /// `subject`, so it renders with the same row layout as a normal log.
