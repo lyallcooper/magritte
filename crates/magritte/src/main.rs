@@ -3605,7 +3605,10 @@ impl StatusView {
     /// is meaningful there (e.g. you cannot stage something already staged).
     fn resolve_action(&self, op: Op) -> Option<Action> {
         let target = self.rows.get(self.selected)?.target.clone()?;
-        if self.is_conflicted(target_path(&target)) {
+        // A conflicted path refuses unstage/discard, but `Stage` is allowed
+        // through (its markers were already checked in `act`) so that staging a
+        // manually-resolved conflict marks it resolved (`git add`).
+        if op != Op::Stage && self.is_conflicted(target_path(&target)) {
             return None;
         }
         match (op, target) {
@@ -5688,10 +5691,14 @@ impl StatusView {
             s = s.replace("{branch}", &shell_words::quote(&branch));
         }
         if s.contains("{commit}") {
+            // The commit at point: the log selection, else a status commit row
+            // (unpushed/unpulled/recent), else the open commit view.
             let hash = self
                 .log()
                 .and_then(|l| l.entries.get(l.selected))
                 .map(|e| e.hash.clone())
+                .or_else(|| self.point_commit().map(|(hash, _, _)| hash))
+                .or_else(|| self.commit_view().map(|cv| cv.rev.clone()))
                 .ok_or_else(|| "No commit at point for {commit}".to_string())?;
             s = s.replace("{commit}", &shell_words::quote(&hash));
         }
