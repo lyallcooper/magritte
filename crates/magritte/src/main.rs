@@ -165,8 +165,8 @@ impl TransientState {
         let switches = self
             .def
             .switches()
-            .filter(|s| self.active.contains(s.key))
-            .map(|s| s.arg.to_string());
+            .filter(|s| self.active.contains(s.key.as_str()))
+            .map(|s| s.arg.clone());
         let options = self
             .def
             .options()
@@ -1095,16 +1095,23 @@ fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String
         }
     }
     // Validate the `[transient]` suffix injections: the section must name a
-    // transient, and each value a real command (the injection itself happens in
-    // `open_transient`).
+    // transient; a `-`-prefixed value is a custom switch (its key must also be
+    // dash-prefixed to toggle), anything else names a command. (The injection
+    // itself happens in `open_transient`.)
     for (tid, suffixes) in &config.transient {
         if !TRANSIENT_IDS.contains(&tid.as_str()) {
             warnings.push(format!("transient: \"{tid}\" is not a transient"));
             continue;
         }
-        for id in suffixes.values() {
-            if !known(id) {
-                warnings.push(format!("transient.{tid}: unknown command id \"{id}\""));
+        for (key, value) in suffixes {
+            if value.starts_with('-') {
+                if !key.starts_with('-') {
+                    warnings.push(format!(
+                        "transient.{tid}: switch \"{key}\" should be dash-prefixed (e.g. \"-{key}\") to toggle"
+                    ));
+                }
+            } else if !known(value) {
+                warnings.push(format!("transient.{tid}: unknown command id \"{value}\""));
             }
         }
     }
@@ -3405,21 +3412,42 @@ impl StatusView {
             .get(id)
             .into_iter()
             .flatten()
-            // Don't shadow a built-in suffix — its binding wins anyway, so an
-            // injected duplicate would just be a dead row.
-            .filter(|(key, _)| def.action_for(key).is_none())
-            .map(|(key, cmd_id)| {
-                // Label it with the command's title (built-in or user), falling
-                // back to the raw id if it names nothing.
-                let description = all_commands(&self.config)
-                    .find(|c| c.id == cmd_id)
-                    .map(|c| c.title.to_string())
-                    .unwrap_or_else(|| cmd_id.clone());
-                transient::Suffix::Custom(transient::Custom {
-                    key: key.clone(),
-                    description,
-                    id: cmd_id.clone(),
-                })
+            .filter_map(|(key, value)| {
+                if let Some(arg_spec) = value.strip_prefix('-') {
+                    // A `-`-prefixed value is a custom switch (a git flag), as
+                    // `"<arg>"` or `"<arg> <description>"`. Skip if the key
+                    // collides with a built-in switch/option (which wins).
+                    let _ = arg_spec;
+                    if def.switches().any(|s| s.key == *key) || def.option_for(key).is_some() {
+                        return None;
+                    }
+                    let (arg, description) = value
+                        .split_once(' ')
+                        .map(|(a, d)| (a.to_string(), d.trim().to_string()))
+                        .unwrap_or_else(|| (value.clone(), String::new()));
+                    Some(transient::Suffix::Switch(transient::Switch::new(
+                        key.clone(),
+                        arg,
+                        description,
+                    )))
+                } else {
+                    // A custom action runs a command by id. Skip if the key
+                    // collides with a built-in action (which wins).
+                    if def.action_for(key).is_some() {
+                        return None;
+                    }
+                    // Label it with the command's title (built-in or user),
+                    // falling back to the raw id if it names nothing.
+                    let description = all_commands(&self.config)
+                        .find(|c| c.id == value)
+                        .map(|c| c.title.to_string())
+                        .unwrap_or_else(|| value.clone());
+                    Some(transient::Suffix::Custom(transient::Custom {
+                        key: key.clone(),
+                        description,
+                        id: value.clone(),
+                    }))
+                }
             })
             .collect();
         if !extra.is_empty() {
@@ -5312,7 +5340,7 @@ impl StatusView {
     ) -> AnyElement {
         match suffix {
             Suffix::Switch(sw) => {
-                let on = state.is_some_and(|s| s.active.contains(sw.key));
+                let on = state.is_some_and(|s| s.active.contains(sw.key.as_str()));
                 // magit layout: key, description, then the literal git flag
                 // in parens. Only the flag itself dims (off) or highlights
                 // bold in the `modified` accent (on) — the parens stay a
@@ -5329,9 +5357,9 @@ impl StatusView {
                 };
                 let paren = || div().text_color(self.palette.fg);
                 let view = view.clone();
-                let key = SharedString::from(sw.key);
+                let key = SharedString::from(sw.key.clone());
                 div()
-                    .id(sw.key)
+                    .id(key.clone())
                     .relative()
                     .flex()
                     .items_center()
@@ -5340,21 +5368,24 @@ impl StatusView {
                     .rounded(px(4.0))
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
-                    .child(track_target(sw.key))
+                    .child(track_target(key.clone()))
                     .child(kbd::switch_chip(
-                        sw.key,
+                        &sw.key,
                         self.palette.dim,
                         self.palette.removed,
                         pending_dash,
                         &self.font,
                     ))
-                    .child(self.hover_label(sw.description, self.palette.fg))
+                    // A custom switch may have no description — show just its flag.
+                    .when(!sw.description.is_empty(), |el| {
+                        el.child(self.hover_label(&sw.description, self.palette.fg))
+                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .child(paren().child(SharedString::from("(")))
-                            .child(flag.child(SharedString::from(sw.arg)))
+                            .child(flag.child(SharedString::from(sw.arg.clone())))
                             .child(paren().child(SharedString::from(")"))),
                     )
                     .on_click(move |_, window, cx: &mut App| {
@@ -7899,6 +7930,27 @@ mod tests {
         assert_eq!(km.get("X").map(String::as_str), Some("user.wip"));
         assert!(!km.contains_key("Y"), "unknown id isn't bound");
         assert_eq!(warnings.len(), 1, "only the unknown id warns: {warnings:?}");
+    }
+
+    /// A `[transient.<id>]` value starting with `-` is a custom switch — valid
+    /// without naming a command, but its key must be dash-prefixed to toggle.
+    #[test]
+    fn transient_switch_injection_validates() {
+        let mut config = config::Config::default();
+        let commit = config.transient.entry("commit".into()).or_default();
+        commit.insert("-v".into(), "--no-verify Skip hooks".into()); // ok
+        commit.insert("x".into(), "--depth=1".into()); // switch value, non-dash key
+        let (_, warnings) = build_keymap(&config);
+        assert!(
+            !warnings.iter().any(|w| w.contains("\"-v\"")),
+            "a dash-keyed switch is fine: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("\"x\"") && w.contains("dash-prefixed")),
+            "a non-dash switch key warns: {warnings:?}"
+        );
     }
 
     /// The palette key-hint resolves a user command's binding — a `[keymap]`

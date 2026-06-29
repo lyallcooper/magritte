@@ -101,12 +101,13 @@ pub enum Command {
     SequenceEditTodo,
 }
 
-/// A toggleable flag (e.g. `-f` → `--force-with-lease`).
-#[derive(Debug, Clone, Copy)]
+/// A toggleable flag (e.g. `-f` → `--force-with-lease`). Owned strings so a
+/// user-injected `[transient.<id>]` switch is the same type as a built-in one.
+#[derive(Debug, Clone)]
 pub struct Switch {
-    pub key: &'static str,
-    pub arg: &'static str,
-    pub description: &'static str,
+    pub key: String,
+    pub arg: String,
+    pub description: String,
     /// Whether the flag starts toggled on when the transient opens (the user can
     /// still turn it off), like magit's `--autostash` on the rebase popup. Most
     /// switches start off.
@@ -115,22 +116,28 @@ pub struct Switch {
 
 impl Switch {
     /// A switch that starts off (the common case).
-    pub const fn new(key: &'static str, arg: &'static str, description: &'static str) -> Self {
+    pub fn new(
+        key: impl Into<String>,
+        arg: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Switch {
-            key,
-            arg,
-            description,
+            key: key.into(),
+            arg: arg.into(),
+            description: description.into(),
             default_on: false,
         }
     }
 
     /// A switch that starts on; the user toggles it off.
-    pub const fn on(key: &'static str, arg: &'static str, description: &'static str) -> Self {
+    pub fn on(
+        key: impl Into<String>,
+        arg: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Switch {
-            key,
-            arg,
-            description,
             default_on: true,
+            ..Switch::new(key, arg, description)
         }
     }
 }
