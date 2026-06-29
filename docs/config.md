@@ -59,6 +59,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
+| `show_tags` | `true` / `false` | `true` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
@@ -101,10 +102,17 @@ recent_count = 10
 - `sections` is an **ordered list of ids** — order is display order, presence
   includes a section, omission hides it. Omit `[status]` (or leave `sections`
   empty) for the default order shown above. An unknown id warns at startup.
-- Ids: `untracked`, `unstaged`, `staged` (the file sections); `stashes`;
-  `unpushed` (commits not on the push/upstream target), `unpulled` (commits on
-  the upstream not yet pulled), `recent` (the last `recent_count` commits).
+- Ids:
+  - `untracked`, `unstaged`, `staged` — the file sections.
+  - `stashes` — the stash list.
+  - `unpushed` / `unpulled` — commits ahead of / behind the **upstream**.
+  - `unpushed-pushremote` / `unpulled-pushremote` — the same vs the **push
+    target** in a triangular workflow; empty (hidden) when the push target is
+    the upstream. In the default order, interleaved with the upstream ones.
+  - `recent` — the last `recent_count` commits.
+  - `ignored` — ignored files. **Off by default**; add it to opt in.
 - An empty section is skipped. `recent_count` (default 10) sizes the recent list.
+- Commit rows show their ref labels (branches, tags, remotes), colored.
 - Like everything else, this is per-repo overridable — drop a `[status]` in
   `.git/magritte/config.toml` to reorder sections for one repository.
 
@@ -112,6 +120,10 @@ recent_count = 10
 `y` (or `Cmd+C`) copies the hash; on a stash row, `Return` shows it, `a`
 applies, `A` pops, `x` drops (confirmed), and `y` copies the reference. File
 rows stage/unstage/discard as usual.
+
+The title bar also shows the nearest tag(s) — `Tag: v1.0 (5)` (commits since)
+or `Tags: v1.0 (5), v1.1 (2)` (also the next tag ahead). Set `show_tags = false`
+to hide it.
 
 ## Keymap
 
