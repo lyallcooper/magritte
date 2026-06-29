@@ -1870,10 +1870,10 @@ struct StatusView {
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
     /// Saved per-transient switch defaults (magit's `transient-save`), global scope.
-    transient_values: config::TransientValues,
-    /// The same, scoped to this repo (`.git/magritte/transient-values.toml`),
+    transient_switches: config::TransientSwitches,
+    /// The same, scoped to this repo (`.git/magritte/transient-switches.toml`),
     /// overlaid on the global ones (repo wins per transient id). Empty with no repo.
-    repo_transient_values: config::TransientValues,
+    repo_transient_switches: config::TransientSwitches,
     /// This repo's settings dir (`.git/magritte`), for repo-scoped saves and the
     /// live-reload watcher. `None` with no repo.
     repo_scope_dir: Option<PathBuf>,
@@ -1929,9 +1929,9 @@ impl StatusView {
             .as_ref()
             .and_then(|r| r.git_common_dir())
             .map(|d| config::repo_dir(&d));
-        let repo_transient_values = repo_scope_dir
+        let repo_transient_switches = repo_scope_dir
             .as_ref()
-            .map(|d| config::load_transient_values_at(&d.join("transient-values.toml")))
+            .map(|d| config::load_transient_switches_at(&d.join("transient-switches.toml")))
             .unwrap_or_default();
         // Overlay this repo's config.toml (if any) on the global config. Done
         // here, after repo discovery, since the repo isn't known until now; the
@@ -2000,8 +2000,8 @@ impl StatusView {
             _appearance_sub: None,
             _activation_sub: None,
             usage: config::load_usage(),
-            transient_values: config::load_transient_values(),
-            repo_transient_values,
+            transient_switches: config::load_transient_switches(),
+            repo_transient_switches,
             repo_scope_dir,
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
@@ -2150,7 +2150,7 @@ impl StatusView {
         // Config file: watch its directory (so atomic save-via-rename, which
         // swaps the inode, still fires), forward matching events over a channel,
         // and re-apply on the UI thread. Watching the dir lets us pick up the
-        // sibling transient-values.toml too, while ignoring other siblings (e.g.
+        // sibling transient-switches.toml too, while ignoring other siblings (e.g.
         // command-usage.toml) by matching the exact paths.
         let Some(config_path) = config::path() else {
             return;
@@ -2165,25 +2165,25 @@ impl StatusView {
             Some(name) => dir.join(name),
             None => return,
         };
-        // Which watched file changed — kept distinct so a transient-values edit
+        // Which watched file changed — kept distinct so a transient-switches edit
         // doesn't run the config-reload path (theme rebuild, "Settings reloaded"
         // toast). All reload live, like the config always has.
         enum Changed {
             Config,
-            TransientValues,
-            RepoTransientValues,
+            TransientSwitches,
+            RepoTransientSwitches,
         }
-        let tv_target = config::transient_values_path()
+        let tv_target = config::transient_switches_path()
             .and_then(|p| p.file_name().map(|n| dir.join(n)));
         // The repo scope's settings dir, if it exists yet (canonicalize fails
-        // otherwise) — so we can watch its config.toml / transient-values.toml.
+        // otherwise) — so we can watch its config.toml / transient-switches.toml.
         // Created lazily on the first repo-scoped save, so a brand-new repo picks
         // it up next launch; an in-app save updates memory directly anyway.
         let repo_scope = self
             .repo_scope_dir
             .as_ref()
             .and_then(|d| std::fs::canonicalize(d).ok());
-        let repo_tv_target = repo_scope.as_ref().map(|d| d.join("transient-values.toml"));
+        let repo_tv_target = repo_scope.as_ref().map(|d| d.join("transient-switches.toml"));
         // For re-resolving the merged config: the plain repo config path (its
         // existence is checked at load time, so it works even if created later).
         let repo_config_load = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml"));
@@ -2199,9 +2199,9 @@ impl StatusView {
                 {
                     let _ = tx.send_blocking(Changed::Config);
                 } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::TransientValues);
+                    let _ = tx.send_blocking(Changed::TransientSwitches);
                 } else if cb_repo_tv.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::RepoTransientValues);
+                    let _ = tx.send_blocking(Changed::RepoTransientSwitches);
                 }
             }
         });
@@ -2242,13 +2242,13 @@ impl StatusView {
                             }
                         })
                     }
-                    Changed::TransientValues => {
-                        let values = config::load_transient_values();
+                    Changed::TransientSwitches => {
+                        let values = config::load_transient_switches();
                         this.update_in(cx, |view, _window, cx| {
                             // Skip our own Ctrl-s save (we update in memory first,
                             // so the reload reads back identical values).
-                            if values != view.transient_values {
-                                view.transient_values = values;
+                            if values != view.transient_switches {
+                                view.transient_switches = values;
                                 view.set_status(
                                     "Switch defaults reloaded from disk".to_string(),
                                     true,
@@ -2257,14 +2257,14 @@ impl StatusView {
                             }
                         })
                     }
-                    Changed::RepoTransientValues => {
+                    Changed::RepoTransientSwitches => {
                         let values = repo_tv_target
                             .as_ref()
-                            .map(|p| config::load_transient_values_at(p))
+                            .map(|p| config::load_transient_switches_at(p))
                             .unwrap_or_default();
                         this.update_in(cx, |view, _window, cx| {
-                            if values != view.repo_transient_values {
-                                view.repo_transient_values = values;
+                            if values != view.repo_transient_switches {
+                                view.repo_transient_switches = values;
                                 view.set_status(
                                     "Switch defaults reloaded from disk".to_string(),
                                     true,
@@ -3703,9 +3703,9 @@ impl StatusView {
     /// wholesale over the global scope (per-id replace), so a repo's entry fully
     /// defines that transient's defaults while global still covers the rest.
     fn saved_switches(&self, id: &str) -> Option<&Vec<String>> {
-        self.repo_transient_values
+        self.repo_transient_switches
             .get(id)
-            .or_else(|| self.transient_values.get(id))
+            .or_else(|| self.transient_switches.get(id))
     }
 
     /// Persist the open transient's switch overrides to a scope (magit's
@@ -3723,17 +3723,17 @@ impl StatusView {
             let Some(dir) = self.repo_scope_dir.clone() else {
                 return; // no repo to save into
             };
-            dir.join("transient-values.toml")
+            dir.join("transient-switches.toml")
         } else {
-            let Some(path) = config::transient_values_path() else {
+            let Some(path) = config::transient_switches_path() else {
                 return;
             };
             path
         };
         let values = if repo_scope {
-            &mut self.repo_transient_values
+            &mut self.repo_transient_switches
         } else {
-            &mut self.transient_values
+            &mut self.transient_switches
         };
         // An empty set carries no overrides — drop the entry rather than writing
         // `id = []`, which used to read as "force everything off".
@@ -3742,7 +3742,7 @@ impl StatusView {
         } else {
             values.insert(id, switches);
         }
-        config::save_transient_values_at(&path, values);
+        config::save_transient_switches_at(&path, values);
         // The saved set is the new baseline, so the hint hides again.
         if let Some(Popup::Transient(s)) = self.popup.as_mut() {
             s.baseline = s.active.clone();

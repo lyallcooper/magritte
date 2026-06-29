@@ -24,7 +24,7 @@ A repository can override these settings for itself — see *Per-repo settings*.
 
 ## Per-repo settings
 
-Drop a `config.toml` (and/or `transient-values.toml`) in **`.git/magritte/`** to
+Drop a `config.toml` (and/or `transient-switches.toml`) in **`.git/magritte/`** to
 override settings for one repository. It's a *sparse overlay* on your global
 config — set only the keys you want to change; everything else falls through.
 The file lives in the repo's git dir, so it's private (never committed) and
@@ -39,7 +39,7 @@ Merge rules — global first, repo on top:
   same `id` (so a repo adds commands, or overrides one by id).
 
 Handy for a distinct theme per repo (tell work from personal at a glance),
-repo-specific keybindings or commands, or — via `transient-values.toml` —
+repo-specific keybindings or commands, or — via `transient-switches.toml` —
 per-repo switch defaults (see *Saved switch defaults*).
 
 ## Settings
@@ -237,8 +237,8 @@ transient's defaults (magit's `transient-save`); reopening it starts from them.
 `Ctrl-s` then asks for a **scope** — press **`g`** to save *globally* or **`l`**
 to save *for this repo* (anything else, incl. `Esc`, cancels):
 
-- **Global** → `transient-values.toml` beside the config (e.g. `commit = ["-a", "-s"]`).
-- **This repo** → `.git/magritte/transient-values.toml` in the repo (shared
+- **Global** → `transient-switches.toml` beside the config (e.g. `commit = ["-a", "-s"]`).
+- **This repo** → `.git/magritte/transient-switches.toml` in the repo (shared
   across its worktrees, never committed).
 
 When a transient opens, the repo scope wins over the global one **per transient
