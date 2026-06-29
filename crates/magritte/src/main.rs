@@ -1285,24 +1285,19 @@ fn command_keys(
     // Otherwise a leaf reached through its prefix's transient: `<prefix>
     // <suffix>`, with the prefix's *current* key (the suffix is transient-fixed).
     let leaf = cmd.leaf?;
-    let rt = RemoteTargets::default();
-    let prefixes: [(&str, Transient); 7] = [
-        ("commit", transient::commit_transient()),
-        ("branch", transient::branch_transient()),
-        ("stash", transient::stash_transient()),
-        ("log", transient::log_transient()),
-        ("push", transient::push_transient(&rt)),
-        ("pull", transient::pull_transient(&rt)),
-        ("fetch", transient::fetch_transient(&rt)),
-    ];
-    for (prefix_id, t) in &prefixes {
+    // Search every transient (via the single `transient_for` source of truth, so
+    // adding a leaf under any prefix surfaces its key — no hardcoded list).
+    for &prefix_id in TRANSIENT_IDS {
+        let Some(t) = transient_for(prefix_id) else {
+            continue;
+        };
         for group in &t.groups {
             for suffix in &group.suffixes {
                 if let Suffix::Action(a) = suffix {
                     if a.command == leaf {
                         let default = commands()
                             .iter()
-                            .find(|c| c.id == *prefix_id)
+                            .find(|c| c.id == prefix_id)
                             .and_then(|c| c.key);
                         let prefix_key = current_key(keymap, prefix_id, default)?;
                         return Some(format!("{prefix_key} {}", a.key));
@@ -1348,8 +1343,6 @@ fn user_command_keys(
     None
 }
 
-/// The built-in transient for an injectable prefix id (the `[transient.<id>]`
-/// sections), for resolving an injected suffix's key against its built-ins.
 /// The plain-text title of a transient group (its text spans joined), for
 /// matching a `[transient.<id>]` injection's target section.
 fn group_text(g: &Group) -> String {
@@ -1362,6 +1355,9 @@ fn group_text(g: &Group) -> String {
         .collect()
 }
 
+/// The built-in transient for a prefix id (the `[transient.<id>]` sections),
+/// for resolving an injected suffix's key against its built-ins. The single
+/// source of truth for "the transient for this id".
 fn transient_for(id: &str) -> Option<Transient> {
     let rt = RemoteTargets::default();
     Some(match id {
@@ -5055,8 +5051,6 @@ impl StatusView {
         }
     }
 
-    /// Open the selected commit's diff in a [`CommitView`], loaded off the UI
-    /// thread.
     /// Cherry-pick or revert the commit selected in the log, then return to the
     /// status view (so a conflict shows in the in-progress banner). Runs on the
     /// background executor.

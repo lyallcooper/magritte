@@ -6,9 +6,6 @@ use gpui::SharedString;
 
 /// Label for the editor-picker entry that opens files in the OS default app
 /// (an empty `editor` config).
-#[cfg(target_os = "macos")]
-pub(crate) const EDITOR_OS_DEFAULT_LABEL: &str = "System Default";
-#[cfg(not(target_os = "macos"))]
 pub(crate) const EDITOR_OS_DEFAULT_LABEL: &str = "System Default";
 
 /// Installed text editors as (display name, `.app` path), for the settings
