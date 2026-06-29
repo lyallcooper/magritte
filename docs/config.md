@@ -179,8 +179,10 @@ A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 
 [transient.commit]
 "A" = "commit-amend"           # action
-# switch with a description — use a table:
-"-v" = { flag = "--verbose", description = "Show diff in message" }
+"-v" = { flag = "--verbose", description = "Show diff in message" }  # switch + label
+# place a suffix in an existing section by its title:
+"-S" = { flag = "--gpg-sign", group = "Arguments" }
+"W" = { command = "commit-amend", group = "Edit HEAD" }
 ```
 
 - **Actions** — the value is a **command id** (no leading `-`); runs with
@@ -188,11 +190,13 @@ A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 - **Switches** — the value is a **git flag**: a bare string like `"--depth=1"`,
   or a table `{ flag = "…", description = "…" }` to add a label. Keyed dash-first
   (`-d`, toggled with `- d`), like the built-in switches.
+- **Section** — the table form takes an optional `group` (a section title). By
+  default switches land in **Arguments** and actions in a **Custom** group; name
+  a `group` to place them elsewhere (a title that doesn't exist is created).
 
-Injected suffixes appear in a **Custom** group at the bottom of the menu. A key
-already used by a built-in suffix is left alone (the built-in wins). A section
-that isn't a real transient, an action naming an unknown command, or a switch
-whose key isn't dash-prefixed warns at startup.
+A key already used by a built-in suffix is left alone (the built-in wins). A
+section that isn't a real transient, an action naming an unknown command, or a
+switch whose key isn't dash-prefixed warns at startup.
 
 ## Commands
 
