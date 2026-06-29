@@ -1840,12 +1840,13 @@ enum RowKind {
     },
     /// A commit row in a non-file section (unpushed/unpulled/recent): dim short
     /// hash, ref labels, and subject, like the log view. `hash` (full) drives
-    /// act-at-point; `refs` is the raw `%D` decoration (branches/tags/remotes).
+    /// act-at-point; `refs` are the classified `%D` decorations, parsed once at
+    /// row-build time (not per frame).
     Commit {
         hash: String,
         short_hash: String,
         subject: String,
-        refs: String,
+        refs: Vec<(String, RefKind)>,
     },
     /// A stash row: dim reference + message.
     Stash {
@@ -1952,6 +1953,10 @@ struct StatusView {
     /// Commit/stash lists for the non-file status sections (unpushed/unpulled/
     /// recent/stashes), refreshed alongside `status` off the UI thread.
     status_sections: StatusSections,
+    /// Paths with an unmerged (conflicted) status, refreshed with `rebuild_rows`
+    /// so `is_conflicted` is an O(1) lookup rather than an O(entries) scan per
+    /// row per frame in `render_row`.
+    conflicted: HashSet<String>,
     /// The in-progress merge/rebase/cherry-pick/revert/am, surfaced as a banner.
     sequence: Option<Sequence>,
     error: Option<String>,
@@ -2138,6 +2143,7 @@ impl StatusView {
             status: None,
             status_sections: StatusSections::default(),
             tag_info: (None, None),
+            conflicted: HashSet::new(),
             sequence: None,
             error: None,
             expanded,
@@ -2749,6 +2755,20 @@ impl StatusView {
     // --- Row construction -------------------------------------------------
 
     fn rebuild_rows(&mut self) {
+        // Refresh the conflicted-path set so is_conflicted (called per clickable
+        // row in render) is an O(1) lookup, not an O(entries) scan per row.
+        self.conflicted = self
+            .status
+            .as_ref()
+            .map(|s| {
+                s.entries
+                    .iter()
+                    .filter(|e| e.kind == EntryKind::Unmerged)
+                    .map(|e| e.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mut rows = Vec::new();
 
         if let Some(error) = &self.error {
@@ -2987,7 +3007,7 @@ impl StatusView {
                     hash: c.hash.clone(),
                     short_hash: c.short_hash.clone(),
                     subject: c.subject.clone(),
-                    refs: c.refs.clone(),
+                    refs: parse_refs(&c.refs),
                 },
             });
         }
@@ -3555,11 +3575,8 @@ impl StatusView {
     /// on these — `git add` would silently mark a conflict resolved (markers and
     /// all), and a discard could lose work.
     fn is_conflicted(&self, path: &str) -> bool {
-        self.status.as_ref().is_some_and(|s| {
-            s.entries
-                .iter()
-                .any(|e| e.path == path && e.kind == EntryKind::Unmerged)
-        })
+        // O(1) against the set refreshed in `rebuild_rows`.
+        self.conflicted.contains(path)
     }
 
     /// The first conflicted file in the current selection — the row at point, or
@@ -7890,15 +7907,17 @@ impl StatusView {
                 );
                 // Ref labels (branches/tags/remotes), colored magit-style: tags
                 // accent, branches added-green (current branch bold), remotes
-                // section-blue.
-                for (label, kind) in parse_refs(refs) {
+                // section-blue. Parsed at row-build time (see RowKind::Commit).
+                for (label, kind) in refs {
                     let (color, bold) = match kind {
                         RefKind::Tag => (self.palette.modified, false),
                         RefKind::Head => (self.palette.added, true),
                         RefKind::Local => (self.palette.added, false),
                         RefKind::Remote => (self.palette.section, false),
                     };
-                    let mut chip = div().text_color(color).child(SharedString::from(label));
+                    let mut chip = div()
+                        .text_color(color)
+                        .child(SharedString::from(label.clone()));
                     if bold {
                         chip = chip.font_weight(FontWeight::BOLD);
                     }
@@ -8550,6 +8569,7 @@ fn row_text(row: &Row) -> String {
 }
 
 /// How a `%D` ref decoration entry is classified, for coloring.
+#[derive(Clone, Copy)]
 enum RefKind {
     /// The current branch (`HEAD -> main`) or a detached `HEAD`.
     Head,
