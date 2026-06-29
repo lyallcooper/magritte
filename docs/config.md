@@ -87,6 +87,32 @@ commit_title_ruler = true
 commit_body_wrap = true
 ```
 
+## Status sections
+
+The status view shows magit-style sections. A `[status]` table picks which
+sections appear and in what order:
+
+```toml
+[status]
+sections = ["untracked", "unstaged", "staged", "stashes", "unpulled", "unpushed", "recent"]
+recent_count = 10
+```
+
+- `sections` is an **ordered list of ids** — order is display order, presence
+  includes a section, omission hides it. Omit `[status]` (or leave `sections`
+  empty) for the default order shown above. An unknown id warns at startup.
+- Ids: `untracked`, `unstaged`, `staged` (the file sections); `stashes`;
+  `unpushed` (commits not on the push/upstream target), `unpulled` (commits on
+  the upstream not yet pulled), `recent` (the last `recent_count` commits).
+- An empty section is skipped. `recent_count` (default 10) sizes the recent list.
+- Like everything else, this is per-repo overridable — drop a `[status]` in
+  `.git/magritte/config.toml` to reorder sections for one repository.
+
+**Act at point** in a section: on a commit row, `Return` opens its diff and
+`y` (or `Cmd+C`) copies the hash; on a stash row, `Return` shows it, `a`
+applies, `A` pops, `x` drops (confirmed), and `y` copies the reference. File
+rows stage/unstage/discard as usual.
+
 ## Keymap
 
 The default keymap mirrors evil-collection's magit. A `[keymap]` table overrides

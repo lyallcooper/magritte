@@ -210,7 +210,9 @@ reusable widgets) will be split out if and when they earn their keep.
 ## 4. Feature scope — the 80%
 
 ### Tier 1 — the daily-driver loop (v1 must-have)
-- Status view: section tree, fold/unfold, act-at-point.
+- Status view: section tree, fold/unfold, act-at-point. (Sections include the
+  file groups plus unpushed / unpulled / recent commits / stashes, configurable
+  and reorderable via `[status]`; done.)
 - Diffs: file, hunk, and line/region granularity.
 - Staging / unstaging / discarding at file, hunk, and region level.
 - Commit: create, amend, reword, extend, fixup, squash + message editor.
