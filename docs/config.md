@@ -208,8 +208,8 @@ run = "git commit -a -m WIP"
   the log), `{branch}` (the current branch). If one can't be resolved — e.g.
   `{file}` with no file selected — the command reports that and doesn't run.
 - **Bind it** like any built-in: `[keymap]` entry `"X" = "user.wip"`, or run it
-  from the `:` palette by its `title`. The command and its output are recorded
-  in the `$` command log (multi-line output opens it).
+  from the `:` palette by its `title`. Its full output shows as a toast (a
+  failure stays until dismissed); the command is also recorded in the `$` log.
 - **Destructive commands confirm first** — one whose words include `clean`,
   `--hard`, or `--force` prompts before running, like the built-in destructive
   operations.
