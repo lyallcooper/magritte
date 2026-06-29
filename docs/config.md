@@ -59,7 +59,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
-| `show_tags` | `true` / `false` | `true` | Show the nearest tag(s) in the title bar — see *Status sections*. |
+| `show_tags` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
@@ -121,9 +121,9 @@ recent_count = 10
 applies, `A` pops, `x` drops (confirmed), and `y` copies the reference. File
 rows stage/unstage/discard as usual.
 
-The title bar also shows the nearest tag(s) — `Tag: v1.0 (5)` (commits since)
-or `Tags: v1.0 (5), v1.1 (2)` (also the next tag ahead). Set `show_tags = false`
-to hide it.
+Set `show_tags = true` to show the nearest tag(s) in the title bar —
+`Tag: v1.0 (5)` (commits since) or `Tags: v1.0 (5), v1.1 (2)` (also the next
+tag ahead). Off by default.
 
 ## Keymap
 
