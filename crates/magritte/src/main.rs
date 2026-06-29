@@ -132,6 +132,9 @@ struct TransientState {
     id: String,
     def: Transient,
     active: std::collections::HashSet<String>,
+    /// The active set as opened (its saved/built-in defaults), so the UI can
+    /// tell when switches have been *modified* (to offer saving them).
+    baseline: std::collections::HashSet<String>,
     /// Value-reading option values, keyed by the option's key (e.g. `-F` →
     /// `fix bug`). Combined with `active` to build the git argument list.
     values: std::collections::HashMap<String, String>,
@@ -146,7 +149,7 @@ impl TransientState {
     fn new(id: impl Into<String>, def: Transient, targets: RemoteTargets) -> Self {
         // Switches flagged default-on start toggled on (the user can turn them
         // off); the rest start off.
-        let active = def
+        let active: std::collections::HashSet<String> = def
             .switches()
             .filter(|s| s.default_on)
             .map(|s| s.key.to_string())
@@ -154,6 +157,7 @@ impl TransientState {
         TransientState {
             id: id.into(),
             def,
+            baseline: active.clone(),
             active,
             values: std::collections::HashMap::new(),
             pending_dash: false,
@@ -950,13 +954,13 @@ fn commands() -> &'static [Command] {
             .nav_section(true, cx)),
         nav!("prev-section", "Previous section", "g k", |t, _w, cx| t
             .nav_section(false, cx)),
-        nav!("half-page-down", "Half page down", "C-d", |t, w, cx| t
+        nav!("half-page-down", "Half page down", "ctrl-d", |t, w, cx| t
             .nav_page(true, false, w, cx)),
-        nav!("half-page-up", "Half page up", "C-u", |t, w, cx| t
+        nav!("half-page-up", "Half page up", "ctrl-u", |t, w, cx| t
             .nav_page(false, false, w, cx)),
-        nav!("page-down", "Page down", "C-f", |t, w, cx| t
+        nav!("page-down", "Page down", "ctrl-f", |t, w, cx| t
             .nav_page(true, true, w, cx)),
-        nav!("page-up", "Page up", "C-b", |t, w, cx| t
+        nav!("page-up", "Page up", "ctrl-b", |t, w, cx| t
             .nav_page(false, true, w, cx)),
         // Quit (Emacs `C-x C-c`, bound in DEFAULT_BINDINGS): no single key, so a
         // literal rather than `top!`. Reachable via the palette too.
@@ -983,22 +987,23 @@ const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     // Arrow + Emacs cursor motions.
     ("down", "move-down"),
     ("up", "move-up"),
-    ("C-n", "move-down"),
-    ("C-p", "move-up"),
+    ("ctrl-n", "move-down"),
+    ("ctrl-p", "move-up"),
     // Paging: full page also on Space; sections also on Emacs/bracket keys.
     ("space", "page-down"),
-    ("C-j", "next-section"),
-    ("C-k", "prev-section"),
+    ("ctrl-j", "next-section"),
+    ("ctrl-k", "prev-section"),
     ("]", "next-section"),
     ("[", "prev-section"),
     // Emacs quit.
-    ("C-x C-c", "quit"),
+    ("ctrl-x ctrl-c", "quit"),
 ];
 
-/// Canonical keystroke string for a keypress: modifier prefixes (`D-` cmd, `C-`
-/// ctrl, `M-` alt) then the key, with a shifted letter uppercased (so `K`, not
-/// `S-k`, matching the rest of the keymap). One token; multi-key sequences join
-/// these with spaces (`C-x C-c`).
+/// Canonical keystroke string for a keypress: word modifier prefixes (`cmd-`,
+/// `ctrl-`, `alt-`, in that order) then the key, with a shifted letter
+/// uppercased (so `K`, not `shift-k`). One token; multi-key sequences join these
+/// with spaces (`ctrl-x ctrl-c`). The prefixes match `kbd::format_keys`, so the
+/// display ("Ctrl+x") follows for free.
 fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
     let base = if shift && key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) {
         key.to_uppercase()
@@ -1007,13 +1012,13 @@ fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
     };
     let mut s = String::new();
     if cmd {
-        s.push_str("D-");
+        s.push_str("cmd-");
     }
     if ctrl {
-        s.push_str("C-");
+        s.push_str("ctrl-");
     }
     if alt {
-        s.push_str("M-");
+        s.push_str("alt-");
     }
     s.push_str(&base);
     s
@@ -1484,7 +1489,7 @@ const KBD_ROW_GROUP: &str = "kbd-row";
 
 /// In a transient, save the current switch toggles as its defaults (magit's
 /// `transient-save`, which uses `C-x C-s`).
-const TRANSIENT_SAVE_KEY: &str = "C-s";
+const TRANSIENT_SAVE_KEY: &str = "ctrl-s";
 
 /// After a refresh, warm at most this many file diffs in the background...
 const PREFETCH_FILE_CAP: usize = 16;
@@ -3495,9 +3500,11 @@ impl StatusView {
         }
         let mut state = TransientState::new(id, def, targets);
         // A saved switch set (magit's `transient-save`) overrides the built-in
-        // default-on switches for this transient.
+        // default-on switches for this transient; that becomes the baseline, so
+        // the save hint only appears once the user changes it.
         if let Some(saved) = self.transient_values.get(id) {
             state.active = saved.iter().cloned().collect();
+            state.baseline = state.active.clone();
         }
         self.popup = Some(Popup::Transient(state));
         cx.notify();
@@ -3522,15 +3529,22 @@ impl StatusView {
         // (magit's `transient-save`); reopening it starts from them. Skipped for
         // ad-hoc transients (empty id), which have nothing to key the save by.
         if key == TRANSIENT_SAVE_KEY {
-            if let Some(Popup::Transient(state)) = &self.popup {
-                if !state.id.is_empty() {
-                    let id = state.id.clone();
-                    let mut switches: Vec<String> = state.active.iter().cloned().collect();
+            let to_save = match &self.popup {
+                Some(Popup::Transient(s)) if !s.id.is_empty() => {
+                    let mut switches: Vec<String> = s.active.iter().cloned().collect();
                     switches.sort();
-                    self.transient_values.insert(id, switches);
-                    config::save_transient_values(&self.transient_values);
-                    self.set_status("Saved switches as default".to_string(), true, cx);
+                    Some((s.id.clone(), switches))
                 }
+                _ => None,
+            };
+            if let Some((id, switches)) = to_save {
+                self.transient_values.insert(id, switches);
+                config::save_transient_values(&self.transient_values);
+                // The saved set is the new baseline, so the hint hides again.
+                if let Some(Popup::Transient(s)) = self.popup.as_mut() {
+                    s.baseline = s.active.clone();
+                }
+                self.set_status("Saved switches as default".to_string(), true, cx);
             }
             return;
         }
@@ -5336,14 +5350,18 @@ impl StatusView {
             body = body.child(command_row);
         }
 
-        // Offer "save these switches" only when there are switches to save and
-        // this is a real (id-bearing) transient, not the `?` dispatch.
-        let can_save = state.is_some_and(|s| !s.id.is_empty())
-            && def
-                .groups
-                .iter()
-                .flat_map(|g| &g.suffixes)
-                .any(|s| matches!(s, Suffix::Switch(_)));
+        // The "save these switches" hint. Reserve its row whenever the transient
+        // has switches to save (a real, id-bearing transient — not the `?`
+        // dispatch), but only reveal it once the switches differ from their
+        // saved/built-in baseline. Reserving + `invisible` keeps toggling from
+        // shifting the layout.
+        let has_switches = def
+            .groups
+            .iter()
+            .flat_map(|g| &g.suffixes)
+            .any(|s| matches!(s, Suffix::Switch(_)));
+        let reserve_save = has_switches && state.is_some_and(|s| !s.id.is_empty());
+        let modified = state.is_some_and(|s| s.active != s.baseline);
 
         div()
             .w_full()
@@ -5357,7 +5375,7 @@ impl StatusView {
             .gap_2()
             .child(self.render_title(&def.title, self.palette.section))
             .child(body)
-            .when(can_save, |el| {
+            .when(reserve_save, |el| {
                 el.child(
                     div()
                         .flex()
@@ -5365,6 +5383,7 @@ impl StatusView {
                         .gap_2()
                         .text_xs()
                         .text_color(self.palette.dim)
+                        .when(!modified, |row| row.invisible())
                         .child(kbd::key_chip(TRANSIENT_SAVE_KEY, self.palette.dim, &self.font))
                         .child(SharedString::from("save these switches as the default")),
                 )
@@ -7234,7 +7253,7 @@ impl StatusView {
                 .child(
                     div()
                         .text_color(self.palette.dim)
-                        .child(SharedString::from("C-g to cancel")),
+                        .child(SharedString::from("Ctrl+g to cancel")),
                 ),
             // A plain message, possibly multi-line (a command's full output):
             // one row per line so it renders as a block, not run together.
@@ -8175,7 +8194,7 @@ mod tests {
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
-            "C-d", "C-u", "C-f", "C-b", // half/full page motions
+            "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", // half/full page motions
         ];
         // Keys allowed to be on only one side of the check. Empty today; add a
         // key here (with a comment) when an exception is genuinely warranted.

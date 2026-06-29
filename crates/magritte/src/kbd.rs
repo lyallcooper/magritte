@@ -52,12 +52,12 @@ pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
 }
 
 /// The display label for a keystroke spec. A multi-keystroke *sequence* is
-/// space-separated (e.g. `g r`, `c c`) and rendered with the keys spaced inside
-/// one keycap. A *chord* joins modifiers to a key with `-` (e.g. `cmd-enter` →
+/// space-separated (e.g. `g r`, `ctrl-x ctrl-c`) with each step formatted in
+/// turn. A *chord* joins modifiers to a key with `-` (e.g. `cmd-enter` →
 /// `Cmd+Enter`). A lone token is word-ified (`tab` → `Tab`).
 pub(crate) fn format_keys(key: &str) -> String {
     if key.contains(' ') {
-        return key.split(' ').map(key_word).collect::<Vec<_>>().join(" ");
+        return key.split(' ').map(format_keys).collect::<Vec<_>>().join(" ");
     }
     let parts: Vec<&str> = key.split('-').collect();
     let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
@@ -72,12 +72,35 @@ pub(crate) fn format_keys(key: &str) -> String {
     }
 }
 
-/// A keyboard key badge: a keycap chip with a word-style label (see
-/// [`format_keys`]). `font` is the monospace family.
+/// A keyboard key badge: one keycap per key. A chord renders each modifier and
+/// the key as separate caps joined by `+` (`[Ctrl]+[g]`); a sequence renders
+/// each step spaced (`[g] [r]`, `[Ctrl]+[x] [Ctrl]+[c]`). `font` is the
+/// monospace family.
 pub(crate) fn key_chip(key: &str, color: Hsla, font: &SharedString) -> AnyElement {
-    chip_box(color, font)
-        .child(SharedString::from(format_keys(key)))
-        .into_any_element()
+    let mut row = div().flex().items_center().gap(px(4.0));
+    for step in key.split(' ') {
+        row = row.child(chord_caps(step, color, font));
+    }
+    row.into_any_element()
+}
+
+/// One keystroke step (possibly a chord) as caps joined by `+`.
+fn chord_caps(step: &str, color: Hsla, font: &SharedString) -> gpui::Div {
+    let parts: Vec<&str> = step.split('-').collect();
+    let is_chord = parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p));
+    let labels: Vec<String> = if is_chord {
+        parts.iter().map(|p| key_word(p)).collect()
+    } else {
+        vec![key_word(step)]
+    };
+    let mut row = div().flex().items_center().gap(px(2.0));
+    for (i, label) in labels.into_iter().enumerate() {
+        if i > 0 {
+            row = row.child(div().text_color(color).child(SharedString::from("+")));
+        }
+        row = row.child(chip_box(color, font).child(SharedString::from(label)));
+    }
+    row
 }
 
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
