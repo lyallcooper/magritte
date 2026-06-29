@@ -170,11 +170,16 @@ impl TransientState {
     /// Pathspec options are excluded — see [`Self::pathspecs`] — since they must
     /// trail the revision behind a `--`.
     fn args(&self) -> Vec<String> {
-        let switches = self
-            .def
-            .switches()
-            .filter(|s| self.active.contains(s.key.as_str()))
-            .map(|s| s.arg.clone());
+        let switches = self.def.switches().filter_map(|s| {
+            let on = self.active.contains(s.key.as_str());
+            match &s.negation {
+                // A negatable switch reflects a git-config default: emit a flag
+                // only when the toggle differs from that default — the positive
+                // arg when turned on, the negation (e.g. --no-gpg-sign) when off.
+                Some(neg) => (on != s.default_on).then(|| if on { s.arg.clone() } else { neg.clone() }),
+                None => on.then(|| s.arg.clone()),
+            }
+        });
         let options = self
             .def
             .options()
@@ -3496,6 +3501,21 @@ impl StatusView {
                     title: transient::plain_title(group_title),
                     suffixes: vec![suffix],
                 }),
+            }
+        }
+        // A switch tied to a git-config key starts on when that config is
+        // enabled (e.g. --gpg-sign with commit.gpgSign=true); toggling it off
+        // then sends the negation (--no-gpg-sign). Resolve those defaults now,
+        // from the repo's effective config.
+        if let Some(repo) = self.repo.as_ref() {
+            for group in def.groups.iter_mut() {
+                for suffix in group.suffixes.iter_mut() {
+                    if let transient::Suffix::Switch(sw) = suffix {
+                        if let Some(key) = sw.config_key.clone() {
+                            sw.default_on = repo.config_bool(&key);
+                        }
+                    }
+                }
             }
         }
         let mut state = TransientState::new(id, def, targets);
@@ -7977,6 +7997,44 @@ mod tests {
         assert!(!StatusView::is_dispatch_key(&km, "g g"));
         assert!(!StatusView::is_dispatch_key(&km, "g r"));
         assert!(!StatusView::is_dispatch_key(&km, "z")); // not bound by default
+    }
+
+    #[test]
+    fn negatable_switch_emits_relative_to_config_default() {
+        // A negatable switch (e.g. --gpg-sign, tied to commit.gpgSign) emits a
+        // flag only when its toggle differs from the configured default: the
+        // positive arg when turned on, the negation when turned off.
+        let args = |config_default: bool, on: bool| {
+            let mut sw = transient::Switch::negatable(
+                "-S",
+                "--gpg-sign",
+                "--no-gpg-sign",
+                "commit.gpgSign",
+                "Sign using gpg",
+            );
+            sw.default_on = config_default;
+            let def = Transient {
+                title: transient::plain_title("Commit"),
+                groups: vec![transient::Group {
+                    title: transient::plain_title("Arguments"),
+                    suffixes: vec![Suffix::Switch(sw)],
+                }],
+            };
+            let mut state = TransientState::new("commit", def, RemoteTargets::default());
+            if on {
+                state.active.insert("-S".into());
+            } else {
+                state.active.remove("-S");
+            }
+            state.args()
+        };
+        // Config off: nothing when off, --gpg-sign when the user turns it on.
+        assert!(args(false, false).is_empty());
+        assert_eq!(args(false, true), vec!["--gpg-sign"]);
+        // Config on: nothing when left on (git signs anyway), --no-gpg-sign when
+        // the user turns it off.
+        assert!(args(true, true).is_empty());
+        assert_eq!(args(true, false), vec!["--no-gpg-sign"]);
     }
 
     #[test]
