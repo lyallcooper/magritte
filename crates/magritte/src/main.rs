@@ -2113,8 +2113,9 @@ impl StatusView {
 
         // Config file: watch its directory (so atomic save-via-rename, which
         // swaps the inode, still fires), forward matching events over a channel,
-        // and re-apply on the UI thread. Watching the dir means we ignore events
-        // for siblings like command-usage.toml by matching the exact path.
+        // and re-apply on the UI thread. Watching the dir lets us pick up the
+        // sibling transient-values.toml too, while ignoring other siblings (e.g.
+        // command-usage.toml) by matching the exact paths.
         let Some(config_path) = config::path() else {
             return;
         };
@@ -2128,11 +2129,22 @@ impl StatusView {
             Some(name) => dir.join(name),
             None => return,
         };
-        let (tx, rx) = async_channel::unbounded::<()>();
+        // Which watched file changed — kept distinct so a transient-values edit
+        // doesn't run the config-reload path (theme rebuild, "Settings reloaded"
+        // toast). Both files reload live, like the config always has.
+        enum Changed {
+            Config,
+            TransientValues,
+        }
+        let tv_target = config::transient_values_path()
+            .and_then(|p| p.file_name().map(|n| dir.join(n)));
+        let (tx, rx) = async_channel::unbounded::<Changed>();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
                 if event.paths.contains(&watch_target) {
-                    let _ = tx.send_blocking(());
+                    let _ = tx.send_blocking(Changed::Config);
+                } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
+                    let _ = tx.send_blocking(Changed::TransientValues);
                 }
             }
         });
@@ -2147,20 +2159,40 @@ impl StatusView {
         // spawn_in so the reload has a Window: applying a config can rebuild the
         // open settings form, whose Select/Input entities need one.
         cx.spawn_in(window, async move |this, cx| {
-            while rx.recv().await.is_ok() {
-                let (cfg, warning) = config::load_reporting();
-                let updated = this.update_in(cx, |view, window, cx| {
-                    if let Some(warning) = warning {
-                        // The file is now invalid/unreadable. Keep the live
-                        // config (don't reset to defaults on a transient bad
-                        // edit) and surface why it was ignored.
-                        view.set_status(warning, false, cx);
-                    } else if cfg != view.config {
-                        // Skip an unchanged config (our own in-app save, or a
-                        // no-op external edit).
-                        view.apply_config(cfg, window, cx);
+            while let Ok(changed) = rx.recv().await {
+                let updated = match changed {
+                    Changed::Config => {
+                        let (cfg, warning) = config::load_reporting();
+                        this.update_in(cx, |view, window, cx| {
+                            if let Some(warning) = warning {
+                                // The file is now invalid/unreadable. Keep the
+                                // live config (don't reset to defaults on a
+                                // transient bad edit) and surface why it was
+                                // ignored.
+                                view.set_status(warning, false, cx);
+                            } else if cfg != view.config {
+                                // Skip an unchanged config (our own in-app save,
+                                // or a no-op external edit).
+                                view.apply_config(cfg, window, cx);
+                            }
+                        })
                     }
-                });
+                    Changed::TransientValues => {
+                        let values = config::load_transient_values();
+                        this.update_in(cx, |view, _window, cx| {
+                            // Skip our own Ctrl-s save (we update in memory first,
+                            // so the reload reads back identical values).
+                            if values != view.transient_values {
+                                view.transient_values = values;
+                                view.set_status(
+                                    "Switch defaults reloaded from disk".to_string(),
+                                    true,
+                                    cx,
+                                );
+                            }
+                        })
+                    }
+                };
                 if updated.is_err() {
                     break; // window closed
                 }
