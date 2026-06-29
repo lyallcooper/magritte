@@ -198,6 +198,13 @@ A key already used by a built-in suffix is left alone (the built-in wins). A
 section that isn't a real transient, an action naming an unknown command, or a
 switch whose key isn't dash-prefixed warns at startup.
 
+### Saved switch defaults
+
+Inside any transient, **`C-s`** saves the current switch toggles as that
+transient's defaults (magit's `transient-save`); reopening it starts from them.
+Saved sets are written to `transient-values.toml` beside the config (e.g.
+`commit = ["-a", "-s"]`) — delete an entry to return to the built-in defaults.
+
 ## Commands
 
 A `[[command]]` table defines your own command — a shell command the `:` palette

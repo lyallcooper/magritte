@@ -340,6 +340,43 @@ pub fn save_usage(usage: &Usage) {
     }
 }
 
+/// Saved default switch sets per transient (magit's `transient-save`), keyed by
+/// transient command id → the active switch keys. Persisted next to the config
+/// as `transient-values.toml` (e.g. `commit = ["-a", "-s"]`).
+pub type TransientValues = BTreeMap<String, Vec<String>>;
+
+/// Path to the saved-transient-values file (a sibling of the config).
+pub fn transient_values_path() -> Option<PathBuf> {
+    path().map(|p| p.with_file_name("transient-values.toml"))
+}
+
+/// Load the saved transient switch sets, or empty if missing/unreadable.
+pub fn load_transient_values() -> TransientValues {
+    let Some(path) = transient_values_path() else {
+        return TransientValues::new();
+    };
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the saved transient switch sets (atomic temp-file + rename).
+pub fn save_transient_values(values: &TransientValues) {
+    let Some(path) = transient_values_path() else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = toml::to_string_pretty(values) {
+        let tmp = path.with_extension("toml.tmp");
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
 /// Write the config, creating parent directories as needed. Written
 /// atomically (temp file + rename) so an interrupted write can't truncate or
 /// corrupt the existing config. Errors are reported but not fatal — settings

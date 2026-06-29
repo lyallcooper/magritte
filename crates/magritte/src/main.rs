@@ -127,6 +127,9 @@ enum CommitDiffRow {
 /// An open transient popup with the switches toggled on and the option values
 /// set within it.
 struct TransientState {
+    /// The transient's command id (`commit`, `push`, …), for saving its switch
+    /// defaults. Empty for ad-hoc transients (e.g. an in-progress sequence).
+    id: String,
     def: Transient,
     active: std::collections::HashSet<String>,
     /// Value-reading option values, keyed by the option's key (e.g. `-F` →
@@ -140,7 +143,7 @@ struct TransientState {
 }
 
 impl TransientState {
-    fn new(def: Transient, targets: RemoteTargets) -> Self {
+    fn new(id: impl Into<String>, def: Transient, targets: RemoteTargets) -> Self {
         // Switches flagged default-on start toggled on (the user can turn them
         // off); the rest start off.
         let active = def
@@ -149,6 +152,7 @@ impl TransientState {
             .map(|s| s.key.to_string())
             .collect();
         TransientState {
+            id: id.into(),
             def,
             active,
             values: std::collections::HashMap::new(),
@@ -1478,6 +1482,10 @@ const STATUS_COL_WIDTH: f32 = 84.0;
 /// only its label (via `group_hover`), not its keycap.
 const KBD_ROW_GROUP: &str = "kbd-row";
 
+/// In a transient, save the current switch toggles as its defaults (magit's
+/// `transient-save`, which uses `C-x C-s`).
+const TRANSIENT_SAVE_KEY: &str = "C-s";
+
 /// After a refresh, warm at most this many file diffs in the background...
 const PREFETCH_FILE_CAP: usize = 16;
 /// ...skipping any whose changed-line count exceeds this, so massive diffs are
@@ -1803,6 +1811,8 @@ struct StatusView {
     _activation_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
+    /// Saved per-transient switch defaults (magit's `transient-save`).
+    transient_values: config::TransientValues,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Cached list of all font families, for the UI-font picker.
@@ -1902,6 +1912,7 @@ impl StatusView {
             _appearance_sub: None,
             _activation_sub: None,
             usage: config::load_usage(),
+            transient_values: config::load_transient_values(),
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
             editors: Vec::new(),
@@ -3482,7 +3493,13 @@ impl StatusView {
                 }),
             }
         }
-        self.popup = Some(Popup::Transient(TransientState::new(def, targets)));
+        let mut state = TransientState::new(id, def, targets);
+        // A saved switch set (magit's `transient-save`) overrides the built-in
+        // default-on switches for this transient.
+        if let Some(saved) = self.transient_values.get(id) {
+            state.active = saved.iter().cloned().collect();
+        }
+        self.popup = Some(Popup::Transient(state));
         cx.notify();
     }
 
@@ -3499,6 +3516,22 @@ impl StatusView {
         if key == "escape" || key == "q" {
             self.popup = None;
             cx.notify();
+            return;
+        }
+        // `C-s` saves the current switch toggles as this transient's defaults
+        // (magit's `transient-save`); reopening it starts from them. Skipped for
+        // ad-hoc transients (empty id), which have nothing to key the save by.
+        if key == TRANSIENT_SAVE_KEY {
+            if let Some(Popup::Transient(state)) = &self.popup {
+                if !state.id.is_empty() {
+                    let id = state.id.clone();
+                    let mut switches: Vec<String> = state.active.iter().cloned().collect();
+                    switches.sort();
+                    self.transient_values.insert(id, switches);
+                    config::save_transient_values(&self.transient_values);
+                    self.set_status("Saved switches as default".to_string(), true, cx);
+                }
+            }
             return;
         }
         let Some(Popup::Transient(state)) = self.popup.as_mut() else {
@@ -4628,9 +4661,11 @@ impl StatusView {
             key.clone()
         };
 
-        // A command transient is modal — it captures every key.
+        // A command transient is modal — it captures every key. Pass the full
+        // chord (with modifiers) so meta-keys like `C-s` (save switches) work;
+        // a plain key's chord is just its cased form, so suffixes are unaffected.
         if matches!(self.popup, Some(Popup::Transient(_))) {
-            self.handle_transient_key(&cased, window, cx);
+            self.handle_transient_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
@@ -5301,6 +5336,15 @@ impl StatusView {
             body = body.child(command_row);
         }
 
+        // Offer "save these switches" only when there are switches to save and
+        // this is a real (id-bearing) transient, not the `?` dispatch.
+        let can_save = state.is_some_and(|s| !s.id.is_empty())
+            && def
+                .groups
+                .iter()
+                .flat_map(|g| &g.suffixes)
+                .any(|s| matches!(s, Suffix::Switch(_)));
+
         div()
             .w_full()
             .border_t_1()
@@ -5313,6 +5357,18 @@ impl StatusView {
             .gap_2()
             .child(self.render_title(&def.title, self.palette.section))
             .child(body)
+            .when(can_save, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(self.palette.dim)
+                        .child(kbd::key_chip(TRANSIENT_SAVE_KEY, self.palette.dim, &self.font))
+                        .child(SharedString::from("save these switches as the default")),
+                )
+            })
     }
 
     /// One transient group as a left-aligned band: its dim title above its
