@@ -8563,7 +8563,7 @@ fn row_text(row: &Row) -> String {
 }
 
 /// How a `%D` ref decoration entry is classified, for coloring.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RefKind {
     /// The current branch (`HEAD -> main`) or a detached `HEAD`.
     Head,
@@ -8741,18 +8741,15 @@ fn page_rows(window: &Window) -> usize {
 /// half-page, `Ctrl-f`/`Ctrl-b`/`Space` full-page, and `g`/`G` to the ends.
 /// Half-page requires Ctrl so plain `d`/`u` stay free for future commands
 /// (`d` diff, `u` unstage).
-fn apply_scroll_key(
-    handle: &UniformListScrollHandle,
-    top: &mut usize,
-    len: usize,
-    key: &str,
-    shift: bool,
-    ctrl: bool,
-    page: usize,
-) -> bool {
+/// The new top-row index a scroll key moves to, or `None` if `key` isn't a
+/// scroll command. Clamped so the last page stays on screen. Pure (no handle)
+/// so the motion/clamp math is unit-testable; [`apply_scroll_key`] adds the
+/// actual scroll. `j`/`k` line, `Ctrl-d`/`Ctrl-u` half-page, `Ctrl-f`/`Ctrl-b`/
+/// `Space` full-page, `g`/`G` to the ends.
+fn scroll_target(top: usize, len: usize, key: &str, shift: bool, ctrl: bool, page: usize) -> Option<usize> {
     let page = (page as isize).max(1);
     let half = (page / 2).max(1);
-    let cur = *top as isize;
+    let cur = top as isize;
     // The furthest the top can scroll: keep a full last page on screen rather
     // than scrolling content off the bottom.
     let max_top = (len as isize - page).max(0);
@@ -8766,14 +8763,30 @@ fn apply_scroll_key(
         "b" if ctrl => cur - page,
         "g" if shift => max_top, // G → bottom (last page)
         "g" => 0,                // g → top
-        _ => return false,
+        _ => return None,
     };
-    *top = target.clamp(0, max_top) as usize;
+    Some(target.clamp(0, max_top) as usize)
+}
+
+fn apply_scroll_key(
+    handle: &UniformListScrollHandle,
+    top: &mut usize,
+    len: usize,
+    key: &str,
+    shift: bool,
+    ctrl: bool,
+    page: usize,
+) -> bool {
+    let Some(new_top) = scroll_target(*top, len, key, shift, ctrl, page) else {
+        return false;
+    };
+    *top = new_top;
+    let max_top = len.saturating_sub(page.max(1));
     // Strict scrolling positions the row even when it's already visible, so line
     // and half-page motions actually move. On the last page, pin the final row
     // to the *bottom* instead — the page-size estimate (header/padding overhead)
     // is slightly off, and pinning guarantees the very last row is reachable.
-    if *top as isize >= max_top && len > 0 {
+    if *top >= max_top && len > 0 {
         handle.scroll_to_item_strict(len - 1, gpui::ScrollStrategy::Bottom);
     } else {
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
@@ -9348,5 +9361,87 @@ mod tests {
             "`?` menu rows with no run_dispatch handler (add them to DISPATCH_KEYS \
              or OVERRIDES): {missing_handler:?}"
         );
+    }
+
+    #[test]
+    fn parse_refs_classifies_decorations() {
+        let got = parse_refs("HEAD -> main, origin/main, tag: v1.0, feature, HEAD");
+        assert_eq!(
+            got,
+            vec![
+                ("main".to_string(), RefKind::Head),
+                ("origin/main".to_string(), RefKind::Remote),
+                ("v1.0".to_string(), RefKind::Tag),
+                ("feature".to_string(), RefKind::Local),
+                ("HEAD".to_string(), RefKind::Head),
+            ]
+        );
+        assert!(parse_refs("").is_empty());
+    }
+
+    #[test]
+    fn scroll_target_motions_and_clamping() {
+        // len 100, page 10 → max_top 90.
+        assert_eq!(scroll_target(5, 100, "j", false, false, 10), Some(6));
+        assert_eq!(scroll_target(5, 100, "k", false, false, 10), Some(4));
+        assert_eq!(scroll_target(0, 100, "k", false, false, 10), Some(0)); // clamp low
+        assert_eq!(scroll_target(5, 100, "d", false, true, 10), Some(10)); // half page
+        assert_eq!(scroll_target(5, 100, "u", false, true, 10), Some(0));
+        assert_eq!(scroll_target(5, 100, "space", false, false, 10), Some(15));
+        assert_eq!(scroll_target(0, 100, "g", true, false, 10), Some(90)); // G → bottom
+        assert_eq!(scroll_target(50, 100, "g", false, false, 10), Some(0)); // g → top
+        assert_eq!(scroll_target(85, 100, "space", false, false, 10), Some(90)); // clamp high
+        // Half-page needs ctrl; plain d/u (and unknown keys) aren't scrolls.
+        assert_eq!(scroll_target(5, 100, "d", false, false, 10), None);
+        assert_eq!(scroll_target(5, 100, "z", false, false, 10), None);
+        // Fewer rows than a page → max_top 0, everything pins to top.
+        assert_eq!(scroll_target(0, 3, "j", false, false, 10), Some(0));
+    }
+
+    #[test]
+    fn build_log_args_orders_and_defaults() {
+        // Default limit injected; scope appended; pathspecs behind `--`.
+        assert_eq!(
+            build_log_args(vec!["--reverse".into()], LogScope::Current, vec![], 20),
+            vec!["--reverse", "--max-count=20", "HEAD"]
+        );
+        assert_eq!(
+            build_log_args(vec![], LogScope::All, vec!["a.txt".into()], 5),
+            vec!["--max-count=5", "--all", "--", "a.txt"]
+        );
+        // An explicit -n / --max-count suppresses the default.
+        assert_eq!(
+            build_log_args(vec!["-n3".into()], LogScope::Ref("dev".into()), vec![], 20),
+            vec!["-n3", "dev"]
+        );
+    }
+
+    #[test]
+    fn row_text_strips_diff_sigils_and_joins_fields() {
+        let commit = Row {
+            indent: 1,
+            selectable: true,
+            fold: None,
+            target: None,
+            kind: RowKind::Commit {
+                hash: "abc".into(),
+                short_hash: "abc123".into(),
+                subject: "Do a thing".into(),
+                refs: Vec::new(),
+            },
+        };
+        assert_eq!(row_text(&commit), "abc123  Do a thing");
+
+        let stash = Row {
+            indent: 1,
+            selectable: true,
+            fold: None,
+            target: None,
+            kind: RowKind::Stash {
+                reference: "stash@{0}".into(),
+                message: "WIP".into(),
+            },
+        };
+        assert_eq!(row_text(&stash), "stash@{0}  WIP");
     }
 }
