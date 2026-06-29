@@ -649,6 +649,23 @@ impl Repo {
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
 
+    /// Ignored file paths (`git ls-files --others --ignored --exclude-standard`),
+    /// repo-relative. For the opt-in `ignored` status section.
+    pub fn ignored_files(&self) -> Result<Vec<String>> {
+        let out = self.run([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        ])?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
     /// The repository's common git directory (`git rev-parse --git-common-dir`),
     /// as an absolute path. It's shared across linked worktrees, so per-repo
     /// state keyed off it lands in one place for the whole repo. `None` on error.
