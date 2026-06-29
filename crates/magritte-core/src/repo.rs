@@ -317,17 +317,7 @@ impl Repo {
         let mut cmd = self.git();
         cmd.args(&arg_vec);
         let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.record_git(&arg_vec, status.code(), &stderr);
-
-        if !status.success() {
-            return Err(Error::Git {
-                args: arg_vec,
-                status: status.code(),
-                stderr,
-            });
-        }
-
-        Ok(GitOutput { stdout, stderr })
+        self.finish(arg_vec, stdout, stderr, status)
     }
 
     /// Run a user-typed command from the `!` prompt — git by default, or an
@@ -396,26 +386,66 @@ impl Repo {
         })
     }
 
-    /// Run `cmd` to completion, returning `(stdout, stderr, status)`.
+    /// Run `cmd` to completion, returning `(stdout, stderr, status)`. `input`,
+    /// when given, is written to the child's stdin.
     ///
-    /// Without a cancel flag or timeout this is plain [`Command::output`]. With
-    /// either set, it spawns the child and polls for exit while *draining both
-    /// pipes on helper threads* — a full pipe would otherwise deadlock the wait
-    /// — and kills the child on cancel ([`Error::Cancelled`]) or deadline
-    /// ([`Error::TimedOut`]), reaping it so no zombie is left behind.
-    fn collect_output(&self, mut cmd: Command) -> Result<(Vec<u8>, String, ExitStatus)> {
+    /// Without a cancel flag or timeout this is plain [`Command::output`] (or a
+    /// spawn + stdin write). With either set, it spawns the child and polls for
+    /// exit while *draining both pipes on helper threads* — a full pipe would
+    /// otherwise deadlock the wait — and writing any stdin on its own thread for
+    /// the same reason; it kills the child on cancel ([`Error::Cancelled`]) or
+    /// deadline ([`Error::TimedOut`]), reaping it so no zombie is left behind.
+    ///
+    /// Routing every variant (incl. `run_with_env`, `run_with_input`) through
+    /// here is what makes them all honor the cancel flag and timeout.
+    fn collect_output_with(
+        &self,
+        mut cmd: Command,
+        input: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, String, ExitStatus)> {
         if self.cancel.is_none() && self.timeout.is_none() {
-            let out = cmd.output().map_err(|source| Error::Spawn { source })?;
+            // Fast path: no cancellation/timeout to honor.
+            let out = match input {
+                None => cmd.output().map_err(|source| Error::Spawn { source })?,
+                Some(input) => {
+                    let mut child = cmd
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|source| Error::Spawn { source })?;
+                    {
+                        let mut stdin = child.stdin.take().expect("stdin piped");
+                        let _ = stdin.write_all(input);
+                    }
+                    child
+                        .wait_with_output()
+                        .map_err(|source| Error::Spawn { source })?
+                }
+            };
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
             return Ok((out.stdout, stderr, out.status));
         }
 
         let mut child = cmd
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|source| Error::Spawn { source })?;
+        // Write stdin on its own thread so a large patch can't deadlock against
+        // git's output filling the stdout pipe before it has consumed stdin.
+        if let Some(input) = input {
+            let mut stdin = child.stdin.take().expect("stdin piped");
+            let buf = input.to_vec();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(&buf);
+            });
+        }
         let mut out_pipe = child.stdout.take().expect("stdout piped");
         let mut err_pipe = child.stderr.take().expect("stderr piped");
         let out_reader = std::thread::spawn(move || {
@@ -460,6 +490,31 @@ impl Repo {
         Ok((stdout, stderr, status))
     }
 
+    /// Run `cmd` with no stdin — the common case.
+    fn collect_output(&self, cmd: Command) -> Result<(Vec<u8>, String, ExitStatus)> {
+        self.collect_output_with(cmd, None)
+    }
+
+    /// The shared tail of the erroring `run*` variants: record the invocation,
+    /// then map a non-zero exit to [`Error::Git`].
+    fn finish(
+        &self,
+        arg_vec: Vec<String>,
+        stdout: Vec<u8>,
+        stderr: String,
+        status: ExitStatus,
+    ) -> Result<GitOutput> {
+        self.record_git(&arg_vec, status.code(), &stderr);
+        if !status.success() {
+            return Err(Error::Git {
+                args: arg_vec,
+                status: status.code(),
+                stderr,
+            });
+        }
+        Ok(GitOutput { stdout, stderr })
+    }
+
     /// Like [`run`](Self::run) but with one extra environment variable set.
     /// Used to point `GIT_EDITOR` at the user's editor for an interactive
     /// `git commit` (which blocks until the editor exits), without disturbing
@@ -474,28 +529,10 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let output = self
-            .git()
-            .env(key, value)
-            .args(&arg_vec)
-            .output()
-            .map_err(|source| Error::Spawn { source })?;
-
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record_git(&arg_vec, output.status.code(), &stderr);
-
-        if !output.status.success() {
-            return Err(Error::Git {
-                args: arg_vec,
-                status: output.status.code(),
-                stderr,
-            });
-        }
-
-        Ok(GitOutput {
-            stdout: output.stdout,
-            stderr,
-        })
+        let mut cmd = self.git();
+        cmd.env(key, value).args(&arg_vec);
+        let (stdout, stderr, status) = self.collect_output(cmd)?;
+        self.finish(arg_vec, stdout, stderr, status)
     }
 
     /// Like [`run`](Self::run) but feeds `input` to git's stdin. Used to pipe
@@ -510,43 +547,13 @@ impl Repo {
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
 
-        let mut child = self
-            .git()
-            .args(&arg_vec)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| Error::Spawn { source })?;
-
-        // Write the whole input, then drop the handle to signal EOF. Ignore a
-        // write error: if git exited early (e.g. it rejected the patch) the
-        // pipe breaks here, but git's real status + stderr are the authoritative
-        // signal — so always wait and report those rather than a generic
-        // broken-pipe error.
-        {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
-            let _ = stdin.write_all(input);
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|source| Error::Spawn { source })?;
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record_git(&arg_vec, output.status.code(), &stderr);
-
-        if !output.status.success() {
-            return Err(Error::Git {
-                args: arg_vec,
-                status: output.status.code(),
-                stderr,
-            });
-        }
-
-        Ok(GitOutput {
-            stdout: output.stdout,
-            stderr,
-        })
+        let mut cmd = self.git();
+        cmd.args(&arg_vec);
+        // Route through collect_output_with so the stdin path also honors the
+        // cancel flag and timeout (a wedged hook reading the patch can't hang
+        // forever, and C-g/Esc kills it).
+        let (stdout, stderr, status) = self.collect_output_with(cmd, Some(input))?;
+        self.finish(arg_vec, stdout, stderr, status)
     }
 
     /// Run `git <args>` where git would normally open the **sequence editor**
