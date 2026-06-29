@@ -1479,7 +1479,7 @@ impl StatusView {
                     Ok(run) => {
                         // Cap the toast, pointing to the `$` log (with its
                         // current key) for the rest when the output is long.
-                        let log_key = current_key(&this.keymap, "git-log", Some("$"));
+                        let log_key = current_key(&this.keymap, "command-log", Some("$"));
                         let toast = command_toast(&run, log_key.as_deref());
                         this.set_status(toast, run.ok, cx);
                     }

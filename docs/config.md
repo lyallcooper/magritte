@@ -135,7 +135,7 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y` | Copy the selection |
 | `settings` | `,` | Open Settings |
-| `git-log` | `$` | Open the git command log |
+| `command-log` | `$` | Open the command log |
 | `move-down` | `j` | Move cursor down |
 | `move-up` | `k` | Move cursor up |
 | `goto-top` | `g g` | Jump to top |
