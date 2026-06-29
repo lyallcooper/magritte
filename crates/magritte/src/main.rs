@@ -4769,12 +4769,16 @@ impl StatusView {
             // The plain command keys (`c`, `s`/`S`, `O`, `F`, `enter`, `v`, …)
             // live there now, not as arms above — the single source of dispatch.
             _ => {
-                if Self::is_dispatch_key(&self.keymap, &cased) {
-                    return self.run_dispatch(&cased, window, cx);
+                // Resolve on the full chord, so a modifier binding (e.g.
+                // `[keymap] "ctrl-d" = "commit"`) dispatches; for a plain/shifted
+                // key the chord is just its cased form, so nothing else changes.
+                let chord = chord(&key, shift, ctrl, alt, cmd);
+                if Self::is_dispatch_key(&self.keymap, &chord) {
+                    return self.run_dispatch(&chord, window, cx);
                 }
                 // An unbound key: tell the user (emacs' "… is undefined"). Only
-                // for plain/shifted keys — keys held with cmd/alt/ctrl are OS or
-                // editor shortcuts we don't model in the keymap, so a "z is
+                // for plain/shifted keys — an unbound key held with cmd/alt/ctrl
+                // is usually an OS or editor shortcut we don't model, so a "z is
                 // unbound" toast for cmd-z would be misleading.
                 if !cmd && !alt && !ctrl {
                     self.report_unbound(&cased, cx);
