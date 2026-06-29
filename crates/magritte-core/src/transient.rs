@@ -649,7 +649,13 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Switch(Switch::new("-r", "--rebase", "Rebase local commits"))],
+                suffixes: vec![Suffix::Switch(Switch::negatable(
+                    "-r",
+                    "--rebase",
+                    "--no-rebase",
+                    "pull.rebase",
+                    "Rebase local commits",
+                ))],
             },
             Group {
                 title: plain_title("Pull from"),
@@ -691,7 +697,13 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Switch(Switch::new("-p", "--prune", "Prune deleted branches"))],
+                suffixes: vec![Suffix::Switch(Switch::negatable(
+                    "-p",
+                    "--prune",
+                    "--no-prune",
+                    "fetch.prune",
+                    "Prune deleted branches",
+                ))],
             },
             Group {
                 title: plain_title("Fetch from"),
@@ -734,7 +746,13 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::on("-a", "--autostash", "Stash uncommitted changes around the rebase")),
-                    Suffix::Switch(Switch::new("-s", "--autosquash", "Honor fixup!/squash! commits")),
+                    Suffix::Switch(Switch::negatable(
+                        "-s",
+                        "--autosquash",
+                        "--no-autosquash",
+                        "rebase.autoSquash",
+                        "Honor fixup!/squash! commits",
+                    )),
                 ],
             },
             Group {
