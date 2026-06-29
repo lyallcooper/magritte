@@ -1409,7 +1409,7 @@ fn current_key(
 /// `dispatch_menu_covers_every_command` test cross-checks it against the keys
 /// `run_dispatch` actually handles, so a command can't be shown-but-dead or
 /// invocable-but-hidden.
-fn dispatch_menu(keymap: &HashMap<String, String>) -> Transient {
+fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::Config) -> Transient {
     let group = |cat: Category| Group {
         title: transient::plain_title(cat.title()),
         // Navigation motions have `menu: false` but belong in the menu's
@@ -1421,7 +1421,7 @@ fn dispatch_menu(keymap: &HashMap<String, String>) -> Transient {
                 current_key(keymap, c.id, c.key).map(|keys| {
                     Suffix::Info(transient::Info {
                         keys,
-                        description: c.title,
+                        description: c.title.to_string(),
                     })
                 })
             })
@@ -1433,9 +1433,9 @@ fn dispatch_menu(keymap: &HashMap<String, String>) -> Transient {
     let mut essential = group(Category::Essential);
     essential.suffixes.push(Suffix::Info(transient::Info {
         keys: ":".to_string(),
-        description: "Command palette",
+        description: "Command palette".to_string(),
     }));
-    Transient {
+    let mut menu = Transient {
         title: transient::plain_title("Help"),
         groups: vec![
             group(Category::Commands),
@@ -1444,7 +1444,27 @@ fn dispatch_menu(keymap: &HashMap<String, String>) -> Transient {
             essential,
             group(Category::Application),
         ],
+    };
+    // User `[[command]]`s that are bound to a key show too, in their configured
+    // `section` (default "Commands"), creating that group if it doesn't exist.
+    for c in &config.commands {
+        let Some(keys) = current_key(keymap, &c.id, None) else {
+            continue; // unbound → palette-only, like keyless built-ins
+        };
+        let info = Suffix::Info(transient::Info {
+            keys,
+            description: c.title.clone(),
+        });
+        let section = c.section.as_deref().unwrap_or("Commands");
+        match menu.groups.iter_mut().find(|g| group_text(g) == section) {
+            Some(g) => g.suffixes.push(info),
+            None => menu.groups.push(Group {
+                title: transient::plain_title(section),
+                suffixes: vec![info],
+            }),
+        }
     }
+    menu
 }
 
 /// Resolved colors for one render, derived from gpui-component's active theme
@@ -5516,12 +5536,12 @@ impl StatusView {
             ":" => return self.open_command_palette(window, cx),
             ";" if shift => return self.open_command_palette(window, cx),
             "?" => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap)));
+                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap, &self.config)));
                 cx.notify();
                 return;
             }
             "/" if shift => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap)));
+                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap, &self.config)));
                 cx.notify();
                 return;
             }
@@ -6377,7 +6397,7 @@ impl StatusView {
                     .group(KBD_ROW_GROUP)
                     .child(track_target(key.clone()))
                     .child(self.key_tokens(&i.keys))
-                    .child(self.hover_label(i.description, self.palette.fg))
+                    .child(self.hover_label(&i.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
                     })
@@ -8468,7 +8488,7 @@ impl Render for StatusView {
                                 .build(window, cx)
                             })
                             .on_click(cx.listener(|this, _, _window, cx| {
-                                this.popup = Some(Popup::Dispatch(dispatch_menu(&this.keymap)));
+                                this.popup = Some(Popup::Dispatch(dispatch_menu(&this.keymap, &this.config)));
                                 cx.notify();
                             })),
                     ),
@@ -8908,8 +8928,9 @@ mod tests {
             }
         }
         // Every menu command is actually reachable from the `?` dispatch menu.
-        let km = build_keymap(&config::Config::default()).0;
-        let menu: HashSet<String> = dispatch_menu(&km)
+        let config = config::Config::default();
+        let km = build_keymap(&config).0;
+        let menu: HashSet<String> = dispatch_menu(&km, &config)
             .groups
             .iter()
             .flat_map(|g| &g.suffixes)
@@ -9088,6 +9109,7 @@ mod tests {
             title: "WIP".into(),
             run: "git commit -a -m WIP".into(),
             refresh: true,
+            section: None,
         });
         config.keymap.insert("X".into(), "user.wip".into());
         config.keymap.insert("Y".into(), "user.nope".into()); // unknown id
@@ -9146,6 +9168,7 @@ mod tests {
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
             refresh: true,
+            section: None,
         });
         // Injected into the commit transient at a free key → reached via `c W`.
         config
@@ -9178,6 +9201,7 @@ mod tests {
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
             refresh: true,
+            section: None,
         });
         config
             .transient
@@ -9270,8 +9294,9 @@ mod tests {
         // key here (with a comment) when an exception is genuinely warranted.
         const OVERRIDES: &[&str] = &[];
 
-        let km = build_keymap(&config::Config::default()).0;
-        let menu: HashSet<String> = dispatch_menu(&km)
+        let config = config::Config::default();
+        let km = build_keymap(&config).0;
+        let menu: HashSet<String> = dispatch_menu(&km, &config)
             .groups
             .iter()
             .flat_map(|g| &g.suffixes)

@@ -312,6 +312,7 @@ refresh = true                  # re-read status afterward (default true)
 id = "user.wip"
 title = "WIP commit"
 run = "git commit -a -m WIP"
+section = "My commands"         # which ? group to list it under when bound
 ```
 
 - **`run` is a shell command**, executed with `sh -c` in the repo root — so
@@ -325,6 +326,9 @@ run = "git commit -a -m WIP"
   from the `:` palette by its `title`. Its output shows as a toast (a failure
   stays until dismissed); long output is cut off with a pointer to the `$` log,
   which records the command and its full output.
+- **Shows in the `?` menu** when bound to a key — under the `section` group
+  (default "Commands"); a section title that doesn't exist is created. Unbound
+  commands stay palette-only.
 - **Destructive commands confirm first** — one whose words include `clean`,
   `--hard`, or `--force` prompts before running, like the built-in destructive
   operations.

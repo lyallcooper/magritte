@@ -144,6 +144,10 @@ pub struct CustomCommand {
     /// Re-read status after running (default true).
     #[serde(default = "default_true")]
     pub refresh: bool,
+    /// Which `?`-help group to list this command under when it's bound to a key
+    /// (the section title; created if it doesn't exist). Defaults to "Commands".
+    #[serde(default)]
+    pub section: Option<String>,
 }
 
 /// A `[transient.<id>]` injection. A bare string is a command id (an action),
