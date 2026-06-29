@@ -214,6 +214,8 @@ Inside any transient, **`Ctrl-s`** saves the current switch toggles as that
 transient's defaults (magit's `transient-save`); reopening it starts from them.
 Saved sets are written to `transient-values.toml` beside the config (e.g.
 `commit = ["-a", "-s"]`) — delete an entry to return to the built-in defaults.
+The file is re-read live, like the config: editing it by hand takes effect on
+the next transient you open, no restart needed.
 A config-derived switch (above) is only recorded when it differs from the
 configured default — as its flag (forced on) or its negation (forced off, e.g.
 `commit = ["--no-gpg-sign"]`); leaving it untouched keeps following the config,
