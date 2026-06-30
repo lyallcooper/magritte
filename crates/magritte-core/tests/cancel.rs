@@ -75,6 +75,43 @@ fn cancel_kills_a_blocking_command_promptly() {
 }
 
 #[test]
+fn cancel_does_not_orphan_the_index_lock() {
+    // A commit that stages (`-a`, or an amend/extend incorporating changes)
+    // holds `.git/index.lock` across the pre-commit hook. Cancelling must
+    // SIGTERM git so its lockfile handler unlinks the lock before exiting — a
+    // SIGKILL would orphan it and wedge the next commit with "Unable to create
+    // '.git/index.lock': File exists". `commit -a` is the simplest invocation
+    // that reliably holds the lock through a cancellable (hook) window.
+    let t = TestRepo::new();
+    t.write("f", "a\n");
+    t.commit_all("init");
+    install_blocking_hook(&t, 5);
+    t.write("f", "b\n"); // unstaged tracked change; `-a` stages it (locks the index)
+
+    let lock = t.path().join(".git/index.lock");
+    let (repo, cancel) = open(&t).cancellable();
+    let worker = thread::spawn(move || repo.run(["commit", "-a", "-m", "x"]));
+
+    // Cancel only once git is in the hook holding the lock.
+    let start = Instant::now();
+    while !lock.exists() && start.elapsed() < Duration::from_secs(3) {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(lock.exists(), "commit -a should hold the index lock during the hook");
+    cancel.store(true, Ordering::Relaxed);
+
+    let res = worker.join().unwrap();
+    assert!(matches!(res, Err(Error::Cancelled)), "expected Cancelled, got {res:?}");
+    assert!(!lock.exists(), "index.lock was orphaned after a cancelled commit");
+    // The lock is gone, so a fresh commit succeeds (--no-verify skips the hook,
+    // which the cancelled run left running in the background).
+    assert!(
+        open(&t).run(["commit", "-a", "-m", "y", "--no-verify"]).is_ok(),
+        "a commit after the cancelled one should succeed"
+    );
+}
+
+#[test]
 fn cancellable_path_drains_large_output_without_truncating() {
     // > 256 KB of stdout: the case that deadlocks a poll loop which doesn't
     // drain the pipe while waiting.

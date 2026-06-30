@@ -151,6 +151,40 @@ fn prepare_spawn(cmd: &mut Command) {
     }
 }
 
+/// How long, after SIGTERM, to let a cancelled child clean up before we SIGKILL
+/// it. Runs on a background worker thread, so it never blocks the UI.
+const TERMINATE_GRACE_MS: u64 = 300;
+
+/// Stop a child we're cancelling. SIGTERM first, so a git process runs its
+/// cleanup — git's lockfile handler unlinks any `*.lock` it holds, notably
+/// `.git/index.lock` from an interrupted `commit`/`add`/`stash`. A plain
+/// SIGKILL can't be caught, so it would orphan that lock and wedge the next
+/// command with "Unable to create '.git/index.lock': File exists". SIGKILL is
+/// the fallback if the child ignores SIGTERM (e.g. wedged on the network).
+#[cfg(unix)]
+fn terminate(child: &mut std::process::Child) {
+    // SAFETY: `child` is alive and owned by us until we reap it below, so its
+    // pid is valid and can't have been recycled.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_millis(TERMINATE_GRACE_MS);
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return; // exited (and reaped) after cleaning up
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(unix))]
+fn terminate(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl GitOutput {
     /// Trimmed stdout as text (lossy UTF-8).
     fn stdout_text(&self) -> String {
@@ -308,7 +342,13 @@ impl Repo {
         cmd.arg("-C")
             .arg(&self.workdir)
             // Keep output stable and machine-readable regardless of user config.
-            .args(["-c", "core.quotepath=false"]);
+            .args(["-c", "core.quotepath=false"])
+            // Don't take the *optional* index lock: read-only commands like
+            // `status`/`diff` otherwise grab `.git/index.lock` to write back a
+            // refreshed stat cache, and we cancel (SIGKILL) superseded reads on
+            // every overlapping refresh — which would orphan that lock. Commands
+            // that *require* the lock (commit, add, …) are unaffected.
+            .env("GIT_OPTIONAL_LOCKS", "0");
         prepare_spawn(&mut cmd);
         cmd
     }
@@ -482,8 +522,10 @@ impl Repo {
                 .is_some_and(|c| c.load(Ordering::Relaxed));
             let timed_out = self.timeout.is_some_and(|t| start.elapsed() >= t);
             if cancelled || timed_out {
-                let _ = child.kill();
-                let _ = child.wait();
+                // SIGTERM (then SIGKILL) so git can unlink any lock it holds —
+                // e.g. `.git/index.lock` from a cancelled commit — rather than
+                // orphaning it.
+                terminate(&mut child);
                 // Don't join the reader threads: we discard the output, and a
                 // killed git can leave a grandchild (e.g. a hook) holding the
                 // pipe's write end open, which would block the read until *it*
