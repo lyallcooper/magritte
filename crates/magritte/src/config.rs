@@ -85,6 +85,17 @@ pub struct Config {
     /// default; set true to show it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub show_tags: bool,
+    /// Branches considered "published" (magit's `magit-published-branches`):
+    /// amending/rewording/rebasing a commit already on one of these warns
+    /// before rewriting shared history. A commit counts as on a branch when
+    /// it's an ancestor of it; branches absent from the repo are ignored (so
+    /// the default names both `origin/main` and `origin/master`). Empty = never
+    /// warn.
+    #[serde(
+        default = "default_published_branches",
+        skip_serializing_if = "is_default_published_branches"
+    )]
+    pub published_branches: Vec<String>,
     /// User-defined commands (`[[command]]`): a shell command surfaced in the
     /// `:` palette and bindable in `[keymap]` by `id`. Skipped when empty so a
     /// saved config doesn't write `command = []` — that's an empty *array*, and
@@ -285,6 +296,10 @@ fn default_which_key_delay_ms() -> u64 {
     1000
 }
 
+fn default_published_branches() -> Vec<String> {
+    vec!["origin/main".to_string(), "origin/master".to_string()]
+}
+
 // `skip_serializing_if` predicates: a saved config omits keys left at their
 // default, so the file stays minimal (and a `command = []` can't break a later
 // hand-added `[[command]]`). Each returns true when the field is at its default.
@@ -309,6 +324,9 @@ fn is_default_status(s: &StatusConfig) -> bool {
 fn is_default_fetch(f: &FetchConfig) -> bool {
     *f == FetchConfig::default()
 }
+fn is_default_published_branches(v: &[String]) -> bool {
+    v == default_published_branches().as_slice()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -331,6 +349,7 @@ impl Default for Config {
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
             show_tags: false,
+            published_branches: default_published_branches(),
             commands: Vec::new(),
             status: StatusConfig::default(),
             fetch: FetchConfig::default(),

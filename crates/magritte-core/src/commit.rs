@@ -75,18 +75,33 @@ impl Repo {
         Ok(out.first_line())
     }
 
-    /// Remote-tracking branches that contain `rev` — i.e. where it's already
-    /// been published. Empty means unpushed. Used to warn (naming the branch)
-    /// before amending/rewording a pushed commit (rewriting published history).
-    pub fn published_branches(&self, rev: &str) -> Result<Vec<String>> {
-        let out = self.run(["branch", "-r", "--contains", rev])?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            // Skip the "origin/HEAD -> origin/main" symbolic-ref line.
-            .filter(|l| !l.is_empty() && !l.contains(" -> "))
-            .map(str::to_string)
-            .collect())
+    /// Whether `rev` is already published — i.e. contained in one of the
+    /// configured `published` branches (it's an ancestor of that branch).
+    /// Returns the first matching branch (to name it in the "already pushed to
+    /// …" warning before a history rewrite) or `None`.
+    ///
+    /// This mirrors magit's `magit-commit-amend-assert`: a bounded
+    /// `merge-base --is-ancestor` test against a small, configurable list
+    /// (`magit-published-branches`), *not* a scan of every remote-tracking ref
+    /// (`branch -r --contains`) — which is seconds-slow on a large repo (~14s
+    /// across 58k refs), worst of all for the common case of amending an
+    /// unpushed commit (it must check every ref to conclude "no"). Branches that
+    /// don't exist here are simply not matched (the default list names both
+    /// `origin/main` and `origin/master`).
+    pub fn published_on(&self, rev: &str, published: &[String]) -> Option<String> {
+        for branch in published {
+            // `merge-base --is-ancestor` is one cheap test per branch — and it
+            // returns false (not errors out of this loop) for a missing ref, so
+            // no separate existence check is needed. It's hidden from the `$`
+            // log as a query.
+            if self
+                .succeeds(["merge-base", "--is-ancestor", rev, branch.as_str()])
+                .unwrap_or(false)
+            {
+                return Some(branch.clone());
+            }
+        }
+        None
     }
 
     /// Amend HEAD with the staged changes, keeping its message (`--no-edit`).

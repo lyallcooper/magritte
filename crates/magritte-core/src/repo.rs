@@ -94,7 +94,7 @@ impl GitCommand {
         match self.args.first().map(String::as_str) {
             Some(
                 "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref"
-                | "ls-files" | "symbolic-ref" | "describe" | "log",
+                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base",
             ) => true,
             // Config *reads* (e.g. resolving the push-remote) are queries; a
             // config write (setting one) is a user action, so keep it visible.
