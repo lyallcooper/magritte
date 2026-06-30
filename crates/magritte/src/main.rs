@@ -2173,6 +2173,15 @@ impl StatusView {
         // The distinct push target (triangular workflow), for the pushremote
         // sections; `None` when the push target is the upstream.
         let push = head.push.as_deref();
+        // When there's nothing staged/unstaged/untracked, lead with the clean
+        // notice — above the stashes/recent/log listings, not buried under them.
+        if status.is_clean() {
+            rows.push(spacer());
+            rows.push(plain(
+                "Nothing to commit, working tree clean",
+                self.palette.dim,
+            ));
+        }
         for id in self.config.status.section_ids() {
             let Some(section) = SectionId::from_config_id(&id) else {
                 continue;
@@ -2276,14 +2285,6 @@ impl StatusView {
                 }
                 SectionId::Ignored => self.push_ignored_section(&mut rows),
             }
-        }
-
-        if status.is_clean() {
-            rows.push(spacer());
-            rows.push(plain(
-                "Nothing to commit, working tree clean",
-                self.palette.dim,
-            ));
         }
 
         self.rows = rows;
@@ -3788,17 +3789,14 @@ impl StatusView {
             "g" if event.keystroke.modifiers.control => "escape",
             k => k,
         };
-        // While the "discard message?" confirmation is up, capture y / n / esc.
+        // While the "discard message?" confirmation is up, it owns the keyboard:
+        // swallow every key so none reaches the message input (otherwise typing
+        // would edit the message behind the prompt). Only y / n / esc act.
         if self.editor().is_some_and(|e| e.confirming_cancel) {
+            cx.stop_propagation();
             match key {
-                "y" => {
-                    cx.stop_propagation();
-                    self.discard_editor(window, cx);
-                }
-                "n" | "escape" => {
-                    cx.stop_propagation();
-                    self.keep_editing(window, cx);
-                }
+                "y" => self.discard_editor(window, cx),
+                "n" | "escape" => self.keep_editing(window, cx),
                 _ => {}
             }
             return;
