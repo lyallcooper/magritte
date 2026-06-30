@@ -191,8 +191,9 @@ impl StatusView {
                 window,
                 |this, input, ev: &InputEvent, _w, cx| {
                     if matches!(ev, InputEvent::Change) {
-                        this.config.commit_editor = input.read(cx).value().trim().to_string();
-                        config::save(&this.config);
+                        let val = input.read(cx).value().trim().to_string();
+                        this.edit_global(|c| c.commit_editor = val.clone());
+                        config::save(&this.config_global);
                     }
                 },
             ),
@@ -202,20 +203,22 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, _cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.config.editor = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
+                        let val = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
                             String::new()
                         } else {
                             name.to_string()
                         };
-                        config::save(&this.config);
+                        this.edit_global(|c| c.editor = val.clone());
+                        config::save(&this.config_global);
                     }
                 },
             ),
             #[cfg(not(target_os = "macos"))]
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
                 if matches!(ev, InputEvent::Change) {
-                    this.config.editor = input.read(cx).value().trim().to_string();
-                    config::save(&this.config);
+                    let val = input.read(cx).value().trim().to_string();
+                    this.edit_global(|c| c.editor = val.clone());
+                    config::save(&this.config_global);
                 }
             }),
             cx.subscribe_in(
@@ -227,7 +230,7 @@ impl StatusView {
                             .iter()
                             .find(|(l, _)| *l == label.as_ref())
                             .map_or("auto", |(_, v)| v);
-                        this.config.appearance = value.to_string();
+                        this.edit_global(|c| c.appearance = value.to_string());
                         this.apply_and_save(cx);
                     }
                 },
@@ -237,7 +240,7 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.config.light_theme = name.to_string();
+                        this.edit_global(|c| c.light_theme = name.to_string());
                         this.apply_and_save(cx);
                     }
                 },
@@ -247,7 +250,7 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.config.dark_theme = name.to_string();
+                        this.edit_global(|c| c.dark_theme = name.to_string());
                         this.apply_and_save(cx);
                     }
                 },
@@ -258,11 +261,12 @@ impl StatusView {
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
                         // "System Default" → empty config (adaptive system mono).
-                        this.config.font = if name.as_ref() == theme::SYSTEM_FONT_LABEL {
+                        let val = if name.as_ref() == theme::SYSTEM_FONT_LABEL {
                             String::new()
                         } else {
                             name.to_string()
                         };
+                        this.edit_global(|c| c.font = val.clone());
                         this.font = theme::resolve_font(&this.config, cx);
                         // The UI font may track the editor font ("Same as
                         // editor"), so re-resolve it too.
@@ -276,13 +280,14 @@ impl StatusView {
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
                     if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.config.ui_font = match name.as_ref() {
+                        let val = match name.as_ref() {
                             // Reuse the monospace font (no proportional UI).
                             theme::UI_FONT_DEFAULT_LABEL => String::new(),
                             // Platform proportional UI font.
                             theme::SYSTEM_FONT_LABEL => theme::SYSTEM_UI_FONT.to_string(),
                             other => other.to_string(),
                         };
+                        this.edit_global(|c| c.ui_font = val.clone());
                         this.ui_font = theme::resolve_ui_font(&this.config, cx);
                         this.apply_and_save(cx);
                     }
@@ -305,10 +310,19 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Re-apply the theme for the current config and persist it.
+    /// Apply a global-settings change to both the live merged config (for the
+    /// instant preview) and the global-only config that's persisted — so an
+    /// in-app save writes just the user's edit to the global file, never the
+    /// repo overlay that's merged into `self.config`.
+    pub(crate) fn edit_global(&mut self, edit: impl Fn(&mut config::Config)) {
+        edit(&mut self.config);
+        edit(&mut self.config_global);
+    }
+
+    /// Re-apply the theme for the current config and persist the global config.
     pub(crate) fn apply_and_save(&mut self, cx: &mut Context<Self>) {
         self.reapply_theme(cx);
-        config::save(&self.config);
+        config::save(&self.config_global);
     }
 
     /// Tab moves focus to the next settings control, cycling through every one

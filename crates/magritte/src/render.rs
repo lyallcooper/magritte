@@ -1821,10 +1821,11 @@ impl StatusView {
             })
     }
 
-    /// Persist the current config (so the file exists even if never edited) and
-    /// return its path.
+    /// Persist the global config (so the file exists even if never edited) and
+    /// return its path. Writes the global-only config, not the merged one, so
+    /// opening the global config never bakes in this repo's overlay.
     pub(crate) fn saved_config_path(&self) -> Option<PathBuf> {
-        config::save(&self.config);
+        config::save(&self.config_global);
         config::path()
     }
 
@@ -1900,8 +1901,12 @@ impl StatusView {
             move |on, _window, cx| {
                 let on = *on;
                 view.update(cx, |this, cx| {
+                    // Apply to both the live merged config and the global-only
+                    // config that's persisted, so the save doesn't leak the repo
+                    // overlay into the global file.
                     set(&mut this.config, on);
-                    config::save(&this.config);
+                    set(&mut this.config_global, on);
+                    config::save(&this.config_global);
                     if refetch {
                         this.refresh(cx);
                     } else {
