@@ -2015,7 +2015,7 @@ impl StatusView {
             } => {
                 let lead = match expanded {
                     Some(e) => chevron(*e, self.palette.dim).into_any_element(),
-                    None => div().w(px(14.0)).into_any_element(),
+                    None => div().w(px(14.0)).flex_shrink_0().into_any_element(),
                 };
                 let mut el = el.child(lead);
                 // Only files with a status word get the fixed-width status
@@ -2024,6 +2024,7 @@ impl StatusView {
                     el = el.child(
                         div()
                             .w(px(STATUS_COL_WIDTH))
+                            .flex_shrink_0()
                             .text_color(*status_color)
                             .child(SharedString::from(status.clone())),
                     );
@@ -2072,8 +2073,9 @@ impl StatusView {
                 refs,
                 ..
             } => {
-                let mut el = el.child(div().w(px(14.0))).child(
+                let mut el = el.child(div().w(px(14.0)).flex_shrink_0()).child(
                     div()
+                        .flex_shrink_0()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(short_hash.clone())),
                 );
@@ -2088,6 +2090,7 @@ impl StatusView {
                         RefKind::Remote => (self.palette.section, false),
                     };
                     let mut chip = div()
+                        .flex_shrink_0()
                         .text_color(color)
                         .child(SharedString::from(label.clone()));
                     if bold {
@@ -2098,9 +2101,10 @@ impl StatusView {
                 el.child(SharedString::from(subject.clone()))
             }
             RowKind::Stash { reference, message } => el
-                .child(div().w(px(14.0)))
+                .child(div().w(px(14.0)).flex_shrink_0())
                 .child(
                     div()
+                        .flex_shrink_0()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(reference.clone())),
                 )

@@ -4195,6 +4195,10 @@ fn chevron(expanded: bool, color: Hsla) -> gpui_component::Icon {
     };
     gpui_component::Icon::new(name)
         .size(px(14.0))
+        // A row's leading gutter must never shrink: flex items default to
+        // flex-shrink 1, so on a row wide enough to overflow, a shrinking
+        // chevron/spacer pulls everything after it left and breaks alignment.
+        .flex_shrink_0()
         .text_color(color)
 }
 
