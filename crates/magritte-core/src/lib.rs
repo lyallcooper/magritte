@@ -42,7 +42,7 @@ pub use ignore::IgnoreDest;
 pub use log::LogEntry;
 pub use rebase::{RebaseAction, RebaseStep};
 pub use remote::{RemoteTargets, Upstream};
-pub use repo::{CommandRun, GitCommand, GitOutput, Repo};
+pub use repo::{CommandRun, GitCommand, GitOutput, Repo, TagDistance, TagsAround};
 pub use reset::ResetMode;
 pub use sequence::{Sequence, SequenceKind, SequenceStep};
 pub use stage::ApplyTarget;

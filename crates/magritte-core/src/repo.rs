@@ -40,6 +40,14 @@ pub struct Repo {
     timeout: Option<Duration>,
 }
 
+/// A tag name paired with the number of commits between it and HEAD.
+pub type TagDistance = (String, usize);
+/// The status "Tag/Tags" display: the nearest tag reachable from HEAD (with
+/// commits since it) and the nearest tag that *contains* HEAD (with commits
+/// until it). Either side is `None` when there's no such tag. See
+/// [`Repo::tags_around`].
+pub type TagsAround = (Option<TagDistance>, Option<TagDistance>);
+
 /// One recorded command invocation, for the command log (magit's process
 /// buffer). Usually git, but a user `!` shell escape records its program too.
 #[derive(Debug, Clone)]
@@ -664,14 +672,14 @@ impl Repo {
     /// tag that *contains* HEAD (with commits-until) — magit's status "Tag/Tags"
     /// header (`magit-get-current-tag` / `magit-get-next-tag`). Either is `None`
     /// when there's no such tag.
-    pub fn tags_around(&self) -> (Option<(String, usize)>, Option<(String, usize)>) {
+    pub fn tags_around(&self) -> TagsAround {
         let current = self.current_tag();
         let next = self.next_tag(current.as_ref().map(|(t, _)| t.as_str()));
         (current, next)
     }
 
     /// `git describe --long --tags` → `(tag, commits-since)`; `None` if untagged.
-    fn current_tag(&self) -> Option<(String, usize)> {
+    fn current_tag(&self) -> Option<TagDistance> {
         let out = self
             .run_optional(["describe", "--long", "--tags"])
             .ok()
@@ -685,7 +693,7 @@ impl Repo {
 
     /// `git describe --contains HEAD` → `(tag, commits-until)` for the nearest
     /// tag HEAD is an ancestor of; `None` if none, or if it's the current tag.
-    fn next_tag(&self, current: Option<&str>) -> Option<(String, usize)> {
+    fn next_tag(&self, current: Option<&str>) -> Option<TagDistance> {
         let out = self
             .run_optional(["describe", "--contains", "HEAD"])
             .ok()

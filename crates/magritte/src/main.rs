@@ -84,6 +84,7 @@ use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest, LineKind,
     LogEntry, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Stash, Status,
+    TagsAround,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -1201,7 +1202,7 @@ struct StatusView {
     worktree_scope_dir: Option<PathBuf>,
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
     /// tag ahead + commits-until). Refreshed with status when `show_tags` is on.
-    tag_info: (Option<(String, usize)>, Option<(String, usize)>),
+    tag_info: TagsAround,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
     /// Cached list of all font families, for the UI-font picker.
