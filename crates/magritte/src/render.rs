@@ -11,7 +11,7 @@ use gpui::{
     div, px, AnyElement, Context, Entity, Hsla, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
-use gpui_component::button::{Button, ButtonVariants, DropdownButton};
+use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::Input;
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
@@ -1791,8 +1791,8 @@ impl StatusView {
     pub(crate) fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
         let focus = self.focus.clone();
         let main = Button::new("open-config-main")
-            .label("Open config file")
-            .ghost()
+            .label("Open global config")
+            .outline()
             .small()
             .icon(IconName::ExternalLink)
             .on_click({
@@ -1802,7 +1802,7 @@ impl StatusView {
                 }
             });
         DropdownButton::new("open-config")
-            .ghost()
+            .outline()
             .small()
             .button(main)
             .dropdown_menu(move |menu, _window, _cx| {
@@ -1825,7 +1825,7 @@ impl StatusView {
         let focus = self.focus.clone();
         let main = Button::new("open-repo-config-main")
             .label("Open repo config")
-            .ghost()
+            .outline()
             .small()
             .icon(IconName::ExternalLink)
             .on_click({
@@ -1835,7 +1835,7 @@ impl StatusView {
                 }
             });
         DropdownButton::new("open-repo-config")
-            .ghost()
+            .outline()
             .small()
             .button(main)
             .dropdown_menu(move |menu, _window, _cx| {

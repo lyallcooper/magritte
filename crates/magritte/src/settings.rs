@@ -6,8 +6,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, SharedString, Subscription, Window};
+use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
 use gpui_component::input::{Input, InputState};
+use gpui_component::scroll::ScrollableElement;
 
 use crate::*;
 
@@ -38,6 +39,9 @@ pub(crate) struct SettingsState {
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
     /// 4=ui_font, 5=editor, 6=commit_editor).
     focus_ix: usize,
+    /// Scroll position of the settings body, so the scrollbar tracks it and the
+    /// offset persists across re-renders.
+    scroll: ScrollHandle,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
 }
@@ -299,6 +303,7 @@ impl StatusView {
             editor,
             commit_editor,
             focus_ix: 0,
+            scroll: ScrollHandle::new(),
             _subs: subs,
         });
         cx.notify();
@@ -400,17 +405,11 @@ impl StatusView {
                 )
         };
 
-        div()
-            // An id makes this a stateful element so it can scroll (and remember
-            // the offset) when the sections exceed the window height.
-            .id("settings-scroll")
+        // The content column: width-capped and left-aligned. Wrapped below in a
+        // full-width scroll container so the scrollbar sits at the window edge.
+        let content = div()
             .flex()
             .flex_col()
-            // Fill the height (like the other full-window screens) so the
-            // status bar pins to the window bottom instead of floating under
-            // the content; scroll when the sections exceed the window height.
-            .flex_grow(1.0)
-            .overflow_y_scroll()
             .w_full()
             .max_w(px(620.0))
             .p_4()
@@ -431,11 +430,19 @@ impl StatusView {
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
-                            .child(self.open_config_button(view))
-                            .when(self.repo_scope_dir.is_some(), |el| {
-                                el.child(self.open_repo_config_button(view))
-                            })
+                            // The related config buttons group tightly; the
+                            // unrelated "close" action sits further off.
+                            .gap_5()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(self.open_config_button(view))
+                                    .when(self.repo_scope_dir.is_some(), |el| {
+                                        el.child(self.open_repo_config_button(view))
+                                    }),
+                            )
                             .child(self.key_action(
                                 "settings-close",
                                 "esc",
@@ -572,7 +579,20 @@ impl StatusView {
                     ));
                 }
                 rows
-            }))
+            }));
+
+        // Full-width scroll container, so the scrollbar sits at the window edge
+        // like the other views (the content column inside is width-capped). `id`
+        // makes it stateful — it scrolls and remembers the offset; `flex_grow`
+        // fills the height so the status bar pins to the window bottom.
+        div()
+            .id("settings-scroll")
+            .flex_grow(1.0)
+            .w_full()
+            .overflow_y_scroll()
+            .track_scroll(&s.scroll)
+            .child(content)
+            .vertical_scrollbar(&s.scroll)
     }
 
     /// Write the current config (so the file exists even if untouched) and open
