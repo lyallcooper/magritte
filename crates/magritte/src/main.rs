@@ -672,6 +672,9 @@ impl Default for Palette {
 const ROW_HEIGHT: f32 = 18.0;
 /// How long a success notice lingers before auto-dismissing (seconds).
 const STATUS_FADE_SECS: u64 = 4;
+/// How long background work must run before the title-bar spinner appears, so
+/// quick operations never flash it.
+const BUSY_SPINNER_DELAY_MS: u64 = 200;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";
@@ -1115,6 +1118,16 @@ struct StatusView {
     /// config changes (and at startup): the running loop exits once its captured
     /// value is stale, so toggling auto-fetch or its interval restarts cleanly.
     auto_fetch_gen: Generation,
+    /// In-flight background operations (status reads, jobs, fetches, diff
+    /// loads). The title-bar spinner shows while this is non-zero *and* the
+    /// work outlasts a short delay — see [`StatusView::begin_activity`].
+    activity: u32,
+    /// Whether the title-bar activity spinner is currently shown. Set by the
+    /// delay timer, cleared when `activity` returns to zero.
+    busy: bool,
+    /// Scopes the spinner's delay timer so a stale arm-timer (activity already
+    /// ended) can't light the spinner after the fact.
+    busy_gen: Generation,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
@@ -1297,6 +1310,9 @@ impl StatusView {
             job_cancel: None,
             screen_gen: Generation::default(),
             auto_fetch_gen: Generation::default(),
+            activity: 0,
+            busy: false,
+            busy_gen: Generation::default(),
             pending_prefix: None,
             prefix_gen: Generation::default(),
             popup: None,
@@ -1664,6 +1680,44 @@ impl StatusView {
         self.highlights = next;
     }
 
+    /// Mark the start of a background operation. The first concurrent op arms a
+    /// short timer; if work is still in flight when it fires, the title-bar
+    /// spinner appears — so sub-threshold operations never flash it. Pair every
+    /// call with [`end_activity`](Self::end_activity) on completion.
+    fn begin_activity(&mut self, cx: &mut Context<Self>) {
+        self.activity += 1;
+        if self.activity != 1 {
+            return; // already counting; one arm-timer covers the whole busy span
+        }
+        let gen = self.busy_gen.bump();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(BUSY_SPINNER_DELAY_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.busy_gen.is_current(gen) && this.activity > 0 && !this.busy {
+                    this.busy = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Mark the end of a background operation. When the last one finishes the
+    /// spinner is retired and any pending arm-timer is invalidated.
+    fn end_activity(&mut self, cx: &mut Context<Self>) {
+        self.activity = self.activity.saturating_sub(1);
+        if self.activity == 0 {
+            self.busy_gen.bump();
+            if self.busy {
+                self.busy = false;
+                cx.notify();
+            }
+        }
+    }
+
     /// The repo cloned for a background *read* (status/diff/prefetch), tagged
     /// with the current generation's cancel flag so a later `refresh` kills it.
     fn read_repo(&self) -> Option<magritte_core::Repo> {
@@ -1704,6 +1758,7 @@ impl StatusView {
             .iter()
             .any(|s| s == "ignored");
         let want_tags = self.config.show_tags;
+        self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let (result, sequence, sections, tag_info) = cx
                 .background_executor()
@@ -1745,6 +1800,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.end_activity(cx);
                 if !this.generation.is_current(generation) {
                     return;
                 }
@@ -1848,6 +1904,7 @@ impl StatusView {
         };
         self.diffs.insert(key.clone(), DiffState::Loading);
         let generation = self.generation.current();
+        self.begin_activity(cx);
 
         cx.spawn(async move |this, cx| {
             // Off the UI thread: load the diff and resolve the language
@@ -1862,6 +1919,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.end_activity(cx);
                 if !this.generation.is_current(generation) {
                     return;
                 }

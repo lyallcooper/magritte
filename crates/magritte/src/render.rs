@@ -15,6 +15,7 @@ use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::input::Input;
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::spinner::Spinner;
 use gpui_component::switch::Switch;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
@@ -1001,6 +1002,12 @@ impl StatusView {
             .bg(self.palette.bg)
             .border_color(self.palette.border)
             .child(info)
+            // A subtle spinner for background activity that outlasts the delay
+            // threshold. The title bar lays children out `justify_between`, so a
+            // second child sits at the far (right) end.
+            .when(self.busy, |bar| {
+                bar.child(Spinner::new().xsmall().color(self.palette.dim))
+            })
     }
 
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
