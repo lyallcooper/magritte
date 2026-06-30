@@ -18,59 +18,72 @@ pub const DEFAULT_DARK_THEME: &str = "Selenized Black";
 #[serde(default)]
 pub struct Config {
     /// "auto" (follow the system), "light", or "dark". Empty = "auto".
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub appearance: String,
     /// Theme used in light mode (registry name). Empty = default.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub light_theme: String,
     /// Theme used in dark mode (registry name). Empty = default.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub dark_theme: String,
     /// Monospace font family (code, diffs, tabular columns). Empty = platform
     /// default.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub font: String,
     /// Proportional UI font for prose chrome (menus, headings, labels). Empty =
     /// use the monospace `font` everywhere, as before.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub ui_font: String,
     /// Highlight commit-summary characters past 50 columns in the editor.
+    #[serde(skip_serializing_if = "is_true")]
     pub commit_title_ruler: bool,
     /// Auto-hard-wrap the commit body at 72 columns as you type.
+    #[serde(skip_serializing_if = "is_true")]
     pub commit_body_wrap: bool,
     /// External GUI editor for "open file" (Return) and the config button.
     /// Either a CLI command (`code -w`, `zed`) or, on macOS, an application
     /// name opened via `open -a` (`Zed`, `Visual Studio Code`). Empty = open in
     /// the OS default app.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub editor: String,
     /// Write commit messages in the external `commit_editor` command (an
     /// interactive `git commit`) instead of Magritte's in-app commit editor.
+    #[serde(skip_serializing_if = "is_false")]
     pub commit_in_editor: bool,
     /// Command for writing commit messages in an external editor (used as
     /// `GIT_EDITOR` for an interactive `git commit`), e.g. `zed --wait`,
     /// `code --wait`, or `nvim`. Must block until the message is saved/closed —
     /// the user supplies the appropriate wait flag. Used only when
     /// `commit_in_editor` is set; empty falls back to the in-app editor.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub commit_editor: String,
     /// Keystroke → command-id overrides, applied over the built-in keymap at
     /// startup. The value `"unbound"` removes a default binding. Keystrokes use
     /// the same form the `?` menu shows (e.g. `"K"`, `"g r"`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keymap: BTreeMap<String, String>,
     /// Extra suffixes to add into a transient, keyed by the transient's command
     /// id (`branch`, `commit`, `push`, …): each inner entry maps a suffix
     /// keystroke to a [`TransientSuffix`] — a command to run, or a toggleable git
     /// flag. Lets users add e.g. a `b X` → delete-branch action, or a custom
     /// switch, inside a built-in transient.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub transient: BTreeMap<String, BTreeMap<String, TransientSuffix>>,
     /// How long (ms) after a prefix key is pressed before the which-key popup
     /// of possible continuations appears. The prefix itself waits indefinitely
     /// for the next key; this only delays the help.
-    #[serde(default = "default_which_key_delay_ms")]
+    #[serde(
+        default = "default_which_key_delay_ms",
+        skip_serializing_if = "is_default_which_key_delay_ms"
+    )]
     pub which_key_delay_ms: u64,
     /// Re-run `git status` when the window regains focus, so out-of-app changes
     /// show up without a manual refresh. On by default; set false to opt out.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub refresh_on_focus: bool,
     /// Show the nearest tag(s) (a "Tag/Tags" segment) in the title bar. Off by
     /// default; set true to show it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub show_tags: bool,
     /// User-defined commands (`[[command]]`): a shell command surfaced in the
     /// `:` palette and bindable in `[keymap]` by `id`. Skipped when empty so a
@@ -80,10 +93,10 @@ pub struct Config {
     #[serde(default, rename = "command", skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<CustomCommand>,
     /// Status-view section selection and order (`[status]`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_status")]
     pub status: StatusConfig,
     /// Background auto-fetch (`[fetch]`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default_fetch")]
     pub fetch: FetchConfig,
 }
 
@@ -94,7 +107,9 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FetchConfig {
+    #[serde(skip_serializing_if = "is_false")]
     pub auto: bool,
+    #[serde(skip_serializing_if = "is_default_interval_minutes")]
     pub interval_minutes: u64,
 }
 
@@ -113,8 +128,10 @@ impl Default for FetchConfig {
 pub struct StatusConfig {
     /// Section ids in display order — order is display order, presence includes,
     /// omission hides. Empty falls back to [`DEFAULT_STATUS_SECTIONS`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<String>,
     /// How many commits the `recent` section shows.
+    #[serde(skip_serializing_if = "is_default_recent_count")]
     pub recent_count: usize,
 }
 
@@ -168,11 +185,11 @@ pub struct CustomCommand {
     /// substituted (shell-quoted) from the selection at run time.
     pub run: String,
     /// Re-read status after running (default true).
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub refresh: bool,
     /// Which `?`-help group to list this command under when it's bound to a key
     /// (the section title; created if it doesn't exist). Defaults to "Commands".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
 }
 
@@ -266,6 +283,31 @@ fn default_true() -> bool {
 
 fn default_which_key_delay_ms() -> u64 {
     1000
+}
+
+// `skip_serializing_if` predicates: a saved config omits keys left at their
+// default, so the file stays minimal (and a `command = []` can't break a later
+// hand-added `[[command]]`). Each returns true when the field is at its default.
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+fn is_default_which_key_delay_ms(n: &u64) -> bool {
+    *n == default_which_key_delay_ms()
+}
+fn is_default_recent_count(n: &usize) -> bool {
+    *n == StatusConfig::default().recent_count
+}
+fn is_default_interval_minutes(n: &u64) -> bool {
+    *n == FetchConfig::default().interval_minutes
+}
+fn is_default_status(s: &StatusConfig) -> bool {
+    *s == StatusConfig::default()
+}
+fn is_default_fetch(f: &FetchConfig) -> bool {
+    *f == FetchConfig::default()
 }
 
 impl Default for Config {
@@ -712,5 +754,39 @@ mod tests {
         });
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert!(text.contains("[[command]]"), "non-empty commands serialize");
+    }
+
+    #[test]
+    fn default_config_omits_default_keys() {
+        // Everything at its default → an empty file, so a saved config carries
+        // only what the user actually changed.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(
+            text.trim().is_empty(),
+            "default config should serialize to nothing, got:\n{text}"
+        );
+
+        // Non-default values are written (and round-trip), while their
+        // still-default neighbours stay omitted.
+        let cfg = Config {
+            font: "Berkeley Mono".into(),
+            status: StatusConfig {
+                recent_count: 25,
+                ..StatusConfig::default()
+            },
+            fetch: FetchConfig {
+                interval_minutes: 5,
+                ..FetchConfig::default()
+            },
+            ..Config::default()
+        };
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("font = \"Berkeley Mono\""));
+        assert!(text.contains("recent_count = 25"));
+        assert!(text.contains("interval_minutes = 5"));
+        assert!(!text.contains("commit_title_ruler"), "default bool omitted");
+        assert!(!text.contains("auto"), "default fetch.auto omitted");
+        assert!(!text.contains("sections"), "default empty sections omitted");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg, "round-trips");
     }
 }
