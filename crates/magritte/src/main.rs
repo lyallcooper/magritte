@@ -675,6 +675,10 @@ const STATUS_FADE_SECS: u64 = 4;
 /// How long background work must run before the title-bar spinner appears, so
 /// quick operations never flash it.
 const BUSY_SPINNER_DELAY_MS: u64 = 200;
+/// Minimum gap between refresh-on-focus runs: focusing refreshes immediately,
+/// but only if the last refresh (of any kind) was at least this long ago, so
+/// rapid app-switching doesn't re-run a full status each time.
+const FOCUS_REFRESH_COOLDOWN_MS: u64 = 5000;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";
@@ -1138,6 +1142,11 @@ struct StatusView {
     /// Scopes the spinner's delay timer so a stale arm-timer (activity already
     /// ended) can't light the spinner after the fact.
     busy_gen: Generation,
+    /// When the status was last refreshed (any refresh — manual, post-action,
+    /// auto-fetch, or focus). Throttles the refresh-on-focus: it fires
+    /// immediately on focus unless a refresh happened within the cooldown, so
+    /// rapid app-switching doesn't re-run a full status each time.
+    last_refresh: Option<std::time::Instant>,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
@@ -1324,6 +1333,7 @@ impl StatusView {
             activity: 0,
             busy: false,
             busy_gen: Generation::default(),
+            last_refresh: None,
             pending_prefix: None,
             prefix_gen: Generation::default(),
             popup: None,
@@ -1475,11 +1485,22 @@ impl StatusView {
         // first status load lands so it doesn't double the startup refresh, and
         // only on the status screen (other screens have their own state).
         self._activation_sub = Some(cx.observe_window_activation(window, |view, window, cx| {
-            if window.is_window_active()
+            if !(window.is_window_active()
                 && view.config.refresh_on_focus
                 && view.status.is_some()
-                && matches!(view.screen, Screen::Status)
+                && matches!(view.screen, Screen::Status))
             {
+                return;
+            }
+            // Refresh immediately on focus, but throttle: skip if we refreshed
+            // recently (a manual `g r`, a post-action refresh, an auto-fetch, or
+            // a prior focus), so rapid app-switching — or macOS firing several
+            // activation events for one focus change — doesn't re-run a full
+            // status each time.
+            let recent = view.last_refresh.is_some_and(|t| {
+                t.elapsed() < Duration::from_millis(FOCUS_REFRESH_COOLDOWN_MS)
+            });
+            if !recent {
                 view.refresh(cx);
             }
         }));
@@ -1748,6 +1769,9 @@ impl StatusView {
 
     /// Reload status from scratch, invalidating any in-flight work.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        // Stamp the refresh so the focus-refresh throttle can tell how long it's
+        // been since the status was last reloaded (by any path).
+        self.last_refresh = Some(std::time::Instant::now());
         // Cancel the previous generation's in-flight reads (kill the processes,
         // not just drop their results) and start a fresh cancel scope.
         self.read_cancel.store(true, Ordering::Relaxed);

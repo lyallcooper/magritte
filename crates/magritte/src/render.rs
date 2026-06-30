@@ -1002,15 +1002,25 @@ impl StatusView {
             .bg(self.palette.bg)
             .border_color(self.palette.border)
             .child(info)
-            // A subtle spinner for background activity that outlasts the delay
+            // A spinner for background activity that outlasts the delay
             // threshold. The title bar lays children out `justify_between`, so a
             // second child sits at the far (right) end; pad it off the edge so
-            // it isn't clipped.
+            // it isn't clipped. A subtle rounded background chip makes it read
+            // as a deliberate indicator rather than blending into the bar.
             .when(self.busy, |bar| {
                 bar.child(
-                    div()
-                        .pr_3()
-                        .child(Spinner::new().small().color(self.palette.fg)),
+                    div().pr_3().child(
+                        // Same rounded-square shape and fill as the title-bar
+                        // branch chip, so the indicator reads as part of the bar.
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .p_1()
+                            .rounded(px(4.0))
+                            .bg(self.palette.selection)
+                            .child(Spinner::new().small().color(self.palette.fg)),
+                    ),
                 )
             })
     }
