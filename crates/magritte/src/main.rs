@@ -1166,9 +1166,15 @@ struct StatusView {
     font: SharedString,
     /// The proportional UI font for prose chrome; equals `font` when unset.
     ui_font: SharedString,
-    /// The loaded user config (theme/appearance/font), kept so we can re-apply
-    /// on config-file edits or system appearance changes.
+    /// The effective config: the global config with this repo's `.git/magritte`
+    /// overlay merged on top. Everything renders from this.
     config: config::Config,
+    /// The *global* config alone (no repo overlay). The settings screen is
+    /// global-only, so its saves write this — never [`config`](Self::config),
+    /// which would leak the repo overlay (e.g. a repo's `[status].sections`)
+    /// into the global file. Kept in sync with the global file by `new`,
+    /// `apply_config`, and the settings handlers.
+    config_global: config::Config,
     /// The effective keystroke → command-id map (registry defaults overlaid with
     /// the user's `[keymap]`), resolved by `on_key`/`run_dispatch`.
     keymap: HashMap<String, String>,
@@ -1260,6 +1266,11 @@ impl StatusView {
             .as_ref()
             .map(|d| config::load_transient_switches_at(&d.join("transient-switches.toml")))
             .unwrap_or_default();
+        // The global config alone, before any repo overlay — what in-app
+        // (settings-screen) saves write back, so they never persist the repo's
+        // overrides into the global file. (`config` here is the global config
+        // main loaded via `load_reporting`.)
+        let config_global = config.clone();
         // Overlay this repo's config.toml (if any) on the global config. Done
         // here, after repo discovery, since the repo isn't known until now; the
         // re-resolved warning supersedes the global-only one from startup, and we
@@ -1341,6 +1352,7 @@ impl StatusView {
             font,
             ui_font,
             config,
+            config_global,
             keymap,
             _config_watcher: None,
             _appearance_sub: None,
@@ -1652,6 +1664,10 @@ impl StatusView {
         let data_changed =
             self.config.show_tags != cfg.show_tags || self.config.status != cfg.status;
         self.config = cfg;
+        // Keep the global-only copy current too (the watcher fires for both the
+        // global and the repo file), so a later settings save writes back the
+        // latest global config rather than a stale one.
+        self.config_global = config::load_reporting().0;
         if fetch_changed {
             self.start_auto_fetch(cx);
         }
