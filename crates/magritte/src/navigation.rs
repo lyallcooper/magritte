@@ -223,7 +223,7 @@ impl StatusView {
     /// fold layout survives a restart. Sections are expanded by default, so we
     /// store only the collapsed ones. No-op without a repo scope.
     fn persist_fold_state(&self) {
-        let Some(dir) = &self.repo_scope_dir else {
+        let Some(dir) = &self.worktree_scope_dir else {
             return;
         };
         let collapsed = SectionId::ALL

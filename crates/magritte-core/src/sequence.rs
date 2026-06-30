@@ -74,8 +74,10 @@ pub struct Sequence {
 
 impl Repo {
     /// The absolute git dir (handles worktrees and `.git`-file links), where the
-    /// sequencing state files live.
-    pub(crate) fn git_dir(&self) -> Result<PathBuf> {
+    /// sequencing state files live. Per-worktree — `.git` for the main worktree,
+    /// `.git/worktrees/<name>` for a linked one (unlike the shared
+    /// [`Repo::git_common_dir`]).
+    pub fn git_dir(&self) -> Result<PathBuf> {
         let out = self.run(["rev-parse", "--absolute-git-dir"])?;
         Ok(PathBuf::from(
             String::from_utf8_lossy(&out.stdout).trim_end(),
