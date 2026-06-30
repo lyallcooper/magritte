@@ -63,6 +63,9 @@ impl StatusView {
             MergePlain | MergeNoCommit | MergeSquash => {
                 self.dispatch_merge(command, args, window, cx)
             }
+            CherryPick | CherryApply | RevertCommit | RevertNoCommit => {
+                self.dispatch_pick(command, args, window, cx)
+            }
             RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
                 self.dispatch_rebase(command, args, &targets, window, cx)
             }
@@ -709,6 +712,10 @@ impl StatusView {
     ) {
         use transient::Command::*;
         if matches!(command, RebaseInteractive) {
+            if self.selected_commit_hash().is_some() {
+                self.rebase_since_selected(args, cx);
+                return;
+            }
             // magit's model: pick the commit to rebase *since* from the log
             // (not a free-text base) — that commit and everything above it
             // become the editable todo.
@@ -736,6 +743,26 @@ impl StatusView {
                 cx,
             ),
         }
+    }
+
+    /// Cherry-pick/revert transient suffix: act on the commit at point (status
+    /// commit row or log selection), matching Magit's commit-at-point default.
+    pub(crate) fn dispatch_pick(
+        &mut self,
+        command: transient::Command,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        let op = match command {
+            CherryPick => PickOp::CherryPick,
+            CherryApply => PickOp::CherryApply,
+            RevertCommit => PickOp::Revert,
+            RevertNoCommit => PickOp::RevertNoCommit,
+            _ => return,
+        };
+        self.pick_selected_with_args(op, args, window, cx);
     }
 
     /// Open the free-text command prompt (magit's `!`), prefilled with `git ` —

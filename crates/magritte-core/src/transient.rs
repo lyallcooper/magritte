@@ -77,6 +77,14 @@ pub enum Command {
     MergeNoCommit,
     /// Squash-merge (`--squash`): stage the result without a merge commit.
     MergeSquash,
+    /// Cherry-pick commit(s), creating commits.
+    CherryPick,
+    /// Apply commit changes without committing.
+    CherryApply,
+    /// Revert commit(s), creating commits.
+    RevertCommit,
+    /// Apply the reverse of commit changes without committing.
+    RevertNoCommit,
     /// Rebase the current branch onto its upstream.
     RebaseOntoUpstream,
     /// Rebase onto the push-remote's same-named branch.
@@ -820,6 +828,48 @@ pub fn merge_transient() -> Transient {
                 ],
             },
         ],
+    }
+}
+
+pub fn cherry_pick_transient() -> Transient {
+    Transient {
+        title: plain_title("Cherry-pick"),
+        groups: vec![Group {
+            title: plain_title("Apply here"),
+            suffixes: vec![
+                Suffix::Action(Action {
+                    key: "A",
+                    description: "pick".to_string(),
+                    command: Command::CherryPick,
+                }),
+                Suffix::Action(Action {
+                    key: "a",
+                    description: "apply".to_string(),
+                    command: Command::CherryApply,
+                }),
+            ],
+        }],
+    }
+}
+
+pub fn revert_transient() -> Transient {
+    Transient {
+        title: plain_title("Revert"),
+        groups: vec![Group {
+            title: plain_title("Actions"),
+            suffixes: vec![
+                Suffix::Action(Action {
+                    key: "V",
+                    description: "revert commit".to_string(),
+                    command: Command::RevertCommit,
+                }),
+                Suffix::Action(Action {
+                    key: "v",
+                    description: "revert changes".to_string(),
+                    command: Command::RevertNoCommit,
+                }),
+            ],
+        }],
     }
 }
 
