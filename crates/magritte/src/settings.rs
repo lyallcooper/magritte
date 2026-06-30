@@ -6,7 +6,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, SharedString, Subscription, Window};
+use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement;
 
@@ -39,6 +39,7 @@ pub(crate) struct SettingsState {
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
     /// 4=ui_font, 5=editor, 6=commit_editor).
     focus_ix: usize,
+    scroll: ScrollHandle,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
 }
@@ -305,6 +306,7 @@ impl StatusView {
             editor,
             commit_editor,
             focus_ix: 0,
+            scroll: ScrollHandle::new(),
             _subs: subs,
         });
         cx.notify();
@@ -597,17 +599,27 @@ impl StatusView {
                 rows
             }));
 
-        // Wrap the width-capped content in gpui-component's `Scrollable` (via
-        // `overflow_y_scrollbar`): unlike a bare `overflow_y_scroll` div + a
-        // `ScrollHandle` (which never sized the thumb), it manages the scroll
-        // area and a properly-sized scrollbar itself. The outer `w_full` keeps
-        // the bar at the window edge while the content column stays capped.
+        // Use the same two-layer shape as the virtualized views: the inner
+        // element owns the scroll handle, and the outer full-height layer renders
+        // the scrollbar. That keeps the thumb sized to the visible settings
+        // viewport (below the title bar), not to the form content itself.
         div()
-            .id("settings-scroll")
+            .relative()
             .w_full()
-            .flex_grow(1.0)
-            .child(content)
-            .overflow_y_scrollbar()
+            .flex_1()
+            .child(
+                div()
+                    .id("settings-scroll")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&s.scroll)
+                    .child(content)
+            )
+            .vertical_scrollbar(&s.scroll)
     }
 
     /// Write the current config (so the file exists even if untouched) and open
