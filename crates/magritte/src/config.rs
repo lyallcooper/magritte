@@ -73,8 +73,11 @@ pub struct Config {
     #[serde(default)]
     pub show_tags: bool,
     /// User-defined commands (`[[command]]`): a shell command surfaced in the
-    /// `:` palette and bindable in `[keymap]` by `id`.
-    #[serde(default, rename = "command")]
+    /// `:` palette and bindable in `[keymap]` by `id`. Skipped when empty so a
+    /// saved config doesn't write `command = []` — that's an empty *array*, and
+    /// a user later hand-adding a `[[command]]` (array-of-tables) entry would
+    /// then hit a TOML type conflict until they deleted the `[]`.
+    #[serde(default, rename = "command", skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<CustomCommand>,
     /// Status-view section selection and order (`[status]`).
     #[serde(default)]
@@ -686,5 +689,28 @@ mod tests {
         assert_eq!(b.get("title").and_then(|v| v.as_str()), Some("B2")); // repo wins
         let parsed: Result<Config, _> = base.try_into();
         assert!(parsed.is_ok(), "merged config deserializes");
+    }
+
+    #[test]
+    fn empty_commands_are_not_serialized() {
+        // A saved default config must not write `command = []`: that's an empty
+        // *array*, and a user later hand-adding a `[[command]]` (array-of-tables)
+        // entry would then hit a TOML type conflict until they deleted the `[]`.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(
+            !text.contains("command"),
+            "default config should not serialize a `command` key:\n{text}"
+        );
+        // But a config that *has* commands still serializes (and round-trips).
+        let mut cfg = Config::default();
+        cfg.commands.push(CustomCommand {
+            id: "amend".into(),
+            title: "Amend".into(),
+            run: "commit --amend".into(),
+            refresh: true,
+            section: None,
+        });
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("[[command]]"), "non-empty commands serialize");
     }
 }

@@ -6,7 +6,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
+use gpui::{Context, Entity, SharedString, Subscription, Window};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement;
 
@@ -39,9 +39,6 @@ pub(crate) struct SettingsState {
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
     /// 4=ui_font, 5=editor, 6=commit_editor).
     focus_ix: usize,
-    /// Scroll position of the settings body, so the scrollbar tracks it and the
-    /// offset persists across re-renders.
-    scroll: ScrollHandle,
     /// Kept alive so the Confirm subscriptions stay active.
     _subs: Vec<Subscription>,
 }
@@ -303,7 +300,6 @@ impl StatusView {
             editor,
             commit_editor,
             focus_ix: 0,
-            scroll: ScrollHandle::new(),
             _subs: subs,
         });
         cx.notify();
@@ -587,18 +583,17 @@ impl StatusView {
                 rows
             }));
 
-        // Full-width scroll container, so the scrollbar sits at the window edge
-        // like the other views (the content column inside is width-capped). `id`
-        // makes it stateful — it scrolls and remembers the offset; `flex_grow`
-        // fills the height so the status bar pins to the window bottom.
+        // Wrap the width-capped content in gpui-component's `Scrollable` (via
+        // `overflow_y_scrollbar`): unlike a bare `overflow_y_scroll` div + a
+        // `ScrollHandle` (which never sized the thumb), it manages the scroll
+        // area and a properly-sized scrollbar itself. The outer `w_full` keeps
+        // the bar at the window edge while the content column stays capped.
         div()
             .id("settings-scroll")
-            .flex_grow(1.0)
             .w_full()
-            .overflow_y_scroll()
-            .track_scroll(&s.scroll)
+            .flex_grow(1.0)
             .child(content)
-            .vertical_scrollbar(&s.scroll)
+            .overflow_y_scrollbar()
     }
 
     /// Write the current config (so the file exists even if untouched) and open
