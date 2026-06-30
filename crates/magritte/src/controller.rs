@@ -143,14 +143,19 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let ok = cx
                 .background_executor()
                 .spawn(async move { repo.fetch_default(&[]).is_ok() })
                 .await;
-            if ok {
-                this.update(cx, |this, cx| this.refresh(cx)).ok();
-            }
+            this.update(cx, |this, cx| {
+                if ok {
+                    this.refresh(cx);
+                }
+                this.end_activity(cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -1464,6 +1469,7 @@ impl StatusView {
         let (repo, cancel) = repo.cancellable();
         self.job_cancel = Some(cancel);
         self.set_progress(progress, cx);
+        self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1473,6 +1479,7 @@ impl StatusView {
                 this.job_cancel = None;
                 finish(this, result, cx);
                 this.refresh(cx);
+                this.end_activity(cx);
             })
             .ok();
         })
@@ -1518,6 +1525,7 @@ impl StatusView {
         let (repo, cancel) = repo.cancellable();
         self.job_cancel = Some(cancel);
         self.set_progress(progress, cx);
+        self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1538,6 +1546,7 @@ impl StatusView {
                 if refresh {
                     this.refresh(cx);
                 }
+                this.end_activity(cx);
             })
             .ok();
         })
