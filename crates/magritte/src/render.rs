@@ -1004,9 +1004,14 @@ impl StatusView {
             .child(info)
             // A subtle spinner for background activity that outlasts the delay
             // threshold. The title bar lays children out `justify_between`, so a
-            // second child sits at the far (right) end.
+            // second child sits at the far (right) end; pad it off the edge so
+            // it isn't clipped.
             .when(self.busy, |bar| {
-                bar.child(Spinner::new().xsmall().color(self.palette.dim))
+                bar.child(
+                    div()
+                        .pr_3()
+                        .child(Spinner::new().xsmall().color(self.palette.dim)),
+                )
             })
     }
 
