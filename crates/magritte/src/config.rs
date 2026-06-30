@@ -79,6 +79,29 @@ pub struct Config {
     /// Status-view section selection and order (`[status]`).
     #[serde(default)]
     pub status: StatusConfig,
+    /// Background auto-fetch (`[fetch]`).
+    #[serde(default)]
+    pub fetch: FetchConfig,
+}
+
+/// Background auto-fetch (`[fetch]`). Off by default; when `auto` is on, runs a
+/// plain `git fetch` every `interval_minutes` so the unpushed/unpulled counts
+/// stay current without a manual fetch. Per-repo overridable like the rest of
+/// the config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FetchConfig {
+    pub auto: bool,
+    pub interval_minutes: u64,
+}
+
+impl Default for FetchConfig {
+    fn default() -> Self {
+        Self {
+            auto: false,
+            interval_minutes: 10,
+        }
+    }
 }
 
 /// The status view's sections and their order (`[status]`).
@@ -265,6 +288,7 @@ impl Default for Config {
             show_tags: false,
             commands: Vec::new(),
             status: StatusConfig::default(),
+            fetch: FetchConfig::default(),
         }
     }
 }

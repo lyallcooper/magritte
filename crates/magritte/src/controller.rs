@@ -102,6 +102,59 @@ impl StatusView {
         );
     }
 
+    /// (Re)start the background auto-fetch loop. Bumping the generation retires
+    /// any loop already running; a fresh one spawns only when `[fetch].auto` is
+    /// on and there's a repo. Called at startup and whenever `[fetch]` changes.
+    pub(crate) fn start_auto_fetch(&mut self, cx: &mut Context<Self>) {
+        let gen = self.auto_fetch_gen.bump();
+        if !self.config.fetch.auto || self.repo.is_none() {
+            return;
+        }
+        let interval =
+            std::time::Duration::from_secs(self.config.fetch.interval_minutes.max(1) * 60);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(interval).await;
+                // Stop if the view is gone, this loop was superseded by a newer
+                // one, or auto-fetch was turned off.
+                let alive = this
+                    .update(cx, |this, _| {
+                        this.auto_fetch_gen.is_current(gen) && this.config.fetch.auto
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+                this.update(cx, |this, cx| this.run_auto_fetch(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Run one background `git fetch`, then refresh so the unpushed/unpulled
+    /// counts update. Skipped while another job is running, and silent — the
+    /// user didn't initiate it, so no progress banner, and failures (offline,
+    /// etc.) are ignored until the next tick. Uses a plain repo clone (not the
+    /// read-cancel scope) so a routine refresh doesn't abort the fetch.
+    fn run_auto_fetch(&mut self, cx: &mut Context<Self>) {
+        if self.job_cancel.is_some() {
+            return;
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let ok = cx
+                .background_executor()
+                .spawn(async move { repo.fetch_default(&[]).is_ok() })
+                .await;
+            if ok {
+                this.update(cx, |this, cx| this.refresh(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     /// Open the stash picker for an apply/pop/drop command.
     pub(crate) fn dispatch_stash(
         &mut self,

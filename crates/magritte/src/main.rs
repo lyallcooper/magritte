@@ -1111,6 +1111,10 @@ struct StatusView {
     /// before populating the screen, so a superseded load can't land in the
     /// screen a newer request opened.
     screen_gen: Generation,
+    /// Scopes the background auto-fetch loop. Bumped whenever the `[fetch]`
+    /// config changes (and at startup): the running loop exits once its captured
+    /// value is stale, so toggling auto-fetch or its interval restarts cleanly.
+    auto_fetch_gen: Generation,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
@@ -1280,6 +1284,7 @@ impl StatusView {
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
             screen_gen: Generation::default(),
+            auto_fetch_gen: Generation::default(),
             pending_prefix: None,
             prefix_gen: Generation::default(),
             popup: None,
@@ -1578,7 +1583,11 @@ impl StatusView {
     /// update the font, and rebuild the effective keymap — so a `[keymap]` edit
     /// takes effect on save, like the other settings (any unknown id re-warns).
     fn apply_config(&mut self, cfg: config::Config, window: &mut Window, cx: &mut Context<Self>) {
+        let fetch_changed = self.config.fetch != cfg.fetch;
         self.config = cfg;
+        if fetch_changed {
+            self.start_auto_fetch(cx);
+        }
         self.font = theme::resolve_font(&self.config, cx);
         self.ui_font = theme::resolve_ui_font(&self.config, cx);
         let (keymap, mut warnings) = build_keymap(&self.config);
@@ -4373,7 +4382,10 @@ fn main() {
                     });
                     // Now that the window exists, install the live-reload watchers
                     // (the appearance observer needs `&mut Window`).
-                    view.update(cx, |view, cx| view.install_watchers(window, cx));
+                    view.update(cx, |view, cx| {
+                        view.install_watchers(window, cx);
+                        view.start_auto_fetch(cx);
+                    });
                     // The window's root must be a gpui-component Root (provides
                     // theming, overlays, and the component context).
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
