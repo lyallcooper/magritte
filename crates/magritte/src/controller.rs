@@ -150,8 +150,7 @@ impl StatusView {
             transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
             _ => Vec::new(),
         };
-        self.picker_gen = self.picker_gen.wrapping_add(1);
-        let gen = self.picker_gen;
+        let gen = self.picker_gen.bump();
         self.open_picker(
             PickerAction::SetOption { key, description },
             initial,
@@ -468,7 +467,7 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 // Drop a load a newer screen request superseded.
-                if this.screen_gen != gen {
+                if !this.screen_gen.is_current(gen) {
                     return;
                 }
                 match loaded {
@@ -511,7 +510,7 @@ impl StatusView {
                 .spawn(async move { repo.rebase_current_todo() })
                 .await;
             this.update(cx, |this, cx| {
-                if this.screen_gen != gen {
+                if !this.screen_gen.is_current(gen) {
                     return;
                 }
                 match loaded {
@@ -1189,8 +1188,7 @@ impl StatusView {
         };
         let selection_only = matches!(create, CreateMode::None);
         let empty_message = action.empty_message();
-        self.picker_gen = self.picker_gen.wrapping_add(1);
-        let gen = self.picker_gen;
+        let gen = self.picker_gen.bump();
         self.open_picker(action, Vec::new(), create, switches, window, cx);
         if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.loading = true;
@@ -1313,8 +1311,7 @@ impl StatusView {
     /// pending fade. Only a `Notice` schedules its own fade; `Progress` stays
     /// until the job reports, `Sticky` until dismissed (Esc / click).
     pub(crate) fn status(&mut self, msg: String, kind: StatusKind, cx: &mut Context<Self>) {
-        self.status_seq = self.status_seq.wrapping_add(1);
-        let seq = self.status_seq;
+        let seq = self.status_seq.bump();
         self.status_message = Some(msg);
         // Most messages have no leading keycap; the few that do set it right
         // after this call.
@@ -1327,7 +1324,7 @@ impl StatusView {
                     .await;
                 this.update(cx, |this, cx| {
                     // Only clear if no newer message has replaced it.
-                    if this.status_seq == seq {
+                    if this.status_seq.is_current(seq) {
                         this.status_message = None;
                         cx.notify();
                     }
@@ -1357,7 +1354,7 @@ impl StatusView {
 
     /// Clear the status bar (advancing the sequence so no pending timer fires).
     pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
-        self.status_seq = self.status_seq.wrapping_add(1);
+        self.status_seq.bump();
         self.status_message = None;
         self.status_keys = None;
         cx.notify();
