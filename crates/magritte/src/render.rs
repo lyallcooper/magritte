@@ -1991,6 +1991,7 @@ impl StatusView {
                 title,
                 count,
                 expanded,
+                refreshing,
             } => el
                 .child(chevron(*expanded, self.palette.dim))
                 .child(
@@ -2006,6 +2007,13 @@ impl StatusView {
                             .text_color(self.palette.dim)
                             .child(SharedString::from(count.to_string())),
                     )
+                })
+                // A subtle spinner while this (already-visible) section's listing
+                // is being re-fetched. Gated on `busy` so it only appears after
+                // the same delay as the global spinner — a fast refresh never
+                // flashes it; first-load sections have no row yet so they pop in.
+                .when(*refreshing && self.busy, |el| {
+                    el.child(Spinner::new().xsmall().color(self.palette.dim))
                 }),
             RowKind::File {
                 status,
