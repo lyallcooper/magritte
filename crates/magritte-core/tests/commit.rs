@@ -117,3 +117,28 @@ fn head_message_returns_full_message() {
     assert!(msg.starts_with("subject line"));
     assert!(msg.contains("body paragraph"));
 }
+
+#[test]
+fn published_on_uses_ancestry_against_the_given_branches() {
+    let t = TestRepo::new();
+    t.write("f", "a\n");
+    t.commit_all("c1");
+    let c1 = t.git(["rev-parse", "HEAD"]).trim().to_string();
+    // Pretend c1 is published: point a remote-tracking ref at it.
+    t.git(["update-ref", "refs/remotes/origin/master", &c1]);
+    t.write("f", "b\n");
+    t.commit_all("c2"); // HEAD is now ahead of origin/master (unpublished)
+
+    let repo = open(&t);
+    let published = vec!["origin/main".to_string(), "origin/master".to_string()];
+
+    // c1 is an ancestor of origin/master → published; origin/main is skipped
+    // (it doesn't exist) rather than erroring.
+    assert_eq!(repo.published_on(&c1, &published).as_deref(), Some("origin/master"));
+    // HEAD (c2) is not on origin/master → unpublished.
+    assert_eq!(repo.published_on("HEAD", &published), None);
+    // A list naming only a missing branch never matches.
+    assert_eq!(repo.published_on(&c1, &["origin/nope".to_string()]), None);
+    // An empty list never warns.
+    assert_eq!(repo.published_on(&c1, &[]), None);
+}

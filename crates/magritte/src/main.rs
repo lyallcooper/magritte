@@ -3947,24 +3947,21 @@ impl StatusView {
             return;
         };
         let probe = rev.clone();
+        let branches = self.config.published_branches.clone();
         cx.spawn(async move |this, cx| {
-            let branches = cx
+            let published = cx
                 .background_executor()
-                .spawn(async move { repo.published_branches(&probe).unwrap_or_default() })
+                .spawn(async move { repo.published_on(&probe, &branches) })
                 .await;
             this.update(cx, |this, cx| {
                 // base = commit^: `base..HEAD` then includes the selected commit.
-                if branches.is_empty() {
+                let Some(target) = published else {
                     this.open_rebase_todo(format!("{rev}^"), args, cx);
                     return;
-                }
+                };
                 // The confirmation bar is status-screen chrome, so leave the log
                 // to show it; "yes" opens the todo editor.
                 this.screen = Screen::Status;
-                let target = match branches.as_slice() {
-                    [one] => one.clone(),
-                    many => format!("{} remote branches", many.len()),
-                };
                 this.confirm = Some((
                     format!("{rev} has already been pushed to {target}. Rebase since it anyway?"),
                     Confirm::RebaseSincePushed { rev, args },

@@ -838,24 +838,21 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let branches = self.config.published_branches.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let branches = cx
+            let published = cx
                 .background_executor()
-                .spawn(async move { repo.published_branches("HEAD").unwrap_or_default() })
+                .spawn(async move { repo.published_on("HEAD", &branches) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if branches.is_empty() {
+                let Some(target) = published else {
                     this.proceed_history_rewrite(command, switches, window, cx);
                     return;
-                }
+                };
                 let verb = match command {
                     transient::Command::CommitReword => "Reword",
                     transient::Command::CommitExtend => "Extend",
                     _ => "Amend",
-                };
-                let target = match branches.as_slice() {
-                    [one] => one.clone(),
-                    many => format!("{} remote branches", many.len()),
                 };
                 this.confirm = Some((
                     format!("This commit has already been pushed to {target}. {verb} it anyway?"),
