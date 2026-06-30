@@ -503,6 +503,30 @@ pub fn transient_switches_path() -> Option<PathBuf> {
     path().map(|p| p.with_file_name("transient-switches.toml"))
 }
 
+/// Per-repo persisted status fold state. Sections are expanded by default, so
+/// only the user's deviations — the collapsed sections, by config id — are
+/// stored; everything absent loads expanded. Repo-scope only (`folds.toml` in
+/// `.git/magritte`); there's no global default to persist.
+#[derive(Serialize, Deserialize, Default)]
+pub struct FoldState {
+    #[serde(default)]
+    pub collapsed: Vec<String>,
+}
+
+/// Load the saved fold state from a file, or empty (all expanded) if it's
+/// missing/unreadable.
+pub fn load_fold_state(path: &Path) -> FoldState {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Persist the fold state (atomic temp-file + rename). Best-effort.
+pub fn save_fold_state(path: &Path, state: &FoldState) {
+    let _ = atomic_write_toml(path, state);
+}
+
 /// Load the saved transient switch sets from a specific file, or empty if it's
 /// missing/unreadable. Used for both scopes (global and a repo's `.git/magritte`).
 pub fn load_transient_switches_at(path: &Path) -> TransientSwitches {
@@ -557,6 +581,25 @@ mod tests {
         assert_eq!(km.get("x").and_then(|v| v.as_str()), Some("unbound")); // overridden
         assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
         assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete")); // added by repo
+    }
+
+    #[test]
+    fn fold_state_round_trips_and_defaults_empty() {
+        // Missing file → default (nothing collapsed → all sections expanded).
+        let missing = std::env::temp_dir().join("magritte-no-such-folds.toml");
+        let _ = std::fs::remove_file(&missing);
+        assert!(load_fold_state(&missing).collapsed.is_empty());
+
+        // Save then load returns the same collapsed set.
+        let path = std::env::temp_dir().join("magritte-fold-state-test.toml");
+        save_fold_state(
+            &path,
+            &FoldState {
+                collapsed: vec!["staged".into(), "ignored".into()],
+            },
+        );
+        assert_eq!(load_fold_state(&path).collapsed, vec!["staged", "ignored"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
