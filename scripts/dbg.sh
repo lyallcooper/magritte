@@ -15,6 +15,7 @@
 #   scripts/dbg.sh shift-click <x> <y>  shift-click at window-relative point
 #   scripts/dbg.sh move <x> <y>       hover the pointer at a point (e.g. for tooltips)
 #   scripts/dbg.sh sleep <ms>         pause (let a frame paint)
+#   scripts/dbg.sh help               show this help
 #
 # Override the control dir with MAGRITTE_DEBUG_DIR (default /tmp/magritte-debug).
 set -euo pipefail
@@ -24,10 +25,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/target/debug/magritte"
 LOG="/tmp/magritte-debug.log"
 
+# Print the header comment block (everything between the shebang and `set -…`)
+# as the usage text, so the docs above are the single source of truth.
+usage() { sed -n '2,/^set /p' "$0" | sed '/^set /d; s/^#\{0,1\} \{0,1\}//'; }
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+
   up)
     repo="${1:-$PWD}"
     pkill -f "target/debug/magritte" 2>/dev/null || true
@@ -65,8 +75,17 @@ case "$cmd" in
     exec "$0" send "$cmd $*"
     ;;
 
+  "")
+    echo "dbg.sh: no command given" >&2
+    echo >&2
+    usage >&2
+    exit 1
+    ;;
+
   *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    echo "dbg.sh: unknown command: $cmd" >&2
+    echo >&2
+    usage >&2
     exit 1
     ;;
 esac
