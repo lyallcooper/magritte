@@ -100,6 +100,9 @@ struct CommitEditor {
     /// Whether a "discard message?" confirmation is showing (cancel was pressed
     /// with unsaved edits).
     confirming_cancel: bool,
+    /// Briefly true after a key other than y/n/esc is pressed while confirming —
+    /// flashes the prompt to draw attention to it. Cleared by a timer.
+    flash: bool,
     /// The staged diff being committed, flattened for read-only display below
     /// the message (magit's commit buffer). Empty until loaded, and left empty
     /// for reword (which commits no tree change).
@@ -680,6 +683,9 @@ const BUSY_SPINNER_DELAY_MS: u64 = 200;
 /// but only if the last refresh (of any kind) was at least this long ago, so
 /// rapid app-switching doesn't re-run a full status each time.
 const FOCUS_REFRESH_COOLDOWN_MS: u64 = 5000;
+/// How long the commit editor's discard-prompt flash stays lit after an
+/// ignored keypress.
+const CONFIRM_FLASH_MS: u64 = 400;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";
@@ -1155,6 +1161,9 @@ struct StatusView {
     /// Bumped each time a prefix is entered, so a stale timeout (a newer prefix,
     /// or a resolved one) is ignored.
     prefix_gen: Generation,
+    /// Scopes the timer that clears the commit editor's discard-prompt flash, so
+    /// a later flash isn't cleared early by an earlier one's timer.
+    confirm_flash_gen: Generation,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The active full-window screen — exactly one at a time. Modeling these as
@@ -1348,6 +1357,7 @@ impl StatusView {
             last_refresh: None,
             pending_prefix: None,
             prefix_gen: Generation::default(),
+            confirm_flash_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,
             font,
@@ -3603,6 +3613,7 @@ impl StatusView {
             args,
             initial: String::new(),
             confirming_cancel: false,
+            flash: false,
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             _sub: sub,
@@ -3814,7 +3825,9 @@ impl StatusView {
             match key {
                 "y" => self.discard_editor(window, cx),
                 "n" | "escape" => self.keep_editing(window, cx),
-                _ => {}
+                // Any other key is ignored — flash the prompt so it's clear
+                // input is paused and only y/n/esc do anything.
+                _ => self.flash_discard_prompt(cx),
             }
             return;
         }
@@ -3839,11 +3852,42 @@ impl StatusView {
         if dirty {
             if let Some(ed) = self.editor_mut() {
                 ed.confirming_cancel = true;
+                ed.flash = false; // start un-flashed
             }
             cx.notify();
         } else {
             self.discard_editor(window, cx);
         }
+    }
+
+    /// Flash the discard confirmation to draw attention to it — invoked when a
+    /// key other than y/n/esc is pressed while it's up. A generation-scoped
+    /// timer clears the flash, so rapid keypresses keep it lit without an
+    /// earlier timer cutting a later flash short.
+    fn flash_discard_prompt(&mut self, cx: &mut Context<Self>) {
+        if !self.editor().is_some_and(|e| e.confirming_cancel) {
+            return;
+        }
+        if let Some(ed) = self.editor_mut() {
+            ed.flash = true;
+        }
+        let gen = self.confirm_flash_gen.bump();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(CONFIRM_FLASH_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.confirm_flash_gen.is_current(gen) {
+                    if let Some(ed) = this.editor_mut() {
+                        ed.flash = false;
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Close the editor, discarding its message.
