@@ -11,16 +11,18 @@
 //! keep that off the opening render). All git work (status + per-file diffs)
 //! runs on the background executor; a generation counter drops stale results.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, px, size, uniform_list, AnyElement, App, AppContext, Bounds, ClipboardItem,
-    Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyBinding,
-    KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, SharedString, Styled,
+    actions, div, px, size, uniform_list, AnyElement, AnyWindowHandle, App, AppContext, Bounds,
+    ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement,
+    KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, SharedString, Styled,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions,
 };
 
@@ -36,6 +38,7 @@ mod editors;
 mod git_action;
 mod highlight;
 mod input;
+mod ipc;
 mod kbd;
 mod navigation;
 mod picker;
@@ -4708,41 +4711,92 @@ fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
     gpui::Empty
 }
 
-/// Re-parent into the background so the launching shell gets its prompt back
-/// immediately — a GUI app shouldn't block the terminal it was started from. We
-/// fork while still single-threaded (before any GPUI/AppKit initialization, so
-/// Obj-C fork-safety isn't a concern), the parent exits, and the child detaches
-/// from the controlling terminal and goes on to run the app. A failed fork just
-/// falls through to a normal foreground run.
-#[cfg(unix)]
-fn detach_into_background() {
-    // SAFETY: called at the very top of `main`, before any threads are spawned
-    // or AppKit/Core Foundation is touched, so `fork` is safe here.
-    unsafe {
-        match libc::fork() {
-            -1 => return,               // fork failed: stay in the foreground
-            0 => {}                     // child: carry on and run the app
-            _ => std::process::exit(0), // parent: hand the terminal back
-        }
-        // Our own session with no controlling terminal, so closing the shell
-        // (SIGHUP) won't take the app down with it.
-        libc::setsid();
-        // Point stdio at /dev/null so nothing prints to the shell after its
-        // prompt returns, and so the fds stay valid once the tty is gone.
-        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-        if null >= 0 {
-            libc::dup2(null, libc::STDIN_FILENO);
-            libc::dup2(null, libc::STDOUT_FILENO);
-            libc::dup2(null, libc::STDERR_FILENO);
-            if null > libc::STDERR_FILENO {
-                libc::close(null);
-            }
-        }
+/// Launch a fresh copy in the background so the shell gets its prompt back
+/// without continuing a forked process into AppKit. The child opts out of this
+/// handoff with `MAGRITTE_FOREGROUND`, so it follows the normal app path.
+fn detach_into_background(args: &[String]) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    std::process::Command::new(exe)
+        .args(args)
+        .env("MAGRITTE_FOREGROUND", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+type RepoWindows = Rc<RefCell<HashMap<PathBuf, AnyWindowHandle>>>;
+
+fn repo_window_key(start_dir: Option<&Path>) -> PathBuf {
+    let root = start_dir
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    Repo::discover(&root)
+        .map(|repo| repo.workdir().to_path_buf())
+        .or_else(|_| std::fs::canonicalize(&root))
+        .unwrap_or(root)
+}
+
+fn status_window_options(cx: &mut App) -> WindowOptions {
+    // A reasonable default window instead of filling the whole screen;
+    // centered on the active display. The user can resize freely.
+    let bounds = Bounds::centered(None, size(px(1000.0), px(720.0)), cx);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // Transparent system bar so our custom `TitleBar` draws the chrome
+        // (and the traffic lights sit where the component expects them).
+        titlebar: Some(gpui_component::TitleBar::title_bar_options()),
+        ..Default::default()
     }
 }
 
-#[cfg(not(unix))]
-fn detach_into_background() {}
+fn open_repo_window(start_dir: Option<PathBuf>, cx: &mut App) -> Option<AnyWindowHandle> {
+    let (cfg, cfg_warning) = config::load_reporting();
+    theme::apply_appearance(&cfg, cx);
+    let options = status_window_options(cx);
+    let window = cx
+        .open_window(options, |window, cx| {
+            let view = cx.new(|cx| {
+                StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx)
+            });
+            // Now that the window exists, install the live-reload watchers (the
+            // appearance observer needs `&mut Window`).
+            view.update(cx, |view, cx| {
+                view.install_watchers(window, cx);
+                view.start_auto_fetch(cx);
+            });
+            // The window's root must be a gpui-component Root (provides
+            // theming, overlays, and the component context).
+            cx.new(|cx| gpui_component::Root::new(view, window, cx))
+        })
+        .ok()?;
+    Some(window.into())
+}
+
+fn open_or_focus_repo(
+    start_dir: Option<PathBuf>,
+    windows: &RepoWindows,
+    cx: &mut App,
+) -> Option<AnyWindowHandle> {
+    let key = repo_window_key(start_dir.as_deref());
+    if let Some(handle) = windows.borrow().get(&key).copied() {
+        if cx
+            .update_window(handle, |_, window, _| window.activate_window())
+            .is_ok()
+        {
+            cx.activate(true);
+            return Some(handle);
+        }
+        windows.borrow_mut().remove(&key);
+    }
+
+    let handle = open_repo_window(start_dir, cx)?;
+    windows.borrow_mut().insert(key, handle);
+    cx.activate(true);
+    Some(handle)
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -4758,14 +4812,18 @@ fn main() {
     }
     // First non-flag argument is a path inside the repo to open (defaults to cwd).
     let start_dir = args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from);
+    let single_instance = ipc::enabled();
+    if single_instance && ipc::try_handoff(start_dir.as_deref()) {
+        return;
+    }
 
     // Detach into the background by default, like a GUI app launched from a
     // shell. Opt out with --foreground or MAGRITTE_FOREGROUND (the debug harness
     // sets the latter so it can read the app's log and control channel).
     let foreground = args.iter().any(|a| a == "--foreground")
         || std::env::var_os("MAGRITTE_FOREGROUND").is_some();
-    if !foreground {
-        detach_into_background();
+    if !foreground && detach_into_background(&args) {
+        return;
     }
 
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
@@ -4775,7 +4833,7 @@ fn main() {
         theme::register_bundled_themes(cx);
         // Apply the saved appearance/themes. Theme::change first ensures the
         // Theme global exists so apply_appearance can set its slots.
-        let (cfg, cfg_warning) = config::load_reporting();
+        let (cfg, _) = config::load_reporting();
         gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
         theme::apply_appearance(&cfg, cx);
         // Standard macOS app shortcuts. Quit is global; Close Window runs on
@@ -4803,44 +4861,36 @@ fn main() {
             }
         })
         .detach();
-        cx.activate(true);
 
-        // A reasonable default window instead of filling the whole screen;
-        // centered on the active display. The user can resize freely.
-        let bounds = Bounds::centered(None, size(px(1000.0), px(720.0)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            // Transparent system bar so our custom `TitleBar` draws the chrome
-            // (and the traffic lights sit where the component expects them).
-            titlebar: Some(gpui_component::TitleBar::title_bar_options()),
-            ..Default::default()
-        };
-
-        cx.spawn(async move |cx| {
-            let window = cx
-                .open_window(options, |window, cx| {
-                    let view = cx.new(|cx| {
-                        StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx)
-                    });
-                    // Now that the window exists, install the live-reload watchers
-                    // (the appearance observer needs `&mut Window`).
-                    view.update(cx, |view, cx| {
-                        view.install_watchers(window, cx);
-                        view.start_auto_fetch(cx);
-                    });
-                    // The window's root must be a gpui-component Root (provides
-                    // theming, overlays, and the component context).
-                    cx.new(|cx| gpui_component::Root::new(view, window, cx))
+        let windows: RepoWindows = Rc::new(RefCell::new(HashMap::new()));
+        if single_instance {
+            let (tx, rx) = async_channel::unbounded();
+            if ipc::start_server(tx) {
+                let windows_for_ipc = windows.clone();
+                cx.spawn(async move |cx| {
+                    while let Ok(path) = rx.recv().await {
+                        let windows = windows_for_ipc.clone();
+                        let _ = cx.update(|cx| {
+                            open_or_focus_repo(Some(path), &windows, cx);
+                        });
+                    }
                 })
-                .expect("failed to open window");
+                .detach();
+            } else if ipc::try_handoff(start_dir.as_deref()) {
+                cx.quit();
+                return;
+            }
+        }
+
+        if let Some(window) = open_or_focus_repo(start_dir.clone(), &windows, cx) {
             // Start the debug control channel (dev builds only; no-op unless
-            // MAGRITTE_DEBUG_DIR is set).
+            // MAGRITTE_DEBUG_DIR is set). Debug mode opts out of single-instance
+            // handoff, so this controls the isolated instance it launched.
             #[cfg(feature = "debug")]
-            cx.update(|cx| debug::init(window.into(), cx));
+            debug::init(window, cx);
             #[cfg(not(feature = "debug"))]
             let _ = window;
-        })
-        .detach();
+        }
     });
 }
 
