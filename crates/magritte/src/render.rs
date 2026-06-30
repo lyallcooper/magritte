@@ -1793,7 +1793,7 @@ impl StatusView {
         let main = Button::new("open-config-main")
             .label("Open global config")
             .outline()
-            .small()
+            .xsmall()
             .icon(IconName::ExternalLink)
             .on_click({
                 let view = view.clone();
@@ -1803,7 +1803,7 @@ impl StatusView {
             });
         DropdownButton::new("open-config")
             .outline()
-            .small()
+            .xsmall()
             .button(main)
             .dropdown_menu(move |menu, _window, _cx| {
                 menu.action_context(focus.clone())
@@ -1826,7 +1826,7 @@ impl StatusView {
         let main = Button::new("open-repo-config-main")
             .label("Open repo config")
             .outline()
-            .small()
+            .xsmall()
             .icon(IconName::ExternalLink)
             .on_click({
                 let view = view.clone();
@@ -1836,7 +1836,7 @@ impl StatusView {
             });
         DropdownButton::new("open-repo-config")
             .outline()
-            .small()
+            .xsmall()
             .button(main)
             .dropdown_menu(move |menu, _window, _cx| {
                 menu.action_context(focus.clone())
