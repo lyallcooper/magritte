@@ -734,6 +734,21 @@ enum SectionId {
 }
 
 impl SectionId {
+    /// Every section, in enum order — the source of truth for "all sections",
+    /// used to seed the default-expanded set and resolve config ids.
+    const ALL: [SectionId; 10] = [
+        SectionId::Untracked,
+        SectionId::Unstaged,
+        SectionId::Staged,
+        SectionId::Stashes,
+        SectionId::Unpushed,
+        SectionId::Unpulled,
+        SectionId::UnpushedPushremote,
+        SectionId::UnpulledPushremote,
+        SectionId::Recent,
+        SectionId::Ignored,
+    ];
+
     /// The config id (`[status].sections` entry) for this section.
     fn config_id(self) -> &'static str {
         match self {
@@ -752,20 +767,7 @@ impl SectionId {
 
     /// The section for a config id, or `None` if unknown.
     fn from_config_id(id: &str) -> Option<SectionId> {
-        [
-            SectionId::Untracked,
-            SectionId::Unstaged,
-            SectionId::Staged,
-            SectionId::Stashes,
-            SectionId::Unpushed,
-            SectionId::Unpulled,
-            SectionId::UnpushedPushremote,
-            SectionId::UnpulledPushremote,
-            SectionId::Recent,
-            SectionId::Ignored,
-        ]
-        .into_iter()
-        .find(|s| s.config_id() == id)
+        SectionId::ALL.into_iter().find(|s| s.config_id() == id)
     }
 }
 
@@ -1239,18 +1241,21 @@ impl StatusView {
         };
 
         // Sections are expanded by default; individual files start collapsed,
-        // so opening a large repo loads no diffs until a file is expanded.
-        let mut expanded = HashSet::new();
-        expanded.insert(FoldKey::Section(SectionId::Untracked));
-        expanded.insert(FoldKey::Section(SectionId::Unstaged));
-        expanded.insert(FoldKey::Section(SectionId::Staged));
-        expanded.insert(FoldKey::Section(SectionId::Stashes));
-        expanded.insert(FoldKey::Section(SectionId::Unpushed));
-        expanded.insert(FoldKey::Section(SectionId::Unpulled));
-        expanded.insert(FoldKey::Section(SectionId::UnpushedPushremote));
-        expanded.insert(FoldKey::Section(SectionId::UnpulledPushremote));
-        expanded.insert(FoldKey::Section(SectionId::Recent));
-        expanded.insert(FoldKey::Section(SectionId::Ignored));
+        // so opening a large repo loads no diffs until a file is expanded. A
+        // per-repo `folds.toml` then re-collapses whatever the user last left
+        // collapsed (persisting sections only — file/hunk folds stay ephemeral
+        // so reopening loads no diffs).
+        let mut expanded: HashSet<FoldKey> = SectionId::ALL
+            .iter()
+            .map(|s| FoldKey::Section(*s))
+            .collect();
+        if let Some(dir) = &repo_scope_dir {
+            for id in config::load_fold_state(&dir.join("folds.toml")).collapsed {
+                if let Some(section) = SectionId::from_config_id(&id) {
+                    expanded.remove(&FoldKey::Section(section));
+                }
+            }
+        }
 
         let mut view = StatusView {
             root,

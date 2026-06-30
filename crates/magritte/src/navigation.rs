@@ -193,6 +193,7 @@ impl StatusView {
         let Some(key) = key else {
             return;
         };
+        let is_section = matches!(key, FoldKey::Section(_));
         // Hunks default to expanded, so their state lives in `collapsed_hunks`
         // (present = collapsed); sections/files use `expanded` (present = open).
         if matches!(key, FoldKey::Hunk(..)) {
@@ -207,11 +208,30 @@ impl StatusView {
                 self.ensure_diff(*source, path.clone(), cx);
             }
         }
+        // Section fold state persists per repo (files/hunks stay ephemeral).
+        if is_section {
+            self.persist_fold_state();
+        }
         // Restore the cursor to the same node: collapsing a hunk from one of its
         // lines lands on the hunk header (the line is gone, so the anchor
         // degrades to it); folding/unfolding otherwise keeps the header.
         self.rebuild_preserving_selection();
         cx.notify();
+    }
+
+    /// Persist which status sections are collapsed to the repo scope, so the
+    /// fold layout survives a restart. Sections are expanded by default, so we
+    /// store only the collapsed ones. No-op without a repo scope.
+    fn persist_fold_state(&self) {
+        let Some(dir) = &self.repo_scope_dir else {
+            return;
+        };
+        let collapsed = SectionId::ALL
+            .iter()
+            .filter(|s| !self.expanded.contains(&FoldKey::Section(**s)))
+            .map(|s| s.config_id().to_string())
+            .collect();
+        config::save_fold_state(&dir.join("folds.toml"), &config::FoldState { collapsed });
     }
 
     pub(crate) fn clamp_selection(&mut self) {
