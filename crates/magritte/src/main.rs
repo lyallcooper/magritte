@@ -1157,6 +1157,10 @@ struct StatusView {
     /// This repo's settings dir (`.git/magritte`), for repo-scoped saves and the
     /// live-reload watcher. `None` with no repo.
     repo_scope_dir: Option<PathBuf>,
+    /// The per-worktree git dir's `magritte` scope, for UI state local to this
+    /// checkout (fold state). Equals `repo_scope_dir` in the main worktree.
+    /// `None` with no repo.
+    worktree_scope_dir: Option<PathBuf>,
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
     /// tag ahead + commits-until). Refreshed with status when `show_tags` is on.
     tag_info: (Option<(String, usize)>, Option<(String, usize)>),
@@ -1207,10 +1211,18 @@ impl StatusView {
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
         // The repo's settings scope (`.git/magritte`) and its saved switch sets,
-        // overlaid on the global ones when a transient opens.
+        // overlaid on the global ones when a transient opens. Keyed to the
+        // *common* git dir, so config/switches are shared across worktrees.
         let repo_scope_dir = repo
             .as_ref()
             .and_then(|r| r.git_common_dir())
+            .map(|d| config::repo_dir(&d));
+        // UI state local to this checkout (just fold state) lives in the
+        // *per-worktree* git dir instead — `.git/magritte` for the main worktree
+        // (so it's unchanged), `.git/worktrees/<name>/magritte` for a linked one.
+        let worktree_scope_dir = repo
+            .as_ref()
+            .and_then(|r| r.git_dir().ok())
             .map(|d| config::repo_dir(&d));
         let repo_transient_switches = repo_scope_dir
             .as_ref()
@@ -1253,7 +1265,7 @@ impl StatusView {
             .iter()
             .map(|s| FoldKey::Section(*s))
             .collect();
-        if let Some(dir) = &repo_scope_dir {
+        if let Some(dir) = &worktree_scope_dir {
             for id in config::load_fold_state(&dir.join("folds.toml")).collapsed {
                 if let Some(section) = SectionId::from_config_id(&id) {
                     expanded.remove(&FoldKey::Section(section));
@@ -1300,6 +1312,7 @@ impl StatusView {
             transient_switches: config::load_transient_switches(),
             repo_transient_switches,
             repo_scope_dir,
+            worktree_scope_dir,
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
             editors: Vec::new(),
