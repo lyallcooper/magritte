@@ -1878,6 +1878,11 @@ impl StatusView {
         checked: bool,
         explanation: &'static str,
         view: &Entity<Self>,
+        // Whether flipping this toggle changes fetched data (e.g. the title-bar
+        // tag segment) rather than just how the current data is painted. When
+        // set, the change refreshes so it takes effect live; otherwise a repaint
+        // suffices.
+        refetch: bool,
         set: fn(&mut config::Config, bool),
     ) -> AnyElement {
         let switch = Switch::new(id).checked(checked).on_click({
@@ -1887,7 +1892,11 @@ impl StatusView {
                 view.update(cx, |this, cx| {
                     set(&mut this.config, on);
                     config::save(&this.config);
-                    cx.notify();
+                    if refetch {
+                        this.refresh(cx);
+                    } else {
+                        cx.notify();
+                    }
                 });
             }
         });
