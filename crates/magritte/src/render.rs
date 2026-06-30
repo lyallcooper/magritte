@@ -1010,7 +1010,7 @@ impl StatusView {
                 bar.child(
                     div()
                         .pr_3()
-                        .child(Spinner::new().xsmall().color(self.palette.dim)),
+                        .child(Spinner::new().small().color(self.palette.fg)),
                 )
             })
     }
