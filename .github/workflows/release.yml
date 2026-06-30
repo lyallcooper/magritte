@@ -71,8 +71,24 @@ jobs:
         with:
           path: target/dist
           merge-multiple: true
+      - name: Upload public Homebrew assets
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "$HOMEBREW_TAP_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --repo "$HOMEBREW_TAP_REPOSITORY" target/dist/*.tar.gz target/dist/*.sha256 --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" --repo "$HOMEBREW_TAP_REPOSITORY" target/dist/*.tar.gz target/dist/*.sha256 --title "Magritte ${GITHUB_REF_NAME}" --notes "Binary release artifacts for Homebrew."
+          fi
       - name: Render Homebrew formula
-        run: scripts/render-homebrew-formula.sh "${GITHUB_REF_NAME#v}"
+        env:
+          MAGRITTE_DOWNLOAD_REPOSITORY: ${{ env.HOMEBREW_TAP_REPOSITORY }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            unset MAGRITTE_DOWNLOAD_REPOSITORY
+          fi
+          scripts/render-homebrew-formula.sh "${GITHUB_REF_NAME#v}"
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:

@@ -3,6 +3,10 @@
 #
 # Usage:
 #   scripts/render-homebrew-formula.sh [version] [github-owner/repo] [output]
+#
+# Set MAGRITTE_DOWNLOAD_REPOSITORY=owner/repo when the public binary artifacts
+# live somewhere other than the source/homepage repository (for example a public
+# Homebrew tap repo while the source repo remains private).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +26,7 @@ if [ -z "$REPOSITORY" ]; then
   echo "render-homebrew-formula: pass github-owner/repo or set GITHUB_REPOSITORY" >&2
   exit 1
 fi
+DOWNLOAD_REPOSITORY="${MAGRITTE_DOWNLOAD_REPOSITORY:-$REPOSITORY}"
 
 macos_archive="magritte-v$VERSION-$MACOS_TARGET.tar.gz"
 macos_sha_file="$ROOT/target/dist/$macos_archive.sha256"
@@ -30,7 +35,7 @@ if [ ! -f "$macos_sha_file" ]; then
   exit 1
 fi
 macos_sha="$(awk '{ print $1; exit }' "$macos_sha_file")"
-macos_url="https://github.com/$REPOSITORY/releases/download/v$VERSION/$macos_archive"
+macos_url="https://github.com/$DOWNLOAD_REPOSITORY/releases/download/v$VERSION/$macos_archive"
 
 linux_archive="magritte-v$VERSION-$LINUX_TARGET.tar.gz"
 linux_sha_file="$ROOT/target/dist/$linux_archive.sha256"
@@ -38,7 +43,7 @@ linux_sha=""
 linux_url=""
 if [ -f "$linux_sha_file" ]; then
   linux_sha="$(awk '{ print $1; exit }' "$linux_sha_file")"
-  linux_url="https://github.com/$REPOSITORY/releases/download/v$VERSION/$linux_archive"
+  linux_url="https://github.com/$DOWNLOAD_REPOSITORY/releases/download/v$VERSION/$linux_archive"
 fi
 
 mkdir -p "$(dirname "$OUT")"
