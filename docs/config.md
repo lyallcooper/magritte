@@ -133,7 +133,7 @@ unpushed/unpulled counts stay current without a manual fetch. Off by default.
 ```toml
 [fetch]
 auto = true            # default false
-interval_minutes = 10  # default 10; minimum 1
+interval_minutes = 30  # default 30; minimum 1
 ```
 
 - The fetch is a plain `git fetch` (the current branch's configured remote),
