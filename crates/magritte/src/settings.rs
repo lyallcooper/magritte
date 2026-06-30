@@ -515,6 +515,7 @@ impl StatusView {
                             self.config.refresh_on_focus,
                             "Refresh the status view automatically when window regains focus.",
                             view,
+                            false,
                             |cfg, on| cfg.refresh_on_focus = on,
                         ),
                     ),
@@ -526,6 +527,8 @@ impl StatusView {
                             self.config.show_tags,
                             "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
                             view,
+                            // Needs the tag data fetched, so refresh on toggle.
+                            true,
                             |cfg, on| cfg.show_tags = on,
                         ),
                     ),
@@ -541,6 +544,7 @@ impl StatusView {
                         "Write commit messages with the editor command below (an interactive \
                          `git commit`) instead of the built-in editor.",
                         view,
+                        false,
                         |cfg, on| cfg.commit_in_editor = on,
                     ),
                 )];
@@ -562,6 +566,7 @@ impl StatusView {
                             "Underlines characters past column 50 on the commit summary (first) \
                              line.",
                             view,
+                            false,
                             |cfg, on| cfg.commit_title_ruler = on,
                         ),
                     ));
@@ -574,6 +579,7 @@ impl StatusView {
                             "Hard-wraps the commit body at 72 columns as you type at the end of a \
                              line (the summary line is never wrapped).",
                             view,
+                            false,
                             |cfg, on| cfg.commit_body_wrap = on,
                         ),
                     ));

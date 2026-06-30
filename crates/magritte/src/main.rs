@@ -1613,6 +1613,12 @@ impl StatusView {
     /// takes effect on save, like the other settings (any unknown id re-warns).
     fn apply_config(&mut self, cfg: config::Config, window: &mut Window, cx: &mut Context<Self>) {
         let fetch_changed = self.config.fetch != cfg.fetch;
+        // Some settings change *fetched data*, not just how it's painted — the
+        // title-bar tag segment (and commit ref labels), which status sections
+        // are populated, and the recent-commit count. Those need a refresh to
+        // take effect live; a repaint alone leaves them stale until the next one.
+        let data_changed =
+            self.config.show_tags != cfg.show_tags || self.config.status != cfg.status;
         self.config = cfg;
         if fetch_changed {
             self.start_auto_fetch(cx);
@@ -1623,6 +1629,9 @@ impl StatusView {
         self.keymap = keymap;
         warnings.extend(theme::config_value_warnings(&self.config, cx));
         self.reapply_theme(cx);
+        if data_changed {
+            self.refresh(cx);
+        }
         // The open settings form's dropdowns/inputs were built from the old
         // config, so rebuild it in place against the reloaded values rather than
         // leave stale controls. Only external edits reach here; our own in-app
