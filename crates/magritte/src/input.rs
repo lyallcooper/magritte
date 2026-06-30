@@ -249,12 +249,19 @@ impl StatusView {
         }
         // Act on the commit/stash at point in a status section (after motions, so
         // j/k/g still work; only these verbs are intercepted — anything else falls
-        // through to the keymap). On a commit row `Enter` opens its diff and
-        // `y`/Cmd-C yanks the hash; on a stash row `Enter` shows it, `a` applies,
-        // `A` pops, `x` drops (confirmed), `y`/Cmd-C yanks the reference.
+        // through to the keymap). Commit rows mirror Magit: `A`/`V` open the
+        // cherry-pick/revert transients with the commit at point as the default,
+        // while lowercase `a`/`v` apply/revert changes without committing.
+        // Stash rows: `Enter` shows it, `a` applies, `A` pops, `x` drops
+        // (confirmed), `y`/Cmd-C yanks the reference.
         if let Some((hash, short, subject)) = self.point_commit() {
             match key.as_str() {
                 "enter" => return self.open_commit(hash, short, subject, cx),
+                "a" if shift => return self.open_cherry_pick_transient(cx),
+                "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
+                "v" if shift => return self.open_revert_transient(cx),
+                "v" => return self.pick_selected(PickOp::RevertNoCommit, window, cx),
+                "r" => return self.invoke_command("rebase", window, cx),
                 "y" => return self.copy_to_clipboard(hash, cx),
                 "c" if cmd => return self.copy_to_clipboard(hash, cx),
                 _ => {}

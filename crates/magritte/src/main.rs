@@ -1052,7 +1052,9 @@ struct PendingPrefix {
 #[derive(Clone, Copy)]
 enum PickOp {
     CherryPick,
+    CherryApply,
     Revert,
+    RevertNoCommit,
 }
 
 /// The active full-window screen. `Status` is the home base; the rest take over
@@ -3998,16 +4000,12 @@ impl StatusView {
 
     /// Begin an interactive rebase since the commit selected in the log (its
     /// parent is the base, so that commit and everything above it are editable),
-    /// opening the todo editor. `args` are the rebase switches. First checks
-    /// (off the UI thread) whether that commit is already published; if so,
-    /// confirm before rewriting pushed history — like magit's rebase assert and
-    /// our amend/reword warning.
+    /// or the commit at point in a status commit section, opening the todo
+    /// editor. `args` are the rebase switches. First checks (off the UI thread)
+    /// whether that commit is already published; if so, confirm before rewriting
+    /// pushed history — like magit's rebase assert and our amend/reword warning.
     fn rebase_since_selected(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
-        let Some(rev) = self
-            .log()
-            .and_then(|l| l.entries.get(l.selected))
-            .map(|e| e.short_hash.clone())
-        else {
+        let Some(rev) = self.selected_commit_hash() else {
             return;
         };
         let Some(repo) = self.repo.clone() else {
@@ -4038,6 +4036,36 @@ impl StatusView {
             .ok();
         })
         .detach();
+    }
+
+    /// The selected commit in the log, or the commit row at point in status.
+    fn selected_commit_hash(&self) -> Option<String> {
+        self.log()
+            .and_then(|l| l.entries.get(l.selected))
+            .map(|e| e.hash.clone())
+            .or_else(|| self.point_commit().map(|(hash, _, _)| hash))
+    }
+
+    /// Open the cherry-pick transient, using a status/log commit at point as the
+    /// default when its suffix fires (Magit's commit-at-point model).
+    fn open_cherry_pick_transient(&mut self, cx: &mut Context<Self>) {
+        self.open_transient(
+            "cherry-pick",
+            transient::cherry_pick_transient(),
+            RemoteTargets::default(),
+            cx,
+        );
+    }
+
+    /// Open the revert transient, using a status/log commit at point as the
+    /// default when its suffix fires (Magit's commit-at-point model).
+    fn open_revert_transient(&mut self, cx: &mut Context<Self>) {
+        self.open_transient(
+            "revert",
+            transient::revert_transient(),
+            RemoteTargets::default(),
+            cx,
+        );
     }
 
     /// Open the selected commit's diff (the clickable "view" button; Return does
@@ -4131,28 +4159,45 @@ impl StatusView {
         }
     }
 
-    /// Cherry-pick or revert the commit selected in the log, then return to the
-    /// status view (so a conflict shows in the in-progress banner). Runs on the
-    /// background executor.
+    /// Cherry-pick or revert the commit selected in the log, or the commit at
+    /// point in a status commit section, then return to the status view (so a
+    /// conflict shows in the in-progress banner). Runs on the background
+    /// executor.
     fn pick_selected(&mut self, op: PickOp, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(rev) = self
-            .log()
-            .and_then(|l| l.entries.get(l.selected))
-            .map(|e| e.short_hash.clone())
-        else {
+        self.pick_selected_with_args(op, Vec::new(), window, cx);
+    }
+
+    fn pick_selected_with_args(
+        &mut self,
+        op: PickOp,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rev) = self.selected_commit_hash() else {
+            self.set_status("No commit at point".to_string(), false, cx);
             return;
         };
         let (verb, done) = match op {
             PickOp::CherryPick => ("Cherry-picking", "Cherry-picked"),
+            PickOp::CherryApply => ("Applying", "Applied"),
             PickOp::Revert => ("Reverting", "Reverted"),
+            PickOp::RevertNoCommit => ("Reverting", "Reverted"),
         };
-        self.close_log(window, cx);
+        if self.log().is_some() {
+            self.close_log(window, cx);
+        }
         self.run_job(
             &format!("{verb} {rev}…"),
             done,
             move |repo| match op {
-                PickOp::CherryPick => repo.cherry_pick(&rev),
-                PickOp::Revert => repo.revert(&rev),
+                PickOp::CherryPick => repo.cherry_pick_with_args(&rev, &args),
+                PickOp::CherryApply => repo.cherry_apply_with_args(&rev, &args),
+                PickOp::Revert => {
+                    let args = if args.is_empty() { vec!["--no-edit".to_string()] } else { args };
+                    repo.revert_with_args(&rev, &args)
+                }
+                PickOp::RevertNoCommit => repo.revert_no_commit_with_args(&rev, &args),
             },
             cx,
         );
@@ -4475,6 +4520,8 @@ fn describe_command(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
+        CherryPick | CherryApply => "Cherry-picking",
+        RevertCommit | RevertNoCommit => "Reverting",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
             "Rebasing"
         }
@@ -4500,6 +4547,8 @@ fn command_done(command: transient::Command) -> &'static str {
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
+        CherryPick | CherryApply => "Cherry-picked",
+        RevertCommit | RevertNoCommit => "Reverted",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
             "Rebased"
         }
