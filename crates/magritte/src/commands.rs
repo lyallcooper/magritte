@@ -422,9 +422,9 @@ pub(crate) fn commands() -> &'static [Command] {
         top!("yank", "Copy", Category::Essential, "y", |t, _w, cx| t
             .copy_selection(cx)),
         // Motions: resolved through the keymap (so remappable) but applied
-        // screen-aware via the `nav_*` helpers. Kept out of the `?` menu (the
-        // static Navigation group shows them) and the `:` palette (navigating
-        // from a list picker is pointless).
+        // screen-aware via the `nav_*` helpers. Kept out of the `?` menu and the
+        // `:` palette (`menu: false`/`palette: false`) — cursor motions are
+        // standard vim/emacs conventions and would only clutter the menu.
         nav!("move-down", "Move down", "j", |t, _w, cx| t.nav_line(1, cx)),
         nav!("move-up", "Move up", "k", |t, _w, cx| t.nav_line(-1, cx)),
         nav!("goto-top", "Top", "g g", |t, _w, cx| t.nav_edge(false, cx)),
@@ -838,11 +838,9 @@ pub(crate) fn current_key(
 pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::Config) -> Transient {
     let group = |cat: Category| Group {
         title: transient::plain_title(cat.title()),
-        // Navigation motions have `menu: false` but belong in the menu's
-        // Navigation group; every other group shows its `menu` commands.
         suffixes: commands()
             .iter()
-            .filter(|c| c.category == cat && (c.menu || cat == Category::Navigation))
+            .filter(|c| c.category == cat && c.menu)
             .filter_map(|c| {
                 current_key(keymap, c.id, c.key).map(|keys| {
                     Suffix::Info(transient::Info {
@@ -866,7 +864,6 @@ pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::C
         groups: vec![
             group(Category::Commands),
             group(Category::Applying),
-            group(Category::Navigation),
             essential,
             group(Category::Application),
         ],
