@@ -86,11 +86,15 @@ impl GitCommand {
         match self.args.first().map(String::as_str) {
             Some(
                 "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref"
-                | "ls-files" | "symbolic-ref" | "describe",
+                | "ls-files" | "symbolic-ref" | "describe" | "log",
             ) => true,
             // Config *reads* (e.g. resolving the push-remote) are queries; a
             // config write (setting one) is a user action, so keep it visible.
             Some("config") => self.args.iter().any(|a| a == "--get" || a == "--get-all"),
+            // `git stash list` is the Stashes section's listing — a query; the
+            // mutating stash verbs (push/pop/apply/drop/show) are user actions,
+            // so they stay visible.
+            Some("stash") => self.args.get(1).map(String::as_str) == Some("list"),
             _ => false,
         }
     }
@@ -754,5 +758,51 @@ impl Repo {
             }
         }
         matches!(self.config_get("pull.rebase"), Ok(Some(v)) if rebase_ish(&v))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(args: &[&str], user: bool) -> GitCommand {
+        GitCommand {
+            program: None,
+            args: args.iter().map(|s| s.to_string()).collect(),
+            code: Some(0),
+            ok: true,
+            user,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn is_query_hides_ui_listings_and_reads() {
+        // Read-only listings/reads the UI issues for its own sections — noise in
+        // the command log, hidden by default.
+        for args in [
+            &["status", "--porcelain=v2"][..],
+            &["log", "@{upstream}..HEAD"][..], // unpushed/unpulled/recent/log view
+            &["stash", "list", "--format=%gd"][..], // the Stashes section
+            &["diff", "--cached"][..],
+            &["describe", "--tags"][..],
+            &["config", "--get", "remote.pushDefault"][..],
+        ] {
+            assert!(cmd(args, false).is_query(), "expected query: {args:?}");
+        }
+    }
+
+    #[test]
+    fn is_query_keeps_user_and_mutations_visible() {
+        // A user-typed command always shows, even a read-only one.
+        assert!(!cmd(&["log"], true).is_query());
+        assert!(!cmd(&["stash", "list"], true).is_query());
+        // Mutating stash verbs and config writes are user actions, not queries.
+        assert!(!cmd(&["stash", "push", "-m", "wip"], false).is_query());
+        assert!(!cmd(&["stash", "pop"], false).is_query());
+        assert!(!cmd(&["config", "remote.pushDefault", "origin"], false).is_query());
+        assert!(!cmd(&["commit", "-m", "x"], false).is_query());
+        assert!(!cmd(&["push"], false).is_query());
     }
 }
