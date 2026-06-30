@@ -486,14 +486,22 @@ pub fn load_usage() -> Usage {
 /// Serialize `value` to TOML and write it to `path` atomically — temp file +
 /// rename, creating parent dirs — so an interrupted write can't corrupt the
 /// target. On a rename failure the temp file is removed rather than leaked.
+///
+/// The temp name is unique per process (pid + counter), so two Magritte
+/// instances writing the same target don't share — and clobber — one temp
+/// file; the atomic rename then makes the last writer win cleanly.
 fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let text = toml::to_string_pretty(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("toml.{}.{seq}.tmp", std::process::id()));
+    std::fs::write(&tmp, &text)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
