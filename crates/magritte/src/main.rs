@@ -31,6 +31,7 @@ mod controller;
 #[cfg(feature = "debug")]
 mod debug;
 mod editor_launch;
+mod generation;
 mod editors;
 mod git_action;
 mod highlight;
@@ -44,6 +45,7 @@ mod status_label;
 mod targets;
 mod theme;
 pub(crate) use commands::*;
+use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{FileHighlights, Span};
 use picker::{CreateMode, PickerList};
@@ -1094,7 +1096,7 @@ struct StatusView {
     /// Set by a shift-click mouse-down so the following click extends the
     /// selection (and doesn't toggle the row's fold).
     shift_click: bool,
-    generation: u64,
+    generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
     /// processes superseded by a newer refresh are killed, not just dropped.
@@ -1106,14 +1108,14 @@ struct StatusView {
     /// diff, rebase todo). A load verifies its captured value still matches
     /// before populating the screen, so a superseded load can't land in the
     /// screen a newer request opened.
-    screen_gen: u64,
+    screen_gen: Generation,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
     pending_prefix: Option<PendingPrefix>,
     /// Bumped each time a prefix is entered, so a stale timeout (a newer prefix,
     /// or a resolved one) is ignored.
-    prefix_gen: u64,
+    prefix_gen: Generation,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The active full-window screen — exactly one at a time. Modeling these as
@@ -1172,10 +1174,10 @@ struct StatusView {
     status_keys: Option<String>,
     /// Bumped each time the status message changes, so an auto-dismiss timer
     /// only clears the message it was scheduled for (not a newer one).
-    status_seq: u64,
+    status_seq: Generation,
     /// Bumped per async picker open, stamped onto the picker, so a late
     /// candidate load only fills the picker it was started for.
-    picker_gen: u64,
+    picker_gen: Generation,
     /// In the `$` command-log view, whether to also show the UI's own read-only
     /// queries (status/diff/ref lookups), which are hidden by default.
     git_log_show_all: bool,
@@ -1269,12 +1271,12 @@ impl StatusView {
             visual: None,
             drag_anchor: None,
             shift_click: false,
-            generation: 0,
+            generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
-            screen_gen: 0,
+            screen_gen: Generation::default(),
             pending_prefix: None,
-            prefix_gen: 0,
+            prefix_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,
             font,
@@ -1294,8 +1296,8 @@ impl StatusView {
             status_message: startup_warning,
             status_copied: None,
             status_keys: None,
-            status_seq: 0,
-            picker_gen: 0,
+            status_seq: Generation::default(),
+            picker_gen: Generation::default(),
             git_log_show_all: false,
             confirm: None,
             focus: cx.focus_handle(),
@@ -1652,8 +1654,7 @@ impl StatusView {
         // not just drop their results) and start a fresh cancel scope.
         self.read_cancel.store(true, Ordering::Relaxed);
         self.read_cancel = Arc::new(AtomicBool::new(false));
-        self.generation += 1;
-        let generation = self.generation;
+        let generation = self.generation.bump();
         self.diffs.clear();
         self.highlights.clear();
         self.diff_langs.clear();
@@ -1717,7 +1718,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if !this.generation.is_current(generation) {
                     return;
                 }
                 this.sequence = sequence;
@@ -1767,7 +1768,7 @@ impl StatusView {
         let Some(repo) = self.read_repo() else {
             return;
         };
-        let generation = self.generation;
+        let generation = self.generation.current();
 
         cx.spawn(async move |this, cx| {
             let counts = cx
@@ -1786,7 +1787,7 @@ impl StatusView {
                 .await;
 
             this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if !this.generation.is_current(generation) {
                     return;
                 }
                 let mut warmed = 0;
@@ -1819,7 +1820,7 @@ impl StatusView {
             return;
         };
         self.diffs.insert(key.clone(), DiffState::Loading);
-        let generation = self.generation;
+        let generation = self.generation.current();
 
         cx.spawn(async move |this, cx| {
             // Off the UI thread: load the diff and resolve the language
@@ -1834,7 +1835,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.generation != generation {
+                if !this.generation.is_current(generation) {
                     return;
                 }
                 let state = match loaded {
@@ -3743,7 +3744,7 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         // Drop a load a newer log/reflog request has superseded.
-        if self.screen_gen != gen {
+        if !self.screen_gen.is_current(gen) {
             return;
         }
         if let Some(log) = self.log_mut() {
@@ -3808,8 +3809,7 @@ impl StatusView {
     /// Advance and return the screen-load generation. A screen-changing async
     /// load captures this and re-checks it before mutating the screen.
     fn next_screen_gen(&mut self) -> u64 {
-        self.screen_gen = self.screen_gen.wrapping_add(1);
-        self.screen_gen
+        self.screen_gen.bump()
     }
 
     /// Open the commit selected in the log (Enter in the log view).
@@ -3864,7 +3864,7 @@ impl StatusView {
             this.update(cx, |this, cx| {
                 // Bail if a newer screen load superseded this one, or the view
                 // was closed before the diff arrived.
-                if this.screen_gen != gen || this.commit_view().is_none() {
+                if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
                     return;
                 }
                 let rows = match loaded {

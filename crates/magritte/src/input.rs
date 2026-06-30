@@ -517,8 +517,7 @@ impl StatusView {
     /// next key; after `which_key_delay_ms` the strip expands into the which-key
     /// list of continuations.
     pub(crate) fn enter_prefix(&mut self, seq: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.prefix_gen = self.prefix_gen.wrapping_add(1);
-        let gen = self.prefix_gen;
+        let gen = self.prefix_gen.bump();
         self.pending_prefix = Some(PendingPrefix {
             seq,
             gen,
