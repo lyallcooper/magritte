@@ -99,7 +99,7 @@ impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             auto: false,
-            interval_minutes: 10,
+            interval_minutes: 30,
         }
     }
 }
