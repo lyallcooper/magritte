@@ -1,0 +1,41 @@
+class Magritte < Formula
+  desc "Standalone macOS git client in the spirit of Magit"
+  homepage "https://github.com/@GITHUB_REPOSITORY@"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "@MACOS_ARM64_URL@"
+      sha256 "@MACOS_ARM64_SHA256@"
+    else
+      odie "Magritte currently ships a macOS Apple Silicon artifact only"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
+      url "@LINUX_X86_64_URL@"
+      sha256 "@LINUX_X86_64_SHA256@"
+    else
+      odie "Magritte currently ships a Linux x86_64 artifact only"
+    end
+  end
+
+  def install
+    if OS.mac?
+      prefix.install "Magritte.app"
+      (bin/"magritte").write <<~SH
+        #!/bin/sh
+        exec "#{opt_prefix}/Magritte.app/Contents/MacOS/magritte" "$@"
+      SH
+    else
+      bin.install "bin/magritte"
+      share.install "share"
+    end
+  end
+
+  test do
+    system "#{bin}/magritte", "--help"
+  end
+end

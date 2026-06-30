@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  HOMEBREW_TAP_REPOSITORY: lyallcooper/homebrew-magritte
+
+jobs:
+  macos:
+    name: macOS artifact
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Build .app archive
+        env:
+          MAGRITTE_TARGET: aarch64-apple-darwin
+        run: scripts/dist-macos.sh "${GITHUB_REF_NAME#v}"
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.sha256
+
+  linux:
+    name: Linux artifact (best effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GPUI Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake curl gcc g++ git jq lld llvm make \
+            libasound2-dev libfontconfig-dev libglib2.0-dev libssl-dev \
+            libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev pipewire xdg-desktop-portal
+      - uses: jdx/mise-action@v2
+      - name: Build Linux archive
+        env:
+          MAGRITTE_TARGET: x86_64-unknown-linux-gnu
+        run: scripts/dist-linux.sh "${GITHUB_REF_NAME#v}"
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.sha256
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [macos, linux]
+    if: always() && needs.macos.result == 'success'
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: target/dist
+          merge-multiple: true
+      - name: Render Homebrew formula
+        run: scripts/render-homebrew-formula.sh "${GITHUB_REF_NAME#v}"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/dist/*.tar.gz
+            target/dist/*.sha256
+            target/dist/magritte.rb
+      - name: Check out Homebrew tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HOMEBREW_TAP_REPOSITORY }}
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+      - name: Update Homebrew tap formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          mkdir -p homebrew-tap/Formula
+          cp target/dist/magritte.rb homebrew-tap/Formula/magritte.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/magritte.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew formula unchanged"
+          else
+            git commit -m "Update Magritte to ${GITHUB_REF_NAME}"
+            git push
+          fi

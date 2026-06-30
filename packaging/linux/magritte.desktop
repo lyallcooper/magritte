@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Magritte
+Comment=Standalone git client in the spirit of Magit
+Exec=magritte %F
+Icon=magritte
+Terminal=false
+Categories=Development;RevisionControl;

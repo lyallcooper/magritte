@@ -26,7 +26,7 @@ debug-capture = ["debug", "dep:image", "gpui_platform/test-support"]
 # gpui + gpui-component must share the exact same gpui git rev so their types
 # unify. These revs are pinned to match gpui-component 0.5.2.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c", features = [
     "tree-sitter-languages",
 ] }
@@ -41,9 +41,6 @@ serde = { version = "1", features = ["derive"] }
 # escapes without invoking a shell.
 shell-words = "1"
 toml = "0.8"
-# fork()/setsid() so launching from a shell detaches into the background instead
-# of blocking the terminal (see `detach_into_background` in main.rs).
-libc = "0.2"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 
