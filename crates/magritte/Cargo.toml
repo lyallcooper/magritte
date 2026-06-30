@@ -41,6 +41,9 @@ serde = { version = "1", features = ["derive"] }
 # escapes without invoking a shell.
 shell-words = "1"
 toml = "0.8"
+# fork()/setsid() so launching from a shell detaches into the background instead
+# of blocking the terminal (see `detach_into_background` in main.rs).
+libc = "0.2"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 

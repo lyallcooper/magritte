@@ -4397,14 +4397,65 @@ fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
     gpui::Empty
 }
 
+/// Re-parent into the background so the launching shell gets its prompt back
+/// immediately — a GUI app shouldn't block the terminal it was started from. We
+/// fork while still single-threaded (before any GPUI/AppKit initialization, so
+/// Obj-C fork-safety isn't a concern), the parent exits, and the child detaches
+/// from the controlling terminal and goes on to run the app. A failed fork just
+/// falls through to a normal foreground run.
+#[cfg(unix)]
+fn detach_into_background() {
+    // SAFETY: called at the very top of `main`, before any threads are spawned
+    // or AppKit/Core Foundation is touched, so `fork` is safe here.
+    unsafe {
+        match libc::fork() {
+            -1 => return,               // fork failed: stay in the foreground
+            0 => {}                     // child: carry on and run the app
+            _ => std::process::exit(0), // parent: hand the terminal back
+        }
+        // Our own session with no controlling terminal, so closing the shell
+        // (SIGHUP) won't take the app down with it.
+        libc::setsid();
+        // Point stdio at /dev/null so nothing prints to the shell after its
+        // prompt returns, and so the fds stay valid once the tty is gone.
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null >= 0 {
+            libc::dup2(null, libc::STDIN_FILENO);
+            libc::dup2(null, libc::STDOUT_FILENO);
+            libc::dup2(null, libc::STDERR_FILENO);
+            if null > libc::STDERR_FILENO {
+                libc::close(null);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_into_background() {}
+
 fn main() {
-    // Optional positional arg: a path inside the repo to open (defaults to cwd).
-    let arg = std::env::args().nth(1);
-    if matches!(arg.as_deref(), Some("-h") | Some("--help")) {
-        println!("Usage: magritte [PATH]\n\nOpen the git repository containing PATH (default: current directory).");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(
+            "Usage: magritte [--foreground] [PATH]\n\n\
+             Open the git repository containing PATH (default: current directory).\n\n\
+             Magritte detaches into the background so the shell returns immediately.\n\
+             Pass --foreground (or set MAGRITTE_FOREGROUND) to keep it attached to\n\
+             the terminal — handy for logs and debugging."
+        );
         return;
     }
-    let start_dir = arg.map(PathBuf::from);
+    // First non-flag argument is a path inside the repo to open (defaults to cwd).
+    let start_dir = args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from);
+
+    // Detach into the background by default, like a GUI app launched from a
+    // shell. Opt out with --foreground or MAGRITTE_FOREGROUND (the debug harness
+    // sets the latter so it can read the app's log and control channel).
+    let foreground = args.iter().any(|a| a == "--foreground")
+        || std::env::var_os("MAGRITTE_FOREGROUND").is_some();
+    if !foreground {
+        detach_into_background();
+    }
 
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(move |cx: &mut App| {
