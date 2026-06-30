@@ -1804,9 +1804,17 @@ impl StatusView {
         self.read_cancel.store(true, Ordering::Relaxed);
         self.read_cancel = Arc::new(AtomicBool::new(false));
         let stamp = self.generation.bump();
-        self.diffs.clear();
-        self.highlights.clear();
-        self.diff_langs.clear();
+        let expanded_diff_keys: HashSet<(DiffSource, String)> = self
+            .expanded
+            .iter()
+            .filter_map(|k| match k {
+                FoldKey::File(source, path) => Some((*source, path.clone())),
+                FoldKey::Section(_) | FoldKey::Hunk(..) => None,
+            })
+            .collect();
+        self.diffs.retain(|key, _| expanded_diff_keys.contains(key));
+        self.highlights.retain(|key, _| expanded_diff_keys.contains(key));
+        self.diff_langs.retain(|key, _| expanded_diff_keys.contains(key));
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
         self.collapsed_hunks.clear();
@@ -2049,7 +2057,7 @@ impl StatusView {
             })
             .collect();
         for (source, path) in files {
-            self.ensure_diff(source, path, cx);
+            self.load_diff(source, path, true, cx);
         }
     }
 
@@ -2105,14 +2113,29 @@ impl StatusView {
 
     /// Kick off a background diff load for a file if not already present.
     fn ensure_diff(&mut self, source: DiffSource, path: String, cx: &mut Context<Self>) {
+        self.load_diff(source, path, false, cx);
+    }
+
+    /// Kick off a background diff load for a file. A forced reload preserves an
+    /// existing loaded diff on screen until the replacement lands, so refreshing
+    /// an expanded file never flashes a temporary "Loading…" body.
+    fn load_diff(
+        &mut self,
+        source: DiffSource,
+        path: String,
+        replace_existing: bool,
+        cx: &mut Context<Self>,
+    ) {
         let key = (source, path.clone());
-        if self.diffs.contains_key(&key) {
+        if !replace_existing && self.diffs.contains_key(&key) {
             return;
         }
         let Some(repo) = self.read_repo() else {
             return;
         };
-        self.diffs.insert(key.clone(), DiffState::Loading);
+        if !self.diffs.contains_key(&key) {
+            self.diffs.insert(key.clone(), DiffState::Loading);
+        }
         let generation = self.generation.current();
         self.begin_activity(cx);
 
