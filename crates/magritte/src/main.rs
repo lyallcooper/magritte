@@ -1071,8 +1071,14 @@ struct StatusView {
     repo: Option<Repo>,
     status: Option<Status>,
     /// Commit/stash lists for the non-file status sections (unpushed/unpulled/
-    /// recent/stashes), refreshed alongside `status` off the UI thread.
+    /// recent/stashes), each refreshed by its own background fetch so a slow one
+    /// can't hold up the rest (see [`refresh`](Self::refresh)).
     status_sections: StatusSections,
+    /// Auxiliary (listing) sections whose independent fetch is still in flight
+    /// for the current generation. While a section is here *and* has no data
+    /// yet, it renders a "Loading…" placeholder instead of being hidden — the
+    /// file sections aren't tracked (they come from the priority `git status`).
+    loading_sections: HashSet<SectionId>,
     /// Paths with an unmerged (conflicted) status, refreshed with `rebuild_rows`
     /// so `is_conflicted` is an O(1) lookup rather than an O(entries) scan per
     /// row per frame in `render_row`.
@@ -1291,6 +1297,7 @@ impl StatusView {
             repo,
             status: None,
             status_sections: StatusSections::default(),
+            loading_sections: HashSet::new(),
             tag_info: (None, None),
             conflicted: HashSet::new(),
             sequence: None,
@@ -1737,14 +1744,11 @@ impl StatusView {
 
     /// Reload status from scratch, invalidating any in-flight work.
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        // Capture the cursor's logical position so we can restore it after the
-        // rebuild rather than leaving it at the same numeric index.
-        let anchor = self.capture_anchor();
         // Cancel the previous generation's in-flight reads (kill the processes,
         // not just drop their results) and start a fresh cancel scope.
         self.read_cancel.store(true, Ordering::Relaxed);
         self.read_cancel = Arc::new(AtomicBool::new(false));
-        let generation = self.generation.bump();
+        let stamp = self.generation.bump();
         self.diffs.clear();
         self.highlights.clear();
         self.diff_langs.clear();
@@ -1753,69 +1757,134 @@ impl StatusView {
         self.collapsed_hunks.clear();
         self.error = None;
 
-        let Some(repo) = self.read_repo() else {
+        if self.read_repo().is_none() {
             self.error = Some(format!("Not a git repository: {}", self.root.display()));
+            self.loading_sections.clear();
             self.rebuild_rows();
             return;
-        };
+        }
 
-        let recent_count = self.config.status.recent_count;
-        let want_ignored = self
+        // The configured sections, so we only fetch (and mark loading) what's
+        // actually shown.
+        let configured: HashSet<SectionId> = self
             .config
             .status
             .section_ids()
             .iter()
-            .any(|s| s == "ignored");
+            .filter_map(|id| SectionId::from_config_id(id))
+            .collect();
+        // Mark the auxiliary listing sections as loading up front so a slow one
+        // shows a "Loading…" placeholder. The file sections come from the
+        // priority `git status` below; the pushremote sections are added later,
+        // only once status confirms a distinct push target (a triangular
+        // workflow), so the common non-triangular case never flashes them.
+        self.loading_sections = [
+            SectionId::Unpushed,
+            SectionId::Unpulled,
+            SectionId::Recent,
+            SectionId::Stashes,
+            SectionId::Ignored,
+        ]
+        .into_iter()
+        .filter(|s| configured.contains(s))
+        .collect();
+
+        let recent_count = self.config.status.recent_count;
         let want_tags = self.config.show_tags;
+        let pushremote_configured = configured.contains(&SectionId::UnpushedPushremote)
+            || configured.contains(&SectionId::UnpulledPushremote);
+
+        // PRIORITY: `git status` + the in-progress sequence. Renders the main
+        // file sections (and the header) the moment it lands, before the
+        // auxiliary listings — and kicks off the pushremote fetch afterward,
+        // since that one needs status to know the push target.
+        self.spawn_status_fetch(stamp, pushremote_configured, cx);
+
+        // Auxiliary listings, each its own fetch running concurrently with
+        // status (none need our status — git resolves @{upstream}/HEAD itself),
+        // so a slow listing can't hold up the main sections or the others. Each
+        // streams in and clears its "Loading…" as it lands.
+        if configured.contains(&SectionId::Unpushed) || configured.contains(&SectionId::Unpulled) {
+            self.spawn_fetch(
+                stamp,
+                vec![SectionId::Unpushed, SectionId::Unpulled],
+                cx,
+                |repo| {
+                    (
+                        repo.unpushed().unwrap_or_default(),
+                        repo.unpulled().unwrap_or_default(),
+                    )
+                },
+                |this, (up, down)| {
+                    this.status_sections.unpushed = up;
+                    this.status_sections.unpulled = down;
+                },
+            );
+        }
+        if configured.contains(&SectionId::Recent) {
+            self.spawn_fetch(
+                stamp,
+                vec![SectionId::Recent],
+                cx,
+                move |repo| repo.log("HEAD", recent_count).unwrap_or_default(),
+                |this, recent| this.status_sections.recent = recent,
+            );
+        }
+        if configured.contains(&SectionId::Stashes) {
+            self.spawn_fetch(
+                stamp,
+                vec![SectionId::Stashes],
+                cx,
+                |repo| repo.stash_list().unwrap_or_default(),
+                |this, stashes| this.status_sections.stashes = stashes,
+            );
+        }
+        if configured.contains(&SectionId::Ignored) {
+            self.spawn_fetch(
+                stamp,
+                vec![SectionId::Ignored],
+                cx,
+                |repo| repo.ignored_files().unwrap_or_default(),
+                |this, ignored| this.status_sections.ignored = ignored,
+            );
+        }
+        if want_tags {
+            // Not a section (it's the title-bar tag segment), so no loading row.
+            self.spawn_fetch(
+                stamp,
+                Vec::new(),
+                cx,
+                |repo| repo.tags_around(),
+                |this, tags| this.tag_info = tags,
+            );
+        } else {
+            self.tag_info = (None, None);
+        }
+    }
+
+    /// The priority fetch: `git status` and the in-progress sequence. Renders
+    /// the main file sections and header as soon as it lands (restoring the
+    /// cursor and re-warming diffs), then — now that the push target is known —
+    /// fetches the pushremote sections when this is a triangular workflow.
+    fn spawn_status_fetch(&mut self, stamp: u64, pushremote_configured: bool, cx: &mut Context<Self>) {
+        let Some(repo) = self.read_repo() else {
+            return;
+        };
+        // Capture the cursor's logical position now (before the rebuild) so it
+        // can be restored once status lands, rather than left at a stale index.
+        let anchor = self.capture_anchor();
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
-            let (result, sequence, sections, tag_info) = cx
+            let (result, sequence) = cx
                 .background_executor()
-                .spawn(async move {
-                    let status = repo.status();
-                    let sequence = repo.sequence();
-                    let tag_info = if want_tags {
-                        repo.tags_around()
-                    } else {
-                        (None, None)
-                    };
-                    // The push target's listings only matter (and only resolve)
-                    // in a triangular workflow — skip the git calls otherwise.
-                    let triangular = status.as_ref().is_ok_and(|s| s.head.push.is_some());
-                    // The non-file section listings (cheap git log / stash list).
-                    // A missing upstream/push just yields an empty list.
-                    let sections = StatusSections {
-                        unpushed: repo.unpushed().unwrap_or_default(),
-                        unpulled: repo.unpulled().unwrap_or_default(),
-                        unpushed_pushremote: if triangular {
-                            repo.unpushed_to_push().unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        },
-                        unpulled_pushremote: if triangular {
-                            repo.unpulled_from_push().unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        },
-                        recent: repo.log("HEAD", recent_count).unwrap_or_default(),
-                        stashes: repo.stash_list().unwrap_or_default(),
-                        ignored: if want_ignored {
-                            repo.ignored_files().unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        },
-                    };
-                    (status, sequence, sections, tag_info)
-                })
+                .spawn(async move { (repo.status(), repo.sequence()) })
                 .await;
             this.update(cx, |this, cx| {
                 this.end_activity(cx);
-                if !this.generation.is_current(generation) {
+                if !this.generation.is_current(stamp) {
                     return;
                 }
                 this.sequence = sequence;
-                this.status_sections = sections;
-                this.tag_info = tag_info;
                 match result {
                     Ok(status) => {
                         this.status = Some(status);
@@ -1830,6 +1899,73 @@ impl StatusView {
                 this.reload_expanded_diffs(cx);
                 // Warm a bounded set of small diffs so first expand feels instant.
                 this.start_prefetch(cx);
+                let triangular = this
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.head.push.is_some());
+                if pushremote_configured && triangular {
+                    this.loading_sections.insert(SectionId::UnpushedPushremote);
+                    this.loading_sections.insert(SectionId::UnpulledPushremote);
+                    this.rebuild_rows();
+                    this.spawn_fetch(
+                        stamp,
+                        vec![SectionId::UnpushedPushremote, SectionId::UnpulledPushremote],
+                        cx,
+                        |repo| {
+                            (
+                                repo.unpushed_to_push().unwrap_or_default(),
+                                repo.unpulled_from_push().unwrap_or_default(),
+                            )
+                        },
+                        |this, (up, down)| {
+                            this.status_sections.unpushed_pushremote = up;
+                            this.status_sections.unpulled_pushremote = down;
+                        },
+                    );
+                } else {
+                    // Not triangular (or the target went away): clear any stale
+                    // pushremote listing so it doesn't linger from a prior state.
+                    this.status_sections.unpushed_pushremote.clear();
+                    this.status_sections.unpulled_pushremote.clear();
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Spawn one independent background section fetch: run `fetch` off the UI
+    /// thread, then on the UI thread (if still the current generation) hand the
+    /// result to `apply`, clear `sections` from the loading set, and rebuild.
+    /// Pairs `begin_activity`/`end_activity` so the busy spinner accounts for it.
+    fn spawn_fetch<T: Send + 'static>(
+        &mut self,
+        stamp: u64,
+        sections: Vec<SectionId>,
+        cx: &mut Context<Self>,
+        fetch: impl FnOnce(Repo) -> T + Send + 'static,
+        apply: impl FnOnce(&mut Self, T) + 'static,
+    ) {
+        let Some(repo) = self.read_repo() else {
+            return;
+        };
+        self.begin_activity(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { fetch(repo) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.end_activity(cx);
+                if !this.generation.is_current(stamp) {
+                    return;
+                }
+                apply(this, result);
+                for s in &sections {
+                    this.loading_sections.remove(s);
+                }
+                this.rebuild_rows();
                 cx.notify();
             })
             .ok();
@@ -2174,10 +2310,47 @@ impl StatusView {
         }
     }
 
+    /// While an auxiliary section's independent fetch is still in flight (and it
+    /// has no data yet), render its header over a dim "Loading…" row so a slow
+    /// section shows progress instead of just popping in. A section not in
+    /// `loading_sections` (already loaded, and empty) renders nothing — so an
+    /// empty section still disappears once its fetch lands.
+    fn push_loading_section(&self, rows: &mut Vec<Row>, id: SectionId, title: &str) {
+        if !self.loading_sections.contains(&id) {
+            return;
+        }
+        rows.push(spacer());
+        let expanded = self.expanded.contains(&FoldKey::Section(id));
+        rows.push(Row {
+            indent: 0,
+            selectable: true,
+            fold: Some(FoldKey::Section(id)),
+            target: None,
+            kind: RowKind::Section {
+                title: title.to_string(),
+                count: None,
+                expanded,
+            },
+        });
+        if expanded {
+            rows.push(Row {
+                indent: 1,
+                selectable: false,
+                fold: None,
+                target: None,
+                kind: RowKind::Plain {
+                    text: "Loading…".to_string(),
+                    color: self.palette.dim,
+                },
+            });
+        }
+    }
+
     /// A commit-listing section (unpushed/unpulled/recent): a foldable header
-    /// over one `RowKind::Commit` per commit. Skipped when empty, like
-    /// [`push_section`]. `count` is shown after the title when `Some` — `None`
-    /// for the recent section, which is capped to a fixed number anyway.
+    /// over one `RowKind::Commit` per commit. When empty it shows a "Loading…"
+    /// placeholder if still fetching (see [`push_loading_section`]), else nothing.
+    /// `count` is shown after the title when `Some` — `None` for the recent
+    /// section, which is capped to a fixed number anyway.
     fn push_commit_section(
         &self,
         rows: &mut Vec<Row>,
@@ -2187,6 +2360,7 @@ impl StatusView {
         count: Option<usize>,
     ) {
         if commits.is_empty() {
+            self.push_loading_section(rows, id, title);
             return;
         }
         rows.push(spacer());
@@ -2226,6 +2400,7 @@ impl StatusView {
     fn push_stash_section(&self, rows: &mut Vec<Row>) {
         let stashes = &self.status_sections.stashes;
         if stashes.is_empty() {
+            self.push_loading_section(rows, SectionId::Stashes, "Stashes");
             return;
         }
         let id = SectionId::Stashes;
@@ -2264,6 +2439,7 @@ impl StatusView {
     fn push_ignored_section(&self, rows: &mut Vec<Row>) {
         let ignored = &self.status_sections.ignored;
         if ignored.is_empty() {
+            self.push_loading_section(rows, SectionId::Ignored, "Ignored files");
             return;
         }
         let id = SectionId::Ignored;
