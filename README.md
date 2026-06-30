@@ -29,6 +29,11 @@ Omit `--release` for a faster, unoptimized dev build. The first build compiles
 GPUI and pulls pinned git dependencies, so it takes a while; later builds are
 incremental.
 
+Launched from a shell, Magritte detaches into the background and returns your
+prompt immediately, the way a GUI app should. Pass `--foreground` (or set
+`MAGRITTE_FOREGROUND`) to keep it attached to the terminal — useful for logs and
+debugging.
+
 ## Keybindings
 
 The default keymap mirrors **evil-collection's magit**, so existing muscle

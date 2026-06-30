@@ -46,7 +46,10 @@ case "$cmd" in
     # Build with `debug-capture` so `shot` can grab the window via offscreen
     # render (works while the app is backgrounded/occluded). Dev-only feature.
     ( cd "$ROOT" && cargo build --features debug-capture ) || { echo "build failed"; exit 1; }
-    MAGRITTE_DEBUG_DIR="$DIR" "$BIN" "$repo" >"$LOG" 2>&1 &
+    # Stay in the foreground (MAGRITTE_FOREGROUND) so we keep this pid, the log
+    # captures output, and the control channel is reachable — the app otherwise
+    # detaches into the background.
+    MAGRITTE_DEBUG_DIR="$DIR" MAGRITTE_FOREGROUND=1 "$BIN" "$repo" >"$LOG" 2>&1 &
     pid=$!
     for _ in $(seq 1 60); do
       grep -q "debug: watching" "$LOG" 2>/dev/null && break
