@@ -1096,25 +1096,41 @@ impl StatusView {
                     .map(|el| {
                         if ed.confirming_cancel {
                             // Unsaved edits: confirm before discarding the message.
+                            // The whole prompt sits in one group so an ignored
+                            // keypress can flash its background (a warning wash),
+                            // signalling that input is paused.
                             el.child(
                                 div()
-                                    .text_color(self.palette.dim)
-                                    .child(SharedString::from("Discard message?")),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_1()
+                                    .rounded(px(3.0))
+                                    .when(ed.flash, |p| p.bg(self.palette.banner))
+                                    .child(
+                                        div()
+                                            .text_color(if ed.flash {
+                                                self.palette.fg
+                                            } else {
+                                                self.palette.dim
+                                            })
+                                            .child(SharedString::from("Discard message?")),
+                                    )
+                                    .child(self.key_action(
+                                        "editor-discard-yes",
+                                        "y",
+                                        "discard",
+                                        view,
+                                        Self::discard_editor,
+                                    ))
+                                    .child(self.key_action(
+                                        "editor-discard-no",
+                                        "n",
+                                        "keep editing",
+                                        view,
+                                        Self::keep_editing,
+                                    )),
                             )
-                            .child(self.key_action(
-                                "editor-discard-yes",
-                                "y",
-                                "discard",
-                                view,
-                                Self::discard_editor,
-                            ))
-                            .child(self.key_action(
-                                "editor-discard-no",
-                                "n",
-                                "keep editing",
-                                view,
-                                Self::keep_editing,
-                            ))
                         } else {
                             el.child(self.key_action(
                                 "editor-commit",
@@ -1144,19 +1160,22 @@ impl StatusView {
         // With a staged diff to review, the message takes a fixed band at the
         // top and the diff fills the rest (scrollable); otherwise the message
         // fills the window.
+        // While the discard confirmation is up, disable the field so it grays
+        // out — a clear cue that typing is paused until you answer y/n.
+        let paused = ed.confirming_cancel;
         if ed.diff.is_empty() {
             root.child(
                 div()
                     .flex_grow(1.0)
                     .w_full()
-                    .child(Input::new(&ed.state).h_full()),
+                    .child(Input::new(&ed.state).h_full().disabled(paused)),
             )
         } else {
             root.child(
                 div()
                     .h(px(176.0))
                     .w_full()
-                    .child(Input::new(&ed.state).h_full()),
+                    .child(Input::new(&ed.state).h_full().disabled(paused)),
             )
             .child(self.render_commit_diff(ed, view))
         }
