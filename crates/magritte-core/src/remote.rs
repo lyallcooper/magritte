@@ -150,6 +150,15 @@ impl Repo {
         Ok(self.run(&args)?.report())
     }
 
+    /// `git fetch [switches]` — the current branch's configured remote, with no
+    /// explicit remote or `--all`. Used for the lightweight background
+    /// auto-fetch (keeps unpushed/unpulled current without touching every remote).
+    pub fn fetch_default(&self, switches: &[String]) -> Result<String> {
+        let mut args = vec!["fetch".to_string()];
+        args.extend(switches.iter().cloned());
+        Ok(self.run(&args)?.report())
+    }
+
     /// `git fetch --all [switches]`.
     pub fn fetch_all(&self, switches: &[String]) -> Result<String> {
         let mut args = vec!["fetch".to_string(), "--all".to_string()];

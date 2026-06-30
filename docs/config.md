@@ -125,6 +125,24 @@ Set `show_tags = true` to show the nearest tag(s) in the title bar —
 `Tag: v1.0 (5)` (commits since) or `Tags: v1.0 (5), v1.1 (2)` (also the next
 tag ahead). Off by default.
 
+## Auto-fetch
+
+A `[fetch]` table runs a periodic background `git fetch` so the
+unpushed/unpulled counts stay current without a manual fetch. Off by default.
+
+```toml
+[fetch]
+auto = true            # default false
+interval_minutes = 10  # default 10; minimum 1
+```
+
+- The fetch is a plain `git fetch` (the current branch's configured remote),
+  run quietly off the UI thread; the status view refreshes when it lands. It's
+  skipped while another operation is in flight, and a failure (offline, etc.)
+  is ignored until the next tick.
+- Like everything else, this is per-repo overridable — enable it (or set a
+  different interval) for one repository via `.git/magritte/config.toml`.
+
 ## Keymap
 
 The default keymap mirrors evil-collection's magit. A `[keymap]` table overrides
