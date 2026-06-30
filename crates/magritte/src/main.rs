@@ -4786,9 +4786,12 @@ mod tests {
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
             "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", // half/full page motions
         ];
-        // Keys allowed to be on only one side of the check. Empty today; add a
-        // key here (with a comment) when an exception is genuinely warranted.
-        const OVERRIDES: &[&str] = &[];
+        // Keys allowed to be on only one side of the check. Cursor motions
+        // dispatch but are intentionally hidden from the `?` menu (standard
+        // vim/emacs conventions — see the `nav!` block in commands.rs).
+        const OVERRIDES: &[&str] = &[
+            "j", "k", "g g", "G", "g j", "g k", "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b",
+        ];
 
         let config = config::Config::default();
         let km = build_keymap(&config).0;
