@@ -1020,17 +1020,21 @@ pub fn revert_transient() -> Transient {
     }
 }
 
-/// The transient shown when the matching prefix key (`r` rebase, `m` merge) is
-/// pressed while *that* sequence is already in progress: magit's continue / skip
-/// / abort, scoped to what the operation supports. A merge has no continue/skip
-/// (you finish it by committing the resolved index, or abort), so it shows only
-/// abort; rebase/cherry-pick/revert show all three — making `r r` = continue,
-/// `r s` = skip, `r a` = abort.
+/// The transient shown when a sequence's prefix is pressed while that sequence
+/// is already in progress: magit's continue / skip / abort, scoped to what the
+/// operation supports. A merge has no continue/skip (you finish it by committing
+/// the resolved index, or abort), so it shows only abort.
 pub fn sequence_transient(kind: SequenceKind) -> Transient {
     let mut suffixes = Vec::new();
+    let continue_key = match kind {
+        SequenceKind::CherryPick => "A",
+        SequenceKind::Revert => "V",
+        SequenceKind::Am => "w",
+        SequenceKind::Merge | SequenceKind::Rebase => "r",
+    };
     if kind.can_continue() {
         suffixes.push(Suffix::Action(Action {
-            key: "r",
+            key: continue_key,
             description: "continue".to_string(),
             command: Command::SequenceContinue,
         }));

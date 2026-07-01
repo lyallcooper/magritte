@@ -393,7 +393,7 @@ impl StatusView {
                 "Hard reset"
             };
             self.confirm = Some((
-                format!("{what} to {target}? (y/n)"),
+                format!("{what} to {target}?"),
                 Confirm::Reset(mode, target),
             ));
             cx.notify();
@@ -1153,7 +1153,7 @@ impl StatusView {
     pub(crate) fn sequence_abort(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(kind) = self.sequence_kind() {
             self.confirm = Some((
-                format!("Abort {}? (y/n)", kind.label()),
+                format!("Abort {}?", kind.label()),
                 Confirm::AbortSequence(kind),
             ));
             cx.notify();

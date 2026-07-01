@@ -6,7 +6,10 @@
 use std::collections::HashMap;
 
 use gpui::{Context, KeyDownEvent, SharedString, Window};
-use magritte_core::transient::{Suffix, Transient};
+use magritte_core::{
+    transient::{self, Suffix, Transient},
+    SequenceKind,
+};
 
 use crate::*;
 
@@ -106,6 +109,25 @@ impl StatusView {
                 self.confirm_no(window, cx);
             }
             return;
+        }
+
+        if let Some(kind) = self.sequence_kind() {
+            let sequence_prefix = match kind {
+                SequenceKind::Rebase => "r",
+                SequenceKind::Merge => "m",
+                SequenceKind::CherryPick => "A",
+                SequenceKind::Revert => "V",
+                SequenceKind::Am => "w",
+            };
+            if cased == sequence_prefix {
+                self.open_transient(
+                    "",
+                    transient::sequence_transient(kind),
+                    RemoteTargets::default(),
+                    cx,
+                );
+                return;
+            }
         }
 
         // Command palette via cmd+p / cmd+k — before per-view handlers, so it
@@ -316,7 +338,7 @@ impl StatusView {
                 "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
                 "x" => {
                     self.confirm = Some((
-                        format!("Drop {reference}? (y/n)"),
+                        format!("Drop {reference}?"),
                         Confirm::DropStash(reference),
                     ));
                     cx.notify();
@@ -474,7 +496,7 @@ impl StatusView {
         }
         if command_is_destructive(&command) {
             self.confirm = Some((
-                format!("Run `{command}`? (y/n)"),
+                format!("Run `{command}`?"),
                 Confirm::CustomShell {
                     command,
                     refresh: cmd.refresh,
@@ -738,7 +760,7 @@ impl StatusView {
                 "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
                 "x" => {
                     self.confirm = Some((
-                        format!("Drop {reference}? (y/n)"),
+                        format!("Drop {reference}?"),
                         Confirm::DropStash(reference),
                     ));
                     cx.notify();
