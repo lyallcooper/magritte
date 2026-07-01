@@ -1215,7 +1215,7 @@ struct StatusView {
     /// `None` with no repo.
     worktree_scope_dir: Option<PathBuf>,
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
-    /// tag ahead + commits-until). Refreshed with status when `show_tags` is on.
+    /// tag ahead + commits-until). Refreshed with status when title-bar tags are on.
     tag_info: TagsAround,
     /// Cached list of monospace font families (computed on first settings open).
     mono_fonts: Vec<SharedString>,
@@ -1677,8 +1677,8 @@ impl StatusView {
         // title-bar tag segment (and commit ref labels), which status sections
         // are populated, and the recent-commit count. Those need a refresh to
         // take effect live; a repaint alone leaves them stale until the next one.
-        let data_changed =
-            self.config.show_tags != cfg.show_tags || self.config.status != cfg.status;
+        let data_changed = self.config.show_tags_in_title_bar != cfg.show_tags_in_title_bar
+            || self.config.status != cfg.status;
         self.config = cfg;
         // Keep the global-only copy current too (the watcher fires for both the
         // global and the repo file), so a later settings save writes back the
@@ -1857,7 +1857,7 @@ impl StatusView {
             .collect();
 
         let recent_count = self.config.status.recent_count;
-        let want_tags = self.config.show_tags;
+        let want_tags = self.config.show_tags_in_title_bar;
         let pushremote_configured = configured.contains(&SectionId::UnpushedPushremote)
             || configured.contains(&SectionId::UnpulledPushremote);
 

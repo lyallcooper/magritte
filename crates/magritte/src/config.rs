@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).
-pub const DEFAULT_LIGHT_THEME: &str = "Selenized White";
-pub const DEFAULT_DARK_THEME: &str = "Selenized Black";
+pub const DEFAULT_LIGHT_THEME: &str = "Selenized Light";
+pub const DEFAULT_DARK_THEME: &str = "Selenized Dark";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,8 +83,8 @@ pub struct Config {
     pub refresh_on_focus: bool,
     /// Show the nearest tag(s) (a "Tag/Tags" segment) in the title bar. Off by
     /// default; set true to show it.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub show_tags: bool,
+    #[serde(default, alias = "show_tags", skip_serializing_if = "is_false")]
+    pub show_tags_in_title_bar: bool,
     /// Branches considered "published" (magit's `magit-published-branches`):
     /// amending/rewording/rebasing a commit already on one of these warns
     /// before rewriting shared history. A commit counts as on a branch when
@@ -348,7 +348,7 @@ impl Default for Config {
             transient: BTreeMap::new(),
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
-            show_tags: false,
+            show_tags_in_title_bar: false,
             published_branches: default_published_branches(),
             commands: Vec::new(),
             status: StatusConfig::default(),
@@ -736,7 +736,13 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         config.refresh_on_focus,
         config.refresh_on_focus,
     );
-    set_bool(&mut doc, "show_tags", config.show_tags, !config.show_tags);
+    set_bool_with_alias(
+        &mut doc,
+        "show_tags_in_title_bar",
+        "show_tags",
+        config.show_tags_in_title_bar,
+        !config.show_tags_in_title_bar,
+    );
 
     atomic_write_text(path, &doc.to_string())
 }
@@ -747,6 +753,23 @@ fn set_string(doc: &mut toml_edit::DocumentMut, key: &str, value: &str, omit: bo
 
 fn set_bool(doc: &mut toml_edit::DocumentMut, key: &str, value: bool, omit: bool) {
     set_setting(doc, key, omit, toml_edit::Value::from(value));
+}
+
+fn set_bool_with_alias(
+    doc: &mut toml_edit::DocumentMut,
+    key: &str,
+    alias: &str,
+    value: bool,
+    omit: bool,
+) {
+    if !doc.as_table().contains_key(key) {
+        if let Some(item) = doc.as_table_mut().remove(alias) {
+            doc[key] = item;
+        }
+    } else {
+        doc.as_table_mut().remove(alias);
+    }
+    set_bool(doc, key, value, omit);
 }
 
 fn set_setting(
@@ -818,7 +841,7 @@ mod tests {
         let original = r#"# my config
 font = "Mono" # keep this comment
 refresh_on_focus = true # explicit default
-show_tags = false # explicit default false
+show_tags_in_title_bar = false # explicit default false
 
 [keymap]
 "g x" = "user.sync"
@@ -832,31 +855,51 @@ run = "git fetch && git push"
 
         let mut cfg: Config = toml::from_str(original).unwrap();
         cfg.font = "JetBrains Mono".to_string();
-        cfg.show_tags = true;
+        cfg.show_tags_in_title_bar = true;
         save_settings_at(&path, &cfg).unwrap();
 
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("# my config"));
         assert!(saved.contains("font = \"JetBrains Mono\" # keep this comment"));
         assert!(saved.contains("refresh_on_focus = true # explicit default"));
-        assert!(saved.contains("show_tags = true # explicit default false"));
+        assert!(saved.contains("show_tags_in_title_bar = true # explicit default false"));
         assert!(saved.contains("[keymap]\n\"g x\" = \"user.sync\""));
         assert!(saved.contains("[[command]]\nid = \"user.sync\""));
         assert!(!saved.contains("commit_body_wrap"));
         assert!(!saved.contains("command = []"));
         let saved_value: toml::Value = toml::from_str(&saved).unwrap();
-        assert_eq!(saved_value.get("show_tags").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(saved_value.get("show_tags_in_title_bar").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(saved_value.get("refresh_on_focus").and_then(|v| v.as_bool()), Some(true));
-        assert!(saved_value["command"][0].get("show_tags").is_none());
+        assert!(saved_value["command"][0].get("show_tags_in_title_bar").is_none());
 
-        cfg.show_tags = false;
+        cfg.show_tags_in_title_bar = false;
         cfg.font.clear();
         save_settings_at(&path, &cfg).unwrap();
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("show_tags = false # explicit default false"));
+        assert!(saved.contains("show_tags_in_title_bar = false # explicit default false"));
         assert!(saved.contains("font = \"\" # keep this comment"));
         assert!(saved.contains("refresh_on_focus = true # explicit default"));
         assert!(saved.contains("[[command]]\nid = \"user.sync\""));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn settings_save_migrates_old_show_tags_key() {
+        let path = std::env::temp_dir().join(format!(
+            "magritte-show-tags-migrate-{}.toml",
+            std::process::id()
+        ));
+        let original = "show_tags = false # old spelling\n";
+        std::fs::write(&path, original).unwrap();
+
+        let cfg: Config = toml::from_str(original).unwrap();
+        assert!(!cfg.show_tags_in_title_bar);
+        save_settings_at(&path, &cfg).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("show_tags_in_title_bar = false # old spelling"));
+        assert!(!saved.contains("show_tags ="));
 
         let _ = std::fs::remove_file(&path);
     }
