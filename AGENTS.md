@@ -69,5 +69,5 @@ Key cross-cutting models:
 ## Conventions
 
 - **Comments** carry only what a future reader needs — don't narrate alternatives considered or justify a choice against one. Match the surrounding comment density.
-- **Commits:** committing with `git commit --no-gpg-sign` is fine here (1Password signing is often locked). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md`, `PLAN.md`, and the `scripts/` dev helpers stay out of commits unless asked.
+- **Commits:** committing with `git commit --no-gpg-sign` is fine here (1Password signing is often locked). Do not include AI/tool attribution or thread-reference trailers in commit messages (no Claude/Codex/Amp co-author lines, generated-by lines, or Amp thread IDs). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md`, `PLAN.md`, and the `scripts/` dev helpers stay out of commits unless asked.
 - **Verify UI changes live** with `scripts/dbg.sh` + a screenshot before considering them done; verify core changes with `cargo test`.
