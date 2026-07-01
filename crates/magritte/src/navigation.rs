@@ -58,18 +58,58 @@ impl StatusView {
         }
     }
 
-    /// Move to the next/previous top-level section header.
+    /// Move to the next/previous visible section start at any depth — headers,
+    /// files, commits, stashes, hunk headers — magit's `magit-section-forward`
+    /// / `-backward`. Backward from inside a section's content lands on the
+    /// section's own start first (magit's "beginning of the current section"),
+    /// which falls out of scanning upward for the nearest start.
     pub(crate) fn select_section(&mut self, forward: bool) {
-        let is_section = |r: &Row| matches!(r.kind, RowKind::Section { .. });
         let next = if forward {
-            (self.selected + 1..self.rows.len()).find(|&i| is_section(&self.rows[i]))
+            (self.selected + 1..self.rows.len())
+                .find(|&i| section_depth(&self.rows[i]).is_some())
         } else {
             (0..self.selected)
                 .rev()
-                .find(|&i| is_section(&self.rows[i]))
+                .find(|&i| section_depth(&self.rows[i]).is_some())
         };
         if let Some(i) = next {
             self.selected = i;
+        }
+    }
+
+    /// Move to the next/previous *sibling* section — the closest section start
+    /// at the same depth, stopping at the enclosing section's boundary
+    /// (magit's `magit-section-forward-sibling` / `-backward-sibling`). With no
+    /// sibling in that direction, fall back to the fine-grained motion, as
+    /// magit does.
+    pub(crate) fn select_section_sibling(&mut self, forward: bool) {
+        // The current section: this row if it starts one, else the nearest
+        // start above (the section the row is inside).
+        let Some(cur) = (0..=self.selected)
+            .rev()
+            .find(|&i| section_depth(&self.rows[i]).is_some())
+        else {
+            return self.select_section(forward);
+        };
+        let depth = section_depth(&self.rows[cur]).unwrap();
+        let sibling = if forward {
+            (cur + 1..self.rows.len())
+                .map(|i| (i, section_depth(&self.rows[i])))
+                .filter_map(|(i, d)| d.map(|d| (i, d)))
+                // A shallower start means we left the parent: no more siblings.
+                .take_while(|&(_, d)| d >= depth)
+                .find(|&(_, d)| d == depth)
+        } else {
+            (0..cur)
+                .rev()
+                .map(|i| (i, section_depth(&self.rows[i])))
+                .filter_map(|(i, d)| d.map(|d| (i, d)))
+                .take_while(|&(_, d)| d >= depth)
+                .find(|&(_, d)| d == depth)
+        };
+        match sibling {
+            Some((i, _)) => self.selected = i,
+            None => self.select_section(forward),
         }
     }
 
@@ -132,11 +172,21 @@ impl StatusView {
         }
     }
 
-    /// Move to the next/previous section. Only the status view has sections; a
-    /// no-op elsewhere.
+    /// Move to the next/previous section start. Only the status view has
+    /// sections; a no-op elsewhere.
     pub(crate) fn nav_section(&mut self, forward: bool, cx: &mut Context<Self>) {
         if matches!(self.screen, Screen::Status) {
             self.select_section(forward);
+            self.scroll
+                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Move to the next/previous sibling section. Status view only.
+    pub(crate) fn nav_section_sibling(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if matches!(self.screen, Screen::Status) {
+            self.select_section_sibling(forward);
             self.scroll
                 .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
             cx.notify();
@@ -422,5 +472,18 @@ impl StatusView {
         let anchor = self.capture_anchor();
         self.rebuild_rows();
         self.restore_anchor(anchor);
+    }
+}
+
+/// The magit section depth of a row that *starts* a section, or `None` for
+/// content/chrome rows (diff lines, messages, spacers). Top-level headers are
+/// 0; files, commits, and stashes are 1; hunk headers are 2 — mirroring the
+/// status buffer's section tree, flattened.
+fn section_depth(row: &Row) -> Option<u8> {
+    match &row.kind {
+        RowKind::Section { .. } => Some(0),
+        RowKind::File { .. } | RowKind::Commit { .. } | RowKind::Stash { .. } => Some(1),
+        RowKind::HunkHeader { .. } => Some(2),
+        RowKind::Plain { .. } | RowKind::Diff { .. } => None,
     }
 }

@@ -504,10 +504,17 @@ pub(crate) fn commands() -> &'static [Command] {
         nav!("goto-top", "Top", "g g", |t, _w, cx| t.nav_edge(false, cx)),
         nav!("goto-bottom", "Bottom", "G", |t, _w, cx| t
             .nav_edge(true, cx)),
-        nav!("next-section", "Next section", "g j", |t, _w, cx| t
+        // Section motions, magit's two granularities: `next-section` visits
+        // every section start (headers, files, commits, hunks — like magit's
+        // `n`); the sibling variants stay at the current depth (magit's `M-n`).
+        nav!("next-section", "Next section", "ctrl-j", |t, _w, cx| t
             .nav_section(true, cx)),
-        nav!("prev-section", "Previous section", "g k", |t, _w, cx| t
+        nav!("prev-section", "Previous section", "ctrl-k", |t, _w, cx| t
             .nav_section(false, cx)),
+        nav!("next-sibling-section", "Next sibling section", "g j", |t, _w, cx| t
+            .nav_section_sibling(true, cx)),
+        nav!("prev-sibling-section", "Previous sibling section", "g k", |t, _w, cx| t
+            .nav_section_sibling(false, cx)),
         nav!("half-page-down", "Half page down", "ctrl-d", |t, w, cx| t
             .nav_page(true, false, w, cx)),
         nav!("half-page-up", "Half page up", "ctrl-u", |t, w, cx| t
@@ -543,14 +550,14 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("up", "move-up"),
     ("ctrl-n", "move-down"),
     ("ctrl-p", "move-up"),
-    // Paging: full page also on Space; sections also on Emacs/bracket keys.
+    // Paging: full page also on Space.
     ("space", "page-down"),
-    ("ctrl-j", "next-section"),
-    ("ctrl-k", "prev-section"),
-    ("alt-j", "next-section"),
-    ("alt-k", "prev-section"),
-    ("]", "next-section"),
-    ("[", "prev-section"),
+    // Sibling-section motion — evil-collection's `gj`/`]`/`M-j` (the primary
+    // `g j` comes from the registry; `C-j`/`C-k` are the fine-grained motions).
+    ("alt-j", "next-sibling-section"),
+    ("alt-k", "prev-sibling-section"),
+    ("]", "next-sibling-section"),
+    ("[", "prev-sibling-section"),
     // Visual line: `V` mirrors `v` (our selection is already line-wise), as in
     // evil-collection-magit.
     ("V", "visual"),
@@ -578,8 +585,9 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("alt->", "goto-bottom"),
     ("n", "next-section"),
     ("p", "prev-section"),
-    ("alt-n", "next-section"),
-    ("alt-p", "prev-section"),
+    // Sibling motion, magit's `M-n`/`M-p`.
+    ("alt-n", "next-sibling-section"),
+    ("alt-p", "prev-sibling-section"),
     // Region selection on set-mark; copy on magit's `magit-copy-section-value`.
     ("ctrl-space", "visual"),
     ("ctrl-w", "yank"),
@@ -602,8 +610,9 @@ fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Optio
             "stash" => Some("z"),
             "discard" => Some("k"),
             "refresh" => Some("g"),
-            "next-section" => None, // `n` is an alias below; no `g j` in vanilla.
-            "prev-section" => None, // `p` is an alias below; no `g k` in vanilla.
+            // `n`/`p` and `M-n`/`M-p` are aliases below; no Ctrl-j/`g j` in vanilla.
+            "next-section" | "prev-section" => None,
+            "next-sibling-section" | "prev-sibling-section" => None,
             "move-down" | "move-up" | "goto-top" | "goto-bottom" | "visual" | "yank" => None,
             _ => cmd.key,
         },
