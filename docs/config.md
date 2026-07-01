@@ -49,8 +49,8 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | Key | Values | Default | Meaning |
 |-----|--------|---------|---------|
 | `appearance` | `"auto"`* / `"light"` / `"dark"` | `auto` | `auto` follows the system; otherwise force one mode. |
-| `light_theme` | theme name | `Selenized White` | Theme used in light mode. |
-| `dark_theme` | theme name | `Selenized Black` | Theme used in dark mode. |
+| `light_theme` | theme name | `Selenized Light` | Theme used in light mode. |
+| `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Monospace font for code, diffs, and tabular rows. |
 | `ui_font` | font family | *(uses `font`)* | Proportional font for chrome (menus, headers, labels). Empty = monospace everywhere. |
 | `editor` | command or app name | OS default opener | External editor for "open file" (`Return`) — see below. |
@@ -59,7 +59,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
-| `show_tags` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
+| `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 | `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
 
@@ -79,7 +79,7 @@ Terminal editors are out of scope (a GUI app can't reliably launch one).
 
 ```toml
 appearance = "dark"
-light_theme = "Selenized White"
+light_theme = "Selenized Light"
 dark_theme = "Dracula"
 font = "Berkeley Mono"
 editor = "zed"
@@ -122,7 +122,7 @@ recent_count = 10
 applies, `A` pops, `x` drops (confirmed), and `y` copies the reference. File
 rows stage/unstage/discard as usual.
 
-Set `show_tags = true` to show the nearest tag(s) in the title bar —
+Set `show_tags_in_title_bar = true` to show the nearest tag(s) in the title bar —
 `Tag: v1.0 (5)` (commits since) or `Tags: v1.0 (5), v1.1 (2)` (also the next
 tag ahead). Off by default.
 

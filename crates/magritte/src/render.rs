@@ -956,17 +956,17 @@ impl StatusView {
             }
 
             // Nearest tag(s): "Tag: v1 (5)" (behind) or "Tags: v1 (5), v2 (2)"
-            // (behind + ahead), magit's status tag header. Gated by `show_tags`
+            // (behind + ahead), magit's status tag header. Gated by `show_tags_in_title_bar`
             // (when off, `tag_info` is left empty so this is skipped).
             let (cur, next) = &self.tag_info;
             let entries: Vec<&(String, usize)> = [cur.as_ref(), next.as_ref()]
                 .into_iter()
                 .flatten()
                 .collect();
-            // Gate on the live config too, so toggling `show_tags` off hides the
+            // Gate on the live config too, so toggling `show_tags_in_title_bar` off hides the
             // segment immediately (not just after the next status refresh clears
             // `tag_info`).
-            if self.config.show_tags && !entries.is_empty() {
+            if self.config.show_tags_in_title_bar && !entries.is_empty() {
                 let label = if entries.len() > 1 { "Tags:" } else { "Tag:" };
                 let mut seg = div()
                     .flex()
