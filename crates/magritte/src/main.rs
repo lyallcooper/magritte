@@ -2040,6 +2040,16 @@ impl StatusView {
         }
     }
 
+    /// Which keymap preset is active — for the handful of hardcoded
+    /// act-at-point keys that differ between evil-collection and vanilla magit.
+    pub(crate) fn is_evil(&self) -> bool {
+        matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection)
+    }
+
+    pub(crate) fn is_vanilla(&self) -> bool {
+        matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla)
+    }
+
     /// The repo cloned for a background *read* (status/diff/prefetch), tagged
     /// with the current generation's cancel flag so a later `refresh` kills it.
     fn read_repo(&self) -> Option<magritte_core::Repo> {
@@ -3026,7 +3036,13 @@ impl StatusView {
                 .collect::<Vec<_>>()
                 .join("\n")
         } else if let Some(row) = self.rows.get(self.selected) {
-            row_text(row)
+            // A single commit/stash row copies its value — the full hash or
+            // stash reference (magit-copy-section-value) — not the row text.
+            match &row.kind {
+                RowKind::Commit { hash, .. } => hash.clone(),
+                RowKind::Stash { reference, .. } => reference.clone(),
+                _ => row_text(row),
+            }
         } else {
             return;
         };

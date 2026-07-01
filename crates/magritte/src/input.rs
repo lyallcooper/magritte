@@ -224,7 +224,9 @@ impl StatusView {
                 }
                 "v" => self.commit_view_toggle_visual(cx),
                 "a" => self.toggle_commit_details(cx),
-                "y" => self.copy_commit_selection(cx),
+                // Copy: evil's `y`; magit-mode-map's `C-w` (the vanilla key).
+                "y" if self.is_evil() => self.copy_commit_selection(cx),
+                "w" if ctrl => self.copy_commit_selection(cx),
                 "c" if cmd => self.copy_commit_selection(cx),
                 _ => {}
             }
@@ -247,7 +249,8 @@ impl StatusView {
                     }
                 }
                 "v" => self.diff_view_toggle_visual(cx),
-                "y" => self.copy_diff_selection(cx),
+                "y" if self.is_evil() => self.copy_diff_selection(cx),
+                "w" if ctrl => self.copy_diff_selection(cx),
                 "c" if cmd => self.copy_diff_selection(cx),
                 _ => {}
             }
@@ -300,8 +303,9 @@ impl StatusView {
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
                 "r" if select_rebase.is_none() => self.rebase_since_selected(Vec::new(), cx),
-                // Yank the selected commit's hash.
-                "y" => self.copy_log_commit(cx),
+                // Yank the selected commit's hash (evil `y`; vanilla `C-w`).
+                "y" if self.is_evil() => self.copy_log_commit(cx),
+                "w" if ctrl => self.copy_log_commit(cx),
                 "c" if cmd => self.copy_log_commit(cx),
                 _ => {}
             }
@@ -342,7 +346,9 @@ impl StatusView {
                     return self.pick_selected(PickOp::RevertNoCommit, window, cx)
                 }
                 "r" => return self.invoke_command("rebase", window, cx),
-                "y" => return self.copy_to_clipboard(hash, cx),
+                // Evil-only: vanilla's copy is `C-w`, which resolves through
+                // the keymap to yank (copying the full hash for a commit row).
+                "y" if self.is_evil() => return self.copy_to_clipboard(hash, cx),
                 "c" if cmd => return self.copy_to_clipboard(hash, cx),
                 _ => {}
             }
@@ -360,7 +366,7 @@ impl StatusView {
                     cx.notify();
                     return;
                 }
-                "y" => return self.copy_to_clipboard(reference, cx),
+                "y" if self.is_evil() => return self.copy_to_clipboard(reference, cx),
                 "c" if cmd => return self.copy_to_clipboard(reference, cx),
                 _ => {}
             }
@@ -716,7 +722,7 @@ impl StatusView {
             match key {
                 "a" => self.toggle_commit_details(cx),
                 "v" => self.commit_view_toggle_visual(cx),
-                "y" => self.copy_commit_selection(cx),
+                "y" | "ctrl-w" => self.copy_commit_selection(cx),
                 "q" => self.close_commit_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -725,7 +731,7 @@ impl StatusView {
         if self.diff_view().is_some() {
             match key {
                 "v" => self.diff_view_toggle_visual(cx),
-                "y" => self.copy_diff_selection(cx),
+                "y" | "ctrl-w" => self.copy_diff_selection(cx),
                 "q" => self.close_diff_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -736,8 +742,9 @@ impl StatusView {
                 "enter" => self.open_commit_view(cx),
                 "A" => self.pick_selected(PickOp::CherryPick, window, cx),
                 "_" => self.pick_selected(PickOp::Revert, window, cx),
+                "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
                 "r" => self.rebase_since_selected(Vec::new(), cx),
-                "y" => self.copy_log_commit(cx),
+                "y" | "ctrl-w" => self.copy_log_commit(cx),
                 "q" => self.close_log(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -776,7 +783,8 @@ impl StatusView {
                     return self.pick_selected(PickOp::RevertNoCommit, window, cx)
                 }
                 "r" => return self.invoke_command("rebase", window, cx),
-                "y" => return self.copy_to_clipboard(hash, cx),
+                "y" if self.is_evil() => return self.copy_to_clipboard(hash, cx),
+                "ctrl-w" => return self.copy_to_clipboard(hash, cx),
                 _ => {}
             }
         }
@@ -793,7 +801,8 @@ impl StatusView {
                     cx.notify();
                     return;
                 }
-                "y" => return self.copy_to_clipboard(reference, cx),
+                "y" if self.is_evil() => return self.copy_to_clipboard(reference, cx),
+                "ctrl-w" => return self.copy_to_clipboard(reference, cx),
                 _ => {}
             }
         }

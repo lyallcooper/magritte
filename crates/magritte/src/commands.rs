@@ -561,6 +561,8 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     // Visual line: `V` mirrors `v` (our selection is already line-wise), as in
     // evil-collection-magit.
     ("V", "visual"),
+    // magit-mode-map's C-w (copy the value at point) — kept in both presets.
+    ("ctrl-w", "yank"),
     // Evil-collection-magit remaps Magit's direct `:` git-command binding to
     // `|`; Magit's `!` run-command transient remains the canonical key.
     ("|", "git-command"),
@@ -1079,6 +1081,9 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
         title: transient::plain_title(title),
         suffixes,
     };
+    // The copy key differs by preset: evil's `y` vs magit-mode-map's `C-w`
+    // (vanilla magit's `y` is show-refs, so `y`-to-copy would surprise there).
+    let copy_key = if view.is_evil() { "y" } else { "ctrl-w" };
 
     match &view.screen {
         Screen::Commit { view: cv, .. } => Transient {
@@ -1088,7 +1093,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                 vec![
                     info("a", if cv.show_details { "Hide details" } else { "Show details" }),
                     info("v", "Visual selection"),
-                    info("y", "Copy"),
+                    info(copy_key, "Copy"),
                     info("q", "Back"),
                 ],
             )],
@@ -1097,11 +1102,11 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
             title: transient::plain_title("Help"),
             groups: vec![group(
                 "Diff",
-                vec![info("v", "Visual selection"), info("y", "Copy"), info("q", "Back")],
+                vec![info("v", "Visual selection"), info(copy_key, "Copy"), info("q", "Back")],
             )],
         },
         Screen::Log(log) => {
-            let mut suffixes = vec![info("enter", "Show commit"), info("y", "Copy hash")];
+            let mut suffixes = vec![info("enter", "Show commit"), info(copy_key, "Copy hash")];
             if matches!(log.purpose, LogPurpose::Browse) {
                 let (revert, _reverse) = match view.config.keymap_preset {
                     config::KeymapPreset::EvilCollection => ("_", "-"),
@@ -1158,7 +1163,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                         "Commit at point",
                         vec![
                             info("enter", "Show commit"),
-                            info("y", "Copy hash"),
+                            info(copy_key, "Copy hash"),
                             info("A", "Cherry-pick"),
                             info("a", "Apply changes"),
                             info(revert, "Revert"),
@@ -1175,7 +1180,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                         "Stash at point",
                         vec![
                             info("enter", "Show stash"),
-                            info("y", "Copy reference"),
+                            info(copy_key, "Copy reference"),
                             info("a", "Apply"),
                             info("A", "Pop"),
                             info("x", "Drop"),
