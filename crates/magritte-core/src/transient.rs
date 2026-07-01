@@ -12,6 +12,15 @@ use crate::remote::{RemoteTargets, Upstream};
 use crate::repo::Repo;
 use crate::sequence::SequenceKind;
 
+/// Which built-in key style to use for transient suffixes that differ between
+/// vanilla Magit and evil-collection-magit. The commands are the same; only the
+/// default keys move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeymapStyle {
+    EvilCollection,
+    Vanilla,
+}
+
 /// The git operation an [`Action`] runs. Push/pull/fetch come in magit's three
 /// flavors — to the push-remote, to the upstream, or elsewhere (the frontend
 /// resolves the actual remote, prompting when unconfigured).
@@ -49,7 +58,8 @@ pub enum Command {
     BranchDelete,
     /// Create a lightweight tag at point/HEAD (prompts for name).
     TagCreate,
-    /// Create an annotated tag at point/HEAD (prompts for name).
+    /// Create an annotated tag at point/HEAD (legacy command id; the built-in
+    /// transient uses `TagCreate` plus the `--annotate` switch, like Magit).
     TagAnnotated,
     /// Delete a local tag (prompts for the tag).
     TagDelete,
@@ -435,7 +445,7 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
     }
 }
 
-pub fn branch_transient() -> Transient {
+pub fn branch_transient(style: KeymapStyle) -> Transient {
     Transient {
         title: plain_title("Branch"),
         groups: vec![
@@ -471,7 +481,10 @@ pub fn branch_transient() -> Transient {
                         command: Command::BranchRename,
                     }),
                     Suffix::Action(Action {
-                        key: "k",
+                        key: match style {
+                            KeymapStyle::EvilCollection => "x",
+                            KeymapStyle::Vanilla => "k",
+                        },
                         description: "delete".to_string(),
                         command: Command::BranchDelete,
                     }),
@@ -481,33 +494,32 @@ pub fn branch_transient() -> Transient {
     }
 }
 
-pub fn tag_transient() -> Transient {
+pub fn tag_transient(style: KeymapStyle) -> Transient {
     Transient {
         title: plain_title("Tag"),
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Switch(Switch::new("-f", "--force", "Replace existing tag"))],
+                suffixes: vec![
+                    Suffix::Switch(Switch::new("-f", "--force", "Force")),
+                    Suffix::Switch(Switch::new("-a", "--annotate", "Annotate")),
+                ],
             },
             Group {
                 title: plain_title("Create"),
-                suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "t",
-                        description: "lightweight".to_string(),
-                        command: Command::TagCreate,
-                    }),
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "annotated".to_string(),
-                        command: Command::TagAnnotated,
-                    }),
-                ],
+                suffixes: vec![Suffix::Action(Action {
+                    key: "t",
+                    description: "tag".to_string(),
+                    command: Command::TagCreate,
+                })],
             },
             Group {
                 title: plain_title("Do"),
                 suffixes: vec![Suffix::Action(Action {
-                    key: "k",
+                    key: match style {
+                        KeymapStyle::EvilCollection => "x",
+                        KeymapStyle::Vanilla => "k",
+                    },
                     description: "delete".to_string(),
                     command: Command::TagDelete,
                 })],
@@ -516,29 +528,38 @@ pub fn tag_transient() -> Transient {
     }
 }
 
-pub fn remote_transient() -> Transient {
+pub fn remote_transient(style: KeymapStyle) -> Transient {
     Transient {
         title: plain_title("Remote"),
-        groups: vec![Group {
-            title: plain_title("Do"),
-            suffixes: vec![
-                Suffix::Action(Action {
-                    key: "a",
-                    description: "add".to_string(),
-                    command: Command::RemoteAdd,
-                }),
-                Suffix::Action(Action {
-                    key: "r",
-                    description: "rename".to_string(),
-                    command: Command::RemoteRename,
-                }),
-                Suffix::Action(Action {
-                    key: "k",
-                    description: "remove".to_string(),
-                    command: Command::RemoteRemove,
-                }),
-            ],
-        }],
+        groups: vec![
+            Group {
+                title: plain_title("Arguments for add"),
+                suffixes: vec![Suffix::Switch(Switch::on("-f", "-f", "Fetch after add"))],
+            },
+            Group {
+                title: plain_title("Actions"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "add".to_string(),
+                        command: Command::RemoteAdd,
+                    }),
+                    Suffix::Action(Action {
+                        key: "r",
+                        description: "rename".to_string(),
+                        command: Command::RemoteRename,
+                    }),
+                    Suffix::Action(Action {
+                        key: match style {
+                            KeymapStyle::EvilCollection => "x",
+                            KeymapStyle::Vanilla => "k",
+                        },
+                        description: "remove".to_string(),
+                        command: Command::RemoteRemove,
+                    }),
+                ],
+            },
+        ],
     }
 }
 
@@ -1064,12 +1085,14 @@ pub fn cherry_pick_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch::new("-x", "-x", "Append origin line")),
-                    Suffix::Switch(Switch::new("-f", "--ff", "Fast-forward when possible")),
+                    Suffix::Switch(Switch::on("-F", "--ff", "Attempt fast-forward")),
+                    Suffix::Switch(Switch::new("-x", "-x", "Reference cherry in commit message")),
+                    Suffix::Switch(Switch::new("-e", "--edit", "Edit commit messages")),
+                    Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
                     Suffix::Option(Opt {
                         key: "-m",
                         arg: "--mainline=",
-                        description: "Mainline parent",
+                        description: "Replay merge relative to parent",
                         completion: Completion::None,
                         pathspec: false,
                     }),
@@ -1099,30 +1122,39 @@ pub fn cherry_pick_transient() -> Transient {
     }
 }
 
-pub fn revert_transient() -> Transient {
+pub fn revert_transient(style: KeymapStyle) -> Transient {
+    let (revert_key, reverse_key) = match style {
+        KeymapStyle::EvilCollection => ("_", "-"),
+        KeymapStyle::Vanilla => ("V", "v"),
+    };
     Transient {
         title: plain_title("Revert"),
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                suffixes: vec![Suffix::Option(Opt {
-                    key: "-m",
-                    arg: "--mainline=",
-                    description: "Mainline parent",
-                    completion: Completion::None,
-                    pathspec: false,
-                })],
+                suffixes: vec![
+                    Suffix::Switch(Switch::new("-e", "--edit", "Edit commit message")),
+                    Suffix::Switch(Switch::new("-E", "--no-edit", "Don't edit commit message")),
+                    Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
+                    Suffix::Option(Opt {
+                        key: "-m",
+                        arg: "--mainline=",
+                        description: "Replay merge relative to parent",
+                        completion: Completion::None,
+                        pathspec: false,
+                    }),
+                ],
             },
             Group {
                 title: plain_title("Actions"),
                 suffixes: vec![
                     Suffix::Action(Action {
-                        key: "V",
+                        key: revert_key,
                         description: "revert commit".to_string(),
                         command: Command::RevertCommit,
                     }),
                     Suffix::Action(Action {
-                        key: "v",
+                        key: reverse_key,
                         description: "revert changes".to_string(),
                         command: Command::RevertNoCommit,
                     }),
@@ -1141,11 +1173,14 @@ pub fn revert_transient() -> Transient {
 /// is already in progress: magit's continue / skip / abort, scoped to what the
 /// operation supports. A merge has no continue/skip (you finish it by committing
 /// the resolved index, or abort), so it shows only abort.
-pub fn sequence_transient(kind: SequenceKind) -> Transient {
+pub fn sequence_transient(kind: SequenceKind, style: KeymapStyle) -> Transient {
     let mut suffixes = Vec::new();
     let continue_key = match kind {
         SequenceKind::CherryPick => "A",
-        SequenceKind::Revert => "V",
+        SequenceKind::Revert => match style {
+            KeymapStyle::EvilCollection => "_",
+            KeymapStyle::Vanilla => "V",
+        },
         SequenceKind::Am => "w",
         SequenceKind::Merge | SequenceKind::Rebase => "r",
     };

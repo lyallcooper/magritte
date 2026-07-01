@@ -63,7 +63,7 @@ impl StatusView {
                 self.dispatch_branch(command, window, cx)
             }
             TagCreate | TagAnnotated | TagDelete => self.dispatch_tag(command, args, window, cx),
-            RemoteAdd | RemoteRename | RemoteRemove => self.dispatch_remote(command, window, cx),
+            RemoteAdd | RemoteRename | RemoteRemove => self.dispatch_remote(command, args, window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
             }
@@ -420,14 +420,17 @@ impl StatusView {
     ) {
         use transient::Command::*;
         match command {
-            TagCreate => self.open_picker(
-                PickerAction::Tag(TagAction::Create { annotated: false }),
-                Vec::new(),
-                CreateMode::Any,
-                args,
-                window,
-                cx,
-            ),
+            TagCreate => {
+                let annotated = args.iter().any(|s| s == "--annotate");
+                self.open_picker(
+                    PickerAction::Tag(TagAction::Create { annotated }),
+                    Vec::new(),
+                    CreateMode::Any,
+                    args,
+                    window,
+                    cx,
+                )
+            }
             TagAnnotated => self.open_picker(
                 PickerAction::Tag(TagAction::Create { annotated: true }),
                 Vec::new(),
@@ -452,6 +455,7 @@ impl StatusView {
     pub(crate) fn dispatch_remote(
         &mut self,
         command: transient::Command,
+        args: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -461,7 +465,7 @@ impl StatusView {
                 PickerAction::Remote(RemoteAction::AddName),
                 Vec::new(),
                 CreateMode::Any,
-                Vec::new(),
+                args,
                 window,
                 cx,
             ),
@@ -1672,7 +1676,7 @@ impl StatusView {
                 }
                 PickerAction::Tag(t) => self.run_tag_action(t, chosen.to_string(), p.switches, cx),
                 PickerAction::Remote(r) => {
-                    self.run_remote_action(r, chosen.to_string(), window, cx)
+                    self.run_remote_action(r, chosen.to_string(), p.switches, window, cx)
                 }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
@@ -2120,6 +2124,7 @@ impl StatusView {
         &mut self,
         action: RemoteAction,
         chosen: String,
+        switches: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2130,7 +2135,10 @@ impl StatusView {
         match action {
             RemoteAction::AddName => {
                 self.open_picker(
-                    PickerAction::Remote(RemoteAction::AddUrl { name: chosen }),
+                    PickerAction::Remote(RemoteAction::AddUrl {
+                        name: chosen,
+                        args: switches,
+                    }),
                     Vec::new(),
                     CreateMode::Value,
                     Vec::new(),
@@ -2148,10 +2156,10 @@ impl StatusView {
                     cx,
                 );
             }
-            RemoteAction::AddUrl { name } => self.run_job(
+            RemoteAction::AddUrl { name, args } => self.run_job(
                 "Adding remote…",
                 "Added remote",
-                move |repo| repo.add_remote(&name, &chosen),
+                move |repo| repo.add_remote(&name, &chosen, &args),
                 cx,
             ),
             RemoteAction::RenameTo { old } => self.run_job(

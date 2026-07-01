@@ -29,7 +29,7 @@ impl StatusView {
 
         // C-g is the universal cancel (= Escape) everywhere — Emacs
         // keyboard-quit. Other Emacs motions (`C-n`/`C-p`, `C-x C-c`, …) are now
-        // ordinary keymap entries (see DEFAULT_BINDINGS), not normalized here.
+        // ordinary keymap entries (see the preset binding tables), not normalized here.
         let key = match key.as_str() {
             "g" if ctrl => {
                 ctrl = false;
@@ -58,11 +58,7 @@ impl StatusView {
 
         // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
         // reconstruct the cased key from the shift modifier.
-        let cased = if shift {
-            key.to_uppercase()
-        } else {
-            key.clone()
-        };
+        let cased = chord(&key, shift, false, false, false);
 
         // A command transient is modal — it captures every key. Pass the full
         // chord (with modifiers) so meta-keys like `C-s` (save switches) work;
@@ -116,13 +112,16 @@ impl StatusView {
                 SequenceKind::Rebase => "r",
                 SequenceKind::Merge => "m",
                 SequenceKind::CherryPick => "A",
-                SequenceKind::Revert => "V",
+                SequenceKind::Revert => match self.config.keymap_preset {
+                    config::KeymapPreset::EvilCollection => "_",
+                    config::KeymapPreset::Vanilla => "V",
+                },
                 SequenceKind::Am => "w",
             };
             if cased == sequence_prefix {
                 self.open_transient(
                     "",
-                    transient::sequence_transient(kind),
+                    transient::sequence_transient(kind, self.keymap_style()),
                     RemoteTargets::default(),
                     cx,
                 );
@@ -158,11 +157,7 @@ impl StatusView {
             // The pager has no cursor, so it scrolls via less-style keys rather
             // than the shared `nav_*`; translate a remapped motion to the key
             // apply_scroll_key understands, so [keymap] still drives it.
-            let cased = if shift {
-                key.to_uppercase()
-            } else {
-                key.clone()
-            };
+            let cased = chord(&key, shift, false, false, false);
             let (skey, sshift) = match self.keymap.get(&cased).map(String::as_str) {
                 Some("move-down") => ("j", false),
                 Some("move-up") => ("k", false),
@@ -190,7 +185,7 @@ impl StatusView {
                 }
                 return;
             }
-            if self.try_nav(&key, shift, ctrl, window, cx) {
+            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
             match key.as_str() {
@@ -212,7 +207,7 @@ impl StatusView {
         }
 
         if self.commit_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, window, cx) {
+            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
             match key.as_str() {
@@ -237,7 +232,7 @@ impl StatusView {
         }
 
         if self.diff_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, window, cx) {
+            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
             match key.as_str() {
@@ -269,7 +264,7 @@ impl StatusView {
                 Some(LogPurpose::SelectRebaseReword { args }) => Some((args.clone(), true)),
                 _ => None,
             };
-            if self.try_nav(&key, shift, ctrl, window, cx) {
+            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
             match key.as_str() {
@@ -288,13 +283,20 @@ impl StatusView {
                     }
                 }
                 "enter" => self.open_commit_view(cx),
-                // Apply the selected commit to the current branch (magit's `A`),
-                // or revert it (`V`). Both return to the status view, where a
-                // conflict surfaces as the in-progress banner.
+                // Apply the selected commit to the current branch (Magit's `A`),
+                // or revert it (evil-collection's `_`). Both return to the
+                // status view, where a conflict surfaces as the in-progress banner.
                 "a" if shift => self.pick_selected(PickOp::CherryPick, window, cx),
                 // Revert is `_` (evil-collection-magit); `V` is visual-line there.
-                "_" => self.pick_selected(PickOp::Revert, window, cx),
-                "-" if shift => self.pick_selected(PickOp::Revert, window, cx),
+                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    self.pick_selected(PickOp::Revert, window, cx)
+                }
+                "-" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    self.pick_selected(PickOp::Revert, window, cx)
+                }
+                "v" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
+                    self.pick_selected(PickOp::Revert, window, cx)
+                }
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
                 "r" if select_rebase.is_none() => self.rebase_since_selected(Vec::new(), cx),
@@ -308,14 +310,15 @@ impl StatusView {
 
         // Command palette via cmd+p / cmd+k handled above, before per-view branches.
         // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
-        if self.try_nav(&key, shift, ctrl, window, cx) {
+        if self.try_nav(&key, shift, ctrl, alt, window, cx) {
             return;
         }
         // Act on the commit/stash at point in a status section (after motions, so
         // j/k/g still work; only these verbs are intercepted — anything else falls
-        // through to the keymap). Commit rows mirror Magit: `A`/`V` open the
-        // cherry-pick/revert transients with the commit at point as the default,
-        // while lowercase `a`/`v` apply/revert changes without committing.
+        // through to the keymap). Commit rows mirror evil-collection-magit:
+        // `A`/`_` open the cherry-pick/revert transients with the commit at
+        // point as the default, while `a`/`-` apply/revert changes without
+        // committing.
         // Stash rows: `Enter` shows it, `a` applies, `A` pops, `x` drops
         // (confirmed), `y`/Cmd-C yanks the reference.
         if let Some((hash, short, subject)) = self.point_commit() {
@@ -323,8 +326,21 @@ impl StatusView {
                 "enter" => return self.open_commit(hash, short, subject, cx),
                 "a" if shift => return self.open_cherry_pick_transient(cx),
                 "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
-                "v" if shift => return self.open_revert_transient(cx),
-                "v" => return self.pick_selected(PickOp::RevertNoCommit, window, cx),
+                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    return self.open_revert_transient(cx)
+                }
+                "-" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    return self.open_revert_transient(cx)
+                }
+                "-" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
+                }
+                "v" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
+                    return self.open_revert_transient(cx)
+                }
+                "v" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
+                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
+                }
                 "r" => return self.invoke_command("rebase", window, cx),
                 "y" => return self.copy_to_clipboard(hash, cx),
                 "c" if cmd => return self.copy_to_clipboard(hash, cx),
@@ -365,17 +381,18 @@ impl StatusView {
                 }
                 return;
             }
-            // Modifier/symbol aliases that aren't plain registry keys, so they
-            // can't ride the keymap below: Cmd-C yanks (before any `c` binding);
-            // M-x / `:` / `;`+shift open the palette; `!`/`|` (and base-key+shift
-            // fallbacks) run a git command; `?` / `/`+shift open Help.
+            // Modifier/popup shortcuts that aren't ordinary commands: Cmd-C yanks
+            // before any `c` binding; M-x and an unbound `:`/`;`+shift open the
+            // palette; `?`/`/`+shift open Help. Bound symbol keys (`!`, `|`, `$`,
+            // vanilla `:`) fall through to the effective keymap below.
             "c" if cmd => return self.invoke_command("yank", window, cx),
             "x" if alt => return self.open_command_palette(window, cx),
-            "!" | "|" => return self.invoke_command("git-command", window, cx),
-            "1" | "\\" if shift => return self.invoke_command("git-command", window, cx),
-            "4" if shift => return self.invoke_command("command-log", window, cx),
-            ":" => return self.open_command_palette(window, cx),
-            ";" if shift => return self.open_command_palette(window, cx),
+            ":" | ";" if key == ":" || shift => {
+                if Self::is_dispatch_key(&self.keymap, &cased) {
+                    return self.run_dispatch(&cased, window, cx);
+                }
+                return self.open_command_palette(window, cx);
+            }
             "?" => {
                 self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
                 cx.notify();
@@ -746,8 +763,18 @@ impl StatusView {
                 "enter" => return self.open_commit(hash, short, subject, cx),
                 "A" => return self.open_cherry_pick_transient(cx),
                 "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
-                "V" => return self.open_revert_transient(cx),
-                "v" => return self.pick_selected(PickOp::RevertNoCommit, window, cx),
+                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    return self.open_revert_transient(cx)
+                }
+                "-" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
+                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
+                }
+                "V" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
+                    return self.open_revert_transient(cx)
+                }
+                "v" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
+                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
+                }
                 "r" => return self.invoke_command("rebase", window, cx),
                 "y" => return self.copy_to_clipboard(hash, cx),
                 _ => {}

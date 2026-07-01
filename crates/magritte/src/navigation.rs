@@ -152,12 +152,13 @@ impl StatusView {
         key: &str,
         shift: bool,
         ctrl: bool,
+        alt: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         // All motions (arrows, `C-d`, Space, `]`, the `g` prefix, …) resolve
         // through the effective keymap — there are no hardcoded aliases.
-        let chord = chord(key, shift, ctrl, false, false);
+        let chord = chord(key, shift, ctrl, alt, false);
         // A prefix key begins a sequence.
         if self.is_prefix(&chord) {
             self.enter_prefix(chord, window, cx);

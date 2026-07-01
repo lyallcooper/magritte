@@ -71,9 +71,13 @@ impl Repo {
             .collect())
     }
 
-    /// `git remote add <name> <url>`.
-    pub fn add_remote(&self, name: &str, url: &str) -> Result<String> {
-        Ok(self.run(["remote", "add", name, url])?.status_line())
+    /// `git remote add [args] <name> <url>`.
+    pub fn add_remote(&self, name: &str, url: &str, args: &[String]) -> Result<String> {
+        let mut argv = vec!["remote".to_string(), "add".to_string()];
+        argv.extend(args.iter().cloned());
+        argv.push(name.to_string());
+        argv.push(url.to_string());
+        Ok(self.run(argv)?.status_line())
     }
 
     /// `git remote rename <old> <new>`.

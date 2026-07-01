@@ -394,7 +394,7 @@ enum TagAction {
 #[derive(Clone)]
 enum RemoteAction {
     AddName,
-    AddUrl { name: String },
+    AddUrl { name: String, args: Vec<String> },
     RenameFrom,
     RenameTo { old: String },
     Remove,
@@ -481,7 +481,7 @@ impl PickerAction {
             PickerAction::Tag(TagAction::Delete) => transient::plain_title("Delete tag"),
             PickerAction::Remote(r) => match r {
                 RemoteAction::AddName => transient::plain_title("Add remote"),
-                RemoteAction::AddUrl { name } => vec![
+                RemoteAction::AddUrl { name, .. } => vec![
                     TitleSpan::text("Add "),
                     TitleSpan::branch(name.clone()),
                     TitleSpan::text(" url"),
@@ -4539,12 +4539,16 @@ impl StatusView {
         );
     }
 
+    fn keymap_style(&self) -> transient::KeymapStyle {
+        self.config.keymap_preset.transient_style()
+    }
+
     /// Open the revert transient, using a status/log commit at point as the
     /// default when its suffix fires (Magit's commit-at-point model).
     fn open_revert_transient(&mut self, cx: &mut Context<Self>) {
         self.open_transient(
             "revert",
-            transient::revert_transient(),
+            transient::revert_transient(self.keymap_style()),
             RemoteTargets::default(),
             cx,
         );
@@ -6263,6 +6267,42 @@ mod tests {
         assert_eq!(warnings.len(), 1, "the unknown id warns: {warnings:?}");
         // Defaults the user didn't touch survive.
         assert_eq!(km.get("c").map(String::as_str), Some("commit"));
+    }
+
+    #[test]
+    fn keymap_preset_switches_defaults_and_transient_suffixes() {
+        let config = config::Config::default();
+        let (km, warnings) = build_keymap(&config);
+        assert!(warnings.is_empty(), "default keymap is clean: {warnings:?}");
+        assert_eq!(km.get("p").map(String::as_str), Some("push"));
+        assert_eq!(km.get("O").map(String::as_str), Some("reset"));
+        assert_eq!(km.get("Z").map(String::as_str), Some("stash"));
+        assert_eq!(km.get("|").map(String::as_str), Some("git-command"));
+        assert_eq!(km.get("V").map(String::as_str), Some("visual"));
+        assert_eq!(command_keys(&km, &config, "Delete branch").as_deref(), Some("b x"));
+        assert_eq!(command_keys(&km, &config, "Delete tag").as_deref(), Some("t x"));
+        assert_eq!(command_keys(&km, &config, "Remove remote").as_deref(), Some("M x"));
+
+        let mut config = config::Config::default();
+        config.keymap_preset = config::KeymapPreset::Vanilla;
+        let (km, warnings) = build_keymap(&config);
+        assert!(warnings.is_empty(), "vanilla keymap is clean: {warnings:?}");
+        assert_eq!(km.get("P").map(String::as_str), Some("push"));
+        assert_eq!(km.get("X").map(String::as_str), Some("reset"));
+        assert_eq!(km.get("z").map(String::as_str), Some("stash"));
+        assert_eq!(km.get("k").map(String::as_str), Some("discard"));
+        assert_eq!(km.get("n").map(String::as_str), Some("next-section"));
+        assert_eq!(km.get("p").map(String::as_str), Some("prev-section"));
+        assert_eq!(km.get(":").map(String::as_str), Some("git-command"));
+        assert_eq!(km.get("!").map(String::as_str), Some("git-command"));
+        assert!(!km.contains_key("V"), "vanilla leaves V for commit-at-point revert");
+        assert_eq!(command_keys(&km, &config, "Push").as_deref(), Some("P"));
+        assert_eq!(command_keys(&km, &config, "Reset").as_deref(), Some("X"));
+        assert_eq!(command_keys(&km, &config, "Stash").as_deref(), Some("z"));
+        assert_eq!(command_keys(&km, &config, "Discard").as_deref(), Some("k"));
+        assert_eq!(command_keys(&km, &config, "Delete branch").as_deref(), Some("b k"));
+        assert_eq!(command_keys(&km, &config, "Delete tag").as_deref(), Some("t k"));
+        assert_eq!(command_keys(&km, &config, "Remove remote").as_deref(), Some("M k"));
     }
 
     #[test]

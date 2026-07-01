@@ -176,7 +176,7 @@ pub(crate) fn commands() -> &'static [Command] {
             // remote targets, so don't resolve them just to open it.
             t.open_transient(
                 "branch",
-                transient::branch_transient(),
+                transient::branch_transient(t.config.keymap_preset.transient_style()),
                 RemoteTargets::default(),
                 cx,
             )
@@ -184,7 +184,7 @@ pub(crate) fn commands() -> &'static [Command] {
         top!("tag", "Tag", Category::Commands, "t", |t, _w, cx| {
             t.open_transient(
                 "tag",
-                transient::tag_transient(),
+                transient::tag_transient(t.config.keymap_preset.transient_style()),
                 RemoteTargets::default(),
                 cx,
             )
@@ -192,7 +192,7 @@ pub(crate) fn commands() -> &'static [Command] {
         top!("remote", "Remote", Category::Commands, "M", |t, _w, cx| {
             t.open_transient(
                 "remote",
-                transient::remote_transient(),
+                transient::remote_transient(t.config.keymap_preset.transient_style()),
                 RemoteTargets::default(),
                 cx,
             )
@@ -229,7 +229,10 @@ pub(crate) fn commands() -> &'static [Command] {
             ) {
                 t.open_transient(
                     "",
-                    transient::sequence_transient(SequenceKind::Rebase),
+                    transient::sequence_transient(
+                        SequenceKind::Rebase,
+                        t.config.keymap_preset.transient_style(),
+                    ),
                     RemoteTargets::default(),
                     cx,
                 );
@@ -247,7 +250,10 @@ pub(crate) fn commands() -> &'static [Command] {
             ) {
                 t.open_transient(
                     "",
-                    transient::sequence_transient(SequenceKind::Merge),
+                    transient::sequence_transient(
+                        SequenceKind::Merge,
+                        t.config.keymap_preset.transient_style(),
+                    ),
                     RemoteTargets::default(),
                     cx,
                 );
@@ -346,7 +352,6 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("branch-rename", "Rename branch", Leaf::BranchRename),
         leaf!("branch-delete", "Delete branch", Leaf::BranchDelete),
         leaf!("tag-create", "Create tag", Leaf::TagCreate),
-        leaf!("tag-annotated", "Create annotated tag", Leaf::TagAnnotated),
         leaf!("tag-delete", "Delete tag", Leaf::TagDelete),
         leaf!("remote-add", "Add remote", Leaf::RemoteAdd),
         leaf!("remote-rename", "Rename remote", Leaf::RemoteRename),
@@ -495,7 +500,7 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_page(true, true, w, cx)),
         nav!("page-up", "Page up", "ctrl-b", |t, w, cx| t
             .nav_page(false, true, w, cx)),
-        // Quit (Emacs `C-x C-c`, bound in DEFAULT_BINDINGS): no single key, so a
+        // Quit (Emacs `C-x C-c`, bound by the preset): no single key, so a
         // literal rather than `top!`. Reachable via the palette too.
         Command {
             id: "quit",
@@ -516,7 +521,7 @@ pub(crate) fn commands() -> &'static [Command] {
 /// keys in [`build_keymap`] (before the user's `[keymap]`, so they're remappable
 /// and unbindable like any default). These keep modifier/arrow/sequence aliases
 /// in the one keymap rather than hardcoded in the key handler.
-pub(crate) const DEFAULT_BINDINGS: &[(&str, &str)] = &[
+pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     // Arrow + Emacs cursor motions.
     ("down", "move-down"),
     ("up", "move-up"),
@@ -526,14 +531,61 @@ pub(crate) const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("space", "page-down"),
     ("ctrl-j", "next-section"),
     ("ctrl-k", "prev-section"),
+    ("alt-j", "next-section"),
+    ("alt-k", "prev-section"),
     ("]", "next-section"),
     ("[", "prev-section"),
     // Visual line: `V` mirrors `v` (our selection is already line-wise), as in
     // evil-collection-magit.
     ("V", "visual"),
+    // Evil-collection-magit remaps Magit's direct `:` git-command binding to
+    // `|`; Magit's `!` run-command transient remains the canonical key.
+    ("|", "git-command"),
     // Emacs quit.
     ("ctrl-x ctrl-c", "quit"),
 ];
+
+pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
+    // Emacs cursor motions stay available because vanilla Magit uses `n`/`p`
+    // for section movement, not line movement.
+    ("down", "move-down"),
+    ("up", "move-up"),
+    ("ctrl-n", "move-down"),
+    ("ctrl-p", "move-up"),
+    ("space", "page-down"),
+    ("n", "next-section"),
+    ("p", "prev-section"),
+    ("alt-n", "next-section"),
+    ("alt-p", "prev-section"),
+    (":", "git-command"),
+    ("Q", "git-command"),
+    ("ctrl-x ctrl-c", "quit"),
+];
+
+fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Option<&'static str> {
+    use config::KeymapPreset::*;
+    match preset {
+        EvilCollection => cmd.key,
+        Vanilla => match cmd.id {
+            "push" => Some("P"),
+            "reset" => Some("X"),
+            "stash" => Some("z"),
+            "discard" => Some("k"),
+            "refresh" => Some("g"),
+            "next-section" => None, // `n` is an alias below; no `g j` in vanilla.
+            "prev-section" => None, // `p` is an alias below; no `g k` in vanilla.
+            "move-down" | "move-up" | "goto-top" | "goto-bottom" | "visual" | "yank" => None,
+            _ => cmd.key,
+        },
+    }
+}
+
+fn preset_bindings(preset: config::KeymapPreset) -> &'static [(&'static str, &'static str)] {
+    match preset {
+        config::KeymapPreset::EvilCollection => EVIL_COLLECTION_BINDINGS,
+        config::KeymapPreset::Vanilla => VANILLA_BINDINGS,
+    }
+}
 
 /// Canonical keystroke string for a keypress: word modifier prefixes (`cmd-`,
 /// `ctrl-`, `alt-`, in that order) then the key, with a shifted letter
@@ -541,8 +593,24 @@ pub(crate) const DEFAULT_BINDINGS: &[(&str, &str)] = &[
 /// with spaces (`ctrl-x ctrl-c`). The prefixes match `kbd::format_keys`, so the
 /// display ("Ctrl+x") follows for free.
 pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
-    let base = if shift && key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) {
-        key.to_uppercase()
+    let base = if shift {
+        match key {
+            "1" => "!".to_string(),
+            "4" => "$".to_string(),
+            "-" => "_".to_string(),
+            "=" => "+".to_string(),
+            "[" => "{".to_string(),
+            "]" => "}".to_string(),
+            "\\" => "|".to_string(),
+            ";" => ":".to_string(),
+            "'" => "\"".to_string(),
+            "," => "<".to_string(),
+            "." => ">".to_string(),
+            "/" => "?".to_string(),
+            "`" => "~".to_string(),
+            _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => key.to_uppercase(),
+            _ => key.to_string(),
+        }
     } else {
         key.to_string()
     };
@@ -600,16 +668,20 @@ pub(crate) fn all_commands(config: &config::Config) -> impl Iterator<Item = Comm
 /// The effective keystroke → command-id map: the built-in defaults (every
 /// registry command that has a key) overlaid with the user's `[keymap]`. A value
 /// of `"unbound"` removes a default binding; an unknown id is skipped with a
-/// warning rather than dropped silently. Only command keys live here — motions
-/// and prefixes (`j`/`k`/`g …`) stay hardwired in `on_key`/`run_dispatch`.
+/// warning rather than dropped silently. Navigation, command prefixes, and
+/// aliases all live in this same map, so preset changes and user overrides flow
+/// through one dispatch path.
 pub(crate) fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String>) {
     let mut map: HashMap<String, String> = commands()
         .iter()
-        .filter_map(|c| c.key.map(|key| (key.to_string(), c.id.to_string())))
+        .filter_map(|c| {
+            default_key_for_command(config.keymap_preset, c)
+                .map(|key| (key.to_string(), c.id.to_string()))
+        })
         .collect();
     // Secondary aliases (arrows, Emacs motions, Space, `C-x C-c`) — layered
     // before the user's table so they remap/unbind like any default.
-    for (key, id) in DEFAULT_BINDINGS {
+    for (key, id) in preset_bindings(config.keymap_preset) {
         map.insert(key.to_string(), id.to_string());
     }
     let mut warnings = Vec::new();
@@ -742,8 +814,8 @@ pub(crate) fn command_is_destructive(command: &str) -> bool {
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
 /// sections for suffix injection.
 pub(crate) const TRANSIENT_IDS: &[&str] = &[
-    "commit", "branch", "stash", "reset", "rebase", "merge", "ignore", "log", "diff",
-    "push", "pull", "fetch",
+    "commit", "branch", "tag", "remote", "stash", "reset", "rebase", "merge", "ignore",
+    "log", "diff", "push", "pull", "fetch",
 ];
 
 /// The keystroke sequence to reach the command with this palette title, as
@@ -762,7 +834,11 @@ pub(crate) fn command_keys(
     };
     // A current top-level key — including a leaf bound directly to one via
     // `[keymap]`. Reflects remaps and hides what the user unbound.
-    if let Some(key) = current_key(keymap, cmd.id, cmd.key) {
+    if let Some(key) = current_key(
+        keymap,
+        cmd.id,
+        default_key_for_command(config.keymap_preset, cmd),
+    ) {
         return Some(key);
     }
     // Otherwise a leaf reached through its prefix's transient: `<prefix>
@@ -771,7 +847,7 @@ pub(crate) fn command_keys(
     // Search every transient (via the single `transient_for` source of truth, so
     // adding a leaf under any prefix surfaces its key — no hardcoded list).
     for &prefix_id in TRANSIENT_IDS {
-        let Some(t) = transient_for(prefix_id) else {
+        let Some(t) = transient_for(prefix_id, config.keymap_preset.transient_style()) else {
             continue;
         };
         for group in &t.groups {
@@ -781,7 +857,7 @@ pub(crate) fn command_keys(
                         let default = commands()
                             .iter()
                             .find(|c| c.id == prefix_id)
-                            .and_then(|c| c.key);
+                            .and_then(|c| default_key_for_command(config.keymap_preset, c));
                         let prefix_key = current_key(keymap, prefix_id, default)?;
                         return Some(format!("{prefix_key} {}", a.key));
                     }
@@ -814,10 +890,15 @@ pub(crate) fn user_command_keys(
             if action_id != id {
                 continue;
             }
-            if transient_for(tid).is_some_and(|t| t.action_for(key).is_some()) {
+            if transient_for(tid, config.keymap_preset.transient_style())
+                .is_some_and(|t| t.action_for(key).is_some())
+            {
                 continue; // shadowed by a built-in suffix — the injection is dropped
             }
-            let default = commands().iter().find(|c| c.id == tid).and_then(|c| c.key);
+            let default = commands()
+                .iter()
+                .find(|c| c.id == tid)
+                .and_then(|c| default_key_for_command(config.keymap_preset, c));
             if let Some(prefix_key) = current_key(keymap, tid, default) {
                 return Some(format!("{prefix_key} {key}"));
             }
@@ -841,11 +922,13 @@ pub(crate) fn group_text(g: &Group) -> String {
 /// The built-in transient for a prefix id (the `[transient.<id>]` sections),
 /// for resolving an injected suffix's key against its built-ins. The single
 /// source of truth for "the transient for this id".
-pub(crate) fn transient_for(id: &str) -> Option<Transient> {
+pub(crate) fn transient_for(id: &str, style: transient::KeymapStyle) -> Option<Transient> {
     let rt = RemoteTargets::default();
     Some(match id {
         "commit" => transient::commit_transient(),
-        "branch" => transient::branch_transient(),
+        "branch" => transient::branch_transient(style),
+        "tag" => transient::tag_transient(style),
+        "remote" => transient::remote_transient(style),
         "stash" => transient::stash_transient(),
         "reset" => transient::reset_transient(),
         "rebase" => transient::rebase_transient(&rt),
@@ -909,10 +992,12 @@ pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::C
     // palette — itself a meta-affordance (reach any command), not a registry
     // entry, so it's appended here rather than living in `commands()`.
     let mut essential = group(Category::Essential);
-    essential.suffixes.push(Suffix::Info(transient::Info {
-        keys: ":".to_string(),
-        description: "Command palette".to_string(),
-    }));
+    if matches!(config.keymap_preset, config::KeymapPreset::EvilCollection) {
+        essential.suffixes.push(Suffix::Info(transient::Info {
+            keys: ":".to_string(),
+            description: "Command palette".to_string(),
+        }));
+    }
     let mut menu = Transient {
         title: transient::plain_title("Help"),
         groups: vec![
@@ -979,9 +1064,13 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
         Screen::Log(log) => {
             let mut suffixes = vec![info("enter", "Show commit"), info("y", "Copy hash")];
             if matches!(log.purpose, LogPurpose::Browse) {
+                let (revert, _reverse) = match view.config.keymap_preset {
+                    config::KeymapPreset::EvilCollection => ("_", "-"),
+                    config::KeymapPreset::Vanilla => ("V", "v"),
+                };
                 suffixes.extend([
                     info("A", "Cherry-pick"),
-                    info("_", "Revert"),
+                    info(revert, "Revert"),
                     info("r", "Rebase since"),
                 ]);
             }
@@ -1020,6 +1109,10 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                 menu.groups.retain(|g| group_text(g) != Category::Applying.title());
             }
             if let Some((_hash, _short, _subject)) = view.point_commit() {
+                let (revert, reverse) = match view.config.keymap_preset {
+                    config::KeymapPreset::EvilCollection => ("_", "-"),
+                    config::KeymapPreset::Vanilla => ("V", "v"),
+                };
                 menu.groups.insert(
                     0,
                     group(
@@ -1029,8 +1122,8 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                             info("y", "Copy hash"),
                             info("A", "Cherry-pick"),
                             info("a", "Apply changes"),
-                            info("V", "Revert"),
-                            info("v", "Revert changes"),
+                            info(revert, "Revert"),
+                            info(reverse, "Revert changes"),
                             info("r", "Rebase since"),
                         ],
                     ),

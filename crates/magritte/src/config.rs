@@ -14,6 +14,38 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_LIGHT_THEME: &str = "Selenized Light";
 pub const DEFAULT_DARK_THEME: &str = "Selenized Dark";
 
+/// Built-in keymap family. `EvilCollection` is the default because Magritte is
+/// keyboard-first and already uses vim-style navigation; `Vanilla` keeps the
+/// Magit command keys for users coming from Emacs without evil-collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeymapPreset {
+    EvilCollection,
+    Vanilla,
+}
+
+impl Default for KeymapPreset {
+    fn default() -> Self {
+        KeymapPreset::EvilCollection
+    }
+}
+
+impl KeymapPreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeymapPreset::EvilCollection => "evil-collection",
+            KeymapPreset::Vanilla => "vanilla",
+        }
+    }
+
+    pub fn transient_style(self) -> magritte_core::transient::KeymapStyle {
+        match self {
+            KeymapPreset::EvilCollection => magritte_core::transient::KeymapStyle::EvilCollection,
+            KeymapPreset::Vanilla => magritte_core::transient::KeymapStyle::Vanilla,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -62,6 +94,9 @@ pub struct Config {
     /// the same form the `?` menu shows (e.g. `"K"`, `"g r"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub keymap: BTreeMap<String, String>,
+    /// Which built-in keymap family to start from before applying `[keymap]`.
+    #[serde(default, skip_serializing_if = "is_default_keymap_preset")]
+    pub keymap_preset: KeymapPreset,
     /// Extra suffixes to add into a transient, keyed by the transient's command
     /// id (`branch`, `commit`, `push`, …): each inner entry maps a suffix
     /// keystroke to a [`TransientSuffix`] — a command to run, or a toggleable git
@@ -316,6 +351,9 @@ fn is_false(b: &bool) -> bool {
 fn is_default_which_key_delay_ms(n: &u64) -> bool {
     *n == default_which_key_delay_ms()
 }
+fn is_default_keymap_preset(p: &KeymapPreset) -> bool {
+    *p == KeymapPreset::default()
+}
 fn is_default_recent_count(n: &usize) -> bool {
     *n == StatusConfig::default().recent_count
 }
@@ -349,6 +387,7 @@ impl Default for Config {
             commit_in_editor: false,
             commit_editor: String::new(),
             keymap: BTreeMap::new(),
+            keymap_preset: KeymapPreset::default(),
             transient: BTreeMap::new(),
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
@@ -717,6 +756,12 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         "commit_editor",
         &config.commit_editor,
         config.commit_editor.is_empty(),
+    );
+    set_string(
+        &mut doc,
+        "keymap_preset",
+        config.keymap_preset.as_str(),
+        config.keymap_preset == KeymapPreset::default(),
     );
     set_bool(
         &mut doc,
