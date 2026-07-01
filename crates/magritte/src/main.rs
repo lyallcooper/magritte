@@ -553,7 +553,14 @@ struct PickerState {
 enum GitLogRow {
     /// `prog` is the program (`git` for the common case), shown dimmed before
     /// the arguments.
-    Command { prog: String, args: String, ok: bool },
+    Command {
+        elapsed: String,
+        slow: bool,
+        very_slow: bool,
+        prog: String,
+        args: String,
+        ok: bool,
+    },
     Output(String),
 }
 

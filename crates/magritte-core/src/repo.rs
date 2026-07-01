@@ -63,6 +63,10 @@ pub struct GitCommand {
     pub code: Option<i32>,
     /// Whether the command exited successfully (status 0).
     pub ok: bool,
+    /// Wall-clock time spent waiting for the child process. This is deliberately
+    /// measured around the full spawn/output path, so slow hooks/remotes show up
+    /// in the command log alongside slow git reads.
+    pub elapsed: Duration,
     /// Whether the user invoked this directly (the `!` prompt), as opposed to
     /// the UI issuing it. User commands always show in the log (never hidden as
     /// a query) and keep their full output.
@@ -323,12 +327,13 @@ impl Repo {
 
     /// Record an internal git call (the UI's own invocations): a `git` command,
     /// not user-invoked, with stdout consumed by the caller rather than stored.
-    fn record_git(&self, args: &[String], code: Option<i32>, stderr: &str) {
+    fn record_git(&self, args: &[String], code: Option<i32>, stderr: &str, elapsed: Duration) {
         self.record(GitCommand {
             program: None,
             args: args.to_vec(),
             code,
             ok: code == Some(0),
+            elapsed,
             user: false,
             stdout: String::new(),
             stderr: stderr.to_string(),
@@ -368,8 +373,9 @@ impl Repo {
 
         let mut cmd = self.git();
         cmd.args(&arg_vec);
+        let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.finish(arg_vec, stdout, stderr, status)
+        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
     }
 
     /// Run a user-typed command from the `!` prompt — git by default, or an
@@ -391,13 +397,16 @@ impl Repo {
                 c
             }
         };
+        let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output(cmd)?;
+        let elapsed = start.elapsed();
         let stdout = String::from_utf8_lossy(&stdout).into_owned();
         self.record(GitCommand {
             program: program.map(String::from),
             args: args.to_vec(),
             code: status.code(),
             ok: status.success(),
+            elapsed,
             user: true,
             stdout: stdout.clone(),
             stderr: stderr.clone(),
@@ -417,7 +426,9 @@ impl Repo {
         let mut cmd = Command::new("sh");
         cmd.current_dir(&self.workdir).arg("-c").arg(command);
         prepare_spawn(&mut cmd);
+        let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output(cmd)?;
+        let elapsed = start.elapsed();
         let stdout = String::from_utf8_lossy(&stdout).into_owned();
         // For the log: show the command as written. The first word reads as the
         // "program" (dim) and the rest as its arguments, like a git line.
@@ -427,6 +438,7 @@ impl Repo {
             args: words.collect(),
             code: status.code(),
             ok: status.success(),
+            elapsed,
             user: true,
             stdout: stdout.clone(),
             stderr: stderr.clone(),
@@ -557,8 +569,9 @@ impl Repo {
         stdout: Vec<u8>,
         stderr: String,
         status: ExitStatus,
+        elapsed: Duration,
     ) -> Result<GitOutput> {
-        self.record_git(&arg_vec, status.code(), &stderr);
+        self.record_git(&arg_vec, status.code(), &stderr, elapsed);
         if !status.success() {
             return Err(Error::Git {
                 args: arg_vec,
@@ -585,8 +598,9 @@ impl Repo {
 
         let mut cmd = self.git();
         cmd.env(key, value).args(&arg_vec);
+        let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.finish(arg_vec, stdout, stderr, status)
+        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
     }
 
     /// Like [`run`](Self::run) but feeds `input` to git's stdin. Used to pipe
@@ -606,8 +620,9 @@ impl Repo {
         // Route through collect_output_with so the stdin path also honors the
         // cancel flag and timeout (a wedged hook reading the patch can't hang
         // forever, and C-g/Esc kills it).
+        let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output_with(cmd, Some(input))?;
-        self.finish(arg_vec, stdout, stderr, status)
+        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
     }
 
     /// Run `git <args>` where git would normally open the **sequence editor**
@@ -652,6 +667,7 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
+        let start = Instant::now();
         let status = self
             .git()
             .args(&arg_vec)
@@ -659,8 +675,9 @@ impl Repo {
             .stderr(Stdio::null())
             .status()
             .map_err(|source| Error::Spawn { source })?;
+        let elapsed = start.elapsed();
         // Output is discarded (Stdio::null), so there's no stderr to log.
-        self.record_git(&arg_vec, status.code(), "");
+        self.record_git(&arg_vec, status.code(), "", elapsed);
         Ok(status.success())
     }
 
@@ -676,13 +693,15 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
+        let start = Instant::now();
         let output = self
             .git()
             .args(&arg_vec)
             .output()
             .map_err(|source| Error::Spawn { source })?;
+        let elapsed = start.elapsed();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record_git(&arg_vec, output.status.code(), &stderr);
+        self.record_git(&arg_vec, output.status.code(), &stderr, elapsed);
         if !output.status.success() {
             return Ok(None);
         }
@@ -821,6 +840,7 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             code: Some(0),
             ok: true,
+            elapsed: Duration::from_millis(1),
             user,
             stdout: String::new(),
             stderr: String::new(),

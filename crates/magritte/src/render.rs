@@ -22,6 +22,15 @@ use magritte_core::{RebaseAction, Sequence};
 
 use crate::*;
 
+fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
+    let millis = elapsed.as_millis();
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    }
+}
+
 impl StatusView {
     /// Render a popup (command transient or the `?` help menu) as a bottom
     /// panel. `state` is `None` for the help menu, which has no toggled
@@ -1400,6 +1409,9 @@ impl StatusView {
                 continue;
             }
             rows.push(GitLogRow::Command {
+                elapsed: git_log_elapsed_label(c.elapsed),
+                slow: c.elapsed >= std::time::Duration::from_millis(500),
+                very_slow: c.elapsed >= std::time::Duration::from_secs(2),
                 prog: c.program.clone().unwrap_or_else(|| "git".to_string()),
                 args: c.args.join(" "),
                 ok: c.ok,
@@ -1424,7 +1436,14 @@ impl StatusView {
     /// of that command's stderr output.
     pub(crate) fn render_git_log_row(&self, row: &GitLogRow) -> AnyElement {
         match row {
-            GitLogRow::Command { prog, args, ok } => {
+            GitLogRow::Command {
+                elapsed,
+                slow,
+                very_slow,
+                prog,
+                args,
+                ok,
+            } => {
                 let (sigil, sigil_color) = if *ok {
                     ("✓", self.palette.added)
                 } else {
@@ -1434,6 +1453,13 @@ impl StatusView {
                     self.palette.fg
                 } else {
                     self.palette.removed
+                };
+                let elapsed_color = if *very_slow {
+                    self.palette.removed
+                } else if *slow {
+                    self.palette.modified
+                } else {
+                    self.palette.dim
                 };
                 div()
                     .h(px(ROW_HEIGHT))
@@ -1453,6 +1479,13 @@ impl StatusView {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .child(
+                                div()
+                                    .w(px(44.0))
+                                    .flex_shrink_0()
+                                    .text_color(elapsed_color)
+                                    .child(SharedString::from(elapsed.clone())),
+                            )
                             .child(
                                 div()
                                     .text_color(self.palette.dim)
