@@ -233,6 +233,7 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `yank` | `y` | Copy the selection |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
+| `check-updates` | — | Check for updates |
 | `move-down` | `j` | Move cursor down |
 | `move-up` | `k` | Move cursor up |
 | `goto-top` | `g g` | Jump to top |

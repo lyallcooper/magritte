@@ -90,6 +90,10 @@ use magritte_core::{
     SequenceKind, Stash, Status, TagsAround,
 };
 
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/lyallcooper/homebrew-magritte/releases/latest";
+
 /// The in-app commit message editor, backed by gpui-component's multi-line
 /// Input. We keep the commit context (mode + switches) alongside it.
 struct CommitEditor {
@@ -5078,6 +5082,80 @@ fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[String]) {
     rows.splice(0..0, prefix);
 }
 
+fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version
+        .trim()
+        .strip_prefix("refs/tags/")
+        .unwrap_or(version.trim())
+        .trim_start_matches('v');
+    let stable = version.split_once('-').map_or(version, |(stable, _)| stable);
+    let mut parts = stable.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn latest_release_version_from_github_json(body: &str) -> std::result::Result<String, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid GitHub response: {e}"))?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "GitHub response did not include tag_name".to_string())?;
+    let version = tag.trim().trim_start_matches('v').to_string();
+    if parse_release_version(&version).is_none() {
+        return Err(format!("latest release tag is not a vX.Y.Z version: {tag}"));
+    }
+    Ok(version)
+}
+
+fn latest_release_version() -> std::result::Result<String, String> {
+    let output = std::process::Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--max-time",
+            "5",
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--header",
+            "X-GitHub-Api-Version: 2022-11-28",
+            "--user-agent",
+            concat!("magritte/", env!("CARGO_PKG_VERSION")),
+            GITHUB_LATEST_RELEASE_API,
+        ])
+        .output()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("GitHub request exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    latest_release_version_from_github_json(&stdout)
+}
+
+fn version_status_message(current: &str, latest: &str) -> String {
+    match (parse_release_version(current), parse_release_version(latest)) {
+        (Some(current_version), Some(latest_version)) if current_version < latest_version => {
+            format!("Magritte {current}; latest is {latest} (update available)")
+        }
+        (Some(current_version), Some(latest_version)) if current_version > latest_version => {
+            format!("Magritte {current}; latest release is {latest}")
+        }
+        _ => format!("Magritte {current} is the latest version"),
+    }
+}
+
 fn message(text: &str, color: Hsla) -> Row {
     Row {
         indent: 2,
@@ -5421,10 +5499,28 @@ fn open_or_focus_repo(
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("magritte {CURRENT_VERSION}");
+        return;
+    }
+    if args.iter().any(|a| a == "--check-version") {
+        match latest_release_version() {
+            Ok(latest) => println!("{}", version_status_message(CURRENT_VERSION, &latest)),
+            Err(e) => {
+                eprintln!("magritte: failed to check latest version: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
             "Usage: magritte [--foreground] [PATH]\n\n\
              Open the git repository containing PATH (default: current directory).\n\n\
+             Options:\n\
+               --foreground      Keep the app attached to the terminal.\n\
+               --version, -V     Print the Magritte version.\n\
+               --check-version   Check GitHub for the latest release.\n\n\
              Magritte detaches into the background so the shell returns immediately.\n\
              Pass --foreground (or set MAGRITTE_FOREGROUND) to keep it attached to\n\
              the terminal — handy for logs and debugging."

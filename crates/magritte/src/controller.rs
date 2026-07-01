@@ -1642,6 +1642,21 @@ impl StatusView {
         self.status(msg, StatusKind::Progress, cx);
     }
 
+    /// Check the latest GitHub release tag and report whether this build is current.
+    pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        self.set_progress("Checking for updates…".to_string(), cx);
+        let task = cx.background_executor().spawn(async { latest_release_version() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| match result {
+                Ok(latest) => this.set_status(version_status_message(CURRENT_VERSION, &latest), false, cx),
+                Err(e) => this.set_status(format!("Update check failed: {e}"), false, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Clear the status bar (advancing the sequence so no pending timer fires).
     pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
         self.status_seq.bump();

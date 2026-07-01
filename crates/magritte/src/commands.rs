@@ -363,6 +363,17 @@ pub(crate) fn commands() -> &'static [Command] {
             "$",
             |t, _w, cx| { t.open_git_log(cx) }
         ),
+        Command {
+            id: "check-updates",
+            title: "Check for updates",
+            category: Category::Application,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |t, _w, cx| t.check_for_updates(cx),
+        },
         // Applying changes.
         top!("stage", "Stage", Category::Applying, "s", |t, _w, cx| t
             .act(Op::Stage, cx)),
