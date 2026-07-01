@@ -5073,6 +5073,9 @@ fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[String]) {
     if details.is_empty() || rows.iter().any(|row| matches!(row, CommitDiffRow::Detail(_))) {
         return;
     }
+    while matches!(rows.first(), Some(CommitDiffRow::Note(n)) if n.is_empty()) {
+        rows.remove(0);
+    }
     let mut prefix = details
         .iter()
         .cloned()
@@ -6107,6 +6110,37 @@ mod tests {
             ]
         );
         assert!(parse_refs("").is_empty());
+    }
+
+    #[test]
+    fn release_version_parsing_and_status() {
+        assert_eq!(parse_release_version("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_release_version("refs/tags/v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_release_version("1.2"), None);
+        assert_eq!(
+            latest_release_version_from_github_json(r#"{"tag_name":"v1.2.3"}"#).unwrap(),
+            "1.2.3"
+        );
+        assert!(latest_release_version_from_github_json(r#"{"tag_name":"nightly"}"#).is_err());
+        assert!(version_status_message("0.3.0", "0.4.0").contains("update available"));
+        assert!(version_status_message(CURRENT_VERSION, CURRENT_VERSION).contains("latest version"));
+    }
+
+    #[test]
+    fn commit_details_toggle_does_not_accumulate_blank_lines() {
+        let details = vec!["Author:    A".to_string()];
+        let mut rows = vec![
+            CommitDiffRow::Note(String::new()),
+            CommitDiffRow::File("a.txt".to_string()),
+        ];
+
+        prepend_commit_details(&mut rows, &details);
+        rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
+        prepend_commit_details(&mut rows, &details);
+
+        assert!(matches!(rows.first(), Some(CommitDiffRow::Detail(_))));
+        assert!(matches!(rows.get(1), Some(CommitDiffRow::Note(n)) if n.is_empty()));
+        assert!(matches!(rows.get(2), Some(CommitDiffRow::File(_))));
     }
 
     #[test]
