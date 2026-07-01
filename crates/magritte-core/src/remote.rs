@@ -8,6 +8,7 @@
 
 use crate::error::Result;
 use crate::repo::Repo;
+use crate::status::HeadInfo;
 
 /// A branch's upstream, split into its remote and remote-branch parts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,7 @@ impl Upstream {
 }
 
 /// The current branch's resolved push/pull/fetch targets, for labeling menus.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteTargets {
     /// Current branch name; `None` when HEAD is detached.
     pub branch: Option<String>,
@@ -32,6 +33,26 @@ pub struct RemoteTargets {
     pub push_remote: Option<String>,
     /// Upstream branch; `None` when unconfigured.
     pub upstream: Option<Upstream>,
+}
+
+impl RemoteTargets {
+    /// Build transient/menu labels from the already-parsed status header. This
+    /// avoids re-running branch/upstream/push resolution after a refresh has
+    /// populated the status screen.
+    pub fn from_head(head: &HeadInfo) -> Self {
+        RemoteTargets {
+            branch: head.branch.clone(),
+            push_remote: head.push_remote.clone(),
+            upstream: head.upstream.as_deref().and_then(parse_upstream),
+        }
+    }
+}
+
+fn parse_upstream(s: &str) -> Option<Upstream> {
+    s.split_once('/').map(|(remote, branch)| Upstream {
+        remote: remote.to_string(),
+        branch: branch.to_string(),
+    })
 }
 
 impl Repo {
@@ -78,12 +99,7 @@ impl Repo {
             ])?
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty())
-            .and_then(|s| {
-                s.split_once('/').map(|(remote, branch)| Upstream {
-                    remote: remote.to_string(),
-                    branch: branch.to_string(),
-                })
-            });
+            .and_then(|s| parse_upstream(&s));
         Ok(RemoteTargets {
             branch,
             push_remote,
@@ -164,5 +180,32 @@ impl Repo {
         let mut args = vec!["fetch".to_string(), "--all".to_string()];
         args.extend(switches.iter().cloned());
         Ok(self.run(&args)?.report())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_targets_reuse_status_head_metadata() {
+        let head = HeadInfo {
+            branch: Some("main".to_string()),
+            upstream: Some("origin/main".to_string()),
+            push_remote: Some("fork".to_string()),
+            ..HeadInfo::default()
+        };
+
+        assert_eq!(
+            RemoteTargets::from_head(&head),
+            RemoteTargets {
+                branch: Some("main".to_string()),
+                push_remote: Some("fork".to_string()),
+                upstream: Some(Upstream {
+                    remote: "origin".to_string(),
+                    branch: "main".to_string(),
+                }),
+            }
+        );
     }
 }

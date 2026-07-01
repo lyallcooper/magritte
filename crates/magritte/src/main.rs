@@ -1240,6 +1240,10 @@ struct StatusView {
     /// current theme still controls highlight colors.
     commit_cache: HashMap<CommitCacheKey, CommitCacheEntry>,
     commit_cache_order: VecDeque<CommitCacheKey>,
+    /// Resolved git-config defaults for transient switches during the current
+    /// repository generation. Cleared on refresh so external git config changes
+    /// are picked up without re-querying on every popup open.
+    transient_config_defaults: HashMap<String, bool>,
     rows: Vec<Row>,
     selected: usize,
     /// Anchor row of an active visual (region) selection; `None` when off.
@@ -1348,6 +1352,10 @@ struct StatusView {
     /// checkout (fold state). Equals `repo_scope_dir` in the main worktree.
     /// `None` with no repo.
     worktree_scope_dir: Option<PathBuf>,
+    /// The per-worktree git dir itself, resolved once at startup. Sequence-state
+    /// reads use this to avoid re-running `rev-parse --absolute-git-dir` on
+    /// every refresh.
+    worktree_git_dir: Option<PathBuf>,
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
     /// tag ahead + commits-until). Refreshed with status when title-bar tags are on.
     tag_info: TagsAround,
@@ -1407,10 +1415,10 @@ impl StatusView {
         // UI state local to this checkout (folds, window placement) lives in the
         // *per-worktree* git dir instead — `.git/magritte` for the main worktree,
         // `.git/worktrees/<name>/magritte` for a linked one.
-        let worktree_scope_dir = repo
+        let worktree_git_dir = repo
             .as_ref()
-            .and_then(|r| r.git_dir().ok())
-            .map(|d| config::repo_dir(&d));
+            .and_then(|r| r.git_dir().ok());
+        let worktree_scope_dir = worktree_git_dir.as_ref().map(|d| config::repo_dir(d));
         let repo_transient_arguments = repo_scope_dir
             .as_ref()
             .map(|d| config::load_transient_arguments_at(&config::repo_transient_arguments_path(d)))
@@ -1484,6 +1492,7 @@ impl StatusView {
             diff_langs: HashMap::new(),
             commit_cache: HashMap::new(),
             commit_cache_order: VecDeque::new(),
+            transient_config_defaults: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
             visual: None,
@@ -1520,6 +1529,7 @@ impl StatusView {
             repo_transient_arguments,
             repo_scope_dir,
             worktree_scope_dir,
+            worktree_git_dir,
             mono_fonts: Vec::new(),
             ui_fonts: Vec::new(),
             editors: Vec::new(),
@@ -1995,6 +2005,7 @@ impl StatusView {
         self.diffs.retain(|key, _| expanded_diff_keys.contains(key));
         self.highlights.retain(|key, _| expanded_diff_keys.contains(key));
         self.diff_langs.retain(|key, _| expanded_diff_keys.contains(key));
+        self.transient_config_defaults.clear();
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
         self.collapsed_hunks.clear();
@@ -2116,12 +2127,17 @@ impl StatusView {
         // Capture the cursor's logical position now (before the rebuild) so it
         // can be restored once status lands, rather than left at a stale index.
         let anchor = self.capture_anchor();
+        let worktree_git_dir = self.worktree_git_dir.clone();
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let (result, sequence) = cx
                 .background_executor()
                 .spawn(async move {
-                    match repo.refresh_snapshot() {
+                    let snapshot = match worktree_git_dir.as_deref() {
+                        Some(dir) => repo.refresh_snapshot_in_dir(dir),
+                        None => repo.refresh_snapshot(),
+                    };
+                    match snapshot {
                         Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence),
                         Err(e) => (Err(e), None),
                     }
@@ -3418,20 +3434,14 @@ impl StatusView {
         // enabled (e.g. --gpg-sign with commit.gpgSign=true); toggling it off
         // then sends the negation (--no-gpg-sign). Resolve those defaults now,
         // from the repo's effective config.
-        if let Some(repo) = self.repo.as_ref() {
+        if let Some(repo) = self.repo.clone() {
+            let branch = targets.branch.clone();
             for group in def.groups.iter_mut() {
                 for suffix in group.suffixes.iter_mut() {
                     if let transient::Suffix::Switch(sw) = suffix {
                         if let Some(key) = sw.config_key.clone() {
-                            sw.default_on = match key.as_str() {
-                                // pull.rebase is an enum (true/interactive/merges)
-                                // with a per-branch override, so it needs git's
-                                // own resolution rather than a plain bool read.
-                                "pull.rebase" => {
-                                    repo.pull_rebase_default(targets.branch.as_deref())
-                                }
-                                _ => repo.config_bool(&key),
-                            };
+                            sw.default_on =
+                                self.transient_config_default(&repo, &key, branch.as_deref());
                         }
                     }
                 }
@@ -3511,10 +3521,38 @@ impl StatusView {
     /// The current branch's resolved push/pull/fetch targets (empty on error or
     /// no repo), for building and dispatching the remote transients.
     fn remote_targets(&self) -> RemoteTargets {
+        if let Some(status) = self.status.as_ref() {
+            return RemoteTargets::from_head(&status.head);
+        }
         self.repo
             .as_ref()
             .and_then(|r| r.remote_targets().ok())
             .unwrap_or_default()
+    }
+
+    fn transient_config_default(
+        &mut self,
+        repo: &Repo,
+        key: &str,
+        branch: Option<&str>,
+    ) -> bool {
+        let cache_key = if key == "pull.rebase" {
+            format!("{key}\0{}", branch.unwrap_or_default())
+        } else {
+            key.to_string()
+        };
+        if let Some(value) = self.transient_config_defaults.get(&cache_key) {
+            return *value;
+        }
+        let value = match key {
+            // pull.rebase is an enum (true/interactive/merges) with a
+            // per-branch override, so it needs git's own resolution rather than
+            // a plain bool read.
+            "pull.rebase" => repo.pull_rebase_default(branch),
+            _ => repo.config_bool(key),
+        };
+        self.transient_config_defaults.insert(cache_key, value);
+        value
     }
 
     fn handle_transient_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {

@@ -4,6 +4,8 @@
 //! `-z` variant so paths are NUL-terminated and never quoted, which removes all
 //! ambiguity around spaces and unusual characters in filenames.
 
+use std::path::Path;
+
 use crate::error::{Error, Result};
 use crate::repo::Repo;
 use crate::sequence::Sequence;
@@ -111,6 +113,10 @@ pub struct HeadInfo {
     pub ahead: i64,
     pub behind: i64,
     pub detached: bool,
+    /// The remote part of `@{push}` (e.g. `origin`), even when the push target
+    /// equals the upstream and therefore isn't shown as a separate title-bar
+    /// tracking ref. Used by the frontend's push/pull/fetch/rebase transients.
+    pub push_remote: Option<String>,
     /// The push target (`@{push}`, from `pushRemote`/`pushDefault`), set only
     /// when it differs from `upstream` — a triangular workflow. `None` when
     /// there's no push target or it's the same ref as the upstream.
@@ -182,6 +188,14 @@ impl Repo {
         Ok(RefreshSnapshot { status, sequence })
     }
 
+    /// Like [`refresh_snapshot`](Self::refresh_snapshot), but reuses a git-dir
+    /// path the caller already resolved while opening the repository.
+    pub fn refresh_snapshot_in_dir(&self, git_dir: &Path) -> Result<RefreshSnapshot> {
+        let status = self.status()?;
+        let sequence = self.sequence_in_dir(git_dir);
+        Ok(RefreshSnapshot { status, sequence })
+    }
+
     /// Resolve the branch's push target (`@{push}`) and its ahead/behind, but
     /// only record it when it differs from the upstream (`branch.ab` already
     /// covers the upstream). `git status` reports `@{upstream}` only, so the
@@ -202,6 +216,9 @@ impl Repo {
             return;
         };
         let push = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if let Some((remote, _)) = push.split_once('/') {
+            head.push_remote = Some(remote.to_string());
+        }
         // Nothing configured, or the same ref the upstream line already shows.
         if push.is_empty() || head.upstream.as_deref() == Some(push.as_str()) {
             return;
