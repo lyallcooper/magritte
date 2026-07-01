@@ -12,7 +12,7 @@
 //! runs on the background executor; a generation counter drops stale results.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -646,6 +646,22 @@ struct CommitView {
     visual: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CommitCacheKey {
+    rev: String,
+    args: Vec<String>,
+    paths: Vec<String>,
+}
+
+#[derive(Clone)]
+struct CommitCacheEntry {
+    metadata: CommitMetadata,
+    message: String,
+    files: Vec<(FileDiff, Option<&'static str>)>,
+}
+
+const COMMIT_CACHE_CAPACITY: usize = 64;
+
 /// A standalone diff buffer (`d` / Magit's `magit-diff`): a title plus a
 /// flattened, read-only list of file/hunk/line rows.
 struct DiffView {
@@ -1219,6 +1235,11 @@ struct StatusView {
     /// Detected highlight language per file diff, kept so highlighting can be
     /// recomputed on a theme change without re-reading files off the UI thread.
     diff_langs: HashMap<(DiffSource, String), &'static str>,
+    /// Immutable commit detail loads (metadata/message/diff), keyed by full OID
+    /// plus diff args/pathspecs. Rows are re-rendered from this on demand so the
+    /// current theme still controls highlight colors.
+    commit_cache: HashMap<CommitCacheKey, CommitCacheEntry>,
+    commit_cache_order: VecDeque<CommitCacheKey>,
     rows: Vec<Row>,
     selected: usize,
     /// Anchor row of an active visual (region) selection; `None` when off.
@@ -1461,6 +1482,8 @@ impl StatusView {
             diffs: HashMap::new(),
             highlights: HashMap::new(),
             diff_langs: HashMap::new(),
+            commit_cache: HashMap::new(),
+            commit_cache_order: VecDeque::new(),
             rows: Vec::new(),
             selected: 0,
             visual: None,
@@ -4597,6 +4620,11 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let key = CommitCacheKey {
+            rev: hash.clone(),
+            args: args.clone(),
+            paths: paths.clone(),
+        };
         let gen = self.next_screen_gen();
         // Carry the screen we came from so closing returns there (log or status).
         let back = Box::new(std::mem::take(&mut self.screen));
@@ -4615,6 +4643,11 @@ impl StatusView {
             },
             back,
         };
+        if let Some(cached) = self.commit_cache.get(&key).cloned() {
+            self.populate_commit_view(&cached, cx);
+            cx.notify();
+            return;
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             let loaded = cx
@@ -4634,7 +4667,11 @@ impl StatusView {
                             })
                             .collect::<Vec<_>>()
                     })?;
-                    Ok::<_, magritte_core::Error>((metadata, message, files))
+                    Ok::<_, magritte_core::Error>(CommitCacheEntry {
+                        metadata,
+                        message,
+                        files,
+                    })
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -4653,22 +4690,38 @@ impl StatusView {
                         return;
                     }
                 };
-                let (metadata, message, files) = loaded;
-                let details = commit_metadata_lines(&metadata);
-                let show_details = this.commit_view().is_some_and(|cv| cv.show_details);
-                let mut rows = this.commit_detail_rows(&message, &files, cx);
-                if show_details {
-                    prepend_commit_details(&mut rows, &details);
-                }
-                if let Some(cv) = this.commit_view_mut() {
-                    cv.details = details;
-                    cv.rows = rows;
-                }
+                this.insert_commit_cache(key, loaded.clone());
+                this.populate_commit_view(&loaded, cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    fn insert_commit_cache(&mut self, key: CommitCacheKey, entry: CommitCacheEntry) {
+        if !self.commit_cache.contains_key(&key) {
+            self.commit_cache_order.push_back(key.clone());
+        }
+        self.commit_cache.insert(key, entry);
+        while self.commit_cache_order.len() > COMMIT_CACHE_CAPACITY {
+            if let Some(old) = self.commit_cache_order.pop_front() {
+                self.commit_cache.remove(&old);
+            }
+        }
+    }
+
+    fn populate_commit_view(&mut self, entry: &CommitCacheEntry, cx: &mut Context<Self>) {
+        let details = commit_metadata_lines(&entry.metadata);
+        let show_details = self.commit_view().is_some_and(|cv| cv.show_details);
+        let mut rows = self.commit_detail_rows(&entry.message, &entry.files, cx);
+        if show_details {
+            prepend_commit_details(&mut rows, &details);
+        }
+        if let Some(cv) = self.commit_view_mut() {
+            cv.details = details;
+            cv.rows = rows;
+        }
     }
 
     fn open_diff(&mut self, request: DiffRequest, cx: &mut Context<Self>) {
