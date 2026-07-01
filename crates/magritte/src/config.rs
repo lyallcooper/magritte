@@ -555,17 +555,21 @@ pub fn load_usage() -> Usage {
 /// instances writing the same target don't share — and clobber — one temp
 /// file; the atomic rename then makes the last writer win cleanly.
 fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let text = toml::to_string_pretty(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    atomic_write_text(path, &text)
+}
+
+fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let text = toml::to_string_pretty(value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("toml.{}.{seq}.tmp", std::process::id()));
-    std::fs::write(&tmp, &text)?;
+    std::fs::write(&tmp, text)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -645,17 +649,120 @@ pub fn load_transient_switches() -> TransientSwitches {
         .unwrap_or_default()
 }
 
-/// Write the config, creating parent directories as needed. Written
-/// atomically (temp file + rename) so an interrupted write can't truncate or
-/// corrupt the existing config. Errors are reported but not fatal — settings
-/// just won't persist.
-pub fn save(config: &Config) {
+/// Ensure the global config file exists without formatting or otherwise
+/// rewriting an existing file. Used by "Open global config" so merely opening
+/// the file doesn't reorder or normalize the user's hand-written TOML.
+pub fn ensure_file() -> Option<PathBuf> {
+    let path = path()?;
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, "");
+    }
+    Some(path)
+}
+
+/// Persist only the top-level fields owned by the Settings screen, preserving
+/// the rest of the user's TOML (comments, ordering, custom command tables,
+/// transient/keymap sections, etc.). Defaults are removed just like the serde
+/// `skip_serializing_if` rules, but unrelated syntax is left untouched.
+pub fn save_settings(config: &Config) {
     let Some(path) = path() else {
         return;
     };
-    if let Err(e) = atomic_write_toml(&path, config) {
+    if let Err(e) = save_settings_at(&path, config) {
         eprintln!("magritte: could not save config: {e}");
     }
+}
+
+fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc = if text.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        text.parse::<toml_edit::DocumentMut>()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+    };
+
+    set_string(
+        &mut doc,
+        "appearance",
+        &config.appearance,
+        config.appearance.is_empty() || config.appearance == "auto",
+    );
+    set_string(
+        &mut doc,
+        "light_theme",
+        &config.light_theme,
+        config.light_theme.is_empty(),
+    );
+    set_string(
+        &mut doc,
+        "dark_theme",
+        &config.dark_theme,
+        config.dark_theme.is_empty(),
+    );
+    set_string(&mut doc, "font", &config.font, config.font.is_empty());
+    set_string(&mut doc, "ui_font", &config.ui_font, config.ui_font.is_empty());
+    set_bool(
+        &mut doc,
+        "commit_title_ruler",
+        config.commit_title_ruler,
+        config.commit_title_ruler,
+    );
+    set_bool(
+        &mut doc,
+        "commit_body_wrap",
+        config.commit_body_wrap,
+        config.commit_body_wrap,
+    );
+    set_string(&mut doc, "editor", &config.editor, config.editor.is_empty());
+    set_bool(
+        &mut doc,
+        "commit_in_editor",
+        config.commit_in_editor,
+        !config.commit_in_editor,
+    );
+    set_string(
+        &mut doc,
+        "commit_editor",
+        &config.commit_editor,
+        config.commit_editor.is_empty(),
+    );
+    set_bool(
+        &mut doc,
+        "refresh_on_focus",
+        config.refresh_on_focus,
+        config.refresh_on_focus,
+    );
+    set_bool(&mut doc, "show_tags", config.show_tags, !config.show_tags);
+
+    atomic_write_text(path, &doc.to_string())
+}
+
+fn set_string(doc: &mut toml_edit::DocumentMut, key: &str, value: &str, omit: bool) {
+    set_setting(doc, key, omit, toml_edit::Value::from(value));
+}
+
+fn set_bool(doc: &mut toml_edit::DocumentMut, key: &str, value: bool, omit: bool) {
+    set_setting(doc, key, omit, toml_edit::Value::from(value));
+}
+
+fn set_setting(
+    doc: &mut toml_edit::DocumentMut,
+    key: &str,
+    omit: bool,
+    mut value: toml_edit::Value,
+) {
+    if omit {
+        doc.as_table_mut().remove(key);
+        return;
+    }
+    if let Some(old) = doc.get(key).and_then(|item| item.as_value()) {
+        *value.decor_mut() = old.decor().clone();
+    }
+    doc[key] = toml_edit::Item::Value(value);
 }
 
 #[cfg(test)]
@@ -695,6 +802,52 @@ mod tests {
             },
         );
         assert_eq!(load_fold_state(&path).collapsed, vec!["staged", "ignored"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn settings_save_preserves_unrelated_config_syntax() {
+        let path = std::env::temp_dir().join(format!(
+            "magritte-settings-save-{}.toml",
+            std::process::id()
+        ));
+        let original = r#"# my config
+font = "Mono" # keep this comment
+
+[keymap]
+"g x" = "user.sync"
+
+[[command]]
+id = "user.sync"
+title = "Sync"
+run = "git fetch && git push"
+"#;
+        std::fs::write(&path, original).unwrap();
+
+        let mut cfg: Config = toml::from_str(original).unwrap();
+        cfg.font = "JetBrains Mono".to_string();
+        cfg.show_tags = true;
+        save_settings_at(&path, &cfg).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# my config"));
+        assert!(saved.contains("font = \"JetBrains Mono\" # keep this comment"));
+        assert!(saved.contains("[keymap]\n\"g x\" = \"user.sync\""));
+        assert!(saved.contains("[[command]]\nid = \"user.sync\""));
+        assert!(saved.contains("show_tags = true"));
+        assert!(!saved.contains("command = []"));
+        let saved_value: toml::Value = toml::from_str(&saved).unwrap();
+        assert_eq!(saved_value.get("show_tags").and_then(|v| v.as_bool()), Some(true));
+        assert!(saved_value["command"][0].get("show_tags").is_none());
+
+        cfg.show_tags = false;
+        cfg.font.clear();
+        save_settings_at(&path, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("show_tags"));
+        assert!(!saved.contains("font ="));
+        assert!(saved.contains("[[command]]\nid = \"user.sync\""));
+
         let _ = std::fs::remove_file(&path);
     }
 

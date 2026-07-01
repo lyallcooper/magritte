@@ -194,7 +194,7 @@ impl StatusView {
                     if matches!(ev, InputEvent::Change) {
                         let val = input.read(cx).value().trim().to_string();
                         this.edit_global(|c| c.commit_editor = val.clone());
-                        config::save(&this.config_global);
+                        config::save_settings(&this.config_global);
                     }
                 },
             ),
@@ -210,7 +210,7 @@ impl StatusView {
                             name.to_string()
                         };
                         this.edit_global(|c| c.editor = val.clone());
-                        config::save(&this.config_global);
+                        config::save_settings(&this.config_global);
                     }
                 },
             ),
@@ -219,7 +219,7 @@ impl StatusView {
                 if matches!(ev, InputEvent::Change) {
                     let val = input.read(cx).value().trim().to_string();
                     this.edit_global(|c| c.editor = val.clone());
-                    config::save(&this.config_global);
+                    config::save_settings(&this.config_global);
                 }
             }),
             cx.subscribe_in(
@@ -324,7 +324,7 @@ impl StatusView {
     /// Re-apply the theme for the current config and persist the global config.
     pub(crate) fn apply_and_save(&mut self, cx: &mut Context<Self>) {
         self.reapply_theme(cx);
-        config::save(&self.config_global);
+        config::save_settings(&self.config_global);
     }
 
     /// Tab moves focus to the next settings control, cycling through every one
@@ -361,7 +361,6 @@ impl StatusView {
     /// Close the settings screen, persisting and returning focus to the list.
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
-        config::save(&self.config);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -622,12 +621,11 @@ impl StatusView {
             .vertical_scrollbar(&s.scroll)
     }
 
-    /// Write the current config (so the file exists even if untouched) and open
-    /// it via the same path as opening a file at point: the configured editor,
-    /// falling back to the OS default app when it's unset. (The split button's
-    /// dropdown still opens a chosen app.)
+    /// Ensure the config file exists and open it via the same path as opening a
+    /// file at point: the configured editor, falling back to the OS default app
+    /// when it's unset. (The split button's dropdown still opens a chosen app.)
     pub(crate) fn open_config_file(&self) {
-        if let Some(path) = self.saved_config_path() {
+        if let Some(path) = config::ensure_file() {
             self.launch_editor(&path, None);
         }
     }
