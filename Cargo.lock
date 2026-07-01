@@ -3680,6 +3680,10 @@ dependencies = [
  "shell-words",
  "toml 0.8.23",
  "toml_edit 0.22.27",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cmake",
+ "tree-sitter-proto",
+ "tree-sitter-swift",
 ]
 
 [[package]]

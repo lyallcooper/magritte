@@ -10,9 +10,10 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Once;
 
 use gpui::{App, Hsla};
-use gpui_component::highlighter::SyntaxHighlighter;
+use gpui_component::highlighter::{LanguageConfig, LanguageRegistry, SyntaxHighlighter};
 use gpui_component::{ActiveTheme, Rope};
 use magritte_core::{FileDiff, LineKind};
 
@@ -22,17 +23,66 @@ pub type Span = (String, Hsla);
 /// Highlighted spans for each `(hunk_index, line_index)` of a file diff.
 pub type FileHighlights = HashMap<(usize, usize), Vec<Span>>;
 
+fn register_extra_highlight_queries() {
+    static REGISTER: Once = Once::new();
+
+    REGISTER.call_once(|| {
+        let registry = LanguageRegistry::singleton();
+        registry.register(
+            "swift",
+            &LanguageConfig::new(
+                "swift",
+                tree_sitter_swift::LANGUAGE.into(),
+                vec![],
+                tree_sitter_swift::HIGHLIGHTS_QUERY,
+                tree_sitter_swift::INJECTIONS_QUERY,
+                tree_sitter_swift::LOCALS_QUERY,
+            ),
+        );
+        registry.register(
+            "csharp",
+            &LanguageConfig::new(
+                "csharp",
+                tree_sitter_c_sharp::LANGUAGE.into(),
+                vec![],
+                tree_sitter_c_sharp::HIGHLIGHTS_QUERY,
+                "",
+                "",
+            ),
+        );
+        registry.register(
+            "proto",
+            &LanguageConfig::new(
+                "proto",
+                tree_sitter_proto::LANGUAGE.into(),
+                vec![],
+                include_str!("highlight_queries/proto.scm"),
+                "",
+                "",
+            ),
+        );
+        registry.register(
+            "cmake",
+            &LanguageConfig::new(
+                "cmake",
+                tree_sitter_cmake::LANGUAGE.into(),
+                vec![],
+                include_str!("highlight_queries/cmake.scm"),
+                "",
+                "",
+            ),
+        );
+    });
+}
+
 /// Map a file path to a tree-sitter language name, or `None` if we don't
 /// highlight it. Names must match a language enabled in gpui-component's
 /// `tree-sitter-languages` feature (and accepted by `Language::from_name`).
 pub fn language_for_path(path: &str) -> Option<&'static str> {
-    // NOTE: gpui-component ships grammars for ~35 languages but registers some
-    // (swift, csharp, graphql, proto, cmake) with EMPTY highlight queries at
-    // this rev — those parse but produce no colors, so we don't map them here
-    // (they'd just render as plain text either way).
     let name = path.rsplit('/').next().unwrap_or(path);
     // Special filenames that carry no useful extension.
     match name {
+        "CMakeLists.txt" => return Some("cmake"),
         "Makefile" | "makefile" | "GNUmakefile" => return Some("make"),
         "Gemfile" | "Rakefile" | "Guardfile" | "Podfile" | "Vagrantfile" | "Brewfile"
         | "Capfile" | "Berksfile" | "Fastfile" | "Appfile" => return Some("ruby"),
@@ -50,6 +100,7 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
         "py" | "pyi" => "python",
         "go" => "go",
         "c" | "h" => "c",
+        "cs" => "csharp",
         "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" | "c++" => "cpp",
         "css" | "scss" => "css",
         "html" | "htm" => "html",
@@ -69,9 +120,12 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
         "lua" => "lua",
         "mk" => "make",
         "php" | "php3" | "php4" | "php5" | "phtml" => "php",
+        "proto" => "proto",
         "scala" | "sc" | "sbt" => "scala",
         "sql" => "sql",
         "svelte" => "svelte",
+        "swift" => "swift",
+        "cmake" => "cmake",
         "zig" => "zig",
         _ => return None,
     })
@@ -158,6 +212,7 @@ fn lang_from_mode(name: &str) -> Option<&'static str> {
         "go" => "go",
         "c" => "c",
         "c++" | "cpp" => "cpp",
+        "csharp" | "c#" | "cs" => "csharp",
         "javascript" | "js" | "js2" | "node" => "javascript",
         "typescript" | "ts" => "typescript",
         "tsx" => "tsx",
@@ -171,10 +226,13 @@ fn lang_from_mode(name: &str) -> Option<&'static str> {
         "java" => "java",
         "lua" => "lua",
         "php" => "php",
+        "proto" | "protobuf" => "proto",
         "scala" => "scala",
         "sql" => "sql",
         "kotlin" => "kotlin",
         "elixir" => "elixir",
+        "swift" => "swift",
+        "cmake" => "cmake",
         "zig" => "zig",
         "makefile" | "make" | "gnumakefile" => "make",
         _ => return None,
@@ -221,6 +279,7 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
     if total_lines > MAX_HIGHLIGHT_LINES {
         return FileHighlights::new();
     }
+    register_extra_highlight_queries();
     let theme = cx.theme();
     let hl_theme = &theme.highlight_theme;
     let mut highlighter = SyntaxHighlighter::new(lang);
@@ -390,6 +449,7 @@ mod tests {
     #[test]
     fn special_filenames_and_shebang_fallback() {
         assert_eq!(language_for_path("Makefile"), Some("make"));
+        assert_eq!(language_for_path("CMakeLists.txt"), Some("cmake"));
         assert_eq!(language_for_path("config/.bashrc"), Some("bash"));
         assert_eq!(language_for_path("Vagrantfile"), Some("ruby"));
         // Extensionless, no modeline → shebang.
@@ -397,5 +457,34 @@ mod tests {
             detect_language("bin/runme", "#!/bin/sh\necho hi\n", ""),
             Some("bash")
         );
+    }
+
+    #[test]
+    fn extra_language_paths_and_modelines() {
+        assert_eq!(language_for_path("Sources/App.swift"), Some("swift"));
+        assert_eq!(language_for_path("Program.cs"), Some("csharp"));
+        assert_eq!(language_for_path("schema/service.proto"), Some("proto"));
+        assert_eq!(language_for_path("cmake/toolchain.cmake"), Some("cmake"));
+        assert_eq!(detect_language("x", "// -*- mode: csharp -*-\n", ""), Some("csharp"));
+        assert_eq!(detect_language("x", "// vim: ft=proto\n", ""), Some("proto"));
+    }
+
+    #[test]
+    fn extra_highlight_queries_produce_styles() {
+        register_extra_highlight_queries();
+        for (lang, sample) in [
+            ("swift", "let greeting = \"hello\"\n"),
+            ("csharp", "public class Program { static void Main() {} }\n"),
+            ("proto", "syntax = \"proto3\";\nmessage User { string name = 1; }\n"),
+            ("cmake", "cmake_minimum_required(VERSION 3.20)\nproject(Magritte)\n"),
+        ] {
+            let mut highlighter = SyntaxHighlighter::new(lang);
+            highlighter.update(None, &Rope::from(sample), None);
+            let styles = highlighter.styles(&(0..sample.len()), &gpui_component::highlighter::HighlightTheme::default_dark());
+            assert!(
+                styles.iter().any(|(_, style)| style.color.is_some()),
+                "{lang} should produce at least one colored span"
+            );
+        }
     }
 }
