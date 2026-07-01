@@ -62,6 +62,17 @@ fn register_extra_highlight_queries() {
             ),
         );
         registry.register(
+            "kotlin",
+            &LanguageConfig::new(
+                "kotlin",
+                tree_sitter_kotlin_sg::LANGUAGE.into(),
+                vec![],
+                include_str!("highlight_queries/kotlin.scm"),
+                "",
+                "",
+            ),
+        );
+        registry.register(
             "cmake",
             &LanguageConfig::new(
                 "cmake",
@@ -477,14 +488,40 @@ mod tests {
             ("csharp", "public class Program { static void Main() {} }\n"),
             ("proto", "syntax = \"proto3\";\nmessage User { string name = 1; }\n"),
             ("cmake", "cmake_minimum_required(VERSION 3.20)\nproject(Magritte)\n"),
+            ("kotlin", "data class User(val name: String)\nfun main() = println(\"hello\")\n"),
+            ("kotlin", "    val greeting = \"hello\"\n    println(greeting)\n}\n\nsealed interface AddedState\nobject Added : AddedState\n"),
         ] {
             let mut highlighter = SyntaxHighlighter::new(lang);
             highlighter.update(None, &Rope::from(sample), None);
             let styles = highlighter.styles(&(0..sample.len()), &gpui_component::highlighter::HighlightTheme::default_dark());
             assert!(
                 styles.iter().any(|(_, style)| style.color.is_some()),
-                "{lang} should produce at least one colored span"
+                "{lang} should produce at least one colored span (highlighter={}, spans={})",
+                highlighter.language(),
+                styles.len()
             );
         }
+    }
+
+    #[test]
+    fn kotlin_diff_fragment_added_lines_are_highlighted() {
+        register_extra_highlight_queries();
+        let block = "    val greeting = \"hello\"\n    println(greeting)\n}\n\nsealed interface AddedState\nobject Added : AddedState\n";
+        let line_start = block.find("sealed interface").unwrap();
+        let line_end = line_start + block[line_start..].lines().next().unwrap().len();
+        let mut highlighter = SyntaxHighlighter::new("kotlin");
+        highlighter.update(None, &Rope::from(block), None);
+        assert_eq!(highlighter.language().as_ref(), "kotlin");
+        let spans = line_spans(
+            &highlighter,
+            block,
+            &(line_start..line_end),
+            &gpui_component::highlighter::HighlightTheme::default_light(),
+            gpui::black(),
+        );
+        assert!(
+            spans.iter().any(|(_, color)| *color != gpui::black()),
+            "added Kotlin line should have at least one non-default colored span: {spans:?}"
+        );
     }
 }

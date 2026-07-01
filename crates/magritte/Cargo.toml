@@ -46,6 +46,7 @@ toml_edit = "0.22"
 # highlight queries at the pinned revision. Versions match Cargo.lock.
 tree-sitter-c-sharp = "0.23.5"
 tree-sitter-cmake = "0.7.1"
+tree-sitter-kotlin-sg = "0.4.1"
 tree-sitter-proto = "0.2.0"
 tree-sitter-swift = "0.7.3"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.

@@ -3682,6 +3682,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "tree-sitter-c-sharp",
  "tree-sitter-cmake",
+ "tree-sitter-kotlin-sg",
  "tree-sitter-proto",
  "tree-sitter-swift",
 ]
