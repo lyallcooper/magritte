@@ -233,7 +233,10 @@ impl StatusView {
             .filter(|s| !self.expanded.contains(&FoldKey::Section(**s)))
             .map(|s| s.config_id().to_string())
             .collect();
-        config::save_fold_state(&dir.join("folds.toml"), &config::FoldState { collapsed });
+        state::save_toml(
+            &state::scoped_path(dir, state::FOLDS_FILE),
+            &state::FoldState { collapsed },
+        );
     }
 
     pub(crate) fn clamp_selection(&mut self) {

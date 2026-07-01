@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, px, size, uniform_list, AnyElement, AnyWindowHandle, App, AppContext, Bounds,
+    actions, div, point, px, size, uniform_list, AnyElement, AnyWindowHandle, App, AppContext, Bounds,
     ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement,
     KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, MouseDownEvent, SharedString, Styled,
     UniformListScrollHandle, Window, WindowBounds, WindowOptions,
@@ -44,6 +44,7 @@ mod navigation;
 mod picker;
 mod render;
 mod settings;
+mod state;
 mod status_label;
 mod targets;
 mod theme;
@@ -1267,6 +1268,8 @@ struct StatusView {
     /// Bumped each time a prefix is entered, so a stale timeout (a newer prefix,
     /// or a resolved one) is ignored.
     prefix_gen: Generation,
+    /// Debounces saving the window frame while the user drags/resizes it.
+    window_bounds_save_gen: Generation,
     /// Scopes the timer that clears the commit editor's discard-prompt flash, so
     /// a later flash isn't cleared early by an earlier one's timer.
     confirm_flash_gen: Generation,
@@ -1301,6 +1304,8 @@ struct StatusView {
     _appearance_sub: Option<Subscription>,
     /// Kept alive so the window-activation observer (focus refresh) stays active.
     _activation_sub: Option<Subscription>,
+    /// Kept alive so the window-frame persistence observer stays active.
+    _window_bounds_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
     /// Saved per-transient argument defaults (magit's `transient-save`), global scope.
@@ -1371,9 +1376,9 @@ impl StatusView {
             .as_ref()
             .and_then(|r| r.git_common_dir())
             .map(|d| config::repo_dir(&d));
-        // UI state local to this checkout (just fold state) lives in the
-        // *per-worktree* git dir instead — `.git/magritte` for the main worktree
-        // (so it's unchanged), `.git/worktrees/<name>/magritte` for a linked one.
+        // UI state local to this checkout (folds, window placement) lives in the
+        // *per-worktree* git dir instead — `.git/magritte` for the main worktree,
+        // `.git/worktrees/<name>/magritte` for a linked one.
         let worktree_scope_dir = repo
             .as_ref()
             .and_then(|r| r.git_dir().ok())
@@ -1425,7 +1430,8 @@ impl StatusView {
             .map(|s| FoldKey::Section(*s))
             .collect();
         if let Some(dir) = &worktree_scope_dir {
-            for id in config::load_fold_state(&dir.join("folds.toml")).collapsed {
+            let folds = state::scoped_path(dir, state::FOLDS_FILE);
+            for id in state::load_toml_or_default::<state::FoldState>(&folds).collapsed {
                 if let Some(section) = SectionId::from_config_id(&id) {
                     expanded.remove(&FoldKey::Section(section));
                 }
@@ -1466,6 +1472,7 @@ impl StatusView {
             last_refresh: None,
             pending_prefix: None,
             prefix_gen: Generation::default(),
+            window_bounds_save_gen: Generation::default(),
             confirm_flash_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,
@@ -1477,6 +1484,7 @@ impl StatusView {
             _config_watcher: None,
             _appearance_sub: None,
             _activation_sub: None,
+            _window_bounds_sub: None,
             usage: config::load_usage(),
             transient_arguments: config::load_transient_arguments(),
             repo_transient_arguments,
@@ -1648,6 +1656,23 @@ impl StatusView {
                 view.refresh(cx);
             }
         }));
+
+        self._window_bounds_sub = Some(cx.observe_window_bounds(window, |view, window, cx| {
+            let gen = view.window_bounds_save_gen.bump();
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                this.update_in(cx, |this, window, _cx| {
+                    if this.window_bounds_save_gen.is_current(gen) {
+                        save_window_state(this.worktree_scope_dir.as_deref(), window, _cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }));
+        save_window_state(self.worktree_scope_dir.as_deref(), window, cx);
 
         // Config file: watch its directory (so atomic save-via-rename, which
         // swaps the inode, still fires), forward matching events over a channel,
@@ -5453,12 +5478,16 @@ fn repo_window_key(start_dir: Option<&Path>) -> PathBuf {
         .unwrap_or(root)
 }
 
-fn status_window_options(cx: &mut App) -> WindowOptions {
-    // A reasonable default window instead of filling the whole screen;
-    // centered on the active display. The user can resize freely.
-    let bounds = Bounds::centered(None, size(px(1000.0), px(720.0)), cx);
+fn status_window_options(worktree_scope_dir: Option<&Path>, cx: &mut App) -> WindowOptions {
+    // Restore the repo/worktree frame first, then the global default. On first
+    // launch, avoid the stiff "exactly centered on the primary display" feel:
+    // place a reasonably sized window near the top-left of the usable display
+    // area, and let later windows cascade from the active Magritte window.
+    let bounds = load_window_state(worktree_scope_dir)
+        .and_then(|state| window_state_to_bounds(state, cx))
+        .unwrap_or_else(|| WindowBounds::Windowed(default_status_window_bounds(cx)));
     WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_bounds: Some(bounds),
         // Transparent system bar so our custom `TitleBar` draws the chrome
         // (and the traffic lights sit where the component expects them).
         titlebar: Some(gpui_component::TitleBar::title_bar_options()),
@@ -5466,10 +5495,155 @@ fn status_window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
+fn load_window_state(worktree_scope_dir: Option<&Path>) -> Option<state::WindowState> {
+    worktree_scope_dir
+        .map(|dir| state::scoped_path(dir, state::WINDOW_FILE))
+        .and_then(|path| state::load_toml_opt(&path))
+        .or_else(|| {
+            state::global_path(state::WINDOW_FILE)
+                .as_deref()
+                .and_then(state::load_toml_opt)
+        })
+}
+
+fn save_window_state(worktree_scope_dir: Option<&Path>, window: &mut Window, cx: &mut App) {
+    let state = window_state_from_window(window, cx);
+    if let Some(dir) = worktree_scope_dir {
+        state::save_toml(&state::scoped_path(dir, state::WINDOW_FILE), &state);
+    }
+    if let Some(path) = state::global_path(state::WINDOW_FILE) {
+        state::save_toml(&path, &state);
+    }
+}
+
+fn default_status_window_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
+    if let Some(bounds) = cx
+        .active_window()
+        .and_then(|window| window.update(cx, |_, window, _| window.window_bounds().get_bounds()).ok())
+    {
+        return fit_window_bounds_on_display(
+            Bounds::new(bounds.origin + point(px(25.0), px(25.0)), bounds.size),
+            None,
+            cx,
+        );
+    }
+
+    let display = primary_visible_bounds(cx);
+    fit_window_bounds_to_visible_bounds(
+        Bounds::new(
+            display.origin + point(px(80.0), px(60.0)),
+            size(px(1000.0), px(720.0)),
+        ),
+        display,
+    )
+}
+
+fn fit_window_bounds_on_display(
+    bounds: Bounds<gpui::Pixels>,
+    display_uuid: Option<&str>,
+    cx: &mut App,
+) -> Bounds<gpui::Pixels> {
+    let displays = cx.displays();
+    let display = display_uuid
+        .and_then(|uuid| {
+            displays
+                .iter()
+                .find(|display| display.uuid().ok().is_some_and(|id| id.to_string() == uuid))
+                .cloned()
+        })
+        .or_else(|| {
+            displays
+                .iter()
+                .find(|display| display.visible_bounds().intersects(&bounds))
+                .cloned()
+        })
+        .map(|display| display.visible_bounds())
+        .unwrap_or_else(|| primary_visible_bounds(cx));
+    fit_window_bounds_to_visible_bounds(bounds, display)
+}
+
+fn fit_window_bounds_to_visible_bounds(
+    bounds: Bounds<gpui::Pixels>,
+    display: Bounds<gpui::Pixels>,
+) -> Bounds<gpui::Pixels> {
+    let width = bounds.size.width.max(px(640.0)).min(display.size.width);
+    let height = bounds.size.height.max(px(420.0)).min(display.size.height);
+    let max_x = display.origin.x + display.size.width - width;
+    let max_y = display.origin.y + display.size.height - height;
+    Bounds::new(
+        point(
+            bounds.origin.x.max(display.origin.x).min(max_x),
+            bounds.origin.y.max(display.origin.y).min(max_y),
+        ),
+        size(width, height),
+    )
+}
+
+fn primary_visible_bounds(cx: &App) -> Bounds<gpui::Pixels> {
+    cx.primary_display()
+        .map(|display| display.visible_bounds())
+        .unwrap_or_else(|| Bounds::new(point(px(0.0), px(0.0)), size(px(1280.0), px(800.0))))
+}
+
+fn window_state_to_bounds(state: state::WindowState, cx: &mut App) -> Option<WindowBounds> {
+    if !(state.x.is_finite()
+        && state.y.is_finite()
+        && state.width.is_finite()
+        && state.height.is_finite())
+        || state.width <= 0.0
+        || state.height <= 0.0
+    {
+        return None;
+    }
+    let bounds = Bounds::new(
+        point(px(state.x), px(state.y)),
+        size(px(state.width), px(state.height)),
+    );
+    let bounds = fit_window_bounds_on_display(bounds, state.display_uuid.as_deref(), cx);
+    Some(match state.mode {
+        state::WindowMode::Windowed => WindowBounds::Windowed(bounds),
+        state::WindowMode::Maximized => WindowBounds::Maximized(bounds),
+        state::WindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+    })
+}
+
+fn window_state_from_window(window: &mut Window, cx: &mut App) -> state::WindowState {
+    let display_uuid = window
+        .display(cx)
+        .and_then(|display| display.uuid().ok())
+        .map(|uuid| uuid.to_string());
+    let mode = match window.window_bounds() {
+        WindowBounds::Windowed(_) => state::WindowMode::Windowed,
+        WindowBounds::Maximized(_) => state::WindowMode::Maximized,
+        WindowBounds::Fullscreen(_) => state::WindowMode::Fullscreen,
+    };
+    let bounds = window.window_bounds().get_bounds();
+    state::WindowState {
+        mode,
+        display_uuid,
+        x: bounds.origin.x.as_f32(),
+        y: bounds.origin.y.as_f32(),
+        width: bounds.size.width.as_f32(),
+        height: bounds.size.height.as_f32(),
+    }
+}
+
+fn discover_worktree_scope_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
+    let root = start_dir
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    Repo::discover(&root)
+        .ok()
+        .and_then(|repo| repo.git_dir().ok())
+        .map(|dir| config::repo_dir(&dir))
+}
+
 fn open_repo_window(start_dir: Option<PathBuf>, cx: &mut App) -> Option<AnyWindowHandle> {
     let (cfg, cfg_warning) = config::load_reporting();
     theme::apply_appearance(&cfg, cx);
-    let options = status_window_options(cx);
+    let worktree_scope_dir = discover_worktree_scope_dir(start_dir.as_deref());
+    let options = status_window_options(worktree_scope_dir.as_deref(), cx);
     let window = cx
         .open_window(options, |window, cx| {
             let view = cx.new(|cx| {
