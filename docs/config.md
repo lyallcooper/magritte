@@ -61,6 +61,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
+| `keymap_preset` | `"evil-collection"` / `"vanilla"` | `evil-collection` | Built-in keymap family to layer before `[keymap]` overrides — see *Keymap*. |
 | `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 | `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
 
@@ -147,11 +148,15 @@ interval_minutes = 30  # default 30; minimum 1
 
 ## Keymap
 
-The default keymap mirrors evil-collection's magit. A `[keymap]` table overrides
-it: each entry maps a **keystroke** to a **command id**, or to the sentinel
+The default keymap mirrors evil-collection-magit. Set `keymap_preset = "vanilla"`
+for a vanilla Magit/Emacs base (`P` push, `X` reset, `z` stash, `n`/`p` section
+motion, `:` run command, etc.). A `[keymap]` table then overrides the selected
+preset: each entry maps a **keystroke** to a **command id**, or to the sentinel
 `"unbound"` to remove a default binding.
 
 ```toml
+keymap_preset = "evil-collection"
+
 # [keymap] must come after the scalar keys above (TOML table rule).
 [keymap]
 "K" = "branch-delete"   # bind K to delete-branch
@@ -184,8 +189,10 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
   | arrows, `ctrl-n` / `ctrl-p` | move the cursor (alongside `j`/`k`) |
   | `space` | page down |
   | `ctrl-d` / `ctrl-u` | half-page down / up |
-  | `ctrl-j` / `ctrl-k` / `]` / `[` | previous / next section |
-  | `V` | visual selection (alongside `v`) |
+  | `ctrl-j` / `ctrl-k` / `alt-j` / `alt-k` / `]` / `[` | previous / next section (evil preset) |
+  | `n` / `p` / `alt-n` / `alt-p` | next / previous section (vanilla preset) |
+  | `V` | visual selection (alongside `v`, evil preset) |
+  | `|` | run command (evil preset alias for Magit's `:`) |
   | `ctrl-x ctrl-c` | quit |
 
   (`ctrl-f` / `ctrl-b` page down / up too — they're the *primary* keys for
@@ -195,10 +202,12 @@ it: each entry maps a **keystroke** to a **command id**, or to the sentinel
     popup (Emacs keyboard-quit).
   - `Tab` folds/unfolds. (You can bind another key to the `fold` command, but
     `Tab` itself stays fold.)
-  - The accelerators `?` (help), `:` (palette), `!` (run a command), `$`
-    (command log), and `Cmd+C` (yank) always reach those, regardless of remaps.
+  - `?` opens help, unbound `:` opens the command palette, `Alt-x` opens the
+    command palette, and `Cmd+C` yanks regardless of remaps. Bound symbols such
+    as `!`, `|`, `$`, and vanilla `:` still go through the effective keymap.
   - On a commit or stash row, the act-at-point verbs (`Return`, `y`, and for a
-    stash `a` apply / `A` pop / `x` drop) act on the item at point.
+    stash `a` apply / `A` pop / `x` drop) act on the item at point. Commit-row
+    revert keys follow the preset: evil `_`/`-`, vanilla `V`/`v`.
 
   Keys typed inside a transient, picker, or the commit editor are consumed by
   that mode, not the keymap.
@@ -212,12 +221,15 @@ are reachable today only through their prefix's transient or the `:` palette.
 |----|-------------|---------|
 | `commit` | `c` | Commit (transient) |
 | `branch` | `b` | Branch (transient) |
+| `tag` | `t` | Tag (transient) |
+| `remote` | `M` | Remote (transient) |
 | `stash` | `Z` | Stash (transient) |
 | `reset` | `O` | Reset (transient) |
 | `rebase` | `r` | Rebase (transient) |
 | `merge` | `m` | Merge (transient) |
 | `ignore` | `i` | Ignore (transient) |
 | `log` | `l` | Log (transient) |
+| `diff` | `d` | Diff (transient) |
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |
@@ -265,9 +277,9 @@ are reachable today only through their prefix's transient or the `:` palette.
 
 A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
 `transient-append-suffix`. The section id is the transient's command id
-(`commit`, `branch`, `stash`, `reset`, `rebase`, `merge`, `ignore`, `log`,
-`push`, `pull`, `fetch`); each entry maps a suffix key to either an **action**
-(a command to run) or a **switch** (a toggleable git flag).
+(`commit`, `branch`, `tag`, `remote`, `stash`, `reset`, `rebase`, `merge`,
+`ignore`, `log`, `diff`, `push`, `pull`, `fetch`); each entry maps a suffix key
+to either an **action** (a command to run) or a **switch** (a toggleable git flag).
 
 ```toml
 [transient.branch]
