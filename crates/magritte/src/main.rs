@@ -2062,12 +2062,7 @@ impl StatusView {
                 stamp,
                 &[SectionId::Unpushed, SectionId::Unpulled],
                 cx,
-                |repo| {
-                    (
-                        repo.unpushed().unwrap_or_default(),
-                        repo.unpulled().unwrap_or_default(),
-                    )
-                },
+                |repo| repo.upstream_divergence().unwrap_or_default(),
                 |this, (up, down)| {
                     this.status_sections.unpushed = up;
                     this.status_sections.unpulled = down;
@@ -2188,12 +2183,7 @@ impl StatusView {
                         stamp,
                         &[SectionId::UnpushedPushremote, SectionId::UnpulledPushremote],
                         cx,
-                        |repo| {
-                            (
-                                repo.unpushed_to_push().unwrap_or_default(),
-                                repo.unpulled_from_push().unwrap_or_default(),
-                            )
-                        },
+                        |repo| repo.push_divergence().unwrap_or_default(),
                         |this, (up, down)| {
                             this.status_sections.unpushed_pushremote = up;
                             this.status_sections.unpulled_pushremote = down;

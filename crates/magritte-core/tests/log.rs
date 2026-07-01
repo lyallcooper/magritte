@@ -68,6 +68,38 @@ fn log_with_grep_filters_by_message() {
 }
 
 #[test]
+fn upstream_divergence_splits_unpushed_and_unpulled() {
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+
+    t.git(["checkout", "-b", "upstream"]);
+    t.write("f", "upstream\n");
+    t.commit_all("upstream-only");
+    let upstream = t.git(["rev-parse", "HEAD"]);
+
+    t.git(["checkout", "main"]);
+    t.write("f", "local\n");
+    t.commit_all("local-only");
+    t.git(["remote", "add", "origin", "https://example.com/origin.git"]);
+    t.git(["update-ref", "refs/remotes/origin/main", &upstream]);
+    t.git(["config", "branch.main.remote", "origin"]);
+    t.git(["config", "branch.main.merge", "refs/heads/main"]);
+
+    let repo = Repo::discover(t.path()).unwrap();
+    let (unpushed, unpulled) = repo.upstream_divergence().unwrap();
+
+    assert_eq!(
+        unpushed.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(),
+        ["local-only"]
+    );
+    assert_eq!(
+        unpulled.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(),
+        ["upstream-only"]
+    );
+}
+
+#[test]
 fn authors_are_unique() {
     let t = TestRepo::new();
     t.write("f", "1\n");

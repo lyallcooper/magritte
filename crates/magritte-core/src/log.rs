@@ -10,6 +10,7 @@ use crate::repo::Repo;
 /// The fields every log listing requests, unit-separated; records are
 /// NUL-terminated (`-z`) so subjects can't confuse the parse.
 const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%s%x1f%D%x1f%an%x1f%ar";
+const LEFT_RIGHT_LOG_FORMAT: &str = "--format=%m%x1f%H%x1f%h%x1f%s%x1f%D%x1f%an%x1f%ar";
 
 /// One commit in a log listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,12 @@ impl Repo {
         self.log_with(&["HEAD..@{upstream}".to_string()])
     }
 
+    /// Commits unique to `HEAD` and to its upstream, in one symmetric-diff walk.
+    /// Left (`HEAD` only) is unpushed; right (`@{upstream}` only) is unpulled.
+    pub fn upstream_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
+        self.divergence("HEAD", "@{upstream}")
+    }
+
     /// Commits on `HEAD` not yet on the push target (`@{push}..HEAD`) — the
     /// triangular-workflow counterpart of [`unpushed`](Self::unpushed). `Err`
     /// when there's no distinct push target.
@@ -67,6 +74,24 @@ impl Repo {
     /// when there's no distinct push target.
     pub fn unpulled_from_push(&self) -> Result<Vec<LogEntry>> {
         self.log_with(&["HEAD..@{push}".to_string()])
+    }
+
+    /// Commits unique to `HEAD` and to its push target, in one symmetric-diff
+    /// walk. Left (`HEAD` only) is unpushed-to-push; right (`@{push}` only) is
+    /// unpulled-from-push.
+    pub fn push_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
+        self.divergence("HEAD", "@{push}")
+    }
+
+    fn divergence(&self, left: &str, right: &str) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
+        let out = self.run([
+            "log",
+            "--left-right",
+            LEFT_RIGHT_LOG_FORMAT,
+            "-z",
+            &format!("{left}...{right}"),
+        ])?;
+        Ok(parse_left_right_log(&out.stdout))
     }
 
     /// `git log -g` (the reflog), newest first. The reflog selector
@@ -125,4 +150,23 @@ fn parse_log_record(record: &str) -> Option<LogEntry> {
         author: fields.next().unwrap_or("").to_string(),
         date: fields.next().unwrap_or("").to_string(),
     })
+}
+
+fn parse_left_right_log(stdout: &[u8]) -> (Vec<LogEntry>, Vec<LogEntry>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for record in String::from_utf8_lossy(stdout).split('\0').filter(|r| !r.is_empty()) {
+        let Some((side, rest)) = record.split_once('\u{1f}') else {
+            continue;
+        };
+        let Some(entry) = parse_log_record(rest) else {
+            continue;
+        };
+        match side {
+            "<" => left.push(entry),
+            ">" => right.push(entry),
+            _ => {}
+        }
+    }
+    (left, right)
 }
