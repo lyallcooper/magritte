@@ -755,12 +755,16 @@ fn set_setting(
     omit: bool,
     mut value: toml_edit::Value,
 ) {
-    if omit {
-        doc.as_table_mut().remove(key);
+    let old_present = doc.as_table().contains_key(key);
+    let old_decor = doc
+        .get(key)
+        .and_then(|item| item.as_value())
+        .map(|value| value.decor().clone());
+    if omit && !old_present {
         return;
     }
-    if let Some(old) = doc.get(key).and_then(|item| item.as_value()) {
-        *value.decor_mut() = old.decor().clone();
+    if let Some(decor) = old_decor {
+        *value.decor_mut() = decor;
     }
     doc[key] = toml_edit::Item::Value(value);
 }
@@ -813,6 +817,8 @@ mod tests {
         ));
         let original = r#"# my config
 font = "Mono" # keep this comment
+refresh_on_focus = true # explicit default
+show_tags = false # explicit default false
 
 [keymap]
 "g x" = "user.sync"
@@ -832,20 +838,24 @@ run = "git fetch && git push"
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("# my config"));
         assert!(saved.contains("font = \"JetBrains Mono\" # keep this comment"));
+        assert!(saved.contains("refresh_on_focus = true # explicit default"));
+        assert!(saved.contains("show_tags = true # explicit default false"));
         assert!(saved.contains("[keymap]\n\"g x\" = \"user.sync\""));
         assert!(saved.contains("[[command]]\nid = \"user.sync\""));
-        assert!(saved.contains("show_tags = true"));
+        assert!(!saved.contains("commit_body_wrap"));
         assert!(!saved.contains("command = []"));
         let saved_value: toml::Value = toml::from_str(&saved).unwrap();
         assert_eq!(saved_value.get("show_tags").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(saved_value.get("refresh_on_focus").and_then(|v| v.as_bool()), Some(true));
         assert!(saved_value["command"][0].get("show_tags").is_none());
 
         cfg.show_tags = false;
         cfg.font.clear();
         save_settings_at(&path, &cfg).unwrap();
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(!saved.contains("show_tags"));
-        assert!(!saved.contains("font ="));
+        assert!(saved.contains("show_tags = false # explicit default false"));
+        assert!(saved.contains("font = \"\" # keep this comment"));
+        assert!(saved.contains("refresh_on_focus = true # explicit default"));
         assert!(saved.contains("[[command]]\nid = \"user.sync\""));
 
         let _ = std::fs::remove_file(&path);
