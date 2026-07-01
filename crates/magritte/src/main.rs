@@ -6007,7 +6007,7 @@ fn main() {
                 cx.spawn(async move |cx| {
                     while let Ok(path) = rx.recv().await {
                         let windows = windows_for_ipc.clone();
-                        let _ = cx.update(|cx| {
+                        cx.update(|cx| {
                             open_or_focus_repo(Some(path), &windows, cx);
                         });
                     }

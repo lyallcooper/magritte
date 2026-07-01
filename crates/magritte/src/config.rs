@@ -17,17 +17,12 @@ pub const DEFAULT_DARK_THEME: &str = "Selenized Dark";
 /// Built-in keymap family. `EvilCollection` is the default because Magritte is
 /// keyboard-first and already uses vim-style navigation; `Vanilla` keeps the
 /// Magit command keys for users coming from Emacs without evil-collection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeymapPreset {
+    #[default]
     EvilCollection,
     Vanilla,
-}
-
-impl Default for KeymapPreset {
-    fn default() -> Self {
-        KeymapPreset::EvilCollection
-    }
 }
 
 impl KeymapPreset {
