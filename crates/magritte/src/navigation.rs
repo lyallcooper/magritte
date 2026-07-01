@@ -82,6 +82,7 @@ impl StatusView {
         match self.screen {
             Screen::Log(_) => self.log_move(delta, cx),
             Screen::Commit { .. } => self.commit_view_move(delta, cx),
+            Screen::Diff { .. } => self.diff_view_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
             _ => {
                 self.move_selection(delta);
@@ -100,6 +101,7 @@ impl StatusView {
         match self.screen {
             Screen::Log(_) => self.log_move(delta, cx),
             Screen::Commit { .. } => self.commit_view_move(delta, cx),
+            Screen::Diff { .. } => self.diff_view_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
             _ => {
                 self.page_selection(delta);
@@ -113,7 +115,7 @@ impl StatusView {
     /// Jump to the first/last row of the active view.
     pub(crate) fn nav_edge(&mut self, to_bottom: bool, cx: &mut Context<Self>) {
         match self.screen {
-            Screen::Log(_) | Screen::Commit { .. } | Screen::RebaseTodo(_) => self.nav_line(
+            Screen::Log(_) | Screen::Commit { .. } | Screen::Diff { .. } | Screen::RebaseTodo(_) => self.nav_line(
                 if to_bottom {
                     isize::MAX / 2
                 } else {

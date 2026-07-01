@@ -57,6 +57,18 @@ pub enum Command {
     StashPop,
     /// Drop a stash (prompts for which).
     StashDrop,
+    /// Diff DWIM target: context-sensitive, usually unstaged/staged/commit.
+    DiffDwim,
+    /// Diff an arbitrary revision or range.
+    DiffRange,
+    /// Diff unstaged worktree changes (`git diff`).
+    DiffUnstaged,
+    /// Diff staged/index changes (`git diff --cached`).
+    DiffStaged,
+    /// Diff the whole working tree against a revision (`git diff HEAD`).
+    DiffWorktree,
+    /// Show a single commit (message + diff).
+    DiffCommit,
     /// Log the current branch (HEAD).
     LogCurrent,
     /// Log all branches (`--all`).
@@ -579,6 +591,117 @@ pub fn log_transient() -> Transient {
                         key: "r",
                         description: "reflog".to_string(),
                         command: Command::LogReflog,
+                    }),
+                ],
+            },
+        ],
+    }
+}
+
+pub fn diff_transient() -> Transient {
+    Transient {
+        title: plain_title("Diff"),
+        groups: vec![
+            Group {
+                title: plain_title("Limit arguments"),
+                suffixes: vec![
+                    Suffix::Option(Opt {
+                        key: "--",
+                        arg: "",
+                        description: "Limit to files",
+                        completion: Completion::Files,
+                        pathspec: true,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-i",
+                        arg: "--ignore-submodules=",
+                        description: "Ignore submodules",
+                        completion: Completion::OneOf(&["untracked", "dirty", "all"]),
+                        pathspec: false,
+                    }),
+                    Suffix::Switch(Switch::new("-b", "--ignore-space-change", "Ignore whitespace changes")),
+                    Suffix::Switch(Switch::new("-w", "--ignore-all-space", "Ignore all whitespace")),
+                    Suffix::Switch(Switch::new("-D", "--irreversible-delete", "Omit preimage for deletes")),
+                ],
+            },
+            Group {
+                title: plain_title("Context arguments"),
+                suffixes: vec![
+                    Suffix::Option(Opt {
+                        key: "-U",
+                        arg: "-U",
+                        description: "Context lines",
+                        completion: Completion::None,
+                        pathspec: false,
+                    }),
+                    Suffix::Switch(Switch::new("-W", "--function-context", "Show surrounding functions")),
+                ],
+            },
+            Group {
+                title: plain_title("Tune arguments"),
+                suffixes: vec![
+                    Suffix::Option(Opt {
+                        key: "-A",
+                        arg: "--diff-algorithm=",
+                        description: "Diff algorithm",
+                        completion: Completion::OneOf(&[
+                            "default",
+                            "minimal",
+                            "patience",
+                            "histogram",
+                        ]),
+                        pathspec: false,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-X",
+                        arg: "--diff-merges=",
+                        description: "Diff merges",
+                        completion: Completion::OneOf(&[
+                            "off",
+                            "first-parent",
+                            "combined",
+                            "dense-combined",
+                        ]),
+                        pathspec: false,
+                    }),
+                    Suffix::Switch(Switch::new("-M", "-M", "Detect renames")),
+                    Suffix::Switch(Switch::new("-C", "-C", "Detect copies")),
+                    Suffix::Switch(Switch::new("-R", "-R", "Reverse sides")),
+                    Suffix::Switch(Switch::new("-x", "--no-ext-diff", "Disallow external diff drivers")),
+                ],
+            },
+            Group {
+                title: plain_title("Actions"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "d",
+                        description: "dwim".to_string(),
+                        command: Command::DiffDwim,
+                    }),
+                    Suffix::Action(Action {
+                        key: "r",
+                        description: "range".to_string(),
+                        command: Command::DiffRange,
+                    }),
+                    Suffix::Action(Action {
+                        key: "u",
+                        description: "unstaged".to_string(),
+                        command: Command::DiffUnstaged,
+                    }),
+                    Suffix::Action(Action {
+                        key: "s",
+                        description: "staged".to_string(),
+                        command: Command::DiffStaged,
+                    }),
+                    Suffix::Action(Action {
+                        key: "w",
+                        description: "worktree".to_string(),
+                        command: Command::DiffWorktree,
+                    }),
+                    Suffix::Action(Action {
+                        key: "c",
+                        description: "show commit".to_string(),
+                        command: Command::DiffCommit,
                     }),
                 ],
             },

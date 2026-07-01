@@ -269,25 +269,67 @@ impl StatusView {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
 
         // Magit's layout, derived from content rather than hand-authored: an
-        // *argument* group (switches/options) is a full-width band, and bands
-        // stack vertically; the *command* groups (actions/`?`-menu info) sit
-        // side by side in a wrapping row beneath them. A tall argument band fans
-        // its rows into sub-columns (capped ~BAND_CAP each) so it stays compact.
+        // *argument* group (switches/options) is a full-width band, and multiple
+        // argument groups pack side-by-side; the *command* groups (actions/`?`
+        // menu info) sit side by side in a wrapping row beneath them. Tall
+        // transients lower the per-column row cap so groups fan into more
+        // columns instead of consuming most of the screen.
         // This reproduces magit's commit transient (Arguments band over a row of
         // Create/Edit/… columns), the log transient (Arguments band over the Log
         // command row), and the `?` dispatch (all command groups → one packed
         // row), without a per-transient layout spec.
-        const BAND_CAP: usize = 7;
         let has_args = |g: &&Group| {
             g.suffixes
                 .iter()
                 .any(|s| matches!(s, Suffix::Switch(_) | Suffix::Option(_)))
         };
+        let arg_groups = def.groups.iter().filter(has_args).collect::<Vec<_>>();
+        let command_groups = def.groups.iter().filter(|g| !has_args(g)).collect::<Vec<_>>();
+        let group_rows = |group: &Group, cap: usize| {
+            let n = group.suffixes.len();
+            let cols = n.div_ceil(cap).max(1);
+            n.div_ceil(cols).max(1)
+        };
+        let estimate_height = |cap: usize| {
+            let arg_height = if arg_groups.len() <= 1 {
+                arg_groups.first().map_or(0, |g| group_rows(g, cap))
+            } else {
+                arg_groups.iter().map(|g| group_rows(g, cap)).max().unwrap_or(0)
+                    + arg_groups.len().saturating_sub(1)
+            };
+            let command_height = command_groups
+                .iter()
+                .map(|g| group_rows(g, cap))
+                .max()
+                .unwrap_or(0);
+            arg_height + command_height
+        };
+        let band_cap = if estimate_height(7) < 10 {
+            7
+        } else if estimate_height(4) < 14 {
+            4
+        } else {
+            3
+        };
 
         let mut body = div().flex().flex_col().items_start().gap_3();
-        for group in def.groups.iter().filter(has_args) {
-            let k = group.suffixes.len().div_ceil(BAND_CAP).max(1);
+        if arg_groups.len() == 1 {
+            let group = arg_groups[0];
+            let k = group.suffixes.len().div_ceil(band_cap).max(1);
             body = body.child(self.render_group(group, k, state, pending_dash, view));
+        } else if !arg_groups.is_empty() {
+            let mut arg_row = div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_start()
+                .gap_x_8()
+                .gap_y_3();
+            for group in arg_groups {
+                let k = group.suffixes.len().div_ceil(band_cap).max(1);
+                arg_row = arg_row.child(self.render_group(group, k, state, pending_dash, view));
+            }
+            body = body.child(arg_row);
         }
         let mut command_row = div()
             .flex()
@@ -297,12 +339,12 @@ impl StatusView {
             .gap_x_8()
             .gap_y_3();
         let mut any_command = false;
-        for group in def.groups.iter().filter(|g| !has_args(g)) {
+        for group in command_groups {
             any_command = true;
             // A tall command group (e.g. the `?` dispatch's "Commands") fans into
             // sub-columns just like an argument band, so it doesn't tower over
             // the shorter groups beside it.
-            let k = group.suffixes.len().div_ceil(BAND_CAP).max(1);
+            let k = group.suffixes.len().div_ceil(band_cap).max(1);
             command_row = command_row.child(self.render_group(group, k, state, pending_dash, view));
         }
         if any_command {
@@ -1689,6 +1731,62 @@ impl StatusView {
             .child(body)
     }
 
+    /// Render a standalone diff buffer opened from the `d` diff transient.
+    pub(crate) fn render_diff_view(&self, dv: &DiffView, view: &Entity<Self>) -> gpui::Div {
+        let count = dv.rows.len();
+        let body = uniform_list("diff-view-rows", count, {
+            let view = view.clone();
+            move |range, _window, cx| {
+                let this = view.read(cx);
+                match this.diff_view() {
+                    Some(dv) => {
+                        let vis = dv.visual.map(|a| (a.min(dv.selected), a.max(dv.selected)));
+                        range
+                            .map(|ix| {
+                                let highlighted = ix == dv.selected
+                                    || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
+                                this.render_commit_diff_row(&dv.rows[ix], highlighted)
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    None => Vec::new(),
+                }
+            }
+        })
+        .track_scroll(&dv.scroll)
+        .flex_grow(1.0);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .font_family(self.font.clone())
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.fg)
+                            .child(dv.title.clone()),
+                    )
+                    .child(div().flex_grow(1.0))
+                    .child(self.key_action(
+                        "diff-view-close",
+                        "esc",
+                        "back",
+                        view,
+                        Self::close_diff_view,
+                    )),
+            )
+            .child(body)
+    }
+
     /// The action keyword + its color for a rebase-todo row.
     pub(crate) fn rebase_action_style(&self, action: RebaseAction) -> (&'static str, Hsla) {
         match action {
@@ -2581,6 +2679,12 @@ impl Render for StatusView {
             Screen::Commit { view: cv, .. } => {
                 return root
                     .child(self.render_commit_view(cv, &view))
+                    .children(self.status_toast(cx))
+                    .children(self.prefix_indicator());
+            }
+            Screen::Diff { view: dv, .. } => {
+                return root
+                    .child(self.render_diff_view(dv, &view))
                     .children(self.status_toast(cx))
                     .children(self.prefix_indicator());
             }

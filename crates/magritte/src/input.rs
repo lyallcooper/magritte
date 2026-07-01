@@ -146,6 +146,29 @@ impl StatusView {
             return;
         }
 
+        if self.diff_view().is_some() {
+            if self.try_nav(&key, shift, ctrl, window, cx) {
+                return;
+            }
+            match key.as_str() {
+                "escape" | "q" => {
+                    if self.diff_view().is_some_and(|dv| dv.visual.is_some()) {
+                        if let Some(dv) = self.diff_view_mut() {
+                            dv.visual = None;
+                        }
+                        cx.notify();
+                    } else {
+                        self.close_diff_view(window, cx);
+                    }
+                }
+                "v" => self.diff_view_toggle_visual(cx),
+                "y" => self.copy_diff_selection(cx),
+                "c" if cmd => self.copy_diff_selection(cx),
+                _ => {}
+            }
+            return;
+        }
+
         // The commit-log view: Enter opens the commit; esc/q close; motions move
         // the selection (shared with every cursor view via `try_nav`).
         if self.log().is_some() {

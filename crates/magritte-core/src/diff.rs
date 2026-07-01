@@ -89,6 +89,21 @@ const DIFF_BASE: &[&str] = &[
 ];
 
 impl Repo {
+    fn diff_with(&self, mut args: Vec<String>, paths: &[String]) -> Result<Vec<FileDiff>> {
+        if !paths.is_empty() {
+            args.push("--".to_string());
+            args.extend(paths.iter().cloned());
+        }
+        let out = self.run(&args)?;
+        parse_diff(&out.stdout)
+    }
+
+    fn diff_base(extra: &[String]) -> Vec<String> {
+        let mut args: Vec<String> = DIFF_BASE.iter().map(|s| s.to_string()).collect();
+        args.extend(extra.iter().cloned());
+        args
+    }
+
     /// Diff a single path against the index or HEAD. Returns `None` when there
     /// is no diff (e.g. the path is unchanged for that source).
     pub fn diff_path(&self, source: DiffSource, path: &str) -> Result<Option<FileDiff>> {
@@ -136,10 +151,56 @@ impl Repo {
         parse_diff(&out.stdout)
     }
 
+    /// The standalone diff transient's unstaged action (`git diff [args]`).
+    pub fn diff_unstaged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
+        self.diff_with(Self::diff_base(extra), paths)
+    }
+
+    /// The standalone diff transient's staged action (`git diff --cached [args]`).
+    pub fn diff_staged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
+        let mut args = Self::diff_base(extra);
+        args.push("--cached".to_string());
+        self.diff_with(args, paths)
+    }
+
+    /// The whole working tree against a revision (Magit's `Diff worktree`,
+    /// defaulting to `HEAD`): staged + unstaged tracked changes.
+    pub fn diff_worktree(
+        &self,
+        rev: &str,
+        extra: &[String],
+        paths: &[String],
+    ) -> Result<Vec<FileDiff>> {
+        let mut args = Self::diff_base(extra);
+        args.push(rev.to_string());
+        self.diff_with(args, paths)
+    }
+
+    /// Diff an arbitrary revision or range (`git diff <rev-or-range> [-- paths]`).
+    pub fn diff_range(
+        &self,
+        rev_or_range: &str,
+        extra: &[String],
+        paths: &[String],
+    ) -> Result<Vec<FileDiff>> {
+        let mut args = Self::diff_base(extra);
+        args.push(rev_or_range.to_string());
+        self.diff_with(args, paths)
+    }
+
     /// The diff a single commit introduced (its changes vs. its first parent),
     /// for previewing the commit being reworded. Root commits (no parent) are
     /// diffed against the empty tree.
     pub fn diff_commit(&self, rev: &str) -> Result<Vec<FileDiff>> {
+        self.diff_commit_with(rev, &[], &[])
+    }
+
+    pub fn diff_commit_with(
+        &self,
+        rev: &str,
+        extra: &[String],
+        paths: &[String],
+    ) -> Result<Vec<FileDiff>> {
         // git's well-known empty-tree object, for diffing a parentless commit.
         const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
         let parent = format!("{rev}^");
@@ -148,11 +209,10 @@ impl Repo {
         } else {
             EMPTY_TREE.to_string()
         };
-        let mut args = DIFF_BASE.to_vec();
-        args.push(&base);
-        args.push(rev);
-        let out = self.run(args)?;
-        parse_diff(&out.stdout)
+        let mut args = Self::diff_base(extra);
+        args.push(base);
+        args.push(rev.to_string());
+        self.diff_with(args, paths)
     }
 
     /// Cheap per-file changed-line counts via `git diff --numstat` (no content),

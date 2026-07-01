@@ -260,6 +260,14 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             )
         }),
+        top!("diff", "Diff", Category::Commands, "d", |t, _w, cx| {
+            t.open_transient(
+                "diff",
+                transient::diff_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
+        }),
         top!("push", "Push", Category::Commands, "p", |t, _w, cx| {
             let rt = t.remote_targets();
             t.open_transient("push", transient::push_transient(&rt), rt, cx)
@@ -334,6 +342,12 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("log-all", "Log all branches", Leaf::LogAll),
         leaf!("log-other", "Log other ref", Leaf::LogOther),
         leaf!("log-reflog", "Reflog", Leaf::LogReflog),
+        leaf!("diff-dwim", "Diff dwim", Leaf::DiffDwim),
+        leaf!("diff-range", "Diff range", Leaf::DiffRange),
+        leaf!("diff-unstaged", "Diff unstaged", Leaf::DiffUnstaged),
+        leaf!("diff-staged", "Diff staged", Leaf::DiffStaged),
+        leaf!("diff-worktree", "Diff worktree", Leaf::DiffWorktree),
+        leaf!("diff-commit", "Show commit", Leaf::DiffCommit),
         // Application commands.
         top!(
             "settings",
@@ -689,8 +703,8 @@ pub(crate) fn command_is_destructive(command: &str) -> bool {
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
 /// sections for suffix injection.
 pub(crate) const TRANSIENT_IDS: &[&str] = &[
-    "commit", "branch", "stash", "reset", "rebase", "merge", "ignore", "log", "push", "pull",
-    "fetch",
+    "commit", "branch", "stash", "reset", "rebase", "merge", "ignore", "log", "diff",
+    "push", "pull", "fetch",
 ];
 
 /// The keystroke sequence to reach the command with this palette title, as
@@ -799,6 +813,7 @@ pub(crate) fn transient_for(id: &str) -> Option<Transient> {
         "merge" => transient::merge_transient(),
         "ignore" => transient::ignore_transient(),
         "log" => transient::log_transient(),
+        "diff" => transient::diff_transient(),
         "push" => transient::push_transient(&rt),
         "pull" => transient::pull_transient(&rt),
         "fetch" => transient::fetch_transient(&rt),

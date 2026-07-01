@@ -406,6 +406,11 @@ enum PickerAction {
         paths: Vec<String>,
         limit: usize,
     },
+    /// Diff the chosen revision/range, with args/pathspecs gathered from the
+    /// diff transient.
+    DiffRange { args: Vec<String>, paths: Vec<String> },
+    /// Show the chosen commit with args/pathspecs gathered from the diff transient.
+    DiffCommit { args: Vec<String>, paths: Vec<String> },
     /// Run a registry [`Command`] chosen from the `:` palette (matched by title).
     RunCommand,
     /// Reset HEAD to the chosen commit, in the carried mode (hard is confirmed).
@@ -448,6 +453,8 @@ impl PickerAction {
                 transient::plain_title(description.clone())
             }
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
+            PickerAction::DiffRange { .. } => transient::plain_title("Diff range"),
+            PickerAction::DiffCommit { .. } => transient::plain_title("Show commit"),
             PickerAction::RunCommand => transient::plain_title("Run command"),
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
             PickerAction::Merge => transient::plain_title("Merge"),
@@ -488,6 +495,8 @@ impl PickerAction {
             PickerAction::Stash(StashAction::Drop) => "drop",
             PickerAction::SetOption { .. } => "set",
             PickerAction::LogRef { .. } => "log",
+            PickerAction::DiffRange { .. } => "diff",
+            PickerAction::DiffCommit { .. } => "show",
             PickerAction::RunCommand => "run",
             PickerAction::Reset(_) => "reset",
             PickerAction::Merge => "merge",
@@ -619,6 +628,37 @@ struct CommitView {
     /// lines can be selected and yanked here too.
     selected: usize,
     visual: Option<usize>,
+}
+
+/// A standalone diff buffer (`d` / Magit's `magit-diff`): a title plus a
+/// flattened, read-only list of file/hunk/line rows.
+struct DiffView {
+    title: SharedString,
+    rows: Vec<CommitDiffRow>,
+    scroll: UniformListScrollHandle,
+    selected: usize,
+    visual: Option<usize>,
+}
+
+#[derive(Clone)]
+enum DiffRequest {
+    Unstaged { args: Vec<String>, paths: Vec<String> },
+    Staged { args: Vec<String>, paths: Vec<String> },
+    Worktree { rev: String, args: Vec<String>, paths: Vec<String> },
+    Range { range: String, args: Vec<String>, paths: Vec<String> },
+}
+
+impl DiffRequest {
+    fn title(&self) -> String {
+        match self {
+            DiffRequest::Unstaged { paths, .. } => diff_title("Unstaged changes", paths),
+            DiffRequest::Staged { paths, .. } => diff_title("Staged changes", paths),
+            DiffRequest::Worktree { rev, paths, .. } => {
+                diff_title(&format!("Working tree vs {rev}"), paths)
+            }
+            DiffRequest::Range { range, paths, .. } => diff_title(range, paths),
+        }
+    }
 }
 
 /// Scroll state for a read-only list view: its handle plus the top row we track
@@ -1123,6 +1163,8 @@ enum Screen {
     /// commit row. It overlays the screen it came from; `back` is that screen,
     /// restored on close (the log, or the status view).
     Commit { view: CommitView, back: Box<Screen> },
+    /// A standalone diff buffer opened by the diff transient.
+    Diff { view: DiffView, back: Box<Screen> },
     /// The interactive-rebase todo editor (`r i`).
     RebaseTodo(RebaseTodoView),
 }
@@ -1475,6 +1517,12 @@ impl StatusView {
             _ => None,
         }
     }
+    fn diff_view(&self) -> Option<&DiffView> {
+        match &self.screen {
+            Screen::Diff { view, .. } => Some(view),
+            _ => None,
+        }
+    }
     fn rebase_todo(&self) -> Option<&RebaseTodoView> {
         match &self.screen {
             Screen::RebaseTodo(r) => Some(r),
@@ -1502,6 +1550,12 @@ impl StatusView {
     fn commit_view_mut(&mut self) -> Option<&mut CommitView> {
         match &mut self.screen {
             Screen::Commit { view, .. } => Some(view),
+            _ => None,
+        }
+    }
+    fn diff_view_mut(&mut self) -> Option<&mut DiffView> {
+        match &mut self.screen {
+            Screen::Diff { view, .. } => Some(view),
             _ => None,
         }
     }
@@ -4456,9 +4510,33 @@ impl StatusView {
         self.open_commit(entry.hash, entry.short_hash, entry.subject, cx);
     }
 
+    fn open_commit_with_args(
+        &mut self,
+        hash: String,
+        short: String,
+        subject: String,
+        args: Vec<String>,
+        paths: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_commit_inner(hash, short, subject, args, paths, cx);
+    }
+
     /// Open a commit's diff detail, overlaying the current screen (restored on
     /// close). Shared by the log view and status commit rows.
     fn open_commit(&mut self, hash: String, short: String, subject: String, cx: &mut Context<Self>) {
+        self.open_commit_inner(hash, short, subject, Vec::new(), Vec::new(), cx);
+    }
+
+    fn open_commit_inner(
+        &mut self,
+        hash: String,
+        short: String,
+        subject: String,
+        args: Vec<String>,
+        paths: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -4484,7 +4562,7 @@ impl StatusView {
                 .background_executor()
                 .spawn(async move {
                     let message = repo.commit_message(&rev)?;
-                    let files = repo.diff_commit(&rev).map(|diffs| {
+                    let files = repo.diff_commit_with(&rev, &args, &paths).map(|diffs| {
                         diffs
                             .into_iter()
                             .map(|d| {
@@ -4511,6 +4589,73 @@ impl StatusView {
                 };
                 if let Some(cv) = this.commit_view_mut() {
                     cv.rows = rows;
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn open_diff(&mut self, request: DiffRequest, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        let title = request.title();
+        let back = Box::new(std::mem::take(&mut self.screen));
+        self.screen = Screen::Diff {
+            view: DiffView {
+                title: SharedString::from(title.clone()),
+                rows: vec![CommitDiffRow::Note("Loading…".to_string())],
+                scroll: UniformListScrollHandle::new(),
+                selected: 0,
+                visual: None,
+            },
+            back,
+        };
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    let diffs = match request {
+                        DiffRequest::Unstaged { args, paths } => repo.diff_unstaged(&args, &paths),
+                        DiffRequest::Staged { args, paths } => repo.diff_staged(&args, &paths),
+                        DiffRequest::Worktree { rev, args, paths } => {
+                            repo.diff_worktree(&rev, &args, &paths)
+                        }
+                        DiffRequest::Range { range, args, paths } => {
+                            repo.diff_range(&range, &args, &paths)
+                        }
+                    }?;
+                    Ok::<_, magritte_core::Error>(
+                        diffs
+                            .into_iter()
+                            .map(|d| {
+                                let (head, tail) =
+                                    file_head_tail(&repo.workdir().join(d.display_path()));
+                                let lang =
+                                    highlight::detect_language(d.display_path(), &head, &tail);
+                                (d, lang)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) || this.diff_view().is_none() {
+                    return;
+                }
+                let rows = match loaded {
+                    Ok(files) if files.is_empty() => {
+                        vec![CommitDiffRow::Note("No changes".to_string())]
+                    }
+                    Ok(files) => this.diff_rows(&files, cx),
+                    Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                };
+                if let Some(dv) = this.diff_view_mut() {
+                    dv.rows = rows;
                 }
                 cx.notify();
             })
@@ -4553,6 +4698,14 @@ impl StatusView {
         cx.notify();
     }
 
+    fn close_diff_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Screen::Diff { back, .. } = std::mem::take(&mut self.screen) {
+            self.screen = *back;
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     /// Copy the full hash of the commit selected in the log.
     fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
         let hash = self
@@ -4578,6 +4731,19 @@ impl StatusView {
         }
     }
 
+    fn diff_view_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(dv) = self.diff_view_mut() {
+            if dv.rows.is_empty() {
+                return;
+            }
+            let last = dv.rows.len() as isize - 1;
+            dv.selected = (dv.selected as isize + delta).clamp(0, last) as usize;
+            dv.scroll
+                .scroll_to_item(dv.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
     /// Toggle a visual selection in the commit view, anchored at the cursor.
     fn commit_view_toggle_visual(&mut self, cx: &mut Context<Self>) {
         if let Some(cv) = self.commit_view_mut() {
@@ -4585,6 +4751,17 @@ impl StatusView {
                 None
             } else {
                 Some(cv.selected)
+            };
+            cx.notify();
+        }
+    }
+
+    fn diff_view_toggle_visual(&mut self, cx: &mut Context<Self>) {
+        if let Some(dv) = self.diff_view_mut() {
+            dv.visual = if dv.visual.is_some() {
+                None
+            } else {
+                Some(dv.selected)
             };
             cx.notify();
         }
@@ -4610,6 +4787,28 @@ impl StatusView {
         };
         if let Some(cv) = self.commit_view_mut() {
             cv.visual = None;
+        }
+        self.copy_to_clipboard(text, cx);
+    }
+
+    fn copy_diff_selection(&mut self, cx: &mut Context<Self>) {
+        let text = {
+            let Some(dv) = self.diff_view() else {
+                return;
+            };
+            let (lo, hi) = match dv.visual {
+                Some(a) => (a.min(dv.selected), a.max(dv.selected)),
+                None => (dv.selected, dv.selected),
+            };
+            let hi = hi.min(dv.rows.len().saturating_sub(1));
+            dv.rows[lo..=hi]
+                .iter()
+                .map(commit_row_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if let Some(dv) = self.diff_view_mut() {
+            dv.visual = None;
         }
         self.copy_to_clipboard(text, cx);
     }
@@ -4871,6 +5070,7 @@ fn describe_command(command: transient::Command) -> &'static str {
             "Working"
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
+        DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Diffing",
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
@@ -4897,6 +5097,7 @@ fn command_done(command: transient::Command) -> &'static str {
             "Done"
         }
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
+        DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Done",
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
@@ -4944,6 +5145,16 @@ fn build_log_args(
         flags.extend(paths);
     }
     flags
+}
+
+fn diff_title(base: &str, paths: &[String]) -> String {
+    if paths.is_empty() {
+        base.to_string()
+    } else if paths.len() == 1 {
+        format!("{base} -- {}", paths[0])
+    } else {
+        format!("{base} -- {} paths", paths.len())
+    }
 }
 
 /// The viewport height in rows — a "page" for the scroll/paging keys.
@@ -5677,7 +5888,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
+            "c", "b", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions

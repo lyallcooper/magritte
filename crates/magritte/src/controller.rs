@@ -79,6 +79,9 @@ impl StatusView {
             StashPush => self.run_stash_push(false, cx),
             StashPushAll => self.run_stash_push(true, cx),
             StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
+            DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => {
+                self.dispatch_diff(command, args, paths, window, cx)
+            }
             // Log: assemble flags + scope + pathspecs in the order git needs.
             LogCurrent => self.start_log(build_log_args(args, LogScope::Current, paths, limit), cx),
             LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
@@ -496,6 +499,104 @@ impl StatusView {
         };
         if let Some(input) = input {
             input.update(cx, |s, cx| s.set_value(default, window, cx));
+        }
+    }
+
+    pub(crate) fn dispatch_diff(
+        &mut self,
+        command: transient::Command,
+        args: Vec<String>,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        match command {
+            DiffDwim => self.diff_dwim(args, paths, window, cx),
+            DiffRange => self.open_picker(
+                PickerAction::DiffRange { args, paths },
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            ),
+            DiffUnstaged => self.open_diff(DiffRequest::Unstaged { args, paths }, cx),
+            DiffStaged => self.open_diff(DiffRequest::Staged { args, paths }, cx),
+            DiffWorktree => self.open_diff(
+                DiffRequest::Worktree {
+                    rev: "HEAD".to_string(),
+                    args,
+                    paths,
+                },
+                cx,
+            ),
+            DiffCommit => self.open_listed_picker(
+                PickerAction::DiffCommit { args, paths },
+                CreateMode::Any,
+                Vec::new(),
+                |repo| {
+                    Ok(repo
+                        .log("HEAD", Self::LOG_LIMIT)?
+                        .into_iter()
+                        .map(|e| format!("{} {}", e.short_hash, e.subject))
+                        .collect())
+                },
+                window,
+                cx,
+            ),
+            _ => {}
+        }
+    }
+
+    fn diff_dwim(
+        &mut self,
+        args: Vec<String>,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((hash, short, subject)) = self.point_commit() {
+            return self.open_commit_with_args(hash, short, subject, args, paths, cx);
+        }
+        if let Some((source, path)) = self.diff_path_at_point() {
+            let mut paths = paths;
+            if paths.is_empty() {
+                paths.push(path);
+            }
+            let request = match source {
+                DiffSource::Unstaged => DiffRequest::Unstaged { args, paths },
+                DiffSource::Staged => DiffRequest::Staged { args, paths },
+            };
+            return self.open_diff(request, cx);
+        }
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.unstaged().next().is_some())
+        {
+            self.open_diff(DiffRequest::Unstaged { args, paths }, cx);
+        } else if self.status.as_ref().is_some_and(|s| s.staged().next().is_some()) {
+            self.open_diff(DiffRequest::Staged { args, paths }, cx);
+        } else {
+            self.open_picker(
+                PickerAction::DiffRange { args, paths },
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn diff_path_at_point(&self) -> Option<(DiffSource, String)> {
+        let target = self.rows.get(self.selected)?.target.as_ref()?;
+        match target {
+            Target::File(f) => section_source(f.section).map(|source| (source, f.path.clone())),
+            Target::Hunk { file, .. } | Target::Line { file, .. } => {
+                section_source(file.section).map(|source| (source, file.path.clone()))
+            }
         }
     }
 
@@ -1455,6 +1556,20 @@ impl StatusView {
                     let args =
                         build_log_args(flags, LogScope::Ref(chosen.to_string()), paths, limit);
                     self.start_log(args, cx);
+                }
+                PickerAction::DiffRange { args, paths } => {
+                    self.open_diff(
+                        DiffRequest::Range {
+                            range: chosen.to_string(),
+                            args,
+                            paths,
+                        },
+                        cx,
+                    );
+                }
+                PickerAction::DiffCommit { args, paths } => {
+                    let rev = chosen.split_whitespace().next().unwrap_or(&chosen).to_string();
+                    self.open_commit_with_args(rev.clone(), rev, String::new(), args, paths, cx);
                 }
                 // Resolve the chosen title back to its command (built-in or a
                 // user `[[command]]`) and run it through the shared dispatch.
