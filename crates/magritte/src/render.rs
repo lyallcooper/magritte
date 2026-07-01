@@ -4,8 +4,6 @@
 //! `impl StatusView` methods plus the `Render` impl, so they read and write the
 //! same private fields as the rest of the view.
 
-use std::path::PathBuf;
-
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, AnyElement, Context, Entity, Hsla, InteractiveElement, IntoElement,
@@ -1840,14 +1838,6 @@ impl StatusView {
             })
     }
 
-    /// Persist the global config (so the file exists even if never edited) and
-    /// return its path. Writes the global-only config, not the merged one, so
-    /// opening the global config never bakes in this repo's overlay.
-    pub(crate) fn saved_config_path(&self) -> Option<PathBuf> {
-        config::save(&self.config_global);
-        config::path()
-    }
-
     /// A button that opens this repo's `.git/magritte/config.toml` (the per-repo
     /// overlay), creating it if absent, with a "Copy path" dropdown item. Shown
     /// only when there's a repo.
@@ -1925,7 +1915,7 @@ impl StatusView {
                     // overlay into the global file.
                     set(&mut this.config, on);
                     set(&mut this.config_global, on);
-                    config::save(&this.config_global);
+                    config::save_settings(&this.config_global);
                     if refetch {
                         this.refresh(cx);
                     } else {
