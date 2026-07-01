@@ -47,6 +47,18 @@ pub enum Command {
     BranchRename,
     /// Delete a branch (prompts for the branch).
     BranchDelete,
+    /// Create a lightweight tag at point/HEAD (prompts for name).
+    TagCreate,
+    /// Create an annotated tag at point/HEAD (prompts for name).
+    TagAnnotated,
+    /// Delete a local tag (prompts for the tag).
+    TagDelete,
+    /// Add a remote (prompts for name then URL).
+    RemoteAdd,
+    /// Rename a remote (prompts for old then new name).
+    RemoteRename,
+    /// Remove a remote (prompts for name).
+    RemoteRemove,
     /// Stash the working tree and index.
     StashPush,
     /// Stash including untracked files.
@@ -93,10 +105,14 @@ pub enum Command {
     MergeSquash,
     /// Cherry-pick commit(s), creating commits.
     CherryPick,
+    /// Cherry-pick a typed revision/range.
+    CherryPickRange,
     /// Apply commit changes without committing.
     CherryApply,
     /// Revert commit(s), creating commits.
     RevertCommit,
+    /// Revert a typed revision/range.
+    RevertRange,
     /// Apply the reverse of commit changes without committing.
     RevertNoCommit,
     /// Rebase the current branch onto its upstream.
@@ -462,6 +478,67 @@ pub fn branch_transient() -> Transient {
                 ],
             },
         ],
+    }
+}
+
+pub fn tag_transient() -> Transient {
+    Transient {
+        title: plain_title("Tag"),
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![Suffix::Switch(Switch::new("-f", "--force", "Replace existing tag"))],
+            },
+            Group {
+                title: plain_title("Create"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "t",
+                        description: "lightweight".to_string(),
+                        command: Command::TagCreate,
+                    }),
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "annotated".to_string(),
+                        command: Command::TagAnnotated,
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Do"),
+                suffixes: vec![Suffix::Action(Action {
+                    key: "k",
+                    description: "delete".to_string(),
+                    command: Command::TagDelete,
+                })],
+            },
+        ],
+    }
+}
+
+pub fn remote_transient() -> Transient {
+    Transient {
+        title: plain_title("Remote"),
+        groups: vec![Group {
+            title: plain_title("Do"),
+            suffixes: vec![
+                Suffix::Action(Action {
+                    key: "a",
+                    description: "add".to_string(),
+                    command: Command::RemoteAdd,
+                }),
+                Suffix::Action(Action {
+                    key: "r",
+                    description: "rename".to_string(),
+                    command: Command::RemoteRename,
+                }),
+                Suffix::Action(Action {
+                    key: "k",
+                    description: "remove".to_string(),
+                    command: Command::RemoteRemove,
+                }),
+            ],
+        }],
     }
 }
 
@@ -902,6 +979,8 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                         "rebase.autoSquash",
                         "Honor fixup!/squash! commits",
                     )),
+                    Suffix::Switch(Switch::new("-m", "--rebase-merges", "Rebase merge commits")),
+                    Suffix::Switch(Switch::new("-u", "--update-refs", "Update branches in the rebased range")),
                 ],
             },
             Group {
@@ -981,42 +1060,80 @@ pub fn merge_transient() -> Transient {
 pub fn cherry_pick_transient() -> Transient {
     Transient {
         title: plain_title("Cherry-pick"),
-        groups: vec![Group {
-            title: plain_title("Apply here"),
-            suffixes: vec![
-                Suffix::Action(Action {
-                    key: "A",
-                    description: "pick".to_string(),
-                    command: Command::CherryPick,
-                }),
-                Suffix::Action(Action {
-                    key: "a",
-                    description: "apply".to_string(),
-                    command: Command::CherryApply,
-                }),
-            ],
-        }],
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![
+                    Suffix::Switch(Switch::new("-x", "-x", "Append origin line")),
+                    Suffix::Switch(Switch::new("-f", "--ff", "Fast-forward when possible")),
+                    Suffix::Option(Opt {
+                        key: "-m",
+                        arg: "--mainline=",
+                        description: "Mainline parent",
+                        completion: Completion::None,
+                        pathspec: false,
+                    }),
+                ],
+            },
+            Group {
+                title: plain_title("Apply here"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "A",
+                        description: "pick".to_string(),
+                        command: Command::CherryPick,
+                    }),
+                    Suffix::Action(Action {
+                        key: "a",
+                        description: "apply".to_string(),
+                        command: Command::CherryApply,
+                    }),
+                    Suffix::Action(Action {
+                        key: "r",
+                        description: "range".to_string(),
+                        command: Command::CherryPickRange,
+                    }),
+                ],
+            },
+        ],
     }
 }
 
 pub fn revert_transient() -> Transient {
     Transient {
         title: plain_title("Revert"),
-        groups: vec![Group {
-            title: plain_title("Actions"),
-            suffixes: vec![
-                Suffix::Action(Action {
-                    key: "V",
-                    description: "revert commit".to_string(),
-                    command: Command::RevertCommit,
-                }),
-                Suffix::Action(Action {
-                    key: "v",
-                    description: "revert changes".to_string(),
-                    command: Command::RevertNoCommit,
-                }),
-            ],
-        }],
+        groups: vec![
+            Group {
+                title: plain_title("Arguments"),
+                suffixes: vec![Suffix::Option(Opt {
+                    key: "-m",
+                    arg: "--mainline=",
+                    description: "Mainline parent",
+                    completion: Completion::None,
+                    pathspec: false,
+                })],
+            },
+            Group {
+                title: plain_title("Actions"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "V",
+                        description: "revert commit".to_string(),
+                        command: Command::RevertCommit,
+                    }),
+                    Suffix::Action(Action {
+                        key: "v",
+                        description: "revert changes".to_string(),
+                        command: Command::RevertNoCommit,
+                    }),
+                    Suffix::Action(Action {
+                        key: "r",
+                        description: "range".to_string(),
+                        command: Command::RevertRange,
+                    }),
+                ],
+            },
+        ],
     }
 }
 

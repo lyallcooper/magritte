@@ -181,6 +181,22 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             )
         }),
+        top!("tag", "Tag", Category::Commands, "t", |t, _w, cx| {
+            t.open_transient(
+                "tag",
+                transient::tag_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
+        }),
+        top!("remote", "Remote", Category::Commands, "M", |t, _w, cx| {
+            t.open_transient(
+                "remote",
+                transient::remote_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
+        }),
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
             t.open_transient(
                 "stash",
@@ -329,6 +345,12 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("branch-create", "Create branch", Leaf::BranchCreate),
         leaf!("branch-rename", "Rename branch", Leaf::BranchRename),
         leaf!("branch-delete", "Delete branch", Leaf::BranchDelete),
+        leaf!("tag-create", "Create tag", Leaf::TagCreate),
+        leaf!("tag-annotated", "Create annotated tag", Leaf::TagAnnotated),
+        leaf!("tag-delete", "Delete tag", Leaf::TagDelete),
+        leaf!("remote-add", "Add remote", Leaf::RemoteAdd),
+        leaf!("remote-rename", "Rename remote", Leaf::RemoteRename),
+        leaf!("remote-remove", "Remove remote", Leaf::RemoteRemove),
         leaf!("stash-push", "Stash worktree and index", Leaf::StashPush),
         leaf!(
             "stash-push-all",
@@ -348,6 +370,12 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("diff-staged", "Diff staged", Leaf::DiffStaged),
         leaf!("diff-worktree", "Diff worktree", Leaf::DiffWorktree),
         leaf!("diff-commit", "Show commit", Leaf::DiffCommit),
+        leaf!("cherry-pick", "Cherry-pick commit", Leaf::CherryPick),
+        leaf!("cherry-pick-range", "Cherry-pick range", Leaf::CherryPickRange),
+        leaf!("cherry-apply", "Apply commit", Leaf::CherryApply),
+        leaf!("revert", "Revert commit", Leaf::RevertCommit),
+        leaf!("revert-range", "Revert range", Leaf::RevertRange),
+        leaf!("revert-no-commit", "Revert changes", Leaf::RevertNoCommit),
         // Application commands.
         top!(
             "settings",

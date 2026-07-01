@@ -62,13 +62,16 @@ impl StatusView {
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
                 self.dispatch_branch(command, window, cx)
             }
+            TagCreate | TagAnnotated | TagDelete => self.dispatch_tag(command, args, window, cx),
+            RemoteAdd | RemoteRename | RemoteRemove => self.dispatch_remote(command, window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
             }
             MergePlain | MergeNoCommit | MergeSquash => {
                 self.dispatch_merge(command, args, window, cx)
             }
-            CherryPick | CherryApply | RevertCommit | RevertNoCommit => {
+            CherryPick | CherryPickRange | CherryApply | RevertCommit | RevertRange
+            | RevertNoCommit => {
                 self.dispatch_pick(command, args, window, cx)
             }
             RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
@@ -399,6 +402,82 @@ impl StatusView {
                 Vec::new(),
                 CreateMode::Any,
                 Vec::new(),
+                window,
+                cx,
+            ),
+            _ => {}
+        }
+    }
+
+    /// Tag transient suffix: create a tag at the commit at point (or HEAD), or
+    /// delete a picked local tag.
+    pub(crate) fn dispatch_tag(
+        &mut self,
+        command: transient::Command,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        match command {
+            TagCreate => self.open_picker(
+                PickerAction::Tag(TagAction::Create { annotated: false }),
+                Vec::new(),
+                CreateMode::Any,
+                args,
+                window,
+                cx,
+            ),
+            TagAnnotated => self.open_picker(
+                PickerAction::Tag(TagAction::Create { annotated: true }),
+                Vec::new(),
+                CreateMode::Any,
+                args,
+                window,
+                cx,
+            ),
+            TagDelete => self.open_listed_picker(
+                PickerAction::Tag(TagAction::Delete),
+                CreateMode::None,
+                Vec::new(),
+                Repo::tags,
+                window,
+                cx,
+            ),
+            _ => {}
+        }
+    }
+
+    /// Remote transient suffix: add/rename/remove configured remotes.
+    pub(crate) fn dispatch_remote(
+        &mut self,
+        command: transient::Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use transient::Command::*;
+        match command {
+            RemoteAdd => self.open_picker(
+                PickerAction::Remote(RemoteAction::AddName),
+                Vec::new(),
+                CreateMode::Any,
+                Vec::new(),
+                window,
+                cx,
+            ),
+            RemoteRename => self.open_listed_picker(
+                PickerAction::Remote(RemoteAction::RenameFrom),
+                CreateMode::None,
+                Vec::new(),
+                Repo::remotes,
+                window,
+                cx,
+            ),
+            RemoteRemove => self.open_listed_picker(
+                PickerAction::Remote(RemoteAction::Remove),
+                CreateMode::None,
+                Vec::new(),
+                Repo::remotes,
                 window,
                 cx,
             ),
@@ -971,8 +1050,28 @@ impl StatusView {
         use transient::Command::*;
         let op = match command {
             CherryPick => PickOp::CherryPick,
+            CherryPickRange => {
+                return self.open_picker(
+                    PickerAction::PickRange(PickOp::CherryPick),
+                    Vec::new(),
+                    CreateMode::Value,
+                    args,
+                    window,
+                    cx,
+                );
+            }
             CherryApply => PickOp::CherryApply,
             RevertCommit => PickOp::Revert,
+            RevertRange => {
+                return self.open_picker(
+                    PickerAction::PickRange(PickOp::Revert),
+                    Vec::new(),
+                    CreateMode::Value,
+                    args,
+                    window,
+                    cx,
+                );
+            }
             RevertNoCommit => PickOp::RevertNoCommit,
             _ => return,
         };
@@ -1580,10 +1679,17 @@ impl StatusView {
                 PickerAction::Branch(b) => {
                     self.run_branch_action(b, chosen.to_string(), window, cx)
                 }
+                PickerAction::Tag(t) => self.run_tag_action(t, chosen.to_string(), p.switches, cx),
+                PickerAction::Remote(r) => {
+                    self.run_remote_action(r, chosen.to_string(), window, cx)
+                }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
                 PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
+                PickerAction::PickRange(op) => {
+                    self.pick_rev_with_args(op, chosen.to_string(), p.switches, window, cx)
+                }
                 PickerAction::RunGit => self.run_user_command(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 // Set the option value (empty clears it) and reopen the transient.
@@ -1982,6 +2088,94 @@ impl StatusView {
             },
             cx,
         );
+    }
+
+    /// Carry out a tag-transient action. Tag creation targets the commit at
+    /// point when one exists, otherwise HEAD.
+    pub(crate) fn run_tag_action(
+        &mut self,
+        action: TagAction,
+        chosen: String,
+        switches: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if chosen.trim().is_empty() {
+            self.set_status("Tag name required".to_string(), false, cx);
+            return;
+        }
+        let force = switches.iter().any(|s| s == "--force");
+        let target = self.selected_commit_hash().unwrap_or_else(|| "HEAD".to_string());
+        let (verb, done) = match action {
+            TagAction::Create { .. } => ("Tagging", "Tagged"),
+            TagAction::Delete => ("Deleting tag", "Deleted tag"),
+        };
+        self.run_job(
+            &format!("{verb}…"),
+            done,
+            move |repo| match action {
+                TagAction::Create { annotated: true } => {
+                    repo.create_annotated_tag(&chosen, &target, force)
+                }
+                TagAction::Create { annotated: false } => repo.create_tag(&chosen, &target, force),
+                TagAction::Delete => repo.delete_tag(&chosen),
+            },
+            cx,
+        );
+    }
+
+    /// Carry out a remote-transient action. Add/rename are two-step: the first
+    /// value opens the next prompt, the second runs git.
+    pub(crate) fn run_remote_action(
+        &mut self,
+        action: RemoteAction,
+        chosen: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if chosen.trim().is_empty() {
+            self.set_status("Remote value required".to_string(), false, cx);
+            return;
+        }
+        match action {
+            RemoteAction::AddName => {
+                self.open_picker(
+                    PickerAction::Remote(RemoteAction::AddUrl { name: chosen }),
+                    Vec::new(),
+                    CreateMode::Value,
+                    Vec::new(),
+                    window,
+                    cx,
+                );
+            }
+            RemoteAction::RenameFrom => {
+                self.open_picker(
+                    PickerAction::Remote(RemoteAction::RenameTo { old: chosen }),
+                    Vec::new(),
+                    CreateMode::Any,
+                    Vec::new(),
+                    window,
+                    cx,
+                );
+            }
+            RemoteAction::AddUrl { name } => self.run_job(
+                "Adding remote…",
+                "Added remote",
+                move |repo| repo.add_remote(&name, &chosen),
+                cx,
+            ),
+            RemoteAction::RenameTo { old } => self.run_job(
+                "Renaming remote…",
+                "Renamed remote",
+                move |repo| repo.rename_remote(&old, &chosen),
+                cx,
+            ),
+            RemoteAction::Remove => self.run_job(
+                "Removing remote…",
+                "Removed remote",
+                move |repo| repo.remove_remote(&chosen),
+                cx,
+            ),
+        }
     }
 
     /// Stash the working tree and index (`Z z` / `Z Z`), on the background

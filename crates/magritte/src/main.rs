@@ -383,6 +383,23 @@ enum BranchAction {
     Delete,
 }
 
+/// A tag-transient operation carried out against a typed tag name or picked tag.
+#[derive(Clone, Copy)]
+enum TagAction {
+    Create { annotated: bool },
+    Delete,
+}
+
+/// A remote-transient operation. Add/rename are two-step prompts.
+#[derive(Clone)]
+enum RemoteAction {
+    AddName,
+    AddUrl { name: String },
+    RenameFrom,
+    RenameTo { old: String },
+    Remove,
+}
+
 /// A stash-transient operation carried out against a picked stash entry. The
 /// chosen value is the entry's display string; the `stash@{N}` reference is its
 /// first whitespace-delimited token.
@@ -399,6 +416,8 @@ enum StashAction {
 enum PickerAction {
     Transfer(Transfer),
     Branch(BranchAction),
+    Tag(TagAction),
+    Remote(RemoteAction),
     Stash(StashAction),
     /// Set a transient option's value (`resume` carries the transient to
     /// reopen with the value applied).
@@ -426,6 +445,8 @@ enum PickerAction {
     Merge,
     /// Rebase the current branch onto the chosen ref, with the carried args.
     Rebase,
+    /// Cherry-pick or revert the typed revision/range with the carried args.
+    PickRange(PickOp),
     /// Run an arbitrary git command typed by the user (magit's `!`).
     RunGit,
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
@@ -451,6 +472,28 @@ impl PickerAction {
                 ],
                 BranchAction::Delete => transient::plain_title("Delete branch"),
             },
+            PickerAction::Tag(TagAction::Create { annotated: true }) => {
+                transient::plain_title("Create annotated tag")
+            }
+            PickerAction::Tag(TagAction::Create { annotated: false }) => {
+                transient::plain_title("Create tag")
+            }
+            PickerAction::Tag(TagAction::Delete) => transient::plain_title("Delete tag"),
+            PickerAction::Remote(r) => match r {
+                RemoteAction::AddName => transient::plain_title("Add remote"),
+                RemoteAction::AddUrl { name } => vec![
+                    TitleSpan::text("Add "),
+                    TitleSpan::branch(name.clone()),
+                    TitleSpan::text(" url"),
+                ],
+                RemoteAction::RenameFrom => transient::plain_title("Rename remote"),
+                RemoteAction::RenameTo { old } => vec![
+                    TitleSpan::text("Rename "),
+                    TitleSpan::branch(old.clone()),
+                    TitleSpan::text(" to"),
+                ],
+                RemoteAction::Remove => transient::plain_title("Remove remote"),
+            },
             PickerAction::Stash(s) => transient::plain_title(match s {
                 StashAction::Apply => "Apply stash",
                 StashAction::Pop => "Pop stash",
@@ -466,6 +509,16 @@ impl PickerAction {
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
             PickerAction::Merge => transient::plain_title("Merge"),
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
+            PickerAction::PickRange(PickOp::CherryPick) => {
+                transient::plain_title("Cherry-pick range")
+            }
+            PickerAction::PickRange(PickOp::Revert) => transient::plain_title("Revert range"),
+            PickerAction::PickRange(PickOp::CherryApply) => {
+                transient::plain_title("Apply range")
+            }
+            PickerAction::PickRange(PickOp::RevertNoCommit) => {
+                transient::plain_title("Revert changes in range")
+            }
             // Reads like magit's "git " prompt: the typed text follows "git".
             PickerAction::RunGit => transient::plain_title("Run"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
@@ -480,6 +533,8 @@ impl PickerAction {
         match self {
             PickerAction::Stash(_) => "No stashes",
             PickerAction::Branch(_) => "No branches",
+            PickerAction::Tag(_) => "No tags",
+            PickerAction::Remote(_) => "No remotes configured",
             PickerAction::Transfer(_) => "No remotes configured",
             _ => "Nothing to select",
         }
@@ -497,6 +552,13 @@ impl PickerAction {
                 "rename"
             }
             PickerAction::Branch(BranchAction::Delete) => "delete",
+            PickerAction::Tag(TagAction::Create { .. }) => "tag",
+            PickerAction::Tag(TagAction::Delete) => "delete",
+            PickerAction::Remote(RemoteAction::AddName | RemoteAction::AddUrl { .. }) => "add",
+            PickerAction::Remote(RemoteAction::RenameFrom | RemoteAction::RenameTo { .. }) => {
+                "rename"
+            }
+            PickerAction::Remote(RemoteAction::Remove) => "remove",
             PickerAction::Stash(StashAction::Apply) => "apply",
             PickerAction::Stash(StashAction::Pop) => "pop",
             PickerAction::Stash(StashAction::Drop) => "drop",
@@ -508,6 +570,8 @@ impl PickerAction {
             PickerAction::Reset(_) => "reset",
             PickerAction::Merge => "merge",
             PickerAction::Rebase => "rebase",
+            PickerAction::PickRange(PickOp::CherryPick | PickOp::CherryApply) => "pick",
+            PickerAction::PickRange(PickOp::Revert | PickOp::RevertNoCommit) => "revert",
             PickerAction::RunGit => "run",
             PickerAction::Ignore(_) => "ignore",
         }
@@ -4601,6 +4665,21 @@ impl StatusView {
             self.set_status("No commit at point".to_string(), false, cx);
             return;
         };
+        self.pick_rev_with_args(op, rev, args, window, cx);
+    }
+
+    fn pick_rev_with_args(
+        &mut self,
+        op: PickOp,
+        rev: String,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if rev.trim().is_empty() {
+            self.set_status("Revision or range required".to_string(), false, cx);
+            return;
+        }
         let (verb, done) = match op {
             PickOp::CherryPick => ("Cherry-picking", "Cherry-picked"),
             PickOp::CherryApply => ("Applying", "Applied"),
@@ -5363,13 +5442,15 @@ fn describe_command(command: transient::Command) -> &'static str {
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Working"
         }
+        TagCreate | TagAnnotated | TagDelete => "Tagging",
+        RemoteAdd | RemoteRename | RemoteRemove => "Working",
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
         DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Diffing",
         LogCurrent | LogAll | LogOther | LogReflog => "Logging",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Resetting",
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
-        CherryPick | CherryApply => "Cherry-picking",
-        RevertCommit | RevertNoCommit => "Reverting",
+        CherryPick | CherryPickRange | CherryApply => "Cherry-picking",
+        RevertCommit | RevertRange | RevertNoCommit => "Reverting",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
         | RebaseRewordCommit => "Rebasing",
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
@@ -5390,13 +5471,16 @@ fn command_done(command: transient::Command) -> &'static str {
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Done"
         }
+        TagCreate | TagAnnotated => "Tagged",
+        TagDelete => "Deleted tag",
+        RemoteAdd | RemoteRename | RemoteRemove => "Done",
         StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
         DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Done",
         LogCurrent | LogAll | LogOther | LogReflog => "Done",
         ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Reset",
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
-        CherryPick | CherryApply => "Cherry-picked",
-        RevertCommit | RevertNoCommit => "Reverted",
+        CherryPick | CherryPickRange | CherryApply => "Cherry-picked",
+        RevertCommit | RevertRange | RevertNoCommit => "Reverted",
         RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
         | RebaseRewordCommit => "Rebased",
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
@@ -6350,7 +6434,7 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
+            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
