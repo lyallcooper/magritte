@@ -16,14 +16,14 @@ jobs:
     name: macOS artifact
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
       - name: Build .app archive
         env:
           MAGRITTE_TARGET: aarch64-apple-darwin
         run: scripts/dist-macos.sh "${GITHUB_REF_NAME#v}"
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-macos
           path: |
@@ -34,8 +34,9 @@ jobs:
     name: Linux artifact (best effort)
     runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install GPUI Linux dependencies
         run: |
           sudo apt-get update
@@ -44,13 +45,13 @@ jobs:
             libasound2-dev libfontconfig-dev libglib2.0-dev libssl-dev \
             libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev pipewire xdg-desktop-portal
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
       - name: Build Linux archive
         env:
           MAGRITTE_TARGET: x86_64-unknown-linux-gnu
         run: scripts/dist-linux.sh "${GITHUB_REF_NAME#v}"
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: |
@@ -65,9 +66,9 @@ jobs:
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: target/dist
           merge-multiple: true
@@ -90,7 +91,7 @@ jobs:
           fi
           scripts/render-homebrew-formula.sh "${GITHUB_REF_NAME#v}"
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             target/dist/*.tar.gz
@@ -98,7 +99,7 @@ jobs:
             target/dist/magritte.rb
       - name: Check out Homebrew tap
         if: env.HOMEBREW_TAP_TOKEN != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.HOMEBREW_TAP_REPOSITORY }}
           token: ${{ env.HOMEBREW_TAP_TOKEN }}

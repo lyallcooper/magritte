@@ -10,8 +10,8 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
       - run: cargo test
       - run: cargo build --release -p magritte
 
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install GPUI Linux dependencies
         run: |
           sudo apt-get update
@@ -29,6 +29,6 @@ jobs:
             libasound2-dev libfontconfig-dev libglib2.0-dev libssl-dev \
             libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev pipewire xdg-desktop-portal
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
       - run: cargo test
       - run: cargo build --release -p magritte
