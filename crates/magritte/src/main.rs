@@ -2044,31 +2044,21 @@ impl StatusView {
 
         let recent_count = self.config.status.recent_count;
         let want_tags = self.config.show_tags_in_title_bar;
+        let upstream_configured = configured.contains(&SectionId::Unpushed)
+            || configured.contains(&SectionId::Unpulled);
         let pushremote_configured = configured.contains(&SectionId::UnpushedPushremote)
             || configured.contains(&SectionId::UnpulledPushremote);
 
         // PRIORITY: `git status` + the in-progress sequence. Renders the main
         // file sections (and the header) the moment it lands, before the
-        // auxiliary listings — and kicks off the pushremote fetch afterward,
-        // since that one needs status to know the push target.
-        self.spawn_status_fetch(stamp, pushremote_configured, cx);
+        // auxiliary listings — and kicks off upstream/pushremote divergence
+        // afterward, since status tells us whether those targets exist.
+        self.spawn_status_fetch(stamp, upstream_configured, pushremote_configured, cx);
 
         // Auxiliary listings, each its own fetch running concurrently with
-        // status (none need our status — git resolves @{upstream}/HEAD itself),
-        // so a slow listing can't hold up the main sections or the others. Each
-        // pops into place as it lands; the title-bar spinner signals the work.
-        if configured.contains(&SectionId::Unpushed) || configured.contains(&SectionId::Unpulled) {
-            self.spawn_fetch(
-                stamp,
-                &[SectionId::Unpushed, SectionId::Unpulled],
-                cx,
-                |repo| repo.upstream_divergence().unwrap_or_default(),
-                |this, (up, down)| {
-                    this.status_sections.unpushed = up;
-                    this.status_sections.unpulled = down;
-                },
-            );
-        }
+        // status when it doesn't need status metadata, so a slow listing can't
+        // hold up the main sections or the others. Each pops into place as it
+        // lands; the title-bar spinner signals the work.
         if configured.contains(&SectionId::Recent) {
             self.spawn_fetch(
                 stamp,
@@ -2113,9 +2103,15 @@ impl StatusView {
 
     /// The priority fetch: `git status` and the in-progress sequence. Renders
     /// the main file sections and header as soon as it lands (restoring the
-    /// cursor and re-warming diffs), then — now that the push target is known —
-    /// fetches the pushremote sections when this is a triangular workflow.
-    fn spawn_status_fetch(&mut self, stamp: u64, pushremote_configured: bool, cx: &mut Context<Self>) {
+    /// cursor and re-warming diffs), then — now that the upstream/push targets
+    /// are known — fetches those divergence sections only when they can exist.
+    fn spawn_status_fetch(
+        &mut self,
+        stamp: u64,
+        upstream_configured: bool,
+        pushremote_configured: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.read_repo() else {
             return;
         };
@@ -2155,13 +2151,23 @@ impl StatusView {
                 for s in [SectionId::Untracked, SectionId::Unstaged, SectionId::Staged] {
                     this.loading_sections.remove(&s);
                 }
+                let has_upstream = this
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.head.upstream.is_some());
                 let triangular = this
                     .status
                     .as_ref()
                     .is_some_and(|s| s.head.push.is_some());
-                // Pushremote sections only exist in a triangular workflow; clear
-                // any stale listing otherwise so it doesn't linger from a prior
-                // state (do it before the rebuild so the row reflects it).
+                // Divergence sections only exist when their target exists; clear
+                // any stale listings otherwise so they don't linger from a prior
+                // state (do it before the rebuild so the rows reflect it).
+                if upstream_configured && !has_upstream {
+                    this.status_sections.unpushed.clear();
+                    this.status_sections.unpulled.clear();
+                    this.loading_sections.remove(&SectionId::Unpushed);
+                    this.loading_sections.remove(&SectionId::Unpulled);
+                }
                 if pushremote_configured && triangular {
                     this.loading_sections.insert(SectionId::UnpushedPushremote);
                     this.loading_sections.insert(SectionId::UnpulledPushremote);
@@ -2176,8 +2182,21 @@ impl StatusView {
                 this.reload_expanded_diffs(cx);
                 // Warm a bounded set of small diffs so first expand feels instant.
                 this.start_prefetch(cx);
-                // Now that status resolved the push target, fetch the pushremote
-                // listings; they pop into place (or drop their spinner) on land.
+                // Now that status resolved the upstream/push targets, fetch the
+                // divergence listings; they pop into place (or drop their
+                // spinners) on land.
+                if upstream_configured && has_upstream {
+                    this.spawn_fetch(
+                        stamp,
+                        &[SectionId::Unpushed, SectionId::Unpulled],
+                        cx,
+                        |repo| repo.upstream_divergence().unwrap_or_default(),
+                        |this, (up, down)| {
+                            this.status_sections.unpushed = up;
+                            this.status_sections.unpulled = down;
+                        },
+                    );
+                }
                 if pushremote_configured && triangular {
                     this.spawn_fetch(
                         stamp,
