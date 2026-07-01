@@ -407,6 +407,22 @@ pub(crate) fn commands() -> &'static [Command] {
             leaf: None,
             run: |t, _w, cx| t.check_for_updates(cx),
         },
+        // The `?` accelerator opens this too; a registry entry so vanilla's `h`
+        // (magit binds both `h` and `?` to the dispatch) and the palette reach it.
+        Command {
+            id: "help",
+            title: "Help",
+            category: Category::Application,
+            key: None,
+            menu: false, // it *is* the menu
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |t, _w, cx| {
+                t.popup = Some(Popup::Dispatch(dispatch_menu_for(t)));
+                cx.notify();
+            },
+        },
         // Applying changes.
         top!("stage", "Stage", Category::Applying, "s", |t, _w, cx| t
             .act(Op::Stage, cx)),
@@ -552,11 +568,25 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("up", "move-up"),
     ("ctrl-n", "move-down"),
     ("ctrl-p", "move-up"),
+    // Paging: Space/DEL mirror magit's scroll pair; C-v/M-v are Emacs' own.
     ("space", "page-down"),
+    ("backspace", "page-up"),
+    ("ctrl-v", "page-down"),
+    ("alt-v", "page-up"),
+    // Buffer edges (Emacs beginning/end-of-buffer).
+    ("alt-<", "goto-top"),
+    ("alt->", "goto-bottom"),
     ("n", "next-section"),
     ("p", "prev-section"),
     ("alt-n", "next-section"),
     ("alt-p", "prev-section"),
+    // Region selection on set-mark; copy on magit's `magit-copy-section-value`.
+    ("ctrl-space", "visual"),
+    ("ctrl-w", "yank"),
+    // Magit binds both `h` and `?` to the dispatch (`?` is the fixed key).
+    ("h", "help"),
+    // Magit's `G` is refresh-all; we have one buffer, so alias plain refresh.
+    ("G", "refresh"),
     (":", "git-command"),
     ("Q", "git-command"),
     ("ctrl-x ctrl-c", "quit"),
