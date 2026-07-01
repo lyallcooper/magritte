@@ -47,5 +47,5 @@ pub use reset::ResetMode;
 pub use sequence::{Sequence, SequenceKind, SequenceStep};
 pub use stage::ApplyTarget;
 pub use stash::Stash;
-pub use status::{Change, EntryKind, FileEntry, HeadInfo, Status};
+pub use status::{Change, EntryKind, FileEntry, HeadInfo, RefreshSnapshot, Status};
 pub use transient::{Command, Transient};

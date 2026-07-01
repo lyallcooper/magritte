@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::repo::Repo;
+use crate::sequence::Sequence;
 
 /// A single-character git status code for one side (index or worktree).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,15 @@ pub struct Status {
     pub entries: Vec<FileEntry>,
 }
 
+/// Metadata the app needs for the priority half of one status refresh. Keeping
+/// it as one core call prevents the UI from independently re-querying shared
+/// repository state while building the same screen generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshSnapshot {
+    pub status: Status,
+    pub sequence: Option<Sequence>,
+}
+
 impl Status {
     pub fn staged(&self) -> impl Iterator<Item = &FileEntry> {
         self.entries.iter().filter(|e| e.is_staged())
@@ -161,6 +171,15 @@ impl Repo {
         let mut status = parse_porcelain_v2(&out.stdout)?;
         self.resolve_push_target(&mut status.head);
         Ok(status)
+    }
+
+    /// The priority read for one UI refresh: parsed status plus any in-progress
+    /// sequence state. Resolve the git dir once and share it with the sequence
+    /// reader instead of letting each frontend path shell out independently.
+    pub fn refresh_snapshot(&self) -> Result<RefreshSnapshot> {
+        let status = self.status()?;
+        let sequence = self.git_dir().ok().and_then(|dir| self.sequence_in_dir(&dir));
+        Ok(RefreshSnapshot { status, sequence })
     }
 
     /// Resolve the branch's push target (`@{push}`) and its ahead/behind, but

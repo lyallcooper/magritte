@@ -88,22 +88,28 @@ impl Repo {
     /// mirror magit's `*-in-progress-p` predicates.
     pub fn sequence(&self) -> Option<Sequence> {
         let dir = self.git_dir().ok()?;
+        self.sequence_in_dir(&dir)
+    }
+
+    /// Like [`sequence`](Self::sequence), but reuses a git-dir path already
+    /// resolved by a broader refresh snapshot.
+    pub(crate) fn sequence_in_dir(&self, dir: &Path) -> Option<Sequence> {
         let has = |p: &str| dir.join(p).exists();
 
         if has("rebase-apply/applying") {
-            return Some(self.am_sequence(&dir));
+            return Some(self.am_sequence(dir));
         }
         if has("rebase-merge") || has("rebase-apply/onto") {
-            return Some(self.rebase_sequence(&dir));
+            return Some(self.rebase_sequence(dir));
         }
-        if has("CHERRY_PICK_HEAD") || self.sequencer_first_verb(&dir).as_deref() == Some("pick") {
-            return Some(self.sequencer_sequence(&dir, SequenceKind::CherryPick, "Cherry Picking"));
+        if has("CHERRY_PICK_HEAD") || self.sequencer_first_verb(dir).as_deref() == Some("pick") {
+            return Some(self.sequencer_sequence(dir, SequenceKind::CherryPick, "Cherry Picking"));
         }
-        if has("REVERT_HEAD") || self.sequencer_first_verb(&dir).as_deref() == Some("revert") {
-            return Some(self.sequencer_sequence(&dir, SequenceKind::Revert, "Reverting"));
+        if has("REVERT_HEAD") || self.sequencer_first_verb(dir).as_deref() == Some("revert") {
+            return Some(self.sequencer_sequence(dir, SequenceKind::Revert, "Reverting"));
         }
         if has("MERGE_HEAD") {
-            return Some(self.merge_sequence(&dir));
+            return Some(self.merge_sequence(dir));
         }
         None
     }

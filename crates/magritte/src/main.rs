@@ -2097,7 +2097,12 @@ impl StatusView {
         cx.spawn(async move |this, cx| {
             let (result, sequence) = cx
                 .background_executor()
-                .spawn(async move { (repo.status(), repo.sequence()) })
+                .spawn(async move {
+                    match repo.refresh_snapshot() {
+                        Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence),
+                        Err(e) => (Err(e), None),
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.end_activity(cx);
