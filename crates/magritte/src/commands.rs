@@ -342,7 +342,7 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("log-all", "Log all branches", Leaf::LogAll),
         leaf!("log-other", "Log other ref", Leaf::LogOther),
         leaf!("log-reflog", "Reflog", Leaf::LogReflog),
-        leaf!("diff-dwim", "Diff dwim", Leaf::DiffDwim),
+        leaf!("diff-dwim", "Diff smart target", Leaf::DiffDwim),
         leaf!("diff-range", "Diff range", Leaf::DiffRange),
         leaf!("diff-unstaged", "Diff unstaged", Leaf::DiffUnstaged),
         leaf!("diff-staged", "Diff staged", Leaf::DiffStaged),

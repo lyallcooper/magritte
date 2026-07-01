@@ -57,7 +57,7 @@ pub enum Command {
     StashPop,
     /// Drop a stash (prompts for which).
     StashDrop,
-    /// Diff DWIM target: context-sensitive, usually unstaged/staged/commit.
+    /// Diff the context-sensitive target, usually unstaged/staged/commit.
     DiffDwim,
     /// Diff an arbitrary revision or range.
     DiffRange,
@@ -387,7 +387,12 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::new("-f", "--force-with-lease", "Force with lease")),
+                    Suffix::Switch(Switch::new("-F", "--force", "Force")),
+                    Suffix::Switch(Switch::new("-h", "--no-verify", "Disable hooks")),
                     Suffix::Switch(Switch::new("-n", "--dry-run", "Dry run")),
+                    Suffix::Switch(Switch::new("-u", "--set-upstream", "Set upstream")),
+                    Suffix::Switch(Switch::new("-T", "--tags", "Include all tags")),
+                    Suffix::Switch(Switch::new("-t", "--follow-tags", "Include related annotated tags")),
                 ],
             },
             Group {
@@ -675,7 +680,7 @@ pub fn diff_transient() -> Transient {
                 suffixes: vec![
                     Suffix::Action(Action {
                         key: "d",
-                        description: "dwim".to_string(),
+                        description: "smart".to_string(),
                         command: Command::DiffDwim,
                     }),
                     Suffix::Action(Action {

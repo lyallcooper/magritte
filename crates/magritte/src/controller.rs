@@ -559,11 +559,7 @@ impl StatusView {
         if let Some((hash, short, subject)) = self.point_commit() {
             return self.open_commit_with_args(hash, short, subject, args, paths, cx);
         }
-        if let Some((source, path)) = self.diff_path_at_point() {
-            let mut paths = paths;
-            if paths.is_empty() {
-                paths.push(path);
-            }
+        if let Some(source) = self.diff_source_at_point() {
             let request = match source {
                 DiffSource::Unstaged => DiffRequest::Unstaged { args, paths },
                 DiffSource::Staged => DiffRequest::Staged { args, paths },
@@ -590,13 +586,16 @@ impl StatusView {
         }
     }
 
-    fn diff_path_at_point(&self) -> Option<(DiffSource, String)> {
-        let target = self.rows.get(self.selected)?.target.as_ref()?;
-        match target {
-            Target::File(f) => section_source(f.section).map(|source| (source, f.path.clone())),
-            Target::Hunk { file, .. } | Target::Line { file, .. } => {
-                section_source(file.section).map(|source| (source, file.path.clone()))
+    fn diff_source_at_point(&self) -> Option<DiffSource> {
+        let row = self.rows.get(self.selected)?;
+        if let Some(FoldKey::Section(section)) = &row.fold {
+            if let Some(source) = section_source(*section) {
+                return Some(source);
             }
+        }
+        match row.target.as_ref()? {
+            Target::File(f) => section_source(f.section),
+            Target::Hunk { file, .. } | Target::Line { file, .. } => section_source(file.section),
         }
     }
 
