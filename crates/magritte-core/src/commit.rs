@@ -39,7 +39,12 @@ impl Repo {
     /// HEAD's full commit message (subject + body), for pre-filling an amend or
     /// reword editor.
     pub fn head_message(&self) -> Result<String> {
-        let out = self.run(["log", "-1", "--format=%B"])?;
+        self.commit_message("HEAD")
+    }
+
+    /// A commit's full message (subject + body), without git's trailing newline.
+    pub fn commit_message(&self, rev: &str) -> Result<String> {
+        let out = self.run(["log", "-1", "--format=%B", rev])?;
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     }
 

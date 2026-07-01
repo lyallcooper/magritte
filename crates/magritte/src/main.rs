@@ -96,6 +96,7 @@ struct CommitEditor {
     state: Entity<InputState>,
     mode: CommitMode,
     args: Vec<String>,
+    after_submit: CommitAfterSubmit,
     /// The baseline message we'd discard back to: empty for a new commit, or
     /// HEAD's message for amend/reword. Canceling only prompts when the current
     /// text differs from this.
@@ -115,8 +116,16 @@ struct CommitEditor {
     _sub: Subscription,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CommitAfterSubmit {
+    Commit,
+    ContinueRebase { stopped_sha: String },
+}
+
 /// One flattened row of the commit editor's staged-diff preview.
 enum CommitDiffRow {
+    /// A line from the commit's full message, shown above the diff in commit view.
+    Message(String),
     /// A file header (the path).
     File(String),
     /// A hunk header (`@@ … @@`).
@@ -512,6 +521,8 @@ enum LogPurpose {
     /// Pick the commit to rebase interactively since (its `^`..HEAD becomes the
     /// editable todo). Carries the switches gathered in the rebase transient.
     SelectRebaseBase { args: Vec<String> },
+    /// Pick a commit to reword directly via an app-managed rebase stop.
+    SelectRebaseReword { args: Vec<String> },
 }
 
 /// The commit-log view (`l`): a scrollable list of commits with j/k navigation.
@@ -1013,6 +1024,8 @@ enum Confirm {
     /// todo editor for `rev^..HEAD` with the carried switches (rewriting pushed
     /// history).
     RebaseSincePushed { rev: String, args: Vec<String> },
+    /// Reword an already-published commit: on `y`, run the direct reword rebase.
+    RebaseRewordPushed { rev: String, args: Vec<String> },
     /// A user `[[command]]` that looks destructive (resolved command): on `y`,
     /// run it via the shell, refreshing unless opted out.
     CustomShell { command: String, refresh: bool },
@@ -1105,6 +1118,9 @@ struct StatusView {
     conflicted: HashSet<String>,
     /// The in-progress merge/rebase/cherry-pick/revert/am, surfaced as a banner.
     sequence: Option<Sequence>,
+    /// Original commit ids whose `reword` rows were intentionally written to
+    /// git as `edit` stops so the in-app editor can handle their messages.
+    pending_rebase_rewords: HashSet<String>,
     error: Option<String>,
     expanded: HashSet<FoldKey>,
     /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
@@ -1340,6 +1356,7 @@ impl StatusView {
             tag_info: (None, None),
             conflicted: HashSet::new(),
             sequence: None,
+            pending_rebase_rewords: HashSet::new(),
             error: None,
             expanded,
             collapsed_hunks: HashSet::new(),
@@ -3106,6 +3123,9 @@ impl StatusView {
             Some((_, Confirm::RebaseSincePushed { rev, args })) => {
                 self.open_rebase_todo(format!("{rev}^"), args, cx)
             }
+            Some((_, Confirm::RebaseRewordPushed { rev, args })) => {
+                self.run_rebase_reword_from_rev(rev, args, window, cx)
+            }
             Some((_, Confirm::CustomShell { command, refresh })) => {
                 self.run_custom_shell(command, refresh, cx)
             }
@@ -3548,7 +3568,7 @@ impl StatusView {
     /// editor, or `None` (use the in-app editor) when none is configured. The
     /// configured command is used verbatim — the user supplies a blocking
     /// `--wait`-style flag as their editor requires.
-    fn external_commit_editor(&self) -> Option<String> {
+    pub(crate) fn external_commit_editor(&self) -> Option<String> {
         if !self.config.commit_in_editor {
             return None;
         }
@@ -3597,11 +3617,26 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // If the user opted to write commit messages in their external editor,
-        // hand off to an interactive `git commit` instead of the in-app editor.
-        if let Some(git_editor) = self.external_commit_editor() {
-            self.commit_via_external_editor(mode, args, git_editor, cx);
-            return;
+        self.open_editor_after(mode, args, CommitAfterSubmit::Commit, window, cx);
+    }
+
+    fn open_editor_after(
+        &mut self,
+        mode: CommitMode,
+        args: Vec<String>,
+        after_submit: CommitAfterSubmit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // If the user opted to write ordinary commit messages in their external
+        // editor, hand off to an interactive `git commit` instead of the in-app
+        // editor. Mid-rebase rewords choose their editor before reaching this
+        // helper, because they also have to continue the rebase afterward.
+        if after_submit == CommitAfterSubmit::Commit {
+            if let Some(git_editor) = self.external_commit_editor() {
+                self.commit_via_external_editor(mode, args, git_editor, cx);
+                return;
+            }
         }
         // Return inserts a newline; Cmd/Ctrl+Return submits (reported as a
         // PressEnter with secondary=true). We use code-editor mode (with the
@@ -3639,6 +3674,7 @@ impl StatusView {
             state: state.clone(),
             mode,
             args,
+            after_submit,
             initial: String::new(),
             confirming_cancel: false,
             flash: false,
@@ -4001,6 +4037,23 @@ impl StatusView {
         .detach();
     }
 
+    fn start_log_select_rebase_reword(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.show_log_loading(LogPurpose::SelectRebaseReword { args: switches }, cx);
+        let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.log_with(&args) })
+                .await;
+            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
+                .ok();
+        })
+        .detach();
+    }
+
     /// Begin an interactive rebase since the commit selected in the log (its
     /// parent is the base, so that commit and everything above it are editable),
     /// or the commit at point in a status commit section, opening the todo
@@ -4041,6 +4094,152 @@ impl StatusView {
         .detach();
     }
 
+    /// Reword the selected older commit using an interactive rebase, matching
+    /// Magit's `c R` / `r w` / `magit-rebase-reword-commit` path.
+    fn reword_past_selected(
+        &mut self,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_commit_hash().is_some() {
+            self.rebase_reword_selected(args, window, cx);
+        } else {
+            self.start_log_select_rebase_reword(args, cx);
+        }
+    }
+
+    fn rebase_reword_selected(
+        &mut self,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rev) = self.selected_commit_hash() else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let probe = rev.clone();
+        let branches = self.config.published_branches.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let published = cx
+                .background_executor()
+                .spawn(async move { repo.published_on(&probe, &branches) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(target) = published else {
+                    this.run_rebase_reword_from_rev(rev, args, window, cx);
+                    return;
+                };
+                this.screen = Screen::Status;
+                this.confirm = Some((
+                    format!("{rev} has already been pushed to {target}. Rebase since it anyway?"),
+                    Confirm::RebaseRewordPushed { rev, args },
+                ));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn run_rebase_reword_from_rev(
+        &mut self,
+        rev: String,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let base = format!("{rev}^");
+                    let result = (|| {
+                        let mut steps = repo.rebase_todo(&base)?;
+                        let step = steps
+                            .iter_mut()
+                            .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
+                            .ok_or_else(|| {
+                                magritte_core::Error::Message(
+                                    "selected commit is not in the rebase range".to_string(),
+                                )
+                            })?;
+                        let oid = step.oid.clone();
+                        step.action = RebaseAction::Reword;
+                        repo.rebase_interactive(&base, &steps, &args)?;
+                        Ok::<_, magritte_core::Error>(oid)
+                    })();
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped) = outcome;
+                this.job_cancel = None;
+                match result {
+                    Ok(oid) => {
+                        this.pending_rebase_rewords.insert(oid);
+                        if let Some(stopped) = stopped {
+                            if this.open_pending_rebase_reword(stopped, window, cx) {
+                                return;
+                            }
+                        }
+                        this.report("Rebased", Ok(String::new()), cx);
+                        this.refresh(cx);
+                    }
+                    Err(e) => {
+                        this.report("Rebased", Err(e), cx);
+                        this.refresh(cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn pending_rebase_reword_matches(&self, stopped_sha: &str) -> bool {
+        self.pending_rebase_rewords
+            .iter()
+            .any(|oid| stopped_sha.starts_with(oid) || oid.starts_with(stopped_sha))
+    }
+
+    fn open_pending_rebase_reword(
+        &mut self,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.pending_rebase_reword_matches(&stopped_sha) {
+            return false;
+        }
+        if let Some(git_editor) = self.external_commit_editor() {
+            self.run_rebase_reword_with_external_editor(stopped_sha, git_editor, window, cx);
+            return true;
+        }
+        self.clear_status(cx);
+        self.open_editor_after(
+            CommitMode::Reword,
+            Vec::new(),
+            CommitAfterSubmit::ContinueRebase { stopped_sha },
+            window,
+            cx,
+        );
+        true
+    }
+
     /// The selected commit in the log, or the commit row at point in status.
     fn selected_commit_hash(&self) -> Option<String> {
         self.log()
@@ -4079,10 +4278,15 @@ impl StatusView {
 
     /// Confirm the selected commit in a log-select mode (the clickable "select"
     /// button; Return does the same from the key handler).
-    fn confirm_log_select(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(LogPurpose::SelectRebaseBase { args }) = self.log().map(|l| &l.purpose) {
-            let args = args.clone();
-            self.rebase_since_selected(args, cx);
+    fn confirm_log_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.log().map(|l| &l.purpose) {
+            Some(LogPurpose::SelectRebaseBase { args }) => {
+                self.rebase_since_selected(args.clone(), cx);
+            }
+            Some(LogPurpose::SelectRebaseReword { args }) => {
+                self.reword_past_selected(args.clone(), window, cx);
+            }
+            _ => {}
         }
     }
 
@@ -4247,7 +4451,8 @@ impl StatusView {
             let loaded = cx
                 .background_executor()
                 .spawn(async move {
-                    repo.diff_commit(&rev).map(|diffs| {
+                    let message = repo.commit_message(&rev)?;
+                    let files = repo.diff_commit(&rev).map(|diffs| {
                         diffs
                             .into_iter()
                             .map(|d| {
@@ -4258,7 +4463,8 @@ impl StatusView {
                                 (d, lang)
                             })
                             .collect::<Vec<_>>()
-                    })
+                    })?;
+                    Ok::<_, magritte_core::Error>((message, files))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -4268,7 +4474,7 @@ impl StatusView {
                     return;
                 }
                 let rows = match loaded {
-                    Ok(files) => this.diff_rows(&files, cx),
+                    Ok((message, files)) => this.commit_detail_rows(&message, &files, cx),
                     Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
                 };
                 if let Some(cv) = this.commit_view_mut() {
@@ -4279,6 +4485,31 @@ impl StatusView {
             .ok();
         })
         .detach();
+    }
+
+    fn commit_detail_rows(
+        &self,
+        message: &str,
+        files: &[(FileDiff, Option<&'static str>)],
+        cx: &mut Context<Self>,
+    ) -> Vec<CommitDiffRow> {
+        let mut rows = Vec::new();
+        let mut body = message.lines().skip(1);
+        if matches!(body.clone().next(), Some("")) {
+            body.next();
+        }
+        let mut body = body.peekable();
+        if body.peek().is_some() {
+            rows.push(CommitDiffRow::Note(String::new()));
+        }
+        for line in body {
+            rows.push(CommitDiffRow::Message(line.to_string()));
+        }
+        if !rows.is_empty() {
+            rows.push(CommitDiffRow::Note(String::new()));
+        }
+        rows.extend(self.diff_rows(files, cx));
+        rows
     }
 
     fn close_commit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4363,7 +4594,13 @@ impl StatusView {
         let ed = self.take_editor().unwrap();
         self.focus.focus(window, cx);
         // Drop the trailing newline the submit keystroke inserted.
-        self.run_commit(text.trim_end().to_string(), ed.mode, ed.args, cx);
+        let message = text.trim_end().to_string();
+        match ed.after_submit {
+            CommitAfterSubmit::Commit => self.run_commit(message, ed.mode, ed.args, cx),
+            CommitAfterSubmit::ContinueRebase { stopped_sha } => {
+                self.run_rebase_reword_commit(message, stopped_sha, window, cx)
+            }
+        }
     }
 
     fn run_commit(
@@ -4379,6 +4616,87 @@ impl StatusView {
             move |repo| repo.commit(&message, mode, &args),
             cx,
         );
+    }
+
+    fn run_rebase_reword_commit(
+        &mut self,
+        message: String,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_rebase_reword_after_commit(
+            stopped_sha,
+            window,
+            cx,
+            move |repo| repo.commit(&message, CommitMode::Reword, &[]),
+        );
+    }
+
+    fn run_rebase_reword_with_external_editor(
+        &mut self,
+        stopped_sha: String,
+        git_editor: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_rebase_reword_after_commit(
+            stopped_sha,
+            window,
+            cx,
+            move |repo| repo.commit_with_editor(CommitMode::Reword, &[], &git_editor),
+        );
+    }
+
+    fn run_rebase_reword_after_commit<F>(
+        &mut self,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        commit: F,
+    ) where
+        F: FnOnce(&Repo) -> magritte_core::Result<String> + Send + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        cx.spawn_in(window, async move |this, cx| {
+            let stopped_for_result = stopped_sha.clone();
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let commit_result = commit(&repo);
+                    let committed = commit_result.is_ok();
+                    let result = commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped, committed)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped, committed) = outcome;
+                this.job_cancel = None;
+                if committed {
+                    this.pending_rebase_rewords.remove(&stopped_for_result);
+                }
+                if result.is_ok() {
+                    if let Some(stopped) = stopped {
+                        if this.open_pending_rebase_reword(stopped, window, cx) {
+                            return;
+                        }
+                    }
+                }
+                this.report("Reworded", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 
 
@@ -4460,6 +4778,7 @@ fn parse_refs(refs: &str) -> Vec<(String, RefKind)> {
 /// the `+`/`-` sigil).
 fn commit_row_text(row: &CommitDiffRow) -> String {
     match row {
+        CommitDiffRow::Message(m) => m.clone(),
         CommitDiffRow::File(p) => p.clone(),
         CommitDiffRow::Hunk(h) => h.clone(),
         CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
@@ -4514,7 +4833,7 @@ fn describe_command(command: transient::Command) -> &'static str {
         PushPushRemote | PushUpstream | PushElsewhere => "Pushing",
         PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
         FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
-        CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committing",
+        CommitCreate | CommitAmend | CommitReword | CommitRewordPast | CommitExtend => "Committing",
         // Branch, stash, and log commands route through their own picker/runner.
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Working"
@@ -4525,9 +4844,8 @@ fn describe_command(command: transient::Command) -> &'static str {
         MergePlain | MergeNoCommit | MergeSquash => "Merging",
         CherryPick | CherryApply => "Cherry-picking",
         RevertCommit | RevertNoCommit => "Reverting",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
-            "Rebasing"
-        }
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
+        | RebaseRewordCommit => "Rebasing",
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
         // These route through run_sequence / the todo editor, which set their
         // own progress text.
@@ -4542,7 +4860,7 @@ fn command_done(command: transient::Command) -> &'static str {
         PushPushRemote | PushUpstream | PushElsewhere => "Pushed",
         PullPushRemote | PullUpstream | PullElsewhere => "Pulled",
         FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetched",
-        CommitCreate | CommitAmend | CommitReword | CommitExtend => "Committed",
+        CommitCreate | CommitAmend | CommitReword | CommitRewordPast | CommitExtend => "Committed",
         BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
             "Done"
         }
@@ -4552,9 +4870,8 @@ fn command_done(command: transient::Command) -> &'static str {
         MergePlain | MergeNoCommit | MergeSquash => "Merged",
         CherryPick | CherryApply => "Cherry-picked",
         RevertCommit | RevertNoCommit => "Reverted",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
-            "Rebased"
-        }
+        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
+        | RebaseRewordCommit => "Rebased",
         IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
         SequenceContinue | SequenceSkip | SequenceAbort | SequenceEditTodo => "Done",
     }

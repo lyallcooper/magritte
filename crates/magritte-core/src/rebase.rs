@@ -10,7 +10,7 @@ use crate::repo::Repo;
 pub enum RebaseAction {
     /// Keep the commit as-is.
     Pick,
-    /// Stop to edit the message (deferred in v1 — see `rebase_interactive`).
+    /// Stop to edit the message.
     Reword,
     /// Pause after applying so the commit can be amended (`--continue` resumes).
     Edit,
@@ -135,7 +135,7 @@ impl Repo {
     pub fn rebase_edit_todo(&self, steps: &[RebaseStep]) -> Result<String> {
         let todo: String = steps
             .iter()
-            .map(|s| format!("{} {}\n", s.action.keyword(), s.oid))
+            .map(|s| format!("{} {}\n", rebase_action_for_git(s.action).keyword(), s.oid))
             .collect();
         let argv = vec!["rebase".to_string(), "--edit-todo".to_string()];
         Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
@@ -143,14 +143,11 @@ impl Repo {
 
     /// Run an interactive rebase onto `base` with the given todo. The todo is
     /// injected via a throwaway sequence editor (`cp <file>`) instead of opening
-    /// git's editor, and `GIT_EDITOR` is neutralized (`true`) so `squash` keeps
-    /// the combined message rather than blocking on an editor. `edit` (and any
-    /// conflict) pauses the rebase, which the in-progress banner then drives via
+    /// git's editor. UI-level `reword` steps are written as git `edit` stops so
+    /// the app can open its in-app message editor mid-rebase instead of relying
+    /// on `$EDITOR`. `squash` keeps the auto-combined message; `edit`/`reword`
+    /// (and any conflict) pause the rebase, which the UI drives via
     /// continue/skip/abort.
-    ///
-    /// v1 note: `reword` is intentionally not offered by the frontend yet — it
-    /// needs a message editor mid-rebase (with `GIT_EDITOR=true` it would be a
-    /// no-op). `squash` keeps the auto-combined message (no inline edit).
     pub fn rebase_interactive(
         &self,
         base: &str,
@@ -165,11 +162,29 @@ impl Repo {
         // Build the todo; the sequence-editor runner handles feeding it to git.
         let todo: String = steps
             .iter()
-            .map(|s| format!("{} {}\n", s.action.keyword(), s.oid))
+            .map(|s| format!("{} {}\n", rebase_action_for_git(s.action).keyword(), s.oid))
             .collect();
         let mut argv = vec!["rebase".to_string(), "-i".to_string()];
         argv.extend(args.iter().cloned());
         argv.push(base.to_string());
         Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
+    }
+
+    /// The original commit at which an interactive rebase is currently stopped,
+    /// if git exposes one. Present for `edit` stops and therefore for app-managed
+    /// `reword` stops (which are written as `edit` in git's todo).
+    pub fn rebase_stopped_sha(&self) -> Option<String> {
+        let path = self.git_dir().ok()?.join("rebase-merge").join("stopped-sha");
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+fn rebase_action_for_git(action: RebaseAction) -> RebaseAction {
+    match action {
+        RebaseAction::Reword => RebaseAction::Edit,
+        other => other,
     }
 }

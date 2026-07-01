@@ -33,6 +33,8 @@ pub enum Command {
     CommitAmend,
     /// Reword HEAD (needs a message).
     CommitReword,
+    /// Reword an older commit using an interactive rebase.
+    CommitRewordPast,
     /// Amend HEAD with staged changes, keeping its message.
     CommitExtend,
     /// Check out an existing branch/revision (the frontend prompts).
@@ -94,6 +96,8 @@ pub enum Command {
     /// Interactive rebase: prompt for a base, then edit the todo
     /// (pick/edit/squash/fixup/drop/reorder).
     RebaseInteractive,
+    /// Reword a commit using an interactive rebase.
+    RebaseRewordCommit,
     /// Add a gitignore rule (the frontend prompts for it, seeded with the file
     /// at point), to one of the four ignore files.
     IgnoreToplevel,
@@ -643,6 +647,14 @@ pub fn commit_transient() -> Transient {
                     }),
                 ],
             },
+            Group {
+                title: plain_title("Edit and rebase"),
+                suffixes: vec![Suffix::Action(Action {
+                    key: "R",
+                    description: "Reword past".to_string(),
+                    command: Command::CommitRewordPast,
+                })],
+            },
         ],
     }
 }
@@ -785,12 +797,19 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                 ],
             },
             Group {
-                title: plain_title("Interactively"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: "i",
-                    description: "edit commits since…".to_string(),
-                    command: Command::RebaseInteractive,
-                })],
+                title: plain_title("Rebase"),
+                suffixes: vec![
+                    Suffix::Action(Action {
+                        key: "i",
+                        description: "interactively".to_string(),
+                        command: Command::RebaseInteractive,
+                    }),
+                    Suffix::Action(Action {
+                        key: "w",
+                        description: "to reword a commit".to_string(),
+                        command: Command::RebaseRewordCommit,
+                    }),
+                ],
             },
         ],
     }

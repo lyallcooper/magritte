@@ -49,6 +49,11 @@ impl StatusView {
             CommitAmend | CommitReword | CommitExtend => {
                 self.begin_history_rewrite(command, args, window, cx)
             }
+            // `c R` is hosted in the commit transient for Magit parity, but the
+            // operation itself is an interactive rebase. Commit switches such as
+            // `--date=now` are not valid `git rebase` options; use `r w` when
+            // rebase-specific switches should be carried through.
+            CommitRewordPast => self.reword_past_selected(Vec::new(), window, cx),
             // Push/pull/fetch resolve a remote (prompting if needed) then run.
             PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
             | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
@@ -66,9 +71,8 @@ impl StatusView {
             CherryPick | CherryApply | RevertCommit | RevertNoCommit => {
                 self.dispatch_pick(command, args, window, cx)
             }
-            RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive => {
-                self.dispatch_rebase(command, args, &targets, window, cx)
-            }
+            RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
+            | RebaseRewordCommit => self.dispatch_rebase(command, args, &targets, window, cx),
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
                 self.dispatch_ignore(command, window, cx)
             }
@@ -578,7 +582,12 @@ impl StatusView {
                     Ok(steps) if steps.is_empty() => {
                         this.set_status("No remaining steps to edit".to_string(), true, cx);
                     }
-                    Ok(steps) => {
+                    Ok(mut steps) => {
+                        for step in &mut steps {
+                            if this.pending_rebase_reword_matches(&step.oid) {
+                                step.action = RebaseAction::Reword;
+                            }
+                        }
                         this.screen = Screen::RebaseTodo(RebaseTodoView {
                             base: String::new(),
                             args: Vec::new(),
@@ -654,15 +663,60 @@ impl StatusView {
             RebaseTodoMode::Start => ("Rebasing…", "Rebased"),
             RebaseTodoMode::Edit => ("Updating todo…", "Todo updated"),
         };
-        self.run_job(
-            progress,
-            done,
-            move |repo| match rt.mode {
-                RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
-                RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
-            },
-            cx,
+        let has_pending_reword = rt.steps.iter().any(|s| s.action == RebaseAction::Reword);
+        self.pending_rebase_rewords.extend(
+            rt.steps
+                .iter()
+                .filter(|s| s.action == RebaseAction::Reword)
+                .map(|s| s.oid.clone()),
         );
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        if !has_pending_reword {
+            self.set_progress(progress.to_string(), cx);
+            self.begin_activity(cx);
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = match rt.mode {
+                        RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+                        RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
+                    };
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped) = outcome;
+                this.job_cancel = None;
+                if result.is_ok() {
+                    if let Some(stopped) = stopped {
+                        if this.open_pending_rebase_reword(stopped, window, cx) {
+                            if !has_pending_reword {
+                                this.end_activity(cx);
+                            }
+                            return;
+                        }
+                    }
+                }
+                this.report(done, result, cx);
+                this.refresh(cx);
+                if !has_pending_reword {
+                    this.end_activity(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Cancel the rebase-todo editor — but if the plan has unsaved edits, ask
@@ -711,15 +765,23 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         use transient::Command::*;
-        if matches!(command, RebaseInteractive) {
+        if matches!(command, RebaseInteractive | RebaseRewordCommit) {
             if self.selected_commit_hash().is_some() {
-                self.rebase_since_selected(args, cx);
+                if matches!(command, RebaseRewordCommit) {
+                    self.reword_past_selected(args, window, cx);
+                } else {
+                    self.rebase_since_selected(args, cx);
+                }
                 return;
             }
             // magit's model: pick the commit to rebase *since* from the log
             // (not a free-text base) — that commit and everything above it
             // become the editable todo.
-            self.start_log_select_rebase(args, cx);
+            if matches!(command, RebaseRewordCommit) {
+                self.start_log_select_rebase_reword(args, cx);
+            } else {
+                self.start_log_select_rebase(args, cx);
+            }
             return;
         }
         let onto = match command {
@@ -945,8 +1007,29 @@ impl StatusView {
     }
 
     /// Continue past a resolved stop.
-    pub(crate) fn sequence_continue(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sequence_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(kind) = self.sequence_kind() {
+            if kind == SequenceKind::Rebase {
+                if let Some(repo) = self.repo.clone() {
+                    cx.spawn_in(window, async move |this, cx| {
+                        let stopped = cx
+                            .background_executor()
+                            .spawn(async move { repo.rebase_stopped_sha() })
+                            .await;
+                        this.update_in(cx, |this, window, cx| {
+                            if let Some(stopped) = stopped {
+                                if this.open_pending_rebase_reword(stopped, window, cx) {
+                                    return;
+                                }
+                            }
+                            this.run_sequence(SeqOp::Continue, kind, cx);
+                        })
+                        .ok();
+                    })
+                    .detach();
+                    return;
+                }
+            }
             self.run_sequence(SeqOp::Continue, kind, cx);
         }
     }
@@ -954,6 +1037,14 @@ impl StatusView {
     /// Skip the current step.
     pub(crate) fn sequence_skip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(kind) = self.sequence_kind() {
+            if kind == SequenceKind::Rebase {
+                if let Some(repo) = self.repo.clone() {
+                    if let Some(stopped) = repo.rebase_stopped_sha() {
+                        self.pending_rebase_rewords
+                            .retain(|oid| !(stopped.starts_with(oid) || oid.starts_with(&stopped)));
+                    }
+                }
+            }
             self.run_sequence(SeqOp::Skip, kind, cx);
         }
     }
@@ -971,6 +1062,9 @@ impl StatusView {
 
     /// Run a sequence control on the background executor, then refresh.
     pub(crate) fn run_sequence(&mut self, op: SeqOp, kind: SequenceKind, cx: &mut Context<Self>) {
+        if matches!(op, SeqOp::Abort) {
+            self.pending_rebase_rewords.clear();
+        }
         let (verb, done) = match op {
             SeqOp::Continue => ("Continuing", "Continued"),
             SeqOp::Skip => ("Skipping", "Skipped"),

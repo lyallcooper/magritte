@@ -112,6 +112,7 @@ impl StatusView {
                 "j" if shift => self.rebase_todo_reorder(1, cx),
                 // Set the action of the commit at point.
                 "p" => self.rebase_todo_set_action(RebaseAction::Pick, cx),
+                "r" | "w" => self.rebase_todo_set_action(RebaseAction::Reword, cx),
                 "e" => self.rebase_todo_set_action(RebaseAction::Edit, cx),
                 "s" => self.rebase_todo_set_action(RebaseAction::Squash, cx),
                 "f" => self.rebase_todo_set_action(RebaseAction::Fixup, cx),
@@ -150,8 +151,9 @@ impl StatusView {
         if self.log().is_some() {
             // In a select mode, Return confirms the commit for the pending
             // action; while browsing it opens the commit's diff.
-            let select_args = match self.log().map(|l| &l.purpose) {
-                Some(LogPurpose::SelectRebaseBase { args }) => Some(args.clone()),
+            let select_rebase = match self.log().map(|l| &l.purpose) {
+                Some(LogPurpose::SelectRebaseBase { args }) => Some((args.clone(), false)),
+                Some(LogPurpose::SelectRebaseReword { args }) => Some((args.clone(), true)),
                 _ => None,
             };
             if self.try_nav(&key, shift, ctrl, window, cx) {
@@ -164,8 +166,12 @@ impl StatusView {
                 // inspect commits before choosing (magit lets you visit from the
                 // log-select).
                 "enter" if cmd => {
-                    if let Some(args) = select_args.clone() {
-                        self.rebase_since_selected(args, cx);
+                    if let Some((args, reword)) = select_rebase.clone() {
+                        if reword {
+                            self.reword_past_selected(args, window, cx);
+                        } else {
+                            self.rebase_since_selected(args, cx);
+                        }
                     }
                 }
                 "enter" => self.open_commit_view(cx),
@@ -178,7 +184,7 @@ impl StatusView {
                 "-" if shift => self.pick_selected(PickOp::Revert, window, cx),
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
-                "r" if select_args.is_none() => self.rebase_since_selected(Vec::new(), cx),
+                "r" if select_rebase.is_none() => self.rebase_since_selected(Vec::new(), cx),
                 // Yank the selected commit's hash.
                 "y" => self.copy_log_commit(cx),
                 "c" if cmd => self.copy_log_commit(cx),

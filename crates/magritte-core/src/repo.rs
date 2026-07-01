@@ -613,8 +613,8 @@ impl Repo {
     /// Run `git <args>` where git would normally open the **sequence editor**
     /// (`rebase -i`, etc.), feeding it `todo` non-interactively. A throwaway
     /// `sequence.editor` copies `todo` over git's generated todo, and
-    /// `GIT_EDITOR` is neutralized (`true`) so any `reword`/`squash` keeps its
-    /// default message instead of blocking on an editor. The temp file is
+    /// `GIT_EDITOR` is neutralized (`true`) so any message-bearing steps use
+    /// their prepared message instead of blocking on an editor. The temp file is
     /// removed regardless of outcome. This isolates the no-TTY plumbing from the
     /// callers' domain logic (which just builds the todo + argv).
     pub fn run_with_sequence_editor(&self, todo: &str, args: &[String]) -> Result<GitOutput> {

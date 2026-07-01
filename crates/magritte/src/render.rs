@@ -1217,6 +1217,10 @@ impl StatusView {
             .items_center()
             .when(highlighted, |el| el.bg(self.palette.selection));
         match row {
+            CommitDiffRow::Message(text) => base
+                .text_color(self.palette.fg)
+                .child(SharedString::from(text.clone()))
+                .into_any_element(),
             CommitDiffRow::File(path) => base
                 .child(
                     div()
@@ -1433,6 +1437,14 @@ impl StatusView {
         let count = log.entries.len();
         // Note when the listing is capped, rather than pretending it's complete.
         let capped = count >= Self::LOG_LIMIT;
+        let hash_width = log
+            .entries
+            .iter()
+            .map(|e| e.short_hash.chars().count())
+            .max()
+            .unwrap_or(7)
+            .max(7) as f32
+            * 8.5;
 
         let note = |text: String, color: Hsla| {
             div()
@@ -1451,7 +1463,13 @@ impl StatusView {
                     match this.log() {
                         Some(log) => range
                             .map(|ix| {
-                                this.render_log_row(ix, &log.entries[ix], ix == log.selected, &view)
+                                this.render_log_row(
+                                    ix,
+                                    &log.entries[ix],
+                                    ix == log.selected,
+                                    hash_width,
+                                    &view,
+                                )
                             })
                             .collect::<Vec<_>>(),
                         None => Vec::new(),
@@ -1465,11 +1483,14 @@ impl StatusView {
 
         // In select mode the title becomes a prompt and Return confirms the
         // commit; while browsing it's just "Log".
-        let selecting = matches!(log.purpose, LogPurpose::SelectRebaseBase { .. });
-        let title = if selecting {
-            "Select a commit to rebase since"
-        } else {
-            "Log"
+        let selecting = matches!(
+            log.purpose,
+            LogPurpose::SelectRebaseBase { .. } | LogPurpose::SelectRebaseReword { .. }
+        );
+        let title = match &log.purpose {
+            LogPurpose::SelectRebaseReword { .. } => "Select a commit to reword",
+            LogPurpose::SelectRebaseBase { .. } => "Select a commit to rebase since",
+            LogPurpose::Browse => "Log",
         };
         let mut header = div().flex().items_center().gap_3().child(
             div()
@@ -1534,6 +1555,7 @@ impl StatusView {
         ix: usize,
         entry: &magritte_core::LogEntry,
         selected: bool,
+        hash_width: f32,
         view: &Entity<Self>,
     ) -> AnyElement {
         let view = view.clone();
@@ -1561,6 +1583,7 @@ impl StatusView {
         }
         row = row.child(
             div()
+                .w(px(hash_width))
                 .flex_shrink_0()
                 .text_color(self.palette.modified)
                 .child(SharedString::from(entry.short_hash.clone())),
@@ -1767,7 +1790,7 @@ impl StatusView {
                     .text_size(px(12.0))
                     .text_color(self.palette.dim)
                     .child(SharedString::from(
-                        "p pick · e edit · s squash · f fixup · d drop · j/k move · J/K reorder",
+                        "p pick · r/w reword · e edit · s squash · f fixup · d drop · j/k move · J/K reorder",
                     )),
             )
     }
