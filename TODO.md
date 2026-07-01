@@ -127,8 +127,9 @@
 - [x] In the log view, in large repos where the short shas get longer, the sha column overflows — done: the log view measures the longest abbreviated hash in the loaded entries and sizes the hash column to fit, so repos with larger `core.abbrev` values keep the subject/date columns readable.
 - [x] Commit details should show the full commit message, not just the title — done: commit detail loads the full commit message (`%B`) and shows the body above the diff (the subject remains in the header).
 - [x] Users should be able to save switches that have arguments in them (e.g. log's -n) — done: transient-save now treats option values as part of the saved argument state. Saved files keep their existing switch array format and add options as `key=value` entries (e.g. `log = ["-r", "-n=50"]`), restore them when reopening the transient, and show the save hint when either toggles or values change.
-- [ ] People may not know what "dwim" means. Let's use a different term.
-- [ ] Add other push transient arguments from magit
-- [ ] We should dynamically show the relevant commands from the '?' menu depending on what view the user is in and where the cursor is
-- [ ] Clicking outside of a transient to dismiss it shouldn't also trigger an action (eg expanding/collapsing a diff)
-- [ ] Binding in commit detail view to show even more commit details
+- [x] People may not know what "dwim" means. Let's use a different term. — done: the user-facing diff action is now "smart" / "Diff smart target"; the internal command variant remains `DiffDwim` because it still describes the Magit concept.
+- [x] Add other push transient arguments from magit — done: the push transient now includes Magit's remaining simple argument switches that apply to our existing push flows: force, disable hooks, set upstream, include all tags, and follow annotated tags.
+- [x] We should dynamically show the relevant commands from the '?' menu depending on what view the user is in and where the cursor is. How does magit handle this if at all? — done: Magit keeps a global dispatch plus section/view-local keymaps; Magritte now mirrors that pragmatically with a context-aware help menu for status-at-point, log, commit detail, diff, command log, and rebase todo views.
+- [x] Clicking outside of a transient to dismiss it shouldn't also trigger an action (eg expanding/collapsing a diff) — done: row mouse-down/click handlers now treat an open popup as a dismiss-only click and return before selecting/toggling/acting.
+- [x] Binding in commit detail view to show even more commit details — done: commit detail now has `a` (and a header button) to toggle author/committer/date/ref metadata above the message and diff.
+- [x] Our diff dwim acts different from magit in the unstaged section — done: smart diff now follows Magit by treating staged/unstaged section headings and their child file/hunk/line rows as whole-section diffs, without inventing a pathspec from the row at point.
