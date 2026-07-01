@@ -1239,6 +1239,12 @@ struct StatusView {
     /// config changes (and at startup): the running loop exits once its captured
     /// value is stale, so toggling auto-fetch or its interval restarts cleanly.
     auto_fetch_gen: Generation,
+    /// Scopes the background update-check loop. Bumped whenever the setting is
+    /// toggled or config reloads, so disabling update checks stops the old loop.
+    update_check_gen: Generation,
+    /// Newer release version already announced in this session, to avoid
+    /// repeating the periodic update notice every interval.
+    notified_update_version: Option<String>,
     /// In-flight background operations (status reads, jobs, fetches, diff
     /// loads). The title-bar spinner shows while this is non-zero *and* the
     /// work outlasts a short delay — see [`StatusView::begin_activity`].
@@ -1452,6 +1458,8 @@ impl StatusView {
             job_cancel: None,
             screen_gen: Generation::default(),
             auto_fetch_gen: Generation::default(),
+            update_check_gen: Generation::default(),
+            notified_update_version: None,
             activity: 0,
             busy: false,
             busy_gen: Generation::default(),
@@ -1781,6 +1789,7 @@ impl StatusView {
     /// takes effect on save, like the other settings (any unknown id re-warns).
     fn apply_config(&mut self, cfg: config::Config, window: &mut Window, cx: &mut Context<Self>) {
         let fetch_changed = self.config.fetch != cfg.fetch;
+        let update_check_changed = self.config.check_for_updates != cfg.check_for_updates;
         // Some settings change *fetched data*, not just how it's painted — the
         // title-bar tag segment (and commit ref labels), which status sections
         // are populated, and the recent-commit count. Those need a refresh to
@@ -1794,6 +1803,9 @@ impl StatusView {
         self.config_global = config::load_reporting().0;
         if fetch_changed {
             self.start_auto_fetch(cx);
+        }
+        if update_check_changed {
+            self.start_update_checks(cx);
         }
         self.font = theme::resolve_font(&self.config, cx);
         self.ui_font = theme::resolve_ui_font(&self.config, cx);
@@ -5468,6 +5480,7 @@ fn open_repo_window(start_dir: Option<PathBuf>, cx: &mut App) -> Option<AnyWindo
             view.update(cx, |view, cx| {
                 view.install_watchers(window, cx);
                 view.start_auto_fetch(cx);
+                view.start_update_checks(cx);
             });
             // The window's root must be a gpui-component Root (provides
             // theming, overlays, and the component context).

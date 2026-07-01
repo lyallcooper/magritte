@@ -543,6 +543,11 @@ impl StatusView {
                             |cfg, on| cfg.show_tags_in_title_bar = on,
                         ),
                     ),
+                    field(
+                        "check-for-updates",
+                        "Check for updates",
+                        self.update_check_toggle_control(view),
+                    ),
                 ],
             ))
             .child(section("Commit editor", {

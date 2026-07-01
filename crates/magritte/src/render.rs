@@ -2067,6 +2067,35 @@ impl StatusView {
             .into_any_element()
     }
 
+    /// The update-check toggle restarts/stops its background loop immediately,
+    /// so it is separate from the generic config-only switch helper.
+    pub(crate) fn update_check_toggle_control(&self, view: &Entity<Self>) -> AnyElement {
+        let switch = Switch::new("check-for-updates")
+            .checked(self.config.check_for_updates)
+            .on_click({
+                let view = view.clone();
+                move |on, _window, cx| {
+                    let on = *on;
+                    view.update(cx, |this, cx| {
+                        this.edit_global(|c| c.check_for_updates = on);
+                        config::save_settings(&this.config_global);
+                        this.start_update_checks(cx);
+                        cx.notify();
+                    });
+                }
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(switch)
+            .child(self.info_icon(
+                "check-for-updates-info".to_string(),
+                "Periodically check for published Magritte releases.",
+            ))
+            .into_any_element()
+    }
+
     /// A small dimmed `(i)` icon that reveals `explanation` in a tooltip on
     /// hover — for clarifying what a settings control does.
     pub(crate) fn info_icon(&self, id: String, explanation: &'static str) -> impl IntoElement {

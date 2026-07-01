@@ -85,6 +85,10 @@ pub struct Config {
     /// default; set true to show it.
     #[serde(default, alias = "show_tags", skip_serializing_if = "is_false")]
     pub show_tags_in_title_bar: bool,
+    /// Periodically check the public release feed and show a quiet notice when a
+    /// newer Magritte is available. On by default; set false to opt out.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub check_for_updates: bool,
     /// Branches considered "published" (magit's `magit-published-branches`):
     /// amending/rewording/rebasing a commit already on one of these warns
     /// before rewriting shared history. A commit counts as on a branch when
@@ -349,6 +353,7 @@ impl Default for Config {
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
             show_tags_in_title_bar: false,
+            check_for_updates: true,
             published_branches: default_published_branches(),
             commands: Vec::new(),
             status: StatusConfig::default(),
@@ -749,6 +754,12 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         "show_tags",
         config.show_tags_in_title_bar,
         !config.show_tags_in_title_bar,
+    );
+    set_bool(
+        &mut doc,
+        "check_for_updates",
+        config.check_for_updates,
+        config.check_for_updates,
     );
 
     atomic_write_text(path, &doc.to_string())

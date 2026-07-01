@@ -141,6 +141,58 @@ impl StatusView {
         .detach();
     }
 
+    /// Periodically check for a newer published release. Failures are silent;
+    /// only an available update is surfaced, so offline/API-rate-limit cases do
+    /// not nag the user.
+    pub(crate) fn start_update_checks(&mut self, cx: &mut Context<Self>) {
+        let gen = self.update_check_gen.bump();
+        if !self.config.check_for_updates {
+            return;
+        }
+        const FIRST_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+        const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FIRST_CHECK_DELAY).await;
+            loop {
+                let alive = this
+                    .update(cx, |this, _| {
+                        this.update_check_gen.is_current(gen) && this.config.check_for_updates
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+                this.update(cx, |this, cx| this.run_silent_update_check(cx)).ok();
+                cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
+            }
+        })
+        .detach();
+    }
+
+    fn run_silent_update_check(&mut self, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async { latest_release_version() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                let Ok(latest) = result else { return };
+                let Some(current_version) = parse_release_version(CURRENT_VERSION) else { return };
+                let Some(latest_version) = parse_release_version(&latest) else { return };
+                if current_version < latest_version
+                    && this.notified_update_version.as_deref() != Some(latest.as_str())
+                {
+                    this.notified_update_version = Some(latest.clone());
+                    this.set_status(
+                        format!("Magritte {latest} is available — run `brew upgrade magritte`"),
+                        true,
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Run one background `git fetch`, then refresh so the unpushed/unpulled
     /// counts update. Skipped while another job is running, and silent — the
     /// user didn't initiate it, so no progress banner, and failures (offline,

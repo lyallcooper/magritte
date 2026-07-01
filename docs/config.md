@@ -60,6 +60,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
+| `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
 | `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
 | `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
 
