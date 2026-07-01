@@ -5431,6 +5431,33 @@ fn chevron(expanded: bool, color: Hsla) -> gpui_component::Icon {
         .text_color(color)
 }
 
+/// The default ignore pattern for a concrete path at point. Repo-local ignore
+/// files get anchored paths (`/foo`) so ignoring a file named `foo` doesn't also
+/// ignore every nested `foo`; a subdir `.gitignore` anchors the basename within
+/// that subdirectory. This mirrors Magit's `magit-gitignore-read-pattern`,
+/// which prefixes the current-file default with `/` for every ignore target.
+fn default_ignore_pattern(command: transient::Command, file: Option<&str>) -> String {
+    use transient::Command::*;
+    match (command, file) {
+        (IgnoreSubdir, Some(f)) => Path::new(f)
+            .file_name()
+            .map(|n| anchored_ignore_path(&n.to_string_lossy()))
+            .unwrap_or_default(),
+        (IgnoreToplevel | IgnorePrivate | IgnoreGlobal, Some(f)) => anchored_ignore_path(f),
+        (_, Some(f)) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn anchored_ignore_path(path: &str) -> String {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    }
+}
+
 fn describe_command(command: transient::Command) -> &'static str {
     use transient::Command::*;
     match command {
@@ -6418,6 +6445,28 @@ mod tests {
         assert!(command_is_destructive("git push --force"));
         assert!(!command_is_destructive("git pull --rebase && git push"));
         assert!(!command_is_destructive("git commit -a -m WIP"));
+    }
+
+    #[test]
+    fn ignore_prompt_defaults_anchor_repo_local_paths() {
+        use transient::Command::*;
+
+        assert_eq!(
+            default_ignore_pattern(IgnoreToplevel, Some("src/generated/file.rs")),
+            "/src/generated/file.rs"
+        );
+        assert_eq!(
+            default_ignore_pattern(IgnorePrivate, Some("build/output.log")),
+            "/build/output.log"
+        );
+        assert_eq!(
+            default_ignore_pattern(IgnoreSubdir, Some("src/generated/file.rs")),
+            "/file.rs"
+        );
+        assert_eq!(
+            default_ignore_pattern(IgnoreGlobal, Some("build/output.log")),
+            "/build/output.log"
+        );
     }
 
     /// Guards against forgetting to surface a command: the `?` dispatch menu and

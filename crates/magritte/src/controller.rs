@@ -602,16 +602,7 @@ impl StatusView {
             IgnoreGlobal => IgnoreDest::Global,
             _ => return,
         };
-        // Default the pattern to the file at point: its basename for a subdir
-        // .gitignore, else its repo-relative path.
-        let default = match (command, file.as_deref()) {
-            (IgnoreSubdir, Some(f)) => Path::new(f)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            (_, Some(f)) => f.to_string(),
-            _ => String::new(),
-        };
+        let default = default_ignore_pattern(command, file.as_deref());
         self.open_picker(
             PickerAction::Ignore(dest),
             Vec::new(),
