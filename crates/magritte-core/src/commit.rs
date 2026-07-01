@@ -7,6 +7,15 @@
 use crate::error::Result;
 use crate::repo::Repo;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitMetadata {
+    pub author: String,
+    pub author_date: String,
+    pub committer: String,
+    pub committer_date: String,
+    pub refs: String,
+}
+
 /// The `commit [--amend [--only --allow-empty]]` argv prefix for a mode, shared
 /// by the stdin-message and external-editor commit paths.
 fn commit_mode_args(mode: CommitMode) -> Vec<String> {
@@ -46,6 +55,24 @@ impl Repo {
     pub fn commit_message(&self, rev: &str) -> Result<String> {
         let out = self.run(["log", "-1", "--format=%B", rev])?;
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+    }
+
+    pub fn commit_metadata(&self, rev: &str) -> Result<CommitMetadata> {
+        let out = self.run([
+            "log",
+            "-1",
+            "--format=%an <%ae>%x1f%aI%x1f%cn <%ce>%x1f%cI%x1f%D",
+            rev,
+        ])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut parts = text.trim_end().split('\x1f');
+        Ok(CommitMetadata {
+            author: parts.next().unwrap_or_default().to_string(),
+            author_date: parts.next().unwrap_or_default().to_string(),
+            committer: parts.next().unwrap_or_default().to_string(),
+            committer_date: parts.next().unwrap_or_default().to_string(),
+            refs: parts.next().unwrap_or_default().to_string(),
+        })
     }
 
     /// Commit `message` according to `mode`, with the given extra arguments

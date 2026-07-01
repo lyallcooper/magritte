@@ -904,3 +904,117 @@ pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::C
     }
     menu
 }
+
+pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
+    let info = |keys: &str, description: &str| {
+        Suffix::Info(transient::Info {
+            keys: keys.to_string(),
+            description: description.to_string(),
+        })
+    };
+    let group = |title: &str, suffixes: Vec<Suffix>| Group {
+        title: transient::plain_title(title),
+        suffixes,
+    };
+
+    match &view.screen {
+        Screen::Commit { view: cv, .. } => Transient {
+            title: transient::plain_title("Help"),
+            groups: vec![group(
+                "Commit detail",
+                vec![
+                    info("a", if cv.show_details { "Hide details" } else { "Show details" }),
+                    info("v", "Visual selection"),
+                    info("y", "Copy"),
+                    info("q", "Back"),
+                ],
+            )],
+        },
+        Screen::Diff { .. } => Transient {
+            title: transient::plain_title("Help"),
+            groups: vec![group(
+                "Diff",
+                vec![info("v", "Visual selection"), info("y", "Copy"), info("q", "Back")],
+            )],
+        },
+        Screen::Log(log) => {
+            let mut suffixes = vec![info("enter", "Show commit"), info("y", "Copy hash")];
+            if matches!(log.purpose, LogPurpose::Browse) {
+                suffixes.extend([
+                    info("A", "Cherry-pick"),
+                    info("_", "Revert"),
+                    info("r", "Rebase since"),
+                ]);
+            }
+            suffixes.push(info("q", "Back"));
+            Transient {
+                title: transient::plain_title("Help"),
+                groups: vec![group("Commit at point", suffixes)],
+            }
+        }
+        Screen::GitLog(_) => Transient {
+            title: transient::plain_title("Help"),
+            groups: vec![group(
+                "Command log",
+                vec![info("a", "Toggle queries"), info("q", "Back")],
+            )],
+        },
+        Screen::RebaseTodo(_) => Transient {
+            title: transient::plain_title("Help"),
+            groups: vec![group(
+                "Rebase todo",
+                vec![
+                    info("enter", "Start rebase"),
+                    info("p", "Pick"),
+                    info("r", "Reword"),
+                    info("e", "Edit"),
+                    info("s", "Squash"),
+                    info("f", "Fixup"),
+                    info("x", "Drop"),
+                    info("q", "Cancel"),
+                ],
+            )],
+        },
+        _ => {
+            let mut menu = dispatch_menu(&view.keymap, &view.config);
+            if view.rows.get(view.selected).and_then(|r| r.target.as_ref()).is_none() {
+                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+            }
+            if let Some((_hash, _short, _subject)) = view.point_commit() {
+                menu.groups.insert(
+                    0,
+                    group(
+                        "Commit at point",
+                        vec![
+                            info("enter", "Show commit"),
+                            info("y", "Copy hash"),
+                            info("A", "Cherry-pick"),
+                            info("a", "Apply changes"),
+                            info("V", "Revert"),
+                            info("v", "Revert changes"),
+                            info("r", "Rebase since"),
+                        ],
+                    ),
+                );
+                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+            } else if let Some((_reference, _message)) = view.point_stash() {
+                menu.groups.insert(
+                    0,
+                    group(
+                        "Stash at point",
+                        vec![
+                            info("enter", "Show stash"),
+                            info("y", "Copy reference"),
+                            info("a", "Apply"),
+                            info("A", "Pop"),
+                            info("x", "Drop"),
+                        ],
+                    ),
+                );
+                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+            }
+            menu.groups.retain(|g| !g.suffixes.is_empty());
+            menu
+        }
+    }
+}

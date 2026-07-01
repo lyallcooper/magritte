@@ -617,7 +617,7 @@ impl StatusView {
                     .child(self.key_tokens(&i.keys))
                     .child(self.hover_label(&i.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.run_dispatch(&key, window, vcx));
+                        view.update(cx, |v, vcx| v.run_info_key(&key, window, vcx));
                     })
                     .into_any_element()
             }
@@ -1261,6 +1261,10 @@ impl StatusView {
             .items_center()
             .when(highlighted, |el| el.bg(self.palette.selection));
         match row {
+            CommitDiffRow::Detail(text) => base
+                .text_color(self.palette.dim)
+                .child(SharedString::from(text.clone()))
+                .into_any_element(),
             CommitDiffRow::Message(text) => base
                 .text_color(self.palette.fg)
                 .child(SharedString::from(text.clone()))
@@ -1726,6 +1730,13 @@ impl StatusView {
                         "back",
                         view,
                         Self::close_commit_view,
+                    ))
+                    .child(self.key_action(
+                        "commit-view-details",
+                        "a",
+                        if cv.show_details { "hide details" } else { "details" },
+                        view,
+                        |this, _window, cx| this.toggle_commit_details(cx),
                     )),
             )
             .child(body)
@@ -2282,6 +2293,9 @@ impl StatusView {
                     let view = view.clone();
                     move |ev: &MouseDownEvent, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
+                            if v.popup.is_some() {
+                                return;
+                            }
                             if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 return;
                             }
@@ -2381,6 +2395,11 @@ impl StatusView {
 
     /// Mouse click on a status row: select it, and toggle its fold if foldable.
     pub(crate) fn click_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.popup.is_some() {
+            self.popup = None;
+            cx.notify();
+            return;
+        }
         // A shift-click already set up the extended selection in `on_mouse_down`;
         // don't also toggle the row's fold.
         if self.shift_click {
@@ -2565,6 +2584,123 @@ impl StatusView {
             ),
         })
     }
+
+    fn render_overlays(
+        &self,
+        mut root: gpui::Div,
+        view: &Entity<Self>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        if let Some(popup) = &self.popup {
+            root = root.child(match popup {
+                Popup::Transient(state) => self.render_transient(&state.def, Some(state), view),
+                Popup::Dispatch(def) => self.render_transient(def, None, view),
+                Popup::Picker(state) => self.render_picker(state, view),
+            });
+        } else if let Some((prompt, _)) = &self.confirm {
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(self.palette.border)
+                    .bg(self.palette.banner)
+                    .text_color(self.palette.fg)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(SharedString::from(prompt.clone()))
+                    .child(self.key_action("confirm-yes", "y", "yes", view, Self::confirm_yes))
+                    .child(self.key_action("confirm-no", "n", "no", view, Self::confirm_no)),
+            );
+        } else if self.visual.is_some() {
+            root = root.child(
+                div()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(self.palette.border)
+                    .bg(self.palette.visual)
+                    .text_color(self.palette.fg)
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_color(self.palette.section)
+                            .child(SharedString::from("VISUAL")),
+                    )
+                    .child(self.key_action("visual-stage", "s", "stage", view, Self::visual_stage))
+                    .child(self.key_action(
+                        "visual-unstage",
+                        "u",
+                        "unstage",
+                        view,
+                        Self::visual_unstage,
+                    ))
+                    .child(self.key_action(
+                        "visual-discard",
+                        "x",
+                        "discard",
+                        view,
+                        Self::visual_discard,
+                    ))
+                    .child(self.key_action(
+                        "visual-cancel",
+                        "esc",
+                        "cancel",
+                        view,
+                        Self::visual_cancel,
+                    )),
+            );
+        } else {
+            // The status/error/"Copied" banner: click it (or press Esc) to dismiss.
+            root = root.children(self.status_toast(cx));
+        }
+
+        let bottom_bar = self.confirm.is_some()
+            || self.visual.is_some()
+            || self.status_message.is_some()
+            || self.pending_prefix.is_some();
+        if self.popup.is_none() && !bottom_bar {
+            let tip_font = self.font.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .bottom_3()
+                    .right_4()
+                    .child(track_target("dispatch-help"))
+                    .child(
+                        div()
+                            .id("dispatch-help")
+                            .size(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(14.0))
+                            .cursor_pointer()
+                            .text_color(self.palette.dim)
+                            .hover(|s| s.bg(self.palette.selection).text_color(self.palette.fg))
+                            .child(SharedString::from("?"))
+                            .tooltip(move |window, cx| {
+                                let font = tip_font.clone();
+                                Tooltip::element(move |_, _| {
+                                    div().font_family(font.clone()).child("Help (?)")
+                                })
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.popup = Some(Popup::Dispatch(dispatch_menu_for(this)));
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        root.children(self.prefix_indicator())
+    }
 }
 
 impl Render for StatusView {
@@ -2653,46 +2789,25 @@ impl Render for StatusView {
         // the status list below.
         match &self.screen {
             Screen::Settings(s) => {
-                return root
-                    .child(self.render_settings(s, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_settings(s, &view)), &view, cx);
             }
             Screen::Editor(ed) => {
-                return root
-                    .child(self.render_editor(ed, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_editor(ed, &view)), &view, cx);
             }
             Screen::GitLog(scroll) => {
-                return root
-                    .child(self.render_git_log(scroll, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_git_log(scroll, &view)), &view, cx);
             }
             Screen::RebaseTodo(rt) => {
-                return root
-                    .child(self.render_rebase_todo(rt, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_rebase_todo(rt, &view)), &view, cx);
             }
             Screen::Commit { view: cv, .. } => {
-                return root
-                    .child(self.render_commit_view(cv, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_commit_view(cv, &view)), &view, cx);
             }
             Screen::Diff { view: dv, .. } => {
-                return root
-                    .child(self.render_diff_view(dv, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_diff_view(dv, &view)), &view, cx);
             }
             Screen::Log(log) => {
-                return root
-                    .child(self.render_log(log, &view))
-                    .children(self.status_toast(cx))
-                    .children(self.prefix_indicator());
+                return self.render_overlays(root.child(self.render_log(log, &view)), &view, cx);
             }
             Screen::Status => {}
         }
@@ -2743,124 +2858,6 @@ impl Render for StatusView {
                 .vertical_scrollbar(&self.scroll),
         );
 
-        if let Some(popup) = &self.popup {
-            root = root.child(match popup {
-                Popup::Transient(state) => self.render_transient(&state.def, Some(state), &view),
-                Popup::Dispatch(def) => self.render_transient(def, None, &view),
-                Popup::Picker(state) => self.render_picker(state, &view),
-            });
-        } else if let Some((prompt, _)) = &self.confirm {
-            root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(self.palette.border)
-                    .bg(self.palette.banner)
-                    .text_color(self.palette.fg)
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(SharedString::from(prompt.clone()))
-                    .child(self.key_action("confirm-yes", "y", "yes", &view, Self::confirm_yes))
-                    .child(self.key_action("confirm-no", "n", "no", &view, Self::confirm_no)),
-            );
-        } else if self.visual.is_some() {
-            root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(self.palette.border)
-                    .bg(self.palette.visual)
-                    .text_color(self.palette.fg)
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_color(self.palette.section)
-                            .child(SharedString::from("VISUAL")),
-                    )
-                    .child(self.key_action("visual-stage", "s", "stage", &view, Self::visual_stage))
-                    .child(self.key_action(
-                        "visual-unstage",
-                        "u",
-                        "unstage",
-                        &view,
-                        Self::visual_unstage,
-                    ))
-                    .child(self.key_action(
-                        "visual-discard",
-                        "x",
-                        "discard",
-                        &view,
-                        Self::visual_discard,
-                    ))
-                    .child(self.key_action(
-                        "visual-cancel",
-                        "esc",
-                        "cancel",
-                        &view,
-                        Self::visual_cancel,
-                    )),
-            );
-        } else {
-            // The status/error/"Copied" banner: click it (or press Esc) to dismiss.
-            root = root.children(self.status_toast(cx));
-        }
-
-        // A floating "?" button (bottom-right) opens the dispatch menu — a
-        // mouse affordance for discovering commands. Hidden while a popup or a
-        // bottom bar (confirm / visual / status) is shown, so it never overlaps
-        // them.
-        let bottom_bar = self.confirm.is_some()
-            || self.visual.is_some()
-            || self.status_message.is_some()
-            || self.pending_prefix.is_some();
-        if self.popup.is_none() && !bottom_bar {
-            // A plain div (not gpui-component `Button`, which forces a default
-            // cursor for non-link variants) so it shows the click cursor, like
-            // the app's other affordances.
-            let tip_font = self.font.clone();
-            root = root.child(
-                div()
-                    .absolute()
-                    .bottom_3()
-                    .right_4()
-                    .child(track_target("dispatch-help"))
-                    .child(
-                        div()
-                            .id("dispatch-help")
-                            .size(px(28.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(14.0))
-                            .cursor_pointer()
-                            .text_color(self.palette.dim)
-                            .hover(|s| s.bg(self.palette.selection).text_color(self.palette.fg))
-                            .child(SharedString::from("?"))
-                            .tooltip(move |window, cx| {
-                                let font = tip_font.clone();
-                                Tooltip::element(move |_, _| {
-                                    div().font_family(font.clone()).child("Help (?)")
-                                })
-                                .build(window, cx)
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.popup = Some(Popup::Dispatch(dispatch_menu(&this.keymap, &this.config)));
-                                cx.notify();
-                            })),
-                    ),
-            );
-        }
-
-        // The pending-prefix strip pins to the very bottom, below any other bar.
-        root = root.children(self.prefix_indicator());
-
-        root
+        self.render_overlays(root, &view, cx)
     }
 }

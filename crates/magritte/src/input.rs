@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use gpui::{Context, KeyDownEvent, SharedString, Window};
+use magritte_core::transient::{Suffix, Transient};
 
 use crate::*;
 
@@ -49,6 +50,72 @@ impl StatusView {
             if key == "escape" {
                 self.close_settings(window, cx);
             }
+            return;
+        }
+
+        // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
+        // reconstruct the cased key from the shift modifier.
+        let cased = if shift {
+            key.to_uppercase()
+        } else {
+            key.clone()
+        };
+
+        // A command transient is modal — it captures every key. Pass the full
+        // chord (with modifiers) so meta-keys like `C-s` (save switches) work;
+        // a plain key's chord is just its cased form, so suffixes are unaffected.
+        if matches!(self.popup, Some(Popup::Transient(_))) {
+            self.handle_transient_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            return;
+        }
+
+        // The vertico picker's focused input handles text; navigation, confirm
+        // and cancel are caught in the capture phase (on_capture_key). Ignore the
+        // rest here so typed characters aren't read as commands.
+        if matches!(self.popup, Some(Popup::Picker(_))) {
+            return;
+        }
+
+        // The `?` dispatch popup is modal (like magit's dispatch): a shown key
+        // runs that command, esc/? close it, other keys are ignored. `q` closes
+        // help unless the context menu explicitly shows it as a view-local action.
+        if let Some(Popup::Dispatch(def)) = &self.popup {
+            // (A pending prefix's second key was already resolved above.)
+            match cased.as_str() {
+                "escape" | "?" | "/" => {
+                    self.popup = None;
+                    cx.notify();
+                }
+                "q" if dispatch_has_key(def, "q") => self.run_info_key("q", window, cx),
+                "q" => {
+                    self.popup = None;
+                    cx.notify();
+                }
+                k if self.is_prefix(k) => self.enter_prefix(k.to_string(), window, cx),
+                k if dispatch_has_key(def, k) => self.run_info_key(k, window, cx),
+                _ => {}
+            }
+            return;
+        }
+
+        // A pending discard confirmation captures the next key.
+        if self.confirm.is_some() {
+            if key == "y" {
+                self.confirm_yes(window, cx);
+            } else {
+                self.confirm_no(window, cx);
+            }
+            return;
+        }
+
+        // Command palette via cmd+p / cmd+k — before per-view handlers, so it
+        // remains reachable from detail/log screens.
+        if cmd && matches!(key.as_str(), "p" | "k") {
+            return self.open_command_palette(window, cx);
+        }
+        if key == "?" || (key == "/" && shift) {
+            self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
+            cx.notify();
             return;
         }
 
@@ -139,6 +206,7 @@ impl StatusView {
                     }
                 }
                 "v" => self.commit_view_toggle_visual(cx),
+                "a" => self.toggle_commit_details(cx),
                 "y" => self.copy_commit_selection(cx),
                 "c" if cmd => self.copy_commit_selection(cx),
                 _ => {}
@@ -216,62 +284,7 @@ impl StatusView {
             return;
         }
 
-        // Popup keys are case-sensitive (e.g. F pull vs f fetch), so
-        // reconstruct the cased key from the shift modifier.
-        let cased = if shift {
-            key.to_uppercase()
-        } else {
-            key.clone()
-        };
-
-        // A command transient is modal — it captures every key. Pass the full
-        // chord (with modifiers) so meta-keys like `C-s` (save switches) work;
-        // a plain key's chord is just its cased form, so suffixes are unaffected.
-        if matches!(self.popup, Some(Popup::Transient(_))) {
-            self.handle_transient_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
-            return;
-        }
-
-        // The vertico picker's focused input handles text; navigation, confirm
-        // and cancel are caught in the capture phase (on_capture_key). Ignore the
-        // rest here so typed characters aren't read as commands.
-        if matches!(self.popup, Some(Popup::Picker(_))) {
-            return;
-        }
-
-        // The `?` dispatch popup is modal (like magit's dispatch): a command
-        // key runs that command, esc/q/? close it, other keys are ignored.
-        if matches!(self.popup, Some(Popup::Dispatch(_))) {
-            // (A pending prefix's second key was already resolved above.)
-            match cased.as_str() {
-                "escape" | "q" | "?" | "/" => {
-                    self.popup = None;
-                    cx.notify();
-                }
-                k if self.is_prefix(k) => self.enter_prefix(k.to_string(), window, cx),
-                k if Self::is_dispatch_key(&self.keymap, k) => {
-                    self.run_dispatch(&cased, window, cx)
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // A pending discard confirmation captures the next key.
-        if self.confirm.is_some() {
-            if key == "y" {
-                self.confirm_yes(window, cx);
-            } else {
-                self.confirm_no(window, cx);
-            }
-            return;
-        }
-
-        // Command palette via cmd+p / cmd+k — before `try_nav`, so cmd+k isn't
-        // read as the `k` motion.
-        if cmd && matches!(key.as_str(), "p" | "k") {
-            return self.open_command_palette(window, cx);
-        }
+        // Command palette via cmd+p / cmd+k handled above, before per-view branches.
         // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
         if self.try_nav(&key, shift, ctrl, window, cx) {
             return;
@@ -342,12 +355,12 @@ impl StatusView {
             ":" => return self.open_command_palette(window, cx),
             ";" if shift => return self.open_command_palette(window, cx),
             "?" => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap, &self.config)));
+                self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
                 cx.notify();
                 return;
             }
             "/" if shift => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu(&self.keymap, &self.config)));
+                self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
                 cx.notify();
                 return;
             }
@@ -657,4 +670,92 @@ impl StatusView {
         // Single-key motions (`j`/`k`/`G`) are registry commands in the keymap now.
         keymap.contains_key(key) || key == ":"
     }
+
+    pub(crate) fn run_info_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = None;
+        if self.commit_view().is_some() {
+            match key {
+                "a" => self.toggle_commit_details(cx),
+                "v" => self.commit_view_toggle_visual(cx),
+                "y" => self.copy_commit_selection(cx),
+                "q" => self.close_commit_view(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if self.diff_view().is_some() {
+            match key {
+                "v" => self.diff_view_toggle_visual(cx),
+                "y" => self.copy_diff_selection(cx),
+                "q" => self.close_diff_view(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if self.log().is_some() {
+            match key {
+                "enter" => self.open_commit_view(cx),
+                "A" => self.pick_selected(PickOp::CherryPick, window, cx),
+                "_" => self.pick_selected(PickOp::Revert, window, cx),
+                "r" => self.rebase_since_selected(Vec::new(), cx),
+                "y" => self.copy_log_commit(cx),
+                "q" => self.close_log(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if self.git_log().is_some() {
+            match key {
+                "a" => self.toggle_git_log_all(window, cx),
+                "q" => self.close_git_log(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if self.rebase_todo().is_some() {
+            match key {
+                "q" => self.close_rebase_todo(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if let Some((hash, short, subject)) = self.point_commit() {
+            match key {
+                "enter" => return self.open_commit(hash, short, subject, cx),
+                "A" => return self.open_cherry_pick_transient(cx),
+                "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
+                "V" => return self.open_revert_transient(cx),
+                "v" => return self.pick_selected(PickOp::RevertNoCommit, window, cx),
+                "r" => return self.invoke_command("rebase", window, cx),
+                "y" => return self.copy_to_clipboard(hash, cx),
+                _ => {}
+            }
+        }
+        if let Some((reference, message)) = self.point_stash() {
+            match key {
+                "enter" => return self.open_commit(reference.clone(), reference, message, cx),
+                "A" => return self.run_stash_action(StashAction::Pop, reference, cx),
+                "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
+                "x" => {
+                    self.confirm = Some((
+                        format!("Drop {reference}? (y/n)"),
+                        Confirm::DropStash(reference),
+                    ));
+                    cx.notify();
+                    return;
+                }
+                "y" => return self.copy_to_clipboard(reference, cx),
+                _ => {}
+            }
+        }
+        self.run_dispatch(key, window, cx);
+    }
+}
+
+fn dispatch_has_key(def: &Transient, key: &str) -> bool {
+    def.groups.iter().any(|group| {
+        group.suffixes.iter().any(|suffix| {
+            matches!(suffix, Suffix::Info(info) if info.keys == key)
+        })
+    })
 }

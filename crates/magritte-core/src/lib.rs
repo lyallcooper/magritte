@@ -34,7 +34,7 @@ pub mod stash;
 pub mod status;
 pub mod transient;
 
-pub use commit::CommitMode;
+pub use commit::{CommitMetadata, CommitMode};
 pub use conflict::ConflictSide;
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};

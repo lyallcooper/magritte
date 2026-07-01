@@ -85,9 +85,9 @@ use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme, IndexPath};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
-    CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry, IgnoreDest, LineKind,
-    LogEntry, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Stash, Status,
-    TagsAround,
+    CommitMetadata, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry,
+    IgnoreDest, LineKind, LogEntry, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence,
+    SequenceKind, Stash, Status, TagsAround,
 };
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -124,6 +124,8 @@ enum CommitAfterSubmit {
 
 /// One flattened row of the commit editor's staged-diff preview.
 enum CommitDiffRow {
+    /// Extra commit metadata toggled in the commit detail view.
+    Detail(String),
     /// A line from the commit's full message, shown above the diff in commit view.
     Message(String),
     /// A file header (the path).
@@ -622,6 +624,8 @@ struct CommitView {
     short: SharedString,
     /// The commit subject, shown after the hash in the header.
     subject: SharedString,
+    details: Vec<String>,
+    show_details: bool,
     rows: Vec<CommitDiffRow>,
     scroll: UniformListScrollHandle,
     /// The cursor row (drives scrolling) and the visual-selection anchor, so
@@ -4549,6 +4553,8 @@ impl StatusView {
                 rev: rev.clone(),
                 short: SharedString::from(short),
                 subject: SharedString::from(subject),
+                details: Vec::new(),
+                show_details: false,
                 rows: vec![CommitDiffRow::Note("Loading…".to_string())],
                 scroll: UniformListScrollHandle::new(),
                 selected: 0,
@@ -4561,6 +4567,7 @@ impl StatusView {
             let loaded = cx
                 .background_executor()
                 .spawn(async move {
+                    let metadata = repo.commit_metadata(&rev)?;
                     let message = repo.commit_message(&rev)?;
                     let files = repo.diff_commit_with(&rev, &args, &paths).map(|diffs| {
                         diffs
@@ -4574,7 +4581,7 @@ impl StatusView {
                             })
                             .collect::<Vec<_>>()
                     })?;
-                    Ok::<_, magritte_core::Error>((message, files))
+                    Ok::<_, magritte_core::Error>((metadata, message, files))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -4583,11 +4590,25 @@ impl StatusView {
                 if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
                     return;
                 }
-                let rows = match loaded {
-                    Ok((message, files)) => this.commit_detail_rows(&message, &files, cx),
-                    Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                let loaded = match loaded {
+                    Ok(loaded) => loaded,
+                    Err(e) => {
+                        if let Some(cv) = this.commit_view_mut() {
+                            cv.rows = vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))];
+                        }
+                        cx.notify();
+                        return;
+                    }
                 };
+                let (metadata, message, files) = loaded;
+                let details = commit_metadata_lines(&metadata);
+                let show_details = this.commit_view().is_some_and(|cv| cv.show_details);
+                let mut rows = this.commit_detail_rows(&message, &files, cx);
+                if show_details {
+                    prepend_commit_details(&mut rows, &details);
+                }
                 if let Some(cv) = this.commit_view_mut() {
+                    cv.details = details;
                     cv.rows = rows;
                 }
                 cx.notify();
@@ -4752,6 +4773,19 @@ impl StatusView {
             } else {
                 Some(cv.selected)
             };
+            cx.notify();
+        }
+    }
+
+    fn toggle_commit_details(&mut self, cx: &mut Context<Self>) {
+        if let Some(cv) = self.commit_view_mut() {
+            cv.show_details = !cv.show_details;
+            if cv.show_details {
+                prepend_commit_details(&mut cv.rows, &cv.details);
+            } else {
+                cv.rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
+                cv.selected = cv.selected.min(cv.rows.len().saturating_sub(1));
+            }
             cx.notify();
         }
     }
@@ -5009,12 +5043,39 @@ fn parse_refs(refs: &str) -> Vec<(String, RefKind)> {
 /// the `+`/`-` sigil).
 fn commit_row_text(row: &CommitDiffRow) -> String {
     match row {
+        CommitDiffRow::Detail(d) => d.clone(),
         CommitDiffRow::Message(m) => m.clone(),
         CommitDiffRow::File(p) => p.clone(),
         CommitDiffRow::Hunk(h) => h.clone(),
         CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
         CommitDiffRow::Note(n) => n.clone(),
     }
+}
+
+fn commit_metadata_lines(metadata: &CommitMetadata) -> Vec<String> {
+    let mut lines = vec![
+        format!("Author:    {}", metadata.author),
+        format!("AuthorDate: {}", metadata.author_date),
+        format!("Commit:    {}", metadata.committer),
+        format!("CommitDate: {}", metadata.committer_date),
+    ];
+    if !metadata.refs.is_empty() {
+        lines.push(format!("Refs:      {}", metadata.refs));
+    }
+    lines
+}
+
+fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[String]) {
+    if details.is_empty() || rows.iter().any(|row| matches!(row, CommitDiffRow::Detail(_))) {
+        return;
+    }
+    let mut prefix = details
+        .iter()
+        .cloned()
+        .map(CommitDiffRow::Detail)
+        .collect::<Vec<_>>();
+    prefix.push(CommitDiffRow::Note(String::new()));
+    rows.splice(0..0, prefix);
 }
 
 fn message(text: &str, color: Hsla) -> Row {
