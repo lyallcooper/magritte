@@ -32,6 +32,7 @@ pub mod sequence;
 pub mod stage;
 pub mod stash;
 pub mod status;
+pub mod tag;
 pub mod transient;
 
 pub use commit::{CommitMetadata, CommitMode};

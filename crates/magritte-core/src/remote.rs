@@ -71,6 +71,21 @@ impl Repo {
             .collect())
     }
 
+    /// `git remote add <name> <url>`.
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<String> {
+        Ok(self.run(["remote", "add", name, url])?.status_line())
+    }
+
+    /// `git remote rename <old> <new>`.
+    pub fn rename_remote(&self, old: &str, new: &str) -> Result<String> {
+        Ok(self.run(["remote", "rename", old, new])?.status_line())
+    }
+
+    /// `git remote remove <name>`.
+    pub fn remove_remote(&self, name: &str) -> Result<String> {
+        Ok(self.run(["remote", "remove", name])?.status_line())
+    }
+
     /// Remote-tracking branches as `remote/branch` (e.g. `origin/main`), for the
     /// push/pull "elsewhere" target picker. Skips the symbolic `*/HEAD` refs —
     /// note `%(refname:short)` collapses `origin/HEAD` to just `origin`, so we
