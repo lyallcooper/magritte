@@ -317,7 +317,9 @@ impl StatusView {
         // baseline, and turns into a scope chooser (`g`lobal / `l`ocal) once the
         // save key is pressed.
         let saving = state.is_some_and(|s| s.pending_save);
-        let show_save = state.is_some_and(|s| !s.id.is_empty() && s.active != s.baseline);
+        let show_save = state.is_some_and(|s| {
+            !s.id.is_empty() && (s.active != s.baseline || s.values != s.baseline_values)
+        });
         let has_repo = self.repo_scope_dir.is_some();
 
         div()
@@ -367,7 +369,7 @@ impl StatusView {
                         .text_xs()
                         .text_color(self.palette.dim)
                         .child(kbd::key_chip(TRANSIENT_SAVE_KEY, self.palette.dim, &self.font))
-                        .child(SharedString::from("save these switches as the default")),
+                        .child(SharedString::from("save these arguments as the default")),
                 )
             })
             .child(self.render_title(&def.title, self.palette.section))

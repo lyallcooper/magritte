@@ -150,6 +150,9 @@ struct TransientState {
     /// Value-reading option values, keyed by the option's key (e.g. `-F` →
     /// `fix bug`). Combined with `active` to build the git argument list.
     values: std::collections::HashMap<String, String>,
+    /// The option values as opened (from saved defaults), paired with
+    /// `baseline` so any argument change can offer transient-save.
+    baseline_values: std::collections::HashMap<String, String>,
     /// True after `-` is pressed, awaiting the switch/option letter (magit `-f`).
     pending_dash: bool,
     /// True after the save key is pressed, awaiting the scope letter (`g`lobal /
@@ -175,6 +178,7 @@ impl TransientState {
             baseline: active.clone(),
             active,
             values: std::collections::HashMap::new(),
+            baseline_values: std::collections::HashMap::new(),
             pending_dash: false,
             pending_save: false,
             targets,
@@ -237,10 +241,28 @@ impl TransientState {
         active
     }
 
-    /// The switch overrides to persist: a plain switch when on, and a negatable
+    /// The option values from a saved set. Saved value entries use the compact
+    /// `-k=value` form, so old switch-only files keep working unchanged.
+    fn apply_saved_values(
+        def: &Transient,
+        saved: &[String],
+    ) -> std::collections::HashMap<String, String> {
+        let option_keys: std::collections::HashSet<&str> =
+            def.options().map(|o| o.key).collect();
+        saved
+            .iter()
+            .filter_map(|entry| {
+                let (key, value) = entry.split_once('=')?;
+                option_keys.contains(key).then(|| (key.to_string(), value.to_string()))
+            })
+            .collect()
+    }
+
+    /// The argument overrides to persist: a plain switch when on, a negatable
     /// switch only when it differs from its config default — recorded as the key
     /// (forced on) or the negation flag (forced off), so omission round-trips as
-    /// "follow config". The inverse of [`apply_saved`](Self::apply_saved).
+    /// "follow config" — plus set options as `key=value` entries. The inverse
+    /// of [`apply_saved`](Self::apply_saved) / [`apply_saved_values`](Self::apply_saved_values).
     fn saved_overrides(&self) -> Vec<String> {
         let mut out = Vec::new();
         for sw in self.def.switches() {
@@ -252,6 +274,13 @@ impl TransientState {
                 Some(_) => {}
                 None if on => out.push(sw.key.clone()),
                 None => {}
+            }
+        }
+        let option_keys: std::collections::HashSet<&str> =
+            self.def.options().map(|o| o.key).collect();
+        for (key, value) in &self.values {
+            if option_keys.contains(key.as_str()) {
+                out.push(format!("{key}={value}"));
             }
         }
         out.sort();
@@ -713,7 +742,7 @@ const STATUS_COL_WIDTH: f32 = 84.0;
 /// only its label (via `group_hover`), not its keycap.
 const KBD_ROW_GROUP: &str = "kbd-row";
 
-/// In a transient, save the current switch toggles as its defaults (magit's
+/// In a transient, save the current argument state as its defaults (magit's
 /// `transient-save`, which uses `C-x C-s`).
 const TRANSIENT_SAVE_KEY: &str = "ctrl-s";
 
@@ -1218,11 +1247,11 @@ struct StatusView {
     _activation_sub: Option<Subscription>,
     /// Per-command usage, for ranking the `:` palette by frecency.
     usage: config::Usage,
-    /// Saved per-transient switch defaults (magit's `transient-save`), global scope.
-    transient_switches: config::TransientSwitches,
-    /// The same, scoped to this repo (`.git/magritte/transient-switches.toml`),
+    /// Saved per-transient argument defaults (magit's `transient-save`), global scope.
+    transient_arguments: config::TransientArguments,
+    /// The same, scoped to this repo (`.git/magritte/transient-arguments.toml`),
     /// overlaid on the global ones (repo wins per transient id). Empty with no repo.
-    repo_transient_switches: config::TransientSwitches,
+    repo_transient_arguments: config::TransientArguments,
     /// This repo's settings dir (`.git/magritte`), for repo-scoped saves and the
     /// live-reload watcher. `None` with no repo.
     repo_scope_dir: Option<PathBuf>,
@@ -1279,9 +1308,9 @@ impl StatusView {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo = Repo::discover(&root).ok();
-        // The repo's settings scope (`.git/magritte`) and its saved switch sets,
+        // The repo's settings scope (`.git/magritte`) and its saved argument sets,
         // overlaid on the global ones when a transient opens. Keyed to the
-        // *common* git dir, so config/switches are shared across worktrees.
+        // *common* git dir, so config/arguments are shared across worktrees.
         let repo_scope_dir = repo
             .as_ref()
             .and_then(|r| r.git_common_dir())
@@ -1293,9 +1322,9 @@ impl StatusView {
             .as_ref()
             .and_then(|r| r.git_dir().ok())
             .map(|d| config::repo_dir(&d));
-        let repo_transient_switches = repo_scope_dir
+        let repo_transient_arguments = repo_scope_dir
             .as_ref()
-            .map(|d| config::load_transient_switches_at(&d.join("transient-switches.toml")))
+            .map(|d| config::load_transient_arguments_at(&config::repo_transient_arguments_path(d)))
             .unwrap_or_default();
         // The global config alone, before any repo overlay — what in-app
         // (settings-screen) saves write back, so they never persist the repo's
@@ -1391,8 +1420,8 @@ impl StatusView {
             _appearance_sub: None,
             _activation_sub: None,
             usage: config::load_usage(),
-            transient_switches: config::load_transient_switches(),
-            repo_transient_switches,
+            transient_arguments: config::load_transient_arguments(),
+            repo_transient_arguments,
             repo_scope_dir,
             worktree_scope_dir,
             mono_fonts: Vec::new(),
@@ -1553,7 +1582,7 @@ impl StatusView {
         // Config file: watch its directory (so atomic save-via-rename, which
         // swaps the inode, still fires), forward matching events over a channel,
         // and re-apply on the UI thread. Watching the dir lets us pick up the
-        // sibling transient-switches.toml too, while ignoring other siblings (e.g.
+        // sibling transient-arguments.toml too, while ignoring other siblings (e.g.
         // command-usage.toml) by matching the exact paths.
         let Some(config_path) = config::path() else {
             return;
@@ -1568,25 +1597,25 @@ impl StatusView {
             Some(name) => dir.join(name),
             None => return,
         };
-        // Which watched file changed — kept distinct so a transient-switches edit
+        // Which watched file changed — kept distinct so a transient-arguments edit
         // doesn't run the config-reload path (theme rebuild, "Settings reloaded"
         // toast). All reload live, like the config always has.
         enum Changed {
             Config,
-            TransientSwitches,
-            RepoTransientSwitches,
+            TransientArguments,
+            RepoTransientArguments,
         }
-        let tv_target = config::transient_switches_path()
+        let tv_target = config::transient_arguments_path()
             .and_then(|p| p.file_name().map(|n| dir.join(n)));
         // The repo scope's settings dir, if it exists yet (canonicalize fails
-        // otherwise) — so we can watch its config.toml / transient-switches.toml.
+        // otherwise) — so we can watch its config.toml / transient-arguments.toml.
         // Created lazily on the first repo-scoped save, so a brand-new repo picks
         // it up next launch; an in-app save updates memory directly anyway.
         let repo_scope = self
             .repo_scope_dir
             .as_ref()
             .and_then(|d| std::fs::canonicalize(d).ok());
-        let repo_tv_target = repo_scope.as_ref().map(|d| d.join("transient-switches.toml"));
+        let repo_tv_target = repo_scope.as_ref().map(|d| config::repo_transient_arguments_path(d));
         // For re-resolving the merged config: the plain repo config path (its
         // existence is checked at load time, so it works even if created later).
         let repo_config_load = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml"));
@@ -1602,9 +1631,9 @@ impl StatusView {
                 {
                     let _ = tx.send_blocking(Changed::Config);
                 } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::TransientSwitches);
+                    let _ = tx.send_blocking(Changed::TransientArguments);
                 } else if cb_repo_tv.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::RepoTransientSwitches);
+                    let _ = tx.send_blocking(Changed::RepoTransientArguments);
                 }
             }
         });
@@ -1645,31 +1674,31 @@ impl StatusView {
                             }
                         })
                     }
-                    Changed::TransientSwitches => {
-                        let values = config::load_transient_switches();
+                    Changed::TransientArguments => {
+                        let values = config::load_transient_arguments();
                         this.update_in(cx, |view, _window, cx| {
                             // Skip our own Ctrl-s save (we update in memory first,
                             // so the reload reads back identical values).
-                            if values != view.transient_switches {
-                                view.transient_switches = values;
+                            if values != view.transient_arguments {
+                                view.transient_arguments = values;
                                 view.set_status(
-                                    "Switch defaults reloaded from disk".to_string(),
+                                    "Argument defaults reloaded from disk".to_string(),
                                     true,
                                     cx,
                                 );
                             }
                         })
                     }
-                    Changed::RepoTransientSwitches => {
+                    Changed::RepoTransientArguments => {
                         let values = repo_tv_target
                             .as_ref()
-                            .map(|p| config::load_transient_switches_at(p))
+                            .map(|p| config::load_transient_arguments_at(p))
                             .unwrap_or_default();
                         this.update_in(cx, |view, _window, cx| {
-                            if values != view.repo_transient_switches {
-                                view.repo_transient_switches = values;
+                            if values != view.repo_transient_arguments {
+                                view.repo_transient_arguments = values;
                                 view.set_status(
-                                    "Switch defaults reloaded from disk".to_string(),
+                                    "Argument defaults reloaded from disk".to_string(),
                                     true,
                                     cx,
                                 );
@@ -3275,31 +3304,33 @@ impl StatusView {
             }
         }
         let mut state = TransientState::new(id, def, targets);
-        // A saved switch set (magit's `transient-save`) overrides this
+        // A saved argument set (magit's `transient-save`) overrides this
         // transient's defaults; that becomes the baseline, so the save hint only
         // appears once the user changes it. A negatable (config-derived) switch
         // is overridden only when the saved set names it *explicitly* — its key
         // (force on) or its negation flag (force off); otherwise it keeps the
         // config default, so an old/empty saved set can't silently flip e.g.
         // gpg-signing off.
-        if let Some(saved) = self.saved_switches(id) {
+        if let Some(saved) = self.saved_arguments(id) {
             state.active = TransientState::apply_saved(&state.def, saved);
             state.baseline = state.active.clone();
+            state.values = TransientState::apply_saved_values(&state.def, saved);
+            state.baseline_values = state.values.clone();
         }
         self.popup = Some(Popup::Transient(state));
         cx.notify();
     }
 
-    /// The saved switch set in effect for a transient id: the repo scope wins
+    /// The saved argument set in effect for a transient id: the repo scope wins
     /// wholesale over the global scope (per-id replace), so a repo's entry fully
     /// defines that transient's defaults while global still covers the rest.
-    fn saved_switches(&self, id: &str) -> Option<&Vec<String>> {
-        self.repo_transient_switches
+    fn saved_arguments(&self, id: &str) -> Option<&Vec<String>> {
+        self.repo_transient_arguments
             .get(id)
-            .or_else(|| self.transient_switches.get(id))
+            .or_else(|| self.transient_arguments.get(id))
     }
 
-    /// Persist the open transient's switch overrides to a scope (magit's
+    /// Persist the open transient's argument overrides to a scope (magit's
     /// `transient-save`), updating the in-memory set and the scope's file, and
     /// re-baselining so the save hint hides. Repo scope is a no-op with no repo.
     fn save_transient_defaults(&mut self, repo_scope: bool, cx: &mut Context<Self>) {
@@ -3314,17 +3345,17 @@ impl StatusView {
             let Some(dir) = self.repo_scope_dir.clone() else {
                 return; // no repo to save into
             };
-            dir.join("transient-switches.toml")
+            config::repo_transient_arguments_path(&dir)
         } else {
-            let Some(path) = config::transient_switches_path() else {
+            let Some(path) = config::transient_arguments_path() else {
                 return;
             };
             path
         };
         let values = if repo_scope {
-            &mut self.repo_transient_switches
+            &mut self.repo_transient_arguments
         } else {
-            &mut self.transient_switches
+            &mut self.transient_arguments
         };
         // An empty set carries no overrides — drop the entry rather than writing
         // `id = []`, which used to read as "force everything off".
@@ -3333,13 +3364,14 @@ impl StatusView {
         } else {
             values.insert(id, switches);
         }
-        config::save_transient_switches_at(&path, values);
+        config::save_transient_arguments_at(&path, values);
         // The saved set is the new baseline, so the hint hides again.
         if let Some(Popup::Transient(s)) = self.popup.as_mut() {
             s.baseline = s.active.clone();
+            s.baseline_values = s.values.clone();
         }
         let scope = if repo_scope { "for this repo" } else { "globally" };
-        self.set_status(format!("Saved switches {scope}"), true, cx);
+        self.set_status(format!("Saved arguments {scope}"), true, cx);
     }
 
     /// The current branch's resolved push/pull/fetch targets (empty on error or
@@ -5381,6 +5413,45 @@ mod tests {
         assert_eq!(
             s.saved_overrides(),
             vec!["--no-gpg-sign".to_string(), "-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn saved_set_round_trips_option_values() {
+        let def = transient::log_transient();
+        let saved = vec![
+            "-r".to_string(),
+            "-n=50".to_string(),
+            "-F=fix bug".to_string(),
+            "--=src/main.rs".to_string(),
+        ];
+        let mut state = TransientState::new("log", def, RemoteTargets::default());
+        state.active = TransientState::apply_saved(&state.def, &saved);
+        state.values = TransientState::apply_saved_values(&state.def, &saved);
+        assert!(state.active.contains("-r"));
+        assert_eq!(state.values.get("-n").map(String::as_str), Some("50"));
+        assert_eq!(state.values.get("-F").map(String::as_str), Some("fix bug"));
+        assert_eq!(
+            state.values.get("--").map(String::as_str),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            state.args(),
+            vec![
+                "--reverse".to_string(),
+                "-n50".to_string(),
+                "--grep=fix bug".to_string(),
+            ]
+        );
+        assert_eq!(state.pathspecs(), vec!["src/main.rs".to_string()]);
+        assert_eq!(
+            state.saved_overrides(),
+            vec![
+                "--=src/main.rs".to_string(),
+                "-F=fix bug".to_string(),
+                "-n=50".to_string(),
+                "-r".to_string(),
+            ]
         );
     }
 

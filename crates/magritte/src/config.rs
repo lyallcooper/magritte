@@ -584,23 +584,30 @@ pub fn save_usage(usage: &Usage) {
     }
 }
 
-/// Saved default switch sets per transient (magit's `transient-save`), keyed by
-/// transient command id → the active switch keys. Persisted next to the config
-/// as `transient-switches.toml` (e.g. `commit = ["-a", "-s"]`).
-pub type TransientSwitches = BTreeMap<String, Vec<String>>;
+/// Saved default argument sets per transient (magit's `transient-save`), keyed
+/// by transient command id → active switch keys plus option values as
+/// `key=value`. Persisted next to the config as `transient-arguments.toml` (e.g.
+/// `commit = ["-a", "-s"]`, `log = ["-n=50"]`).
+pub type TransientArguments = BTreeMap<String, Vec<String>>;
+
+pub const TRANSIENT_ARGUMENTS_FILE: &str = "transient-arguments.toml";
 
 /// The magritte settings directory inside a repo's git dir — the repo "scope",
 /// a sibling layout to the global config dir (so `config.toml` /
-/// `transient-switches.toml` carry the same formats, just rooted here and
+/// `transient-arguments.toml` carry the same formats, just rooted here and
 /// overlaid on the global ones). `git_common_dir` is the repo's common git
 /// directory, shared across worktrees.
 pub fn repo_dir(git_common_dir: &Path) -> PathBuf {
     git_common_dir.join("magritte")
 }
 
-/// Path to the global saved-transient-switches file (a sibling of the config).
-pub fn transient_switches_path() -> Option<PathBuf> {
-    path().map(|p| p.with_file_name("transient-switches.toml"))
+/// Path to the global saved transient arguments file (a sibling of the config).
+pub fn transient_arguments_path() -> Option<PathBuf> {
+    path().map(|p| p.with_file_name(TRANSIENT_ARGUMENTS_FILE))
+}
+
+pub fn repo_transient_arguments_path(repo_dir: &Path) -> PathBuf {
+    repo_dir.join(TRANSIENT_ARGUMENTS_FILE)
 }
 
 /// Per-repo persisted status fold state. Sections are expanded by default, so
@@ -627,25 +634,25 @@ pub fn save_fold_state(path: &Path, state: &FoldState) {
     let _ = atomic_write_toml(path, state);
 }
 
-/// Load the saved transient switch sets from a specific file, or empty if it's
+/// Load the saved transient argument sets from a specific file, or empty if it's
 /// missing/unreadable. Used for both scopes (global and a repo's `.git/magritte`).
-pub fn load_transient_switches_at(path: &Path) -> TransientSwitches {
+pub fn load_transient_arguments_at(path: &Path) -> TransientArguments {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|text| toml::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-/// Persist the saved transient switch sets to a specific file (atomic temp-file
+/// Persist the saved transient argument sets to a specific file (atomic temp-file
 /// + rename), creating its directory as needed. Best-effort.
-pub fn save_transient_switches_at(path: &Path, values: &TransientSwitches) {
+pub fn save_transient_arguments_at(path: &Path, values: &TransientArguments) {
     let _ = atomic_write_toml(path, values);
 }
 
-/// Load the global saved transient switch sets, or empty if missing.
-pub fn load_transient_switches() -> TransientSwitches {
-    transient_switches_path()
-        .map(|p| load_transient_switches_at(&p))
+/// Load the global saved transient argument sets, or empty if missing.
+pub fn load_transient_arguments() -> TransientArguments {
+    transient_arguments_path()
+        .map(|p| load_transient_arguments_at(&p))
         .unwrap_or_default()
 }
 
