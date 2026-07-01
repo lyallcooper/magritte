@@ -142,6 +142,18 @@ pub struct RefreshSnapshot {
     pub sequence: Option<Sequence>,
 }
 
+/// Extra metadata the UI wants attached to a refresh snapshot. Plain
+/// [`status`](Repo::status) stays cheap and porcelain-only; the app opts into
+/// slower/ref-sensitive adornments only for screens that need them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RefreshNeeds {
+    /// Resolve a distinct push target (`@{push}`) so triangular-workflow sections
+    /// and title-bar tracking can be shown. This is attempted only for branches
+    /// that already have an upstream, matching the status sections' "distinct
+    /// from upstream" model and avoiding noisy failures on purely local branches.
+    pub push_target: bool,
+}
+
 impl Status {
     pub fn staged(&self) -> impl Iterator<Item = &FileEntry> {
         self.entries.iter().filter(|e| e.is_staged())
@@ -174,16 +186,19 @@ impl Repo {
             "--untracked-files=normal",
             "-z",
         ])?;
-        let mut status = parse_porcelain_v2(&out.stdout)?;
-        self.resolve_push_target(&mut status.head);
-        Ok(status)
+        parse_porcelain_v2(&out.stdout)
     }
 
     /// The priority read for one UI refresh: parsed status plus any in-progress
     /// sequence state. Resolve the git dir once and share it with the sequence
     /// reader instead of letting each frontend path shell out independently.
     pub fn refresh_snapshot(&self) -> Result<RefreshSnapshot> {
-        let status = self.status()?;
+        self.refresh_snapshot_with(RefreshNeeds::default())
+    }
+
+    pub fn refresh_snapshot_with(&self, needs: RefreshNeeds) -> Result<RefreshSnapshot> {
+        let mut status = self.status()?;
+        self.enrich_status(&mut status, needs);
         let sequence = self.git_dir().ok().and_then(|dir| self.sequence_in_dir(&dir));
         Ok(RefreshSnapshot { status, sequence })
     }
@@ -191,9 +206,24 @@ impl Repo {
     /// Like [`refresh_snapshot`](Self::refresh_snapshot), but reuses a git-dir
     /// path the caller already resolved while opening the repository.
     pub fn refresh_snapshot_in_dir(&self, git_dir: &Path) -> Result<RefreshSnapshot> {
-        let status = self.status()?;
+        self.refresh_snapshot_in_dir_with(git_dir, RefreshNeeds::default())
+    }
+
+    pub fn refresh_snapshot_in_dir_with(
+        &self,
+        git_dir: &Path,
+        needs: RefreshNeeds,
+    ) -> Result<RefreshSnapshot> {
+        let mut status = self.status()?;
+        self.enrich_status(&mut status, needs);
         let sequence = self.sequence_in_dir(git_dir);
         Ok(RefreshSnapshot { status, sequence })
+    }
+
+    fn enrich_status(&self, status: &mut Status, needs: RefreshNeeds) {
+        if needs.push_target && status.head.upstream.is_some() {
+            self.resolve_push_target(&mut status.head);
+        }
     }
 
     /// Resolve the branch's push target (`@{push}`) and its ahead/behind, but

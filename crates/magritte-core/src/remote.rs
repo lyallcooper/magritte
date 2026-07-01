@@ -40,10 +40,14 @@ impl RemoteTargets {
     /// avoids re-running branch/upstream/push resolution after a refresh has
     /// populated the status screen.
     pub fn from_head(head: &HeadInfo) -> Self {
+        let upstream = head.upstream.as_deref().and_then(parse_upstream);
         RemoteTargets {
             branch: head.branch.clone(),
-            push_remote: head.push_remote.clone(),
-            upstream: head.upstream.as_deref().and_then(parse_upstream),
+            push_remote: head
+                .push_remote
+                .clone()
+                .or_else(|| upstream.as_ref().map(|u| u.remote.clone())),
+            upstream,
         }
     }
 }

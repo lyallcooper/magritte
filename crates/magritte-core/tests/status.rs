@@ -2,7 +2,7 @@ mod common;
 
 use common::TestRepo;
 use magritte_core::status::parse_porcelain_v2;
-use magritte_core::{Change, EntryKind, Repo};
+use magritte_core::{Change, EntryKind, RefreshNeeds, Repo};
 
 fn open(repo: &TestRepo) -> Repo {
     Repo::discover(repo.path()).expect("discover repo")
@@ -22,6 +22,70 @@ fn clean_repo_reports_branch_and_no_entries() {
         "expected clean, got {:?}",
         status.entries
     );
+}
+
+#[test]
+fn plain_status_does_not_probe_push_target() {
+    let t = TestRepo::new();
+    t.write("README.md", "hello\n");
+    t.commit_all("initial");
+    let repo = open(&t);
+
+    let status = repo.status().unwrap();
+
+    assert_eq!(status.head.branch.as_deref(), Some("main"));
+    assert!(status.head.push.is_none());
+    assert!(repo
+        .command_log()
+        .iter()
+        .all(|cmd| !cmd.display().contains("@{push}")));
+}
+
+#[test]
+fn push_target_enrichment_skips_branches_without_upstream() {
+    let t = TestRepo::new();
+    t.write("README.md", "hello\n");
+    t.commit_all("initial");
+    let repo = open(&t);
+
+    let snapshot = repo
+        .refresh_snapshot_with(RefreshNeeds { push_target: true })
+        .unwrap();
+
+    assert_eq!(snapshot.status.head.branch.as_deref(), Some("main"));
+    assert!(snapshot.status.head.push.is_none());
+    assert!(repo
+        .command_log()
+        .iter()
+        .all(|cmd| !cmd.display().contains("@{push}")));
+}
+
+#[test]
+fn push_target_enrichment_reports_triangular_push_target() {
+    let t = TestRepo::new();
+    t.write("README.md", "base\n");
+    t.commit_all("base");
+    let base = t.git(["rev-parse", "HEAD"]);
+
+    t.git(["remote", "add", "origin", "https://example.com/origin.git"]);
+    t.git(["remote", "add", "fork", "https://example.com/fork.git"]);
+    t.git(["update-ref", "refs/remotes/origin/main", &base]);
+    t.git(["update-ref", "refs/remotes/fork/main", &base]);
+    t.git(["config", "branch.main.remote", "origin"]);
+    t.git(["config", "branch.main.merge", "refs/heads/main"]);
+    t.git(["config", "branch.main.pushRemote", "fork"]);
+
+    let repo = open(&t);
+    let plain = repo.status().unwrap();
+    assert!(plain.head.push.is_none());
+    assert!(plain.head.push_remote.is_none());
+
+    let snapshot = repo
+        .refresh_snapshot_with(RefreshNeeds { push_target: true })
+        .unwrap();
+
+    assert_eq!(snapshot.status.head.push.as_deref(), Some("fork/main"));
+    assert_eq!(snapshot.status.head.push_remote.as_deref(), Some("fork"));
 }
 
 #[test]

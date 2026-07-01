@@ -87,8 +87,8 @@ use gpui_component::{ActiveTheme, IndexPath};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     CommitMetadata, CommitMode, ConflictSide, DiffSource, EntryKind, FileDiff, FileEntry,
-    IgnoreDest, LineKind, LogEntry, RebaseAction, RemoteTargets, Repo, ResetMode, Sequence,
-    SequenceKind, Stash, Status, TagsAround,
+    IgnoreDest, LineKind, LogEntry, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode,
+    Sequence, SequenceKind, Stash, Status, TagsAround,
 };
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -2119,14 +2119,17 @@ impl StatusView {
         // can be restored once status lands, rather than left at a stale index.
         let anchor = self.capture_anchor();
         let worktree_git_dir = self.worktree_git_dir.clone();
+        let needs = RefreshNeeds {
+            push_target: pushremote_configured,
+        };
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let (result, sequence) = cx
                 .background_executor()
                 .spawn(async move {
                     let snapshot = match worktree_git_dir.as_deref() {
-                        Some(dir) => repo.refresh_snapshot_in_dir(dir),
-                        None => repo.refresh_snapshot(),
+                        Some(dir) => repo.refresh_snapshot_in_dir_with(dir, needs),
+                        None => repo.refresh_snapshot_with(needs),
                     };
                     match snapshot {
                         Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence),
