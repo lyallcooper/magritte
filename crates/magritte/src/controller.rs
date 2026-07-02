@@ -2198,3 +2198,186 @@ impl StatusView {
         );
     }
 }
+
+// --- Mid-rebase reword (the rebase flow that pauses to edit a message) ----
+//
+// Moved next to the rest of the rebase/sequence dispatch so the whole rebase
+// state machine lives in one file.
+
+impl StatusView {
+    pub(crate) fn run_rebase_reword_from_rev(
+        &mut self,
+        rev: String,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let base = format!("{rev}^");
+                    let result = (|| {
+                        let mut steps = repo.rebase_todo(&base)?;
+                        let step = steps
+                            .iter_mut()
+                            .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
+                            .ok_or_else(|| {
+                                magritte_core::Error::Message(
+                                    "selected commit is not in the rebase range".to_string(),
+                                )
+                            })?;
+                        let oid = step.oid.clone();
+                        step.action = RebaseAction::Reword;
+                        repo.rebase_interactive(&base, &steps, &args)?;
+                        Ok::<_, magritte_core::Error>(oid)
+                    })();
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped) = outcome;
+                this.job_cancel = None;
+                match result {
+                    Ok(oid) => {
+                        this.pending_rebase_rewords.insert(oid);
+                        if let Some(stopped) = stopped {
+                            if this.open_pending_rebase_reword(stopped, window, cx) {
+                                return;
+                            }
+                        }
+                        this.report("Rebased", Ok(String::new()), cx);
+                        this.refresh(cx);
+                    }
+                    Err(e) => {
+                        this.report("Rebased", Err(e), cx);
+                        this.refresh(cx);
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn pending_rebase_reword_matches(&self, stopped_sha: &str) -> bool {
+        self.pending_rebase_rewords
+            .iter()
+            .any(|oid| stopped_sha.starts_with(oid) || oid.starts_with(stopped_sha))
+    }
+
+    pub(crate) fn open_pending_rebase_reword(
+        &mut self,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.pending_rebase_reword_matches(&stopped_sha) {
+            return false;
+        }
+        if let Some(git_editor) = self.external_commit_editor() {
+            self.run_rebase_reword_with_external_editor(stopped_sha, git_editor, window, cx);
+            return true;
+        }
+        self.clear_status(cx);
+        self.open_editor_after(
+            CommitMode::Reword,
+            Vec::new(),
+            CommitAfterSubmit::ContinueRebase { stopped_sha },
+            window,
+            cx,
+        );
+        true
+    }
+
+    pub(crate) fn run_rebase_reword_commit(
+        &mut self,
+        message: String,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_rebase_reword_after_commit(
+            stopped_sha,
+            window,
+            cx,
+            move |repo| repo.commit(&message, CommitMode::Reword, &[]),
+        );
+    }
+
+    pub(crate) fn run_rebase_reword_with_external_editor(
+        &mut self,
+        stopped_sha: String,
+        git_editor: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_rebase_reword_after_commit(
+            stopped_sha,
+            window,
+            cx,
+            move |repo| repo.commit_with_editor(CommitMode::Reword, &[], &git_editor),
+        );
+    }
+
+    pub(crate) fn run_rebase_reword_after_commit<F>(
+        &mut self,
+        stopped_sha: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        commit: F,
+    ) where
+        F: FnOnce(&Repo) -> magritte_core::Result<String> + Send + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel);
+        cx.spawn_in(window, async move |this, cx| {
+            let stopped_for_result = stopped_sha.clone();
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let commit_result = commit(&repo);
+                    let committed = commit_result.is_ok();
+                    let result = commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped, committed)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped, committed) = outcome;
+                this.job_cancel = None;
+                if committed {
+                    this.pending_rebase_rewords.remove(&stopped_for_result);
+                }
+                if result.is_ok() {
+                    if let Some(stopped) = stopped {
+                        if this.open_pending_rebase_reword(stopped, window, cx) {
+                            return;
+                        }
+                    }
+                }
+                this.report("Reworded", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
