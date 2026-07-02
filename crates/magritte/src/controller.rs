@@ -1852,12 +1852,31 @@ impl StatusView {
         F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
         G: FnOnce(&mut Self, magritte_core::Result<String>, &mut Context<Self>) + 'static,
     {
+        self.run_job_core(
+            progress,
+            op,
+            move |this, result, cx| {
+                finish(this, result, cx);
+                this.refresh(cx);
+            },
+            cx,
+        );
+    }
+
+    /// The bare cancellable-job shell every runner shares: show `progress`, tag
+    /// the job's git calls with a cancel flag so `C-g`/Esc can kill a hung
+    /// subprocess (stored on `self` for the key handler; cleared when the job
+    /// finishes), count activity for the busy spinner, run `op` on the
+    /// background executor, then `finish` on the UI thread.
+    fn run_job_core<T, F, G>(&mut self, progress: String, op: F, finish: G, cx: &mut Context<Self>)
+    where
+        T: Send + 'static,
+        F: FnOnce(Repo) -> T + Send + 'static,
+        G: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        // Tag the job's git calls with a cancel flag so `C-g`/Esc can kill a
-        // hung transfer (the common case: a stalled remote). Stored on `self`
-        // for the key handler; cleared when the job finishes.
         let (repo, cancel) = repo.cancellable();
         self.job_cancel = Some(cancel);
         self.set_progress(progress, cx);
@@ -1870,7 +1889,6 @@ impl StatusView {
             this.update(cx, |this, cx| {
                 this.job_cancel = None;
                 finish(this, result, cx);
-                this.refresh(cx);
                 this.end_activity(cx);
             })
             .ok();
@@ -1911,20 +1929,10 @@ impl StatusView {
     ) where
         F: FnOnce(Repo) -> magritte_core::Result<magritte_core::CommandRun> + Send + 'static,
     {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
-        self.set_progress(progress, cx);
-        self.begin_activity(cx);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { run(repo) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.job_cancel = None;
+        self.run_job_core(
+            progress,
+            run,
+            move |this, result, cx| {
                 match result {
                     Ok(run) => {
                         // Cap the toast, pointing to the `$` log (with its
@@ -1938,11 +1946,9 @@ impl StatusView {
                 if refresh {
                     this.refresh(cx);
                 }
-                this.end_activity(cx);
-            })
-            .ok();
-        })
-        .detach();
+            },
+            cx,
+        );
     }
 
     /// Cancel the active mutating job, if any — killing its git subprocess.
