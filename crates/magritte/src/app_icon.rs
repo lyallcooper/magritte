@@ -36,6 +36,11 @@ pub(crate) const ICONS: &[Icon] = &[
         master: include_bytes!("../icons/golconda.png"),
         thumb: include_bytes!("../icons/thumb/golconda.png"),
     },
+    Icon {
+        id: "magic",
+        master: include_bytes!("../icons/magic.png"),
+        thumb: include_bytes!("../icons/thumb/magic.png"),
+    },
 ];
 
 /// The variant used when `app_icon` is empty (or unrecognized). Kept in sync
