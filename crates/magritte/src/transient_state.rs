@@ -696,7 +696,14 @@ impl StatusView {
     /// no repo), for building and dispatching the remote transients.
     pub(crate) fn remote_targets(&self) -> RemoteTargets {
         if let Some(status) = self.status.as_ref() {
-            return RemoteTargets::from_head(&status.head);
+            // `from_head` reuses the parsed status; add the remote list so the
+            // menus can name the sole remote an unconfigured target would use.
+            let remotes = self
+                .repo
+                .as_ref()
+                .and_then(|r| r.remotes().ok())
+                .unwrap_or_default();
+            return RemoteTargets::from_head(&status.head).with_remotes(&remotes);
         }
         self.repo
             .as_ref()

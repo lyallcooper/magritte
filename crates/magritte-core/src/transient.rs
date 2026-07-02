@@ -489,17 +489,26 @@ impl Transient {
 fn push_remote_label(t: &RemoteTargets) -> String {
     match (&t.branch, &t.push_remote) {
         (Some(b), Some(r)) => format!("{b} \u{2192} {r}/{b}"),
-        _ => "push remote, setting it".to_string(),
+        // Unconfigured: name the sole remote it would push to (and save) when
+        // there's just one, else the abstract hint.
+        _ => match t.predicted_ref() {
+            Some(r) => format!("{r}, setting it"),
+            None => "push remote, setting it".to_string(),
+        },
     }
 }
 
 /// The push-upstream target label: `remote/branch` when configured, else the
-/// descriptive hint that invoking it configures the upstream (push saves it).
+/// predicted sole-remote target (or the abstract hint) — invoking it configures
+/// the upstream (push saves it).
 fn push_upstream_label(t: &RemoteTargets) -> String {
-    t.upstream
-        .as_ref()
-        .map(Upstream::display)
-        .unwrap_or_else(|| "upstream, setting it".to_string())
+    match t.upstream.as_ref() {
+        Some(u) => u.display(),
+        None => match t.predicted_ref() {
+            Some(r) => format!("{r}, setting it"),
+            None => "upstream, setting it".to_string(),
+        },
+    }
 }
 
 /// The upstream label (`origin/master`); the bare target for pull/fetch/rebase,

@@ -33,12 +33,19 @@ pub struct RemoteTargets {
     pub push_remote: Option<String>,
     /// Upstream branch; `None` when unconfigured.
     pub upstream: Option<Upstream>,
+    /// The single configured remote, when there's exactly one — the remote an
+    /// unconfigured push/pull/fetch would use without prompting. Lets the menus
+    /// name that concrete target instead of an abstract "push remote". Filled by
+    /// the caller (needs a `git remote` query); `None` when unknown or when 0/2+
+    /// remotes exist.
+    pub sole_remote: Option<String>,
 }
 
 impl RemoteTargets {
     /// Build transient/menu labels from the already-parsed status header. This
     /// avoids re-running branch/upstream/push resolution after a refresh has
-    /// populated the status screen.
+    /// populated the status screen. `sole_remote` is left unset — fill it via
+    /// [`with_remotes`](Self::with_remotes) when the remote list is available.
     pub fn from_head(head: &HeadInfo) -> Self {
         let upstream = head.upstream.as_deref().and_then(parse_upstream);
         RemoteTargets {
@@ -48,6 +55,26 @@ impl RemoteTargets {
                 .clone()
                 .or_else(|| upstream.as_ref().map(|u| u.remote.clone())),
             upstream,
+            sole_remote: None,
+        }
+    }
+
+    /// Record the configured remotes, setting `sole_remote` when exactly one
+    /// exists (what an unconfigured target resolves to without a prompt).
+    pub fn with_remotes(mut self, remotes: &[String]) -> Self {
+        self.sole_remote = match remotes {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+        self
+    }
+
+    /// The predicted target ref for an unconfigured push/pull on this branch:
+    /// `sole_remote/branch` when there's a single remote to fall back to.
+    pub fn predicted_ref(&self) -> Option<String> {
+        match (&self.branch, &self.sole_remote) {
+            (Some(b), Some(r)) => Some(format!("{r}/{b}")),
+            _ => None,
         }
     }
 
@@ -131,10 +158,18 @@ impl Repo {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .filter(|s| !s.is_empty())
             .and_then(|s| parse_upstream(&s));
+        let sole_remote = match self.remotes()?.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+        // Fall back to the upstream's remote (as `from_head` does) so the
+        // push/pull menus collapse consistently on this path too.
+        let push_remote = push_remote.or_else(|| upstream.as_ref().map(|u| u.remote.clone()));
         Ok(RemoteTargets {
             branch,
             push_remote,
             upstream,
+            sole_remote,
         })
     }
 
@@ -230,6 +265,7 @@ mod tests {
                     remote: "origin".to_string(),
                     branch: "main".to_string(),
                 }),
+                sole_remote: None,
             }
         );
     }
@@ -242,7 +278,33 @@ mod tests {
                 remote: up_remote.to_string(),
                 branch: up_branch.to_string(),
             }),
+            sole_remote: None,
         }
+    }
+
+    #[test]
+    fn sole_remote_predicts_target_for_unconfigured_branch() {
+        // A branch with no upstream/push-remote but exactly one remote: the
+        // menus can name what a push would target (and save).
+        let t = RemoteTargets {
+            branch: Some("wip".to_string()),
+            push_remote: None,
+            upstream: None,
+            sole_remote: None,
+        }
+        .with_remotes(&["origin".to_string()]);
+        assert_eq!(t.sole_remote.as_deref(), Some("origin"));
+        assert_eq!(t.predicted_ref().as_deref(), Some("origin/wip"));
+
+        // Two remotes → ambiguous, no prediction (the push would prompt).
+        let two = RemoteTargets {
+            branch: Some("wip".to_string()),
+            push_remote: None,
+            upstream: None,
+            sole_remote: None,
+        }
+        .with_remotes(&["origin".to_string(), "fork".to_string()]);
+        assert_eq!(two.predicted_ref(), None);
     }
 
     #[test]
