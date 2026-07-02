@@ -298,6 +298,10 @@ pub struct Action {
     pub also_key: Option<&'static str>,
     pub description: String,
     pub command: Command,
+    /// Whether the description is a concrete remote-tracking ref/remote (so the
+    /// frontend colors it like one). False for placeholders ("…, setting it")
+    /// and non-ref actions ("elsewhere", "all remotes").
+    pub ref_label: bool,
 }
 
 impl Action {
@@ -308,10 +312,29 @@ impl Action {
             also_key: None,
             description: description.into(),
             command,
+            ref_label: false,
         })
     }
 
-    /// An action row invokable by either of two keys (rendered `key/also`).
+    /// A push/pull/fetch target row. `is_ref` marks a configured remote ref
+    /// (colored like one); a placeholder label passes false.
+    pub fn target(
+        key: &'static str,
+        description: impl Into<String>,
+        command: Command,
+        is_ref: bool,
+    ) -> Suffix {
+        Suffix::Action(Action {
+            key,
+            also_key: None,
+            description: description.into(),
+            command,
+            ref_label: is_ref,
+        })
+    }
+
+    /// A collapsed push-remote/upstream target invokable by either key
+    /// (rendered `key/also`); always a configured ref.
     pub fn suffix_dual(
         key: &'static str,
         also: &'static str,
@@ -323,6 +346,7 @@ impl Action {
             also_key: Some(also),
             description: description.into(),
             command,
+            ref_label: true,
         })
     }
 }
@@ -534,8 +558,18 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                     ]
                 } else {
                     vec![
-                        Action::suffix("p", push_remote_label(t), Command::PushPushRemote),
-                        Action::suffix("u", push_upstream_label(t), Command::PushUpstream),
+                        Action::target(
+                            "p",
+                            push_remote_label(t),
+                            Command::PushPushRemote,
+                            t.push_remote.is_some(),
+                        ),
+                        Action::target(
+                            "u",
+                            push_upstream_label(t),
+                            Command::PushUpstream,
+                            t.upstream.is_some(),
+                        ),
                         Action::suffix("e", "elsewhere", Command::PushElsewhere),
                     ]
                 },
@@ -926,8 +960,18 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
                     ]
                 } else {
                     vec![
-                        Action::suffix("p", push_remote, Command::PullPushRemote),
-                        Action::suffix("u", upstream_label(t), Command::PullUpstream),
+                        Action::target(
+                            "p",
+                            push_remote,
+                            Command::PullPushRemote,
+                            t.push_remote.is_some(),
+                        ),
+                        Action::target(
+                            "u",
+                            upstream_label(t),
+                            Command::PullUpstream,
+                            t.upstream.is_some(),
+                        ),
                         Action::suffix("e", "elsewhere", Command::PullElsewhere),
                     ]
                 },
@@ -970,8 +1014,13 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
                     ]
                 } else {
                     vec![
-                        Action::suffix("p", push_remote, Command::FetchPushRemote),
-                        Action::suffix("u", upstream, Command::FetchUpstream),
+                        Action::target(
+                            "p",
+                            push_remote,
+                            Command::FetchPushRemote,
+                            t.push_remote.is_some(),
+                        ),
+                        Action::target("u", upstream, Command::FetchUpstream, t.upstream.is_some()),
                         Action::suffix("a", "all remotes", Command::FetchAll),
                         Action::suffix("e", "elsewhere", Command::FetchElsewhere),
                     ]
@@ -1016,8 +1065,18 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Rebase onto"),
                 suffixes: vec![
-                    Action::suffix("p", push_remote, Command::RebaseOntoPushRemote),
-                    Action::suffix("u", upstream_label(t), Command::RebaseOntoUpstream),
+                    Action::target(
+                        "p",
+                        push_remote,
+                        Command::RebaseOntoPushRemote,
+                        t.push_remote.is_some(),
+                    ),
+                    Action::target(
+                        "u",
+                        upstream_label(t),
+                        Command::RebaseOntoUpstream,
+                        t.upstream.is_some(),
+                    ),
                     Action::suffix("e", "elsewhere", Command::RebaseElsewhere),
                 ],
             },

@@ -28,6 +28,10 @@ pub(crate) struct Palette {
     pub(crate) added_bg: Hsla,
     pub(crate) removed_bg: Hsla,
     pub(crate) banner: Hsla,
+    /// Remote-tracking refs (`origin/main`), magit's green `branch-remote` face.
+    pub(crate) branch_remote: Hsla,
+    /// Tag names (`v0.4.0`), magit's yellow `tag` face.
+    pub(crate) tag: Hsla,
 }
 
 impl Palette {
@@ -60,6 +64,12 @@ impl Palette {
             added_bg: status.success_background(cx),
             removed_bg: status.error_background(cx),
             banner: status.warning_background(cx),
+            // Ref colors follow magit's faces: remote branches green, tags
+            // yellow. They share the theme's success/warning hues (as the diff
+            // added/modified colors do) — context disambiguates a ref from a
+            // diff line.
+            branch_remote: status.success(cx),
+            tag: status.warning(cx),
         }
     }
 }
@@ -85,6 +95,8 @@ impl Default for Palette {
             added_bg: ga(0x1a7f371f),
             removed_bg: ga(0xcf222e1f),
             banner: ga(0xb088002e),
+            branch_remote: g(0x1a7f37),
+            tag: g(0xb08800),
         }
     }
 }

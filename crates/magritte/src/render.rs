@@ -641,6 +641,13 @@ impl StatusView {
                         .into_any_element(),
                     None => kbd::key_chip(a.key, self.palette.dim, &self.font),
                 };
+                // A concrete remote ref is colored like one; placeholders and
+                // non-ref actions ("elsewhere") use the normal foreground.
+                let label_color = if a.ref_label {
+                    self.palette.branch_remote
+                } else {
+                    self.palette.fg
+                };
                 div()
                     .id(a.key)
                     .relative()
@@ -653,7 +660,7 @@ impl StatusView {
                     .group(KBD_ROW_GROUP)
                     .child(track_target(a.key))
                     .child(keycap)
-                    .child(self.hover_label(&a.description, self.palette.fg))
+                    .child(self.hover_label(&a.description, label_color))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
                     })
@@ -945,9 +952,26 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_1()
-            .text_color(self.palette.dim)
             .font_family(self.font.clone())
-            .child(SharedString::from(format!("{glyph}{name}")));
+            // Glyph (dim) and ref name (magit's green branch-remote face) sit
+            // tight together; the ahead/behind chips follow with a gap.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .when(!glyph.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(glyph.to_string())),
+                        )
+                    })
+                    .child(
+                        div()
+                            .text_color(self.palette.branch_remote)
+                            .child(SharedString::from(name.to_string())),
+                    ),
+            );
         if ahead > 0 {
             chunk = chunk.child(self.titlebar_action(
                 view,
@@ -1087,7 +1111,7 @@ impl StatusView {
                     }
                     seg = seg.child(
                         div()
-                            .text_color(self.palette.modified)
+                            .text_color(self.palette.tag)
                             .child(SharedString::from(text)),
                     );
                 }
