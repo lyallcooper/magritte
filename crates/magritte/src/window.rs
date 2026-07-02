@@ -228,6 +228,8 @@ pub(crate) fn open_repo_window(
                 view.install_watchers(window, cx);
                 view.start_auto_fetch(cx);
                 view.start_update_checks(cx);
+                // The Dock-icon override is per-session, so set it each launch.
+                view.apply_app_icon();
             });
             // The window's root must be a gpui-component Root (provides
             // theming, overlays, and the component context).

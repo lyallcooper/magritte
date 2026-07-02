@@ -53,6 +53,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Monospace font for code, diffs, and tabular rows. |
 | `ui_font` | font family | *(uses `font`)* | Proportional font for chrome (menus, headers, labels). Empty = monospace everywhere. |
+| `app_icon` | `pipe` / `golconda` / `son-of-man` | `pipe` | macOS only. The Dock (and Cmd-Tab) icon. Sets the running app's icon, not the Finder icon, which macOS keeps fixed to the bundle default. |
 | `editor` | command or app name | OS default opener | External editor for "open file" (`Return`) — see below. |
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |

@@ -25,6 +25,7 @@ use gpui::{
     MenuItem, MouseButton, MouseDownEvent, SharedString, Styled, UniformListScrollHandle,
 };
 
+mod app_icon;
 mod commands;
 mod commit_diff_view;
 mod commit_editor;

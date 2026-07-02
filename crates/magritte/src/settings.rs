@@ -61,6 +61,9 @@ pub(crate) struct SettingsState {
     commit_editor: Entity<InputState>,
     /// Keymap preset (Evil/Vim vs Vanilla Emacs).
     keymap_preset: Entity<SelectState<Vec<SharedString>>>,
+    /// App icon variant (macOS Dock icon).
+    #[cfg(target_os = "macos")]
+    app_icon: Entity<SelectState<Vec<SharedString>>>,
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
     /// 4=ui_font, 5=editor, 6=keymap_preset, 7=commit_editor).
     focus_ix: usize,
@@ -147,6 +150,19 @@ impl StatusView {
             .unwrap_or(0);
         let keymap_preset =
             cx.new(|cx| SelectState::new(keymap_items, row(keymap_ix), &mut *window, cx));
+        #[cfg(target_os = "macos")]
+        let app_icon = {
+            let items: Vec<SharedString> = app_icon::ICONS
+                .iter()
+                .map(|(_, label, _)| SharedString::from(*label))
+                .collect();
+            // Empty config = the default variant (the first entry).
+            let ix = app_icon::ICONS
+                .iter()
+                .position(|(id, ..)| *id == self.config.app_icon)
+                .unwrap_or(0);
+            cx.new(|cx| SelectState::new(items, row(ix), &mut *window, cx))
+        };
         let light_theme = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(theme_names.clone()),
@@ -231,7 +247,7 @@ impl StatusView {
                 .default_value(self.config.commit_editor.clone())
         });
 
-        let subs = vec![
+        let mut subs = vec![
             cx.subscribe_in(
                 &commit_editor,
                 window,
@@ -357,6 +373,23 @@ impl StatusView {
                 },
             ),
         ];
+        #[cfg(target_os = "macos")]
+        subs.push(cx.subscribe_in(
+            &app_icon,
+            window,
+            |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
+                if let SelectEvent::Confirm(Some(label)) = ev {
+                    let id = app_icon::ICONS
+                        .iter()
+                        .find(|(_, l, _)| *l == label.as_ref())
+                        .map_or("", |(id, ..)| *id);
+                    this.edit_global(|c| c.app_icon = id.to_string());
+                    // Set the running Dock icon immediately.
+                    this.apply_app_icon();
+                    this.apply_and_save(cx);
+                }
+            },
+        ));
 
         appearance.update(cx, |st, cx| st.focus(window, cx));
         self.screen = Screen::Settings(SettingsState {
@@ -368,6 +401,8 @@ impl StatusView {
             editor,
             commit_editor,
             keymap_preset,
+            #[cfg(target_os = "macos")]
+            app_icon,
             focus_ix: 0,
             scroll: ScrollHandle::new(),
             _subs: subs,
@@ -549,10 +584,15 @@ impl StatusView {
     /// of them (the dropdowns have distinct `SelectState` types and the editor
     /// fields are `Select`/`Input`, so each arm focuses its own entity).
     pub(crate) fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One extra control on macOS (the app-icon dropdown).
+        #[cfg(target_os = "macos")]
+        const FOCUS_COUNT: usize = 9;
+        #[cfg(not(target_os = "macos"))]
+        const FOCUS_COUNT: usize = 8;
         let Some(s) = self.settings_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + 1) % 8;
+        s.focus_ix = (s.focus_ix + 1) % FOCUS_COUNT;
         match s.focus_ix {
             0 => s
                 .appearance
@@ -573,6 +613,8 @@ impl StatusView {
                 .keymap_preset
                 .clone()
                 .update(cx, |st, cx| st.focus(window, cx)),
+            #[cfg(target_os = "macos")]
+            7 => s.app_icon.clone().update(cx, |st, cx| st.focus(window, cx)),
             _ => s
                 .commit_editor
                 .clone()
@@ -742,9 +784,8 @@ impl StatusView {
                             )),
                     ),
             )
-            .child(section(
-                "Appearance",
-                vec![
+            .child(section("Appearance", {
+                let mut rows = vec![
                     field(
                         "appearance",
                         "Mode",
@@ -778,8 +819,17 @@ impl StatusView {
                             .search_placeholder("Search fonts")
                             .into_any_element(),
                     ),
-                ],
-            ))
+                ];
+                // The app-icon switcher sets the macOS Dock icon; no effect
+                // elsewhere, so it's macOS-only.
+                #[cfg(target_os = "macos")]
+                rows.push(field(
+                    "app-icon",
+                    "App icon",
+                    Select::new(&s.app_icon).into_any_element(),
+                ));
+                rows
+            }))
             .child(section("Editor", {
                 #[cfg(target_os = "macos")]
                 let control = Select::new(&s.editor)

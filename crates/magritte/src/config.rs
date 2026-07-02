@@ -71,6 +71,11 @@ pub struct Config {
     /// use the monospace `font` everywhere, as before.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub ui_font: String,
+    /// The app icon variant (macOS Dock/switcher icon): `pipe`, `golconda`, or
+    /// `son-of-man`. Empty = the default (`pipe`). macOS only, and it sets the
+    /// running Dock icon, not the bundle's Finder icon.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub app_icon: String,
     /// Highlight commit-summary characters past 50 columns in the editor.
     #[serde(skip_serializing_if = "is_true")]
     pub commit_title_ruler: bool,
@@ -386,6 +391,7 @@ impl Default for Config {
             dark_theme: String::new(),
             font: String::new(),
             ui_font: String::new(),
+            app_icon: String::new(),
             commit_title_ruler: true,
             commit_body_wrap: true,
             editor: String::new(),
@@ -734,6 +740,12 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         "ui_font",
         &config.ui_font,
         config.ui_font.is_empty(),
+    );
+    set_string(
+        &mut doc,
+        "app_icon",
+        &config.app_icon,
+        config.app_icon.is_empty(),
     );
     set_bool(
         &mut doc,

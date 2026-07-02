@@ -56,6 +56,15 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # macOS-only: window-id lookup for screenshots, and CoreText font traits for
 # robust monospace-font detection (vs. glyph-width heuristics).
 [target.'cfg(target_os = "macos")'.dependencies]
+# Raw Objective-C messaging for the Dock-icon switcher (NSApplication
+# applicationIconImage); already in the tree via gpui.
+objc = "0.2"
 core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["link"] }
 core-text = "21"
+
+[lints.rust]
+# objc 0.2's msg_send!/sel! macros reference `feature = "cargo-clippy"`, which
+# we don't (and shouldn't) declare; expect it so the real unexpected_cfgs lint
+# still catches our own typos.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

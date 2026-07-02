@@ -216,6 +216,7 @@ impl StatusView {
     ) {
         let fetch_changed = self.config.fetch != cfg.fetch;
         let update_check_changed = self.config.check_for_updates != cfg.check_for_updates;
+        let app_icon_changed = self.config.app_icon != cfg.app_icon;
         // Some settings change *fetched data*, not just how it's painted — the
         // title-bar tag segment (and commit ref labels), which status sections
         // are populated, and the recent-commit count. Those need a refresh to
@@ -232,6 +233,9 @@ impl StatusView {
         }
         if update_check_changed {
             self.start_update_checks(cx);
+        }
+        if app_icon_changed {
+            self.apply_app_icon();
         }
         self.font = theme::resolve_font(&self.config, cx);
         self.ui_font = theme::resolve_ui_font(&self.config, cx);
