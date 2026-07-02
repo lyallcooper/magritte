@@ -1685,7 +1685,9 @@ impl StatusView {
                 PickerAction::Branch(b) => {
                     self.run_branch_action(b, chosen.to_string(), window, cx)
                 }
-                PickerAction::Tag(t) => self.run_tag_action(t, chosen.to_string(), p.switches, cx),
+                PickerAction::Tag(t) => {
+                    self.run_tag_action(t, chosen.to_string(), p.switches, window, cx)
+                }
                 PickerAction::Remote(r) => {
                     self.run_remote_action(r, chosen.to_string(), p.switches, window, cx)
                 }
@@ -2120,6 +2122,7 @@ impl StatusView {
         action: TagAction,
         chosen: String,
         switches: Vec<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if chosen.trim().is_empty() {
@@ -2130,22 +2133,25 @@ impl StatusView {
         let target = self
             .selected_commit_hash()
             .unwrap_or_else(|| "HEAD".to_string());
-        let (verb, done) = match action {
-            TagAction::Create { .. } => ("Tagging", "Tagged"),
-            TagAction::Delete => ("Deleting tag", "Deleted tag"),
-        };
-        self.run_job(
-            &format!("{verb}…"),
-            done,
-            move |repo| match action {
-                TagAction::Create { annotated: true } => {
-                    repo.create_annotated_tag(&chosen, &target, force)
-                }
-                TagAction::Create { annotated: false } => repo.create_tag(&chosen, &target, force),
-                TagAction::Delete => repo.delete_tag(&chosen),
-            },
-            cx,
-        );
+        match action {
+            // An annotated tag carries a message, so open the editor to write it
+            // (the tag is created on submit); the rest run straight away.
+            TagAction::Create { annotated: true } => {
+                self.start_annotated_tag(chosen, target, force, window, cx)
+            }
+            TagAction::Create { annotated: false } => self.run_job(
+                "Tagging…",
+                "Tagged",
+                move |repo| repo.create_tag(&chosen, &target, force),
+                cx,
+            ),
+            TagAction::Delete => self.run_job(
+                "Deleting tag…",
+                "Deleted tag",
+                move |repo| repo.delete_tag(&chosen),
+                cx,
+            ),
+        }
     }
 
     /// Carry out a remote-transient action. Add/rename are two-step: the first

@@ -24,17 +24,50 @@ impl Repo {
             .status_line())
     }
 
-    /// `git tag -a [-f] -m <name> <name> <target>` — create an annotated tag
-    /// without requiring an external editor. The tag name is a good default
-    /// annotation, and users can edit annotations later once that flow exists.
-    pub fn create_annotated_tag(&self, name: &str, target: &str, force: bool) -> Result<String> {
+    /// `git tag -a [-f] -F - <name> <target>` — create an annotated tag with
+    /// `message` as its annotation, read from stdin so a multi-line message
+    /// needs no escaping.
+    pub fn create_annotated_tag(
+        &self,
+        name: &str,
+        target: &str,
+        force: bool,
+        message: &str,
+    ) -> Result<String> {
         let lead: &[&str] = if force {
             &["tag", "--annotate", "--force"]
         } else {
             &["tag", "--annotate"]
         };
         Ok(self
-            .run(git_args(lead, &[], &["--message", name, name, target]))?
+            .run_with_input(
+                git_args(lead, &[], &["--file", "-", name, target]),
+                message.as_bytes(),
+            )?
+            .status_line())
+    }
+
+    /// `git tag -a [-f] <name> <target>` with `GIT_EDITOR` pointed at the user's
+    /// editor — the interactive path for writing the annotation externally
+    /// (git opens the editor, blocking until it's closed).
+    pub fn create_annotated_tag_with_editor(
+        &self,
+        name: &str,
+        target: &str,
+        force: bool,
+        git_editor: &str,
+    ) -> Result<String> {
+        let lead: &[&str] = if force {
+            &["tag", "--annotate", "--force"]
+        } else {
+            &["tag", "--annotate"]
+        };
+        Ok(self
+            .run_with_env(
+                git_args(lead, &[], &[name, target]),
+                "GIT_EDITOR",
+                git_editor,
+            )?
             .status_line())
     }
 

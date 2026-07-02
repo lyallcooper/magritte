@@ -42,7 +42,16 @@ pub(crate) struct CommitEditor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommitAfterSubmit {
     Commit,
-    ContinueRebase { stopped_sha: String },
+    ContinueRebase {
+        stopped_sha: String,
+    },
+    /// The editor is capturing an annotated tag's message; on submit, create
+    /// the tag at `target` (the commit at point, or HEAD).
+    CreateTag {
+        name: String,
+        target: String,
+        force: bool,
+    },
 }
 
 /// One flattened row of the commit editor's staged-diff preview.
@@ -234,6 +243,65 @@ impl StatusView {
         self.open_editor_after(mode, args, CommitAfterSubmit::Commit, window, cx);
     }
 
+    /// Begin creating an annotated tag: capture its message in the in-app editor
+    /// (or hand off to the external editor, like commit messages, when one is
+    /// configured), then create the tag at `target`.
+    pub(crate) fn start_annotated_tag(
+        &mut self,
+        name: String,
+        target: String,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(git_editor) = self.external_commit_editor() {
+            self.create_tag_via_external_editor(name, target, force, git_editor, cx);
+            return;
+        }
+        self.open_editor_after(
+            CommitMode::Create,
+            Vec::new(),
+            CommitAfterSubmit::CreateTag {
+                name,
+                target,
+                force,
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Create an annotated tag by launching the external editor on its message
+    /// (mirrors `commit_via_external_editor`): git blocks on the editor, we show
+    /// a waiting notice, then report and refresh.
+    pub(crate) fn create_tag_via_external_editor(
+        &mut self,
+        name: String,
+        target: String,
+        force: bool,
+        git_editor: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.set_status("Waiting for tag message…".to_string(), false, cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    repo.create_annotated_tag_with_editor(&name, &target, force, &git_editor)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.report("Tagged", result, cx);
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(crate) fn open_editor_after(
         &mut self,
         mode: CommitMode,
@@ -334,8 +402,14 @@ impl StatusView {
             }
         }
         // Preview the relevant diff: the staged change for create/amend, or the
-        // reworded commit's own changes for reword.
-        self.load_commit_diff(cx);
+        // reworded commit's own changes for reword. A tag message has no diff to
+        // show, so the message editor fills the window instead.
+        if !matches!(
+            self.editor().map(|e| &e.after_submit),
+            Some(CommitAfterSubmit::CreateTag { .. })
+        ) {
+            self.load_commit_diff(cx);
+        }
         cx.notify();
     }
 
@@ -599,7 +673,7 @@ impl StatusView {
         };
         let text = ed.state.read(cx).value().to_string();
         if text.trim().is_empty() {
-            self.set_status("Commit message is empty".to_string(), false, cx);
+            self.set_status("Message is empty".to_string(), false, cx);
             return;
         }
         let ed = self.take_editor().unwrap();
@@ -611,6 +685,16 @@ impl StatusView {
             CommitAfterSubmit::ContinueRebase { stopped_sha } => {
                 self.run_rebase_reword_commit(message, stopped_sha, window, cx)
             }
+            CommitAfterSubmit::CreateTag {
+                name,
+                target,
+                force,
+            } => self.run_job(
+                "Tagging…",
+                "Tagged",
+                move |repo| repo.create_annotated_tag(&name, &target, force, &message),
+                cx,
+            ),
         }
     }
 

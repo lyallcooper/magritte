@@ -49,15 +49,23 @@ fn tags_around_reports_nearest_behind_and_ahead() {
 }
 
 #[test]
-fn create_annotated_tag_without_editor() {
+fn create_annotated_tag_with_message() {
     let (t, repo) = repo();
     let head = t.git(["rev-parse", "HEAD"]);
 
-    repo.create_annotated_tag("v1.0.0", &head, false).unwrap();
+    repo.create_annotated_tag("v1.0.0", &head, false, "Release v1.0.0\n\nFirst release.")
+        .unwrap();
 
+    // A real tag object (annotated), pointing at HEAD.
     assert_eq!(t.git(["rev-parse", "v1.0.0^{}"]), head);
     assert_eq!(
         t.git(["for-each-ref", "--format=%(objecttype)", "refs/tags/v1.0.0"]),
         "tag"
+    );
+    // The multi-line message is recorded as the annotation.
+    assert_eq!(
+        t.git(["tag", "-l", "--format=%(contents)", "v1.0.0"])
+            .trim(),
+        "Release v1.0.0\n\nFirst release."
     );
 }

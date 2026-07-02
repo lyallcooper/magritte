@@ -1157,10 +1157,19 @@ impl StatusView {
     /// Render the commit message editor: a header, the editable text with a
     /// caret, all filling the window.
     pub(crate) fn render_editor(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
-        let title = match ed.mode {
-            CommitMode::Create => "Commit message",
-            CommitMode::Amend => "Amend commit",
-            CommitMode::Reword => "Reword commit",
+        let title: SharedString = match &ed.after_submit {
+            CommitAfterSubmit::CreateTag { name, .. } => format!("Annotate tag {name}").into(),
+            _ => match ed.mode {
+                CommitMode::Create => "Commit message",
+                CommitMode::Amend => "Amend commit",
+                CommitMode::Reword => "Reword commit",
+            }
+            .into(),
+        };
+        let submit_label = if matches!(ed.after_submit, CommitAfterSubmit::CreateTag { .. }) {
+            "create tag"
+        } else {
+            "commit"
         };
 
         let root = div()
@@ -1178,11 +1187,7 @@ impl StatusView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .text_color(self.palette.section)
-                            .child(SharedString::from(title)),
-                    )
+                    .child(div().text_color(self.palette.section).child(title))
                     .map(|el| {
                         if ed.confirming_cancel {
                             // Unsaved edits: confirm before discarding the message.
@@ -1225,7 +1230,7 @@ impl StatusView {
                             el.child(self.key_action(
                                 "editor-commit",
                                 "cmd-enter",
-                                "commit",
+                                submit_label,
                                 view,
                                 Self::submit_editor,
                             ))
