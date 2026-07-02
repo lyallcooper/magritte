@@ -52,6 +52,38 @@ fn timeout_kills_a_blocking_command() {
 }
 
 #[test]
+fn timeout_applies_to_succeeds_and_run_optional() {
+    // The predicate/optional variants must honor cancel/timeout like `run` —
+    // they back the extra queries a refresh spawns (push-target resolution,
+    // `merge-base --is-ancestor`, …), exactly the work supersession must kill.
+    let t = repo_with_pending_blocked_commit();
+    let repo = open(&t).with_timeout(Duration::from_millis(300));
+
+    let start = Instant::now();
+    let res = repo.succeeds(["commit", "-m", "x"]);
+    assert!(
+        matches!(res, Err(Error::TimedOut)),
+        "succeeds: expected TimedOut, got {res:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(3));
+
+    let start = Instant::now();
+    let res = repo.run_optional(["commit", "-m", "x"]);
+    assert!(
+        matches!(res, Err(Error::TimedOut)),
+        "run_optional: expected TimedOut, got {res:?}"
+    );
+    assert!(start.elapsed() < Duration::from_secs(3));
+
+    // Both still behave normally when the command completes.
+    let plain = open(&t);
+    assert!(plain.succeeds(["rev-parse", "--verify", "HEAD"]).unwrap());
+    assert!(!plain.succeeds(["rev-parse", "--verify", "no-such-ref"]).unwrap());
+    assert!(plain.run_optional(["rev-parse", "--verify", "HEAD"]).unwrap().is_some());
+    assert!(plain.run_optional(["config", "--get", "no.such.key"]).unwrap().is_none());
+}
+
+#[test]
 fn cancel_kills_a_blocking_command_promptly() {
     let t = repo_with_pending_blocked_commit();
     let (repo, cancel) = open(&t).cancellable();

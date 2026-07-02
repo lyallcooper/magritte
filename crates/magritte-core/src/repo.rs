@@ -667,17 +667,11 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
+        let mut cmd = self.git();
+        cmd.args(&arg_vec);
         let start = Instant::now();
-        let status = self
-            .git()
-            .args(&arg_vec)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|source| Error::Spawn { source })?;
-        let elapsed = start.elapsed();
-        // Output is discarded (Stdio::null), so there's no stderr to log.
-        self.record_git(&arg_vec, status.code(), "", elapsed);
+        let (_stdout, stderr, status) = self.collect_output(cmd)?;
+        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
         Ok(status.success())
     }
 
@@ -693,22 +687,15 @@ impl Repo {
             .into_iter()
             .map(|s| s.as_ref().to_string_lossy().into_owned())
             .collect();
+        let mut cmd = self.git();
+        cmd.args(&arg_vec);
         let start = Instant::now();
-        let output = self
-            .git()
-            .args(&arg_vec)
-            .output()
-            .map_err(|source| Error::Spawn { source })?;
-        let elapsed = start.elapsed();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        self.record_git(&arg_vec, output.status.code(), &stderr, elapsed);
-        if !output.status.success() {
+        let (stdout, stderr, status) = self.collect_output(cmd)?;
+        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
+        if !status.success() {
             return Ok(None);
         }
-        Ok(Some(GitOutput {
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            stdout: output.stdout,
-        }))
+        Ok(Some(GitOutput { stdout, stderr }))
     }
 
     /// Read a single git config value (`git config --get <key>`), `None` if
