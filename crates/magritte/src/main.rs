@@ -438,6 +438,11 @@ struct StatusView {
     prefix_gen: Generation,
     /// Debounces saving the window frame while the user drags/resizes it.
     window_bounds_save_gen: Generation,
+    /// Debounces persisting free-text settings edits (see
+    /// `save_settings_debounced`); the flag marks an unflushed edit so closing
+    /// settings can write it immediately.
+    settings_save_gen: Generation,
+    settings_save_pending: bool,
     /// Scopes the timer that clears the commit editor's discard-prompt flash, so
     /// a later flash isn't cleared early by an earlier one's timer.
     confirm_flash_gen: Generation,
@@ -631,6 +636,8 @@ impl StatusView {
             pending_prefix: None,
             prefix_gen: Generation::default(),
             window_bounds_save_gen: Generation::default(),
+            settings_save_gen: Generation::default(),
+            settings_save_pending: false,
             confirm_flash_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,

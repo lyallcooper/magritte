@@ -98,7 +98,9 @@ impl StatusView {
         if self.settings_caches.mono_fonts.is_empty() {
             self.settings_caches.mono_fonts = theme::monospace_font_names(cx);
         }
-        self.settings_caches.editors = editors::text_editors();
+        if self.settings_caches.editors.is_empty() {
+            self.settings_caches.editors = editors::text_editors();
+        }
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
         let mut font_items: Vec<SharedString> = vec![SharedString::from(theme::SYSTEM_FONT_LABEL)];
@@ -230,7 +232,7 @@ impl StatusView {
                     if matches!(ev, InputEvent::Change) {
                         let val = input.read(cx).value().trim().to_string();
                         this.edit_global(|c| c.commit_editor = val.clone());
-                        config::save_settings(&this.config_global);
+                        this.save_settings_debounced(cx);
                     }
                 },
             ),
@@ -255,7 +257,7 @@ impl StatusView {
                 if matches!(ev, InputEvent::Change) {
                     let val = input.read(cx).value().trim().to_string();
                     this.edit_global(|c| c.editor = val.clone());
-                    config::save_settings(&this.config_global);
+                    this.save_settings_debounced(cx);
                 }
             }),
             cx.subscribe_in(
@@ -573,9 +575,38 @@ impl StatusView {
 
     /// Close the settings screen, persisting and returning focus to the list.
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Flush any pending debounced save so closing can't drop the tail of a
+        // free-text edit.
+        if self.settings_save_pending {
+            self.settings_save_gen.bump(); // cancel the outstanding timer
+            self.settings_save_pending = false;
+            config::save_settings(&self.config_global);
+        }
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// Persist the global config, debounced: the free-text settings inputs
+    /// fire a Change per keystroke, and each save is a full read/parse/rewrite
+    /// of the config file. The live config is already updated by the caller;
+    /// only the disk write waits for the typing to pause.
+    fn save_settings_debounced(&mut self, cx: &mut Context<Self>) {
+        let gen = self.settings_save_gen.bump();
+        self.settings_save_pending = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(400))
+                .await;
+            this.update(cx, |this, _cx| {
+                if this.settings_save_gen.is_current(gen) {
+                    this.settings_save_pending = false;
+                    config::save_settings(&this.config_global);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Render the live settings screen as a form of dropdowns. The `Select`
