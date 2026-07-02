@@ -300,6 +300,10 @@ pub(crate) enum PickerAction {
     RunGit,
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
+    /// Stash with the typed message (empty = git's default "WIP on …").
+    StashMessage {
+        include_untracked: bool,
+    },
 }
 
 impl PickerAction {
@@ -369,6 +373,7 @@ impl PickerAction {
             // Reads like magit's "git " prompt: the typed text follows "git".
             PickerAction::RunGit => transient::plain_title("Run"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
+            PickerAction::StashMessage { .. } => transient::plain_title("Stash message (optional)"),
         }
     }
 
@@ -421,6 +426,7 @@ impl PickerAction {
             PickerAction::PickRange(PickOp::Revert | PickOp::RevertNoCommit) => "revert",
             PickerAction::RunGit => "run",
             PickerAction::Ignore(_) => "ignore",
+            PickerAction::StashMessage { .. } => "stash",
         }
     }
 }

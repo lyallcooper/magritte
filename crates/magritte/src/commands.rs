@@ -1380,7 +1380,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                             info(copy_key, "Copy reference"),
                             info("a", "Apply"),
                             info("A", "Pop"),
-                            info("x", "Drop"),
+                            info(if view.is_evil() { "x" } else { "k" }, "Drop"),
                         ],
                     ),
                 );

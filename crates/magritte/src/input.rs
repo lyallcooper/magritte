@@ -714,7 +714,13 @@ impl StatusView {
             "enter" => self.open_commit(reference.clone(), reference, message, cx),
             "A" => self.run_stash_action(StashAction::Pop, reference, cx),
             "a" => self.run_stash_action(StashAction::Apply, reference, cx),
-            "x" => {
+            // The delete key follows the preset: evil-collection's x, magit
+            // vanilla's k.
+            "x" if self.is_evil() => {
+                self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
+                cx.notify();
+            }
+            "k" if self.is_vanilla() => {
                 self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
                 cx.notify();
             }

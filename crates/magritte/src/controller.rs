@@ -100,8 +100,8 @@ impl StatusView {
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
                 self.dispatch_ignore(command, window, cx)
             }
-            StashPush => self.run_stash_push(false, cx),
-            StashPushAll => self.run_stash_push(true, cx),
+            StashPush => self.prompt_stash_message(false, window, cx),
+            StashPushAll => self.prompt_stash_message(true, window, cx),
             StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
             DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => {
                 self.dispatch_diff(command, args, paths, window, cx)
@@ -1690,6 +1690,9 @@ impl StatusView {
                 }
                 PickerAction::RunGit => self.run_user_command(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
+                PickerAction::StashMessage { include_untracked } => {
+                    self.run_stash_push(include_untracked, chosen.to_string(), cx)
+                }
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {
@@ -2198,11 +2201,34 @@ impl StatusView {
 
     /// Stash the working tree and index (`Z z` / `Z Z`), on the background
     /// executor, then refresh.
-    pub(crate) fn run_stash_push(&mut self, include_untracked: bool, cx: &mut Context<Self>) {
+    /// Prompt for an optional stash message (magit prompts too; empty keeps
+    /// git's default "WIP on …"), then stash.
+    pub(crate) fn prompt_stash_message(
+        &mut self,
+        include_untracked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_picker(
+            PickerAction::StashMessage { include_untracked },
+            Vec::new(),
+            CreateMode::Value,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn run_stash_push(
+        &mut self,
+        include_untracked: bool,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
         self.run_job(
             "Stashing…",
             "Stashed",
-            move |repo| repo.stash_push(None, include_untracked),
+            move |repo| repo.stash_push(Some(&message), include_untracked),
             cx,
         );
     }
