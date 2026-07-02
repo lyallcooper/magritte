@@ -13,6 +13,23 @@ fn repo() -> (TestRepo, Repo) {
 }
 
 #[test]
+fn current_branch_on_normal_unborn_and_detached_head() {
+    let (t, repo) = repo();
+    assert_eq!(repo.current_branch().unwrap().as_deref(), Some("main"));
+
+    // Unborn branch (fresh repo, no commits): still names the branch — the
+    // push/pull/fetch transients must open before the first commit.
+    let unborn = TestRepo::new();
+    let unborn_repo = Repo::discover(unborn.path()).unwrap();
+    assert_eq!(unborn_repo.current_branch().unwrap().as_deref(), Some("main"));
+    assert!(unborn_repo.remote_targets().is_ok(), "remote_targets on an unborn branch");
+
+    // Detached HEAD: no branch.
+    t.git(["checkout", "--detach", "HEAD"]);
+    assert_eq!(repo.current_branch().unwrap(), None);
+}
+
+#[test]
 fn create_lists_and_checkout() {
     let (t, repo) = repo();
 

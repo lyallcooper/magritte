@@ -5,6 +5,18 @@ use crate::error::Result;
 use crate::repo::Repo;
 
 impl Repo {
+    /// The current branch name, or `None` when HEAD is detached. Uses
+    /// `symbolic-ref` rather than `rev-parse --abbrev-ref` so an unborn branch
+    /// (fresh repo, no commits) still resolves to its name instead of erroring.
+    pub fn current_branch(&self) -> Result<Option<String>> {
+        // `-q` exits 1 silently on a detached HEAD; run_optional maps that to
+        // None rather than an error.
+        Ok(self
+            .run_optional(["symbolic-ref", "--short", "-q", "HEAD"])?
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|name| !name.is_empty()))
+    }
+
     /// Local branch names (`refs/heads`), most-recently-committed first so the
     /// branches you're likely to want are near the top of the picker.
     pub fn local_branches(&self) -> Result<Vec<String>> {

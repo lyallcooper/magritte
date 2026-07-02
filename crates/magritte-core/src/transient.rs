@@ -1312,13 +1312,6 @@ pub fn reset_transient() -> Transient {
 }
 
 impl Repo {
-    /// The current branch name, or `None` when HEAD is detached.
-    pub fn current_branch(&self) -> Result<Option<String>> {
-        let out = self.run(["rev-parse", "--abbrev-ref", "HEAD"])?;
-        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        Ok(if name == "HEAD" { None } else { Some(name) })
-    }
-
     /// Run a transient command that doesn't need a resolved remote or a message:
     /// currently only commit-extend. Push/pull/fetch are run via the dedicated
     /// [`Repo::push_to`]/[`pull_from`](Repo::pull_from)/etc. methods (the frontend
