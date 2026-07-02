@@ -459,15 +459,27 @@ impl Transient {
     }
 }
 
-/// `branch → remote/branch`, the push-remote target label.
+/// The push-remote target label: `branch → remote/branch` when configured, else
+/// magit's descriptive hint that invoking it configures the push-remote (push
+/// saves it — "…, setting it" reads as an action, unlike a bare "push remote").
 fn push_remote_label(t: &RemoteTargets) -> String {
     match (&t.branch, &t.push_remote) {
         (Some(b), Some(r)) => format!("{b} \u{2192} {r}/{b}"),
-        _ => "push-remote".to_string(),
+        _ => "push remote, setting it".to_string(),
     }
 }
 
-/// The upstream label (`origin/master`).
+/// The push-upstream target label: `remote/branch` when configured, else the
+/// descriptive hint that invoking it configures the upstream (push saves it).
+fn push_upstream_label(t: &RemoteTargets) -> String {
+    t.upstream
+        .as_ref()
+        .map(Upstream::display)
+        .unwrap_or_else(|| "upstream, setting it".to_string())
+}
+
+/// The upstream label (`origin/master`); the bare target for pull/fetch/rebase,
+/// which act on it without configuring it.
 fn upstream_label(t: &RemoteTargets) -> String {
     t.upstream
         .as_ref()
@@ -512,13 +524,18 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                 // (`p/u`) covers both; otherwise show them separately.
                 suffixes: if t.push_matches_upstream() {
                     vec![
-                        Action::suffix_dual("p", "u", upstream_label(t), Command::PushUpstream),
+                        Action::suffix_dual(
+                            "p",
+                            "u",
+                            push_upstream_label(t),
+                            Command::PushUpstream,
+                        ),
                         Action::suffix("e", "elsewhere", Command::PushElsewhere),
                     ]
                 } else {
                     vec![
                         Action::suffix("p", push_remote_label(t), Command::PushPushRemote),
-                        Action::suffix("u", upstream_label(t), Command::PushUpstream),
+                        Action::suffix("u", push_upstream_label(t), Command::PushUpstream),
                         Action::suffix("e", "elsewhere", Command::PushElsewhere),
                     ]
                 },
