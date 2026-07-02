@@ -25,6 +25,30 @@ fn create_list_and_delete_lightweight_tag() {
 }
 
 #[test]
+fn tags_around_reports_nearest_behind_and_ahead() {
+    // v1 -- middle -- v2; from `middle`, v1 is one behind and v2 one ahead.
+    let (t, repo) = repo();
+    t.git(["tag", "v1"]);
+    t.write("f", "2\n");
+    t.commit_all("two");
+    let middle = t.git(["rev-parse", "HEAD"]);
+    t.write("f", "3\n");
+    t.commit_all("three");
+    t.git(["tag", "v2"]);
+
+    t.git(["checkout", &middle]);
+    let (current, next) = repo.tags_around();
+    assert_eq!(current, Some(("v1".to_string(), 1)));
+    assert_eq!(next, Some(("v2".to_string(), 1)));
+
+    // Exactly on a tag: distance 0, and no distinct next tag.
+    t.git(["checkout", "v2"]);
+    let (current, next) = repo.tags_around();
+    assert_eq!(current, Some(("v2".to_string(), 0)));
+    assert_eq!(next, None);
+}
+
+#[test]
 fn create_annotated_tag_without_editor() {
     let (t, repo) = repo();
     let head = t.git(["rev-parse", "HEAD"]);

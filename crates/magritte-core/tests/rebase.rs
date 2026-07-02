@@ -88,6 +88,48 @@ fn reword_stops_for_app_managed_message_edit() {
 }
 
 #[test]
+fn plain_rebase_replays_onto_target() {
+    // main gains M while feature (from base) has F; rebase feature onto main.
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    t.git(["checkout", "-b", "feature"]);
+    t.write("F.txt", "F");
+    t.commit_all("F");
+    t.git(["checkout", "main"]);
+    t.write("M.txt", "M");
+    t.commit_all("M");
+    t.git(["checkout", "feature"]);
+
+    open(&t).rebase("main", &[]).unwrap();
+    assert_eq!(subjects(&t), ["F", "M", "base"], "F replayed on top of M");
+}
+
+#[test]
+fn edit_todo_rewrites_the_remaining_plan() {
+    // Pause at an edit stop on A, then drop C from the remaining plan.
+    let (t, base) = three_commits();
+    let mut todo = open(&t).rebase_todo(&base).unwrap();
+    todo[0].action = RebaseAction::Edit;
+    let repo = open(&t);
+    repo.rebase_interactive(&base, &todo, &[]).unwrap();
+
+    // The injected todo carries no subjects ("edit <oid>" lines), so identify
+    // the remaining steps by resolving their oids.
+    let remaining = repo.rebase_current_todo().unwrap();
+    let names: Vec<String> = remaining
+        .iter()
+        .map(|s| t.git(["log", "-1", "--format=%s", &s.oid]))
+        .collect();
+    assert_eq!(names, ["B", "C"], "paused on A with B and C still planned");
+
+    repo.rebase_edit_todo(&remaining[..1]).unwrap(); // keep only B
+    repo.sequence_continue(magritte_core::SequenceKind::Rebase)
+        .unwrap();
+    assert_eq!(subjects(&t), ["B", "A", "base"], "C dropped via --edit-todo");
+}
+
+#[test]
 fn all_dropped_is_refused() {
     let (t, base) = three_commits();
     let mut todo = open(&t).rebase_todo(&base).unwrap();
