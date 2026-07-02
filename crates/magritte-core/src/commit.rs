@@ -149,7 +149,11 @@ impl Repo {
     /// message. Requires staged changes (git errors otherwise).
     pub fn commit_fixup(&self, commit: &str, args: &[String]) -> Result<String> {
         Ok(self
-            .run(git_args(&["commit", &format!("--fixup={commit}")], args, &[]))?
+            .run(git_args(
+                &["commit", &format!("--fixup={commit}")],
+                args,
+                &[],
+            ))?
             .first_line())
     }
 
@@ -158,7 +162,11 @@ impl Repo {
     /// edited to fold in this commit's. No editor at creation time.
     pub fn commit_squash(&self, commit: &str, args: &[String]) -> Result<String> {
         Ok(self
-            .run(git_args(&["commit", &format!("--squash={commit}")], args, &[]))?
+            .run(git_args(
+                &["commit", &format!("--squash={commit}")],
+                args,
+                &[],
+            ))?
             .first_line())
     }
 }

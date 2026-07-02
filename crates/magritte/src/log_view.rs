@@ -35,6 +35,41 @@ pub(crate) enum LogPurpose {
     SelectRebaseBase { args: Vec<String> },
     /// Pick a commit to reword directly via an app-managed rebase stop.
     SelectRebaseReword { args: Vec<String> },
+    /// Pick the commit to fix up / squash into (the `--fixup=`/`--squash=`
+    /// target), for the chosen [`SquashOp`], with the commit transient's args.
+    SelectSquash { op: SquashOp, args: Vec<String> },
+}
+
+/// The four fixup/squash flavors from the commit transient. Fixup keeps the
+/// target's message; squash lets it be edited (we take the combined message).
+/// The "instant" variants immediately autosquash the new commit into its
+/// target; the plain variants leave that to a later `r f`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SquashOp {
+    Fixup,
+    Squash,
+    InstantFixup,
+    InstantSquash,
+}
+
+impl SquashOp {
+    /// Whether this variant rewrites history immediately (instant = autosquash
+    /// right away, so it must warn before touching published commits).
+    pub(crate) fn is_instant(self) -> bool {
+        matches!(self, SquashOp::InstantFixup | SquashOp::InstantSquash)
+    }
+
+    fn is_squash(self) -> bool {
+        matches!(self, SquashOp::Squash | SquashOp::InstantSquash)
+    }
+
+    fn progress(self) -> &'static str {
+        if self.is_squash() {
+            "Squashing…"
+        } else {
+            "Fixing up…"
+        }
+    }
 }
 
 /// The commit-log view (`l`): a scrollable list of commits with j/k navigation.
@@ -241,6 +276,137 @@ impl StatusView {
         .detach();
     }
 
+    /// Fix up / squash into a target commit (the commit at point, else a
+    /// log-select), for the chosen [`SquashOp`] — magit's `c f`/`c s`/`c F`/`c
+    /// S`. Requires staged changes (git errors otherwise).
+    pub(crate) fn fixup_squash_selected(
+        &mut self,
+        op: SquashOp,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(rev) = self.selected_commit_hash() {
+            self.run_fixup_squash(op, rev, args, cx);
+        } else {
+            let log_args =
+                build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
+            self.spawn_log(
+                LogPurpose::SelectSquash { op, args },
+                move |repo| repo.log_with(&log_args),
+                cx,
+            );
+        }
+    }
+
+    /// Create the fixup!/squash! commit for `rev`, then autosquash it for the
+    /// instant variants. The instant variants rewrite history, so they warn
+    /// first when `rev` is already published (like reword/rebase-since); the
+    /// plain variants only add a commit, so they run straight away.
+    pub(crate) fn run_fixup_squash(
+        &mut self,
+        op: SquashOp,
+        rev: String,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !op.is_instant() {
+            self.do_fixup_squash(op, rev, args, cx);
+            return;
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let probe = rev.clone();
+        let branches = self.config.published_branches.clone();
+        cx.spawn(async move |this, cx| {
+            let published = cx
+                .background_executor()
+                .spawn(async move { repo.published_on(&probe, &branches) })
+                .await;
+            this.update(cx, |this, cx| match published {
+                None => this.do_fixup_squash(op, rev, args, cx),
+                Some(target) => {
+                    this.confirm = Some((
+                        format!(
+                            "{rev} has already been pushed to {target}. Squash into it anyway?"
+                        ),
+                        Confirm::AutosquashPublished { op, rev, args },
+                    ));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Run the fixup/squash commit (and, for instant variants, the autosquash
+    /// rebase from the target's parent) on the background path.
+    pub(crate) fn do_fixup_squash(
+        &mut self,
+        op: SquashOp,
+        rev: String,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let squash = matches!(op, SquashOp::Squash | SquashOp::InstantSquash);
+        let instant = op.is_instant();
+        self.run_job(
+            op.progress(),
+            "Done",
+            move |repo| {
+                if squash {
+                    repo.commit_squash(&rev, &args)?;
+                } else {
+                    repo.commit_fixup(&rev, &args)?;
+                }
+                if instant {
+                    // Autosquash the just-created commit into its target; the
+                    // target and everything above it are in the range.
+                    repo.rebase_autosquash(&format!("{rev}^"), &[])?;
+                }
+                Ok(format!(
+                    "{} into {}",
+                    if squash { "Squashed" } else { "Fixed up" },
+                    &rev[..7.min(rev.len())]
+                ))
+            },
+            cx,
+        );
+    }
+
+    /// Autosquash existing fixup!/squash! commits (`r f`): an interactive
+    /// rebase since the upstream merge base. With no upstream to bound it,
+    /// there's no safe automatic base, so point the user at the commit
+    /// transient's fixup instead.
+    pub(crate) fn autosquash(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let base = cx
+                .background_executor()
+                .spawn(async move { repo.upstream_merge_base() })
+                .await;
+            this.update(cx, |this, cx| match base {
+                Some(base) => this.run_job(
+                    "Autosquashing…",
+                    "Autosquashed",
+                    move |repo| repo.rebase_autosquash(&base, &args),
+                    cx,
+                ),
+                None => this.set_status(
+                    "No upstream to autosquash against — use the commit transient's fixup (c f)"
+                        .to_string(),
+                    false,
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The selected commit in the log, or the commit row at point in status.
     pub(crate) fn selected_commit_hash(&self) -> Option<String> {
         self.log()
@@ -290,6 +456,10 @@ impl StatusView {
             }
             Some(LogPurpose::SelectRebaseReword { args }) => {
                 self.reword_past_selected(args.clone(), window, cx);
+            }
+            Some(LogPurpose::SelectSquash { op, args }) => {
+                let (op, args) = (*op, args.clone());
+                self.fixup_squash_selected(op, args, cx);
             }
             _ => {}
         }

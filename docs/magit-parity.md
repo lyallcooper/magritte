@@ -34,9 +34,9 @@ vanilla presets differ, both are given.
 worktree commands, submodules, patch create/apply (and starting a `git am` —
 we can only drive one already in progress), clone/init, notes, subtree,
 sparse-checkout, bundle, cherry, wip. Within existing transients, the largest
-gaps are commit's whole fixup/squash column, magit's "push something other
-than the current branch" group, log's limiting/formatting flags, merge
-strategies, and stash's index/worktree/snapshot variants.
+gaps are magit's "push something other than the current branch" group, log's
+limiting/formatting flags, merge strategies, and stash's index/worktree/
+snapshot variants.
 
 **Notable behavior differences in shared features:**
 
@@ -147,16 +147,15 @@ Ours only: settings `,`, command-log `$`, check-updates, visual `v`, yank
 | `a` | amend | ✓ |
 | `w` | reword | ✓ |
 | `d` | reshelve (level 0) | ✗ |
-| `f` / `s` | fixup / squash | ✗ |
+| `f` / `s` | fixup / squash | ✓ (target: commit at point, else log-select) |
 | `A` / `n` / `W` | alter / augment / revise | ✗ |
-| `F` / `S` | instant-fixup / instant-squash | ✗ |
+| `F` / `S` | instant-fixup / instant-squash | ✓ (create + autosquash; warns if the target is published) |
 | `R` | rebase-reword-commit (level 0) | ✓ ours "Reword past", visible by default; drops commit-only switches when firing |
 | `x` | autofixup (level 6) | ✗ |
 | `X` | absorb-modules (level 6) | ✗ |
 
 Sub-transients `magit-commit-absorb` (needs git-absorb) and
-`magit-commit-autofixup`: ✗. The fixup/squash column is the biggest commit
-gap.
+`magit-commit-autofixup`: ✗.
 
 ### Branch (magit `b` / ours `b`)
 
@@ -749,8 +748,6 @@ Grouped by kind, roughly ordered within each group.
 
 **High-value additions to existing surfaces**
 
-- Commit fixup/squash column (`f`/`s`, then `F`/`S` instant variants,
-  rebase `f` autosquash) — the most-missed magit workflow.
 - `SPC` show-or-scroll preview of the commit/stash at point.
 - `u` on committed changes (reverse-in-index), `v` reverse-at-point, `a`
   apply-at-point — the second half of magit's apply engine.

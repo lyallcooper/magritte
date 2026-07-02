@@ -267,11 +267,14 @@ impl StatusView {
         if self.log().is_some() {
             // In a select mode, Return confirms the commit for the pending
             // action; while browsing it opens the commit's diff.
-            let select_rebase = match self.log().map(|l| &l.purpose) {
-                Some(LogPurpose::SelectRebaseBase { args }) => Some((args.clone(), false)),
-                Some(LogPurpose::SelectRebaseReword { args }) => Some((args.clone(), true)),
-                _ => None,
-            };
+            let selecting = matches!(
+                self.log().map(|l| &l.purpose),
+                Some(
+                    LogPurpose::SelectRebaseBase { .. }
+                        | LogPurpose::SelectRebaseReword { .. }
+                        | LogPurpose::SelectSquash { .. }
+                )
+            );
             if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
@@ -282,21 +285,10 @@ impl StatusView {
                 // Return opens the commit's diff — in select mode too, so you can
                 // inspect commits before choosing (magit lets you visit from the
                 // log-select).
-                "cmd-enter" => {
-                    if let Some((args, reword)) = select_rebase {
-                        if reword {
-                            self.reword_past_selected(args, window, cx);
-                        } else {
-                            self.rebase_since_selected(args, cx);
-                        }
-                    }
-                    return;
-                }
+                "cmd-enter" if selecting => return self.confirm_log_select(window, cx),
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
-                "r" if select_rebase.is_none() => {
-                    return self.rebase_since_selected(Vec::new(), cx)
-                }
+                "r" if !selecting => return self.rebase_since_selected(Vec::new(), cx),
                 // Vanilla copy: `C-w` isn't in the log's keymap dispatch, so
                 // handle it here alongside the shared verbs.
                 "ctrl-w" => return self.copy_log_commit(cx),

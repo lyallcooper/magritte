@@ -182,6 +182,13 @@ pub(crate) enum Confirm {
     RebaseSincePushed { rev: String, args: Vec<String> },
     /// Reword an already-published commit: on `y`, run the direct reword rebase.
     RebaseRewordPushed { rev: String, args: Vec<String> },
+    /// Instant fixup/squash into an already-published commit (it autosquashes
+    /// immediately, rewriting pushed history): on `y`, run it.
+    AutosquashPublished {
+        op: SquashOp,
+        rev: String,
+        args: Vec<String>,
+    },
     /// A user `[[command]]` that looks destructive (resolved command): on `y`,
     /// run it via the shell, refreshing unless opted out.
     CustomShell { command: String, refresh: bool },
@@ -791,6 +798,9 @@ impl StatusView {
             }
             Some((_, Confirm::RebaseRewordPushed { rev, args })) => {
                 self.run_rebase_reword_from_rev(rev, args, window, cx)
+            }
+            Some((_, Confirm::AutosquashPublished { op, rev, args })) => {
+                self.do_fixup_squash(op, rev, args, cx)
             }
             Some((_, Confirm::CustomShell { command, refresh })) => {
                 self.run_custom_shell(command, refresh, cx)

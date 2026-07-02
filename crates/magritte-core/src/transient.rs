@@ -59,6 +59,14 @@ pub enum Command {
     CommitRewordPast,
     /// Amend HEAD with staged changes, keeping its message.
     CommitExtend,
+    /// Create a `fixup!` commit targeting the commit at point / a selected one.
+    CommitFixup,
+    /// Create a `squash!` commit targeting the commit at point / a selected one.
+    CommitSquash,
+    /// Create a `fixup!` commit and immediately autosquash it into its target.
+    CommitInstantFixup,
+    /// Create a `squash!` commit and immediately autosquash it into its target.
+    CommitInstantSquash,
     /// Check out an existing branch/revision (the frontend prompts).
     BranchCheckout,
     /// Create a new branch and check it out (prompts for a name).
@@ -146,6 +154,8 @@ pub enum Command {
     RebaseInteractive,
     /// Reword a commit using an interactive rebase.
     RebaseRewordCommit,
+    /// Autosquash existing fixup!/squash! commits into their targets.
+    RebaseAutosquash,
     /// Add a gitignore rule (the frontend prompts for it, seeded with the file
     /// at point), to one of the four ignore files.
     IgnoreToplevel,
@@ -822,12 +832,19 @@ pub fn commit_transient() -> Transient {
                 ],
             },
             Group {
+                title: plain_title("Edit"),
+                suffixes: vec![
+                    Action::suffix("f", "Fixup", Command::CommitFixup),
+                    Action::suffix("s", "Squash", Command::CommitSquash),
+                ],
+            },
+            Group {
                 title: plain_title("Edit and rebase"),
-                suffixes: vec![Action::suffix(
-                    "R",
-                    "Reword past",
-                    Command::CommitRewordPast,
-                )],
+                suffixes: vec![
+                    Action::suffix("F", "Instant fixup", Command::CommitInstantFixup),
+                    Action::suffix("S", "Instant squash", Command::CommitInstantSquash),
+                    Action::suffix("R", "Reword past", Command::CommitRewordPast),
+                ],
             },
         ],
     }
@@ -945,6 +962,7 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                 title: plain_title("Rebase"),
                 suffixes: vec![
                     Action::suffix("i", "interactively", Command::RebaseInteractive),
+                    Action::suffix("f", "to autosquash", Command::RebaseAutosquash),
                     Action::suffix("w", "to reword a commit", Command::RebaseRewordCommit),
                 ],
             },

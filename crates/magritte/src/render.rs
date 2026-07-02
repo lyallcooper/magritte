@@ -1610,13 +1610,14 @@ impl StatusView {
 
         // In select mode the title becomes a prompt and Return confirms the
         // commit; while browsing it's just "Log".
-        let selecting = matches!(
-            log.purpose,
-            LogPurpose::SelectRebaseBase { .. } | LogPurpose::SelectRebaseReword { .. }
-        );
+        let selecting = !matches!(log.purpose, LogPurpose::Browse);
         let title = match &log.purpose {
             LogPurpose::SelectRebaseReword { .. } => "Select a commit to reword",
             LogPurpose::SelectRebaseBase { .. } => "Select a commit to rebase since",
+            LogPurpose::SelectSquash { op, .. } if op.is_instant() => {
+                "Select a commit to squash into"
+            }
+            LogPurpose::SelectSquash { .. } => "Select a commit to fix up / squash into",
             LogPurpose::Browse => "Log",
         };
         let mut header = div().flex().items_center().gap_3().child(

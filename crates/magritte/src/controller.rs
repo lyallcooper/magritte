@@ -75,6 +75,13 @@ impl StatusView {
             // `--date=now` are not valid `git rebase` options; use `r w` when
             // rebase-specific switches should be carried through.
             CommitRewordPast => self.reword_past_selected(Vec::new(), window, cx),
+            // Fixup/squash into a target commit (at point, or via log-select).
+            // Commit switches (--all, --gpg-sign, …) carry through; the instant
+            // variants then autosquash.
+            CommitFixup => self.fixup_squash_selected(SquashOp::Fixup, args, cx),
+            CommitSquash => self.fixup_squash_selected(SquashOp::Squash, args, cx),
+            CommitInstantFixup => self.fixup_squash_selected(SquashOp::InstantFixup, args, cx),
+            CommitInstantSquash => self.fixup_squash_selected(SquashOp::InstantSquash, args, cx),
             // Push/pull/fetch resolve a remote (prompting if needed) then run.
             PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
             | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
@@ -95,6 +102,7 @@ impl StatusView {
             }
             CherryPick | CherryPickRange | CherryApply | RevertCommit | RevertRange
             | RevertNoCommit => self.dispatch_pick(command, args, window, cx),
+            RebaseAutosquash => self.autosquash(args, cx),
             RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
             | RebaseRewordCommit => self.dispatch_rebase(command, args, &targets, window, cx),
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {

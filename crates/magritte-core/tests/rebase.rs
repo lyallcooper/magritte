@@ -162,7 +162,11 @@ fn fixup_and_autosquash_folds_into_target() {
     t.git(["add", "a.txt"]);
     let repo = open(&t);
     repo.commit_fixup(&a, &[]).unwrap();
-    assert_eq!(subjects(&t), ["fixup! A", "B", "A", "base"], "fixup created on top of HEAD");
+    assert_eq!(
+        subjects(&t),
+        ["fixup! A", "B", "A", "base"],
+        "fixup created on top of HEAD"
+    );
 
     repo.rebase_autosquash(&format!("{a}^"), &[]).unwrap();
     assert_eq!(subjects(&t), ["B", "A", "base"], "fixup folded into A");
