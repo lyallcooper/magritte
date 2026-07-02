@@ -20,7 +20,9 @@ pub const DEFAULT_DARK_THEME: &str = "Selenized Dark";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeymapPreset {
+    // "evil-collection" is accepted for configs written before the rename.
     #[default]
+    #[serde(rename = "evil", alias = "evil-collection")]
     EvilCollection,
     Vanilla,
 }
@@ -28,7 +30,7 @@ pub enum KeymapPreset {
 impl KeymapPreset {
     pub fn as_str(self) -> &'static str {
         match self {
-            KeymapPreset::EvilCollection => "evil-collection",
+            KeymapPreset::EvilCollection => "evil",
             KeymapPreset::Vanilla => "vanilla",
         }
     }
@@ -832,6 +834,24 @@ mod tests {
 
     fn val(s: &str) -> toml::Value {
         toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn keymap_preset_parses_current_and_legacy_names() {
+        let parse = |s: &str| -> Config { toml::from_str(s).unwrap() };
+        assert_eq!(
+            parse("keymap_preset = \"evil\"").keymap_preset,
+            KeymapPreset::EvilCollection
+        );
+        assert_eq!(
+            parse("keymap_preset = \"vanilla\"").keymap_preset,
+            KeymapPreset::Vanilla
+        );
+        // Accepted for configs written before the rename to "evil".
+        assert_eq!(
+            parse("keymap_preset = \"evil-collection\"").keymap_preset,
+            KeymapPreset::EvilCollection
+        );
     }
 
     #[test]

@@ -19,6 +19,12 @@ const APPEARANCE_OPTIONS: [(&str, &str); 3] = [
     ("Dark", "dark"),
 ];
 
+/// The keymap presets, in display order. Label paired with the config value.
+const KEYMAP_OPTIONS: [(&str, config::KeymapPreset); 2] = [
+    ("Evil/Vim", config::KeymapPreset::EvilCollection),
+    ("Vanilla Emacs", config::KeymapPreset::Vanilla),
+];
+
 /// The live settings screen, built from gpui-component `Select` dropdowns (each
 /// with built-in mouse + keyboard handling). Tab cycles focus between them;
 /// confirming a selection applies it live.
@@ -36,8 +42,10 @@ pub(crate) struct SettingsState {
     editor: Entity<InputState>,
     /// External commit-message editor command (free text, e.g. `zed --wait`).
     commit_editor: Entity<InputState>,
+    /// Keymap preset (Evil/Vim vs Vanilla Emacs).
+    keymap_preset: Entity<SelectState<Vec<SharedString>>>,
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
-    /// 4=ui_font, 5=editor, 6=commit_editor).
+    /// 4=ui_font, 5=editor, 6=keymap_preset, 7=commit_editor).
     focus_ix: usize,
     scroll: ScrollHandle,
     /// Kept alive so the Confirm subscriptions stay active.
@@ -108,6 +116,17 @@ impl StatusView {
 
         let appearance =
             cx.new(|cx| SelectState::new(appearance_items, row(appearance_ix), &mut *window, cx));
+
+        let keymap_items: Vec<SharedString> = KEYMAP_OPTIONS
+            .iter()
+            .map(|(label, _)| SharedString::from(*label))
+            .collect();
+        let keymap_ix = KEYMAP_OPTIONS
+            .iter()
+            .position(|(_, p)| *p == self.config.keymap_preset)
+            .unwrap_or(0);
+        let keymap_preset =
+            cx.new(|cx| SelectState::new(keymap_items, row(keymap_ix), &mut *window, cx));
         let light_theme = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(theme_names.clone()),
@@ -237,6 +256,23 @@ impl StatusView {
                 },
             ),
             cx.subscribe_in(
+                &keymap_preset,
+                window,
+                |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
+                    if let SelectEvent::Confirm(Some(label)) = ev {
+                        let preset = KEYMAP_OPTIONS
+                            .iter()
+                            .find(|(l, _)| *l == label.as_ref())
+                            .map_or(config::KeymapPreset::default(), |(_, p)| *p);
+                        this.edit_global(|c| c.keymap_preset = preset);
+                        // The effective keymap is derived from the preset;
+                        // rebuild it so the change applies immediately.
+                        this.keymap = build_keymap(&this.config).0;
+                        this.apply_and_save(cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
                 &light_theme,
                 window,
                 |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
@@ -305,6 +341,7 @@ impl StatusView {
             ui_font,
             editor,
             commit_editor,
+            keymap_preset,
             focus_ix: 0,
             scroll: ScrollHandle::new(),
             _subs: subs,
@@ -334,7 +371,7 @@ impl StatusView {
         let Some(s) = self.settings_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + 1) % 7;
+        s.focus_ix = (s.focus_ix + 1) % 8;
         match s.focus_ix {
             0 => s
                 .appearance
@@ -351,6 +388,10 @@ impl StatusView {
             3 => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
             4 => s.ui_font.clone().update(cx, |st, cx| st.focus(window, cx)),
             5 => s.editor.clone().update(cx, |st, cx| st.focus(window, cx)),
+            6 => s
+                .keymap_preset
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
             _ => s
                 .commit_editor
                 .clone()
@@ -518,6 +559,11 @@ impl StatusView {
             .child(section(
                 "Behavior",
                 vec![
+                    field(
+                        "keymap-preset",
+                        "Keybindings",
+                        Select::new(&s.keymap_preset).into_any_element(),
+                    ),
                     field(
                         "refresh-on-focus",
                         "Refresh on focus",
