@@ -44,8 +44,6 @@ strategies, and stash's index/worktree/snapshot variants.
   incompatible, and `--ff` is on by default, so it's easy to hit; git then
   errors). Our transient model has no incompatibility mechanism.
 - Our revert defaults to `--no-edit`; magit defaults to `--edit`.
-- Our rebase transient swapped magit's keys: ours `-a` = autostash and
-  `-s` = autosquash; magit uses `-A` and `-a` respectively.
 - `S` stage-all runs `git add -A` (includes untracked); magit's
   `S` stages tracked files only — and magit confirms `S`/`U` when they would
   blur the staged/unstaged split, which we never do.
@@ -355,8 +353,8 @@ transient.
 | `-u` | `--update-refs` | ✓ |
 | `-s` / `-X` / `=X` / `-f` / `-x` | strategy/options/algorithm/force/exec (level 7) | ✗ |
 | `-d` / `-t` | committer-date-is-author-date / ignore-date | ✗ |
-| `-a` | `--autosquash` | ≈ **ours is `-s`** (negatable, seeded from `rebase.autoSquash`) |
-| `-A` | `--autostash` (default on) | ≈ **ours is `-a`** (default on) — the `-a`/`-A` pair is swapped vs magit |
+| `-a` | `--autosquash` | ✓ (ours negatable, seeded from `rebase.autoSquash`) |
+| `-A` | `--autostash` (default on) | ✓ (default on) |
 | `-i` | `--interactive` switch | ✗ as a switch; covered by the `i` action |
 | `-h` | `--no-verify` | ✗ |
 | `-S` / `+s` | gpg-sign / signoff | ✗ |
@@ -751,8 +749,6 @@ Grouped by kind, roughly ordered within each group.
    is user-hostile today; also needed before adding pull `--ff-only`).
 2. Match magit's revert default (`--edit` on) or make the divergence a
    documented choice.
-3. Fix the rebase `-a`/`-s` autostash/autosquash key swap to magit's
-   `-A`/`-a`.
 4. Make `S` stage tracked-only (magit semantics) and add the `S`/`U`
    confirms when both sides have changes.
 5. Vanilla stash-row drop should be `k` (it's hardcoded `x`).

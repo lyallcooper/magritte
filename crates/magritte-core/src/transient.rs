@@ -900,13 +900,14 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
+                    // Magit's keys: -A autostash, -a autosquash.
                     Suffix::Switch(Switch::on(
-                        "-a",
+                        "-A",
                         "--autostash",
                         "Stash uncommitted changes around the rebase",
                     )),
                     Suffix::Switch(Switch::negatable(
-                        "-s",
+                        "-a",
                         "--autosquash",
                         "--no-autosquash",
                         "rebase.autoSquash",
