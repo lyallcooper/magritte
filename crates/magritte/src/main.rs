@@ -22,7 +22,7 @@ use std::time::Duration;
 use gpui::{
     actions, div, px, uniform_list, AnyElement, AnyWindowHandle, App, ClipboardItem, Context,
     Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyBinding, KeyDownEvent, Menu,
-    MenuItem, MouseButton, MouseDownEvent, SharedString, Styled, UniformListScrollHandle, Window,
+    MenuItem, MouseButton, MouseDownEvent, SharedString, Styled, UniformListScrollHandle,
 };
 
 mod commands;
@@ -61,6 +61,7 @@ pub(crate) use commands::*;
 pub(crate) use commit_diff_view::*;
 pub(crate) use commit_editor::*;
 pub(crate) use log_view::*;
+pub(crate) use navigation::*;
 pub(crate) use palette::*;
 pub(crate) use row_build::*;
 pub(crate) use window::*;
@@ -68,7 +69,7 @@ pub(crate) use staging::*;
 pub(crate) use transient_state::*;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
-use highlight::{FileHighlights, Span};
+use highlight::{file_head_tail, FileHighlights, Span};
 use picker::{CreateMode, PickerList};
 
 /// Key context for our status view, used so our `tab` binding takes precedence
@@ -900,168 +901,6 @@ fn version_status_message(current: &str, latest: &str) -> String {
         }
         _ => format!("Magritte {current} is the latest version"),
     }
-}
-
-/// The default ignore pattern for a concrete path at point. Repo-local ignore
-/// files get anchored paths (`/foo`) so ignoring a file named `foo` doesn't also
-/// ignore every nested `foo`; a subdir `.gitignore` anchors the basename within
-/// that subdirectory. This mirrors Magit's `magit-gitignore-read-pattern`,
-/// which prefixes the current-file default with `/` for every ignore target.
-fn default_ignore_pattern(command: transient::Command, file: Option<&str>) -> String {
-    use transient::Command::*;
-    match (command, file) {
-        (IgnoreSubdir, Some(f)) => Path::new(f)
-            .file_name()
-            .map(|n| anchored_ignore_path(&n.to_string_lossy()))
-            .unwrap_or_default(),
-        (IgnoreToplevel | IgnorePrivate | IgnoreGlobal, Some(f)) => anchored_ignore_path(f),
-        (_, Some(f)) => f.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn anchored_ignore_path(path: &str) -> String {
-    let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        String::new()
-    } else {
-        format!("/{path}")
-    }
-}
-
-/// The revision scope for a `git log` invocation.
-enum LogScope {
-    /// HEAD / the current branch.
-    Current,
-    /// All refs (`--all`).
-    All,
-    /// A specific ref.
-    Ref(String),
-}
-
-/// Assemble a `git log` argument list in the order git requires: flags and
-/// options, a commit limit (defaulted when unset), the revision scope, then any
-/// pathspecs behind a `--`.
-fn build_log_args(
-    mut flags: Vec<String>,
-    scope: LogScope,
-    paths: Vec<String>,
-    limit: usize,
-) -> Vec<String> {
-    if !flags
-        .iter()
-        .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))
-    {
-        flags.push(format!("--max-count={limit}"));
-    }
-    match scope {
-        LogScope::Current => flags.push("HEAD".to_string()),
-        LogScope::All => flags.push("--all".to_string()),
-        LogScope::Ref(r) => flags.push(r),
-    }
-    if !paths.is_empty() {
-        flags.push("--".to_string());
-        flags.extend(paths);
-    }
-    flags
-}
-
-fn diff_title(base: &str, paths: &[String]) -> String {
-    if paths.is_empty() {
-        base.to_string()
-    } else if paths.len() == 1 {
-        format!("{base} -- {}", paths[0])
-    } else {
-        format!("{base} -- {} paths", paths.len())
-    }
-}
-
-/// The viewport height in rows — a "page" for the scroll/paging keys.
-fn page_rows(window: &Window) -> usize {
-    let height = window.viewport_size().height.as_f32();
-    // Leave a few rows for the header/padding so paging keeps a little overlap.
-    ((height / ROW_HEIGHT) as usize).saturating_sub(3).max(1)
-}
-
-/// Apply a vi-style scroll key to a `uniform_list`, updating the caller-tracked
-/// top-row index (`top`) and scrolling the handle to it. We track `top`
-/// ourselves because the handle's index getter is test-only. Returns whether
-/// `key` was a recognized scroll command: `j`/`k` line, `Ctrl-d`/`Ctrl-u`
-/// half-page, `Ctrl-f`/`Ctrl-b`/`Space` full-page, and `g`/`G` to the ends.
-/// Half-page requires Ctrl so plain `d`/`u` stay free for future commands
-/// (`d` diff, `u` unstage).
-/// The new top-row index a scroll key moves to, or `None` if `key` isn't a
-/// scroll command. Clamped so the last page stays on screen. Pure (no handle)
-/// so the motion/clamp math is unit-testable; [`apply_scroll_key`] adds the
-/// actual scroll. `j`/`k` line, `Ctrl-d`/`Ctrl-u` half-page, `Ctrl-f`/`Ctrl-b`/
-/// `Space` full-page, `g`/`G` to the ends.
-fn scroll_target(top: usize, len: usize, key: &str, shift: bool, ctrl: bool, page: usize) -> Option<usize> {
-    let page = (page as isize).max(1);
-    let half = (page / 2).max(1);
-    let cur = top as isize;
-    // The furthest the top can scroll: keep a full last page on screen rather
-    // than scrolling content off the bottom.
-    let max_top = (len as isize - page).max(0);
-    let target = match key {
-        "j" => cur + 1,
-        "k" => cur - 1,
-        "d" if ctrl => cur + half,
-        "u" if ctrl => cur - half,
-        "space" => cur + page,
-        "f" if ctrl => cur + page,
-        "b" if ctrl => cur - page,
-        "g" if shift => max_top, // G → bottom (last page)
-        "g" => 0,                // g → top
-        _ => return None,
-    };
-    Some(target.clamp(0, max_top) as usize)
-}
-
-fn apply_scroll_key(
-    handle: &UniformListScrollHandle,
-    top: &mut usize,
-    len: usize,
-    key: &str,
-    shift: bool,
-    ctrl: bool,
-    page: usize,
-) -> bool {
-    let Some(new_top) = scroll_target(*top, len, key, shift, ctrl, page) else {
-        return false;
-    };
-    *top = new_top;
-    let max_top = len.saturating_sub(page.max(1));
-    // Strict scrolling positions the row even when it's already visible, so line
-    // and half-page motions actually move. On the last page, pin the final row
-    // to the *bottom* instead — the page-size estimate (header/padding overhead)
-    // is slightly off, and pinning guarantees the very last row is reachable.
-    if *top >= max_top && len > 0 {
-        handle.scroll_to_item_strict(len - 1, gpui::ScrollStrategy::Bottom);
-    } else {
-        handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
-    }
-    true
-}
-
-/// Read the first and last ~1 KB of a file (lossy UTF-8) for modeline/shebang
-/// detection. Returns empty strings on error.
-fn file_head_tail(path: &std::path::Path) -> (String, String) {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return (String::new(), String::new());
-    };
-    let mut head = [0u8; 1024];
-    let hn = file.read(&mut head).unwrap_or(0);
-    // Tail: only when the file is larger than the head we already read.
-    let mut tail = [0u8; 1024];
-    let tn = match file.seek(SeekFrom::End(-1024)) {
-        Ok(_) => file.read(&mut tail).unwrap_or(0),
-        Err(_) => 0,
-    };
-    (
-        String::from_utf8_lossy(&head[..hn]).into_owned(),
-        String::from_utf8_lossy(&tail[..tn]).into_owned(),
-    )
 }
 
 /// A transparent overlay that records its element's on-screen center for the

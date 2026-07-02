@@ -1329,3 +1329,69 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
         }
     }
 }
+
+// --- Command-argument vocabulary shared with the controller ---------------
+
+/// The default ignore pattern for a concrete path at point. Repo-local ignore
+/// files get anchored paths (`/foo`) so ignoring a file named `foo` doesn't also
+/// ignore every nested `foo`; a subdir `.gitignore` anchors the basename within
+/// that subdirectory. This mirrors Magit's `magit-gitignore-read-pattern`,
+/// which prefixes the current-file default with `/` for every ignore target.
+pub(crate) fn default_ignore_pattern(command: transient::Command, file: Option<&str>) -> String {
+    use transient::Command::*;
+    match (command, file) {
+        (IgnoreSubdir, Some(f)) => Path::new(f)
+            .file_name()
+            .map(|n| anchored_ignore_path(&n.to_string_lossy()))
+            .unwrap_or_default(),
+        (IgnoreToplevel | IgnorePrivate | IgnoreGlobal, Some(f)) => anchored_ignore_path(f),
+        (_, Some(f)) => f.to_string(),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn anchored_ignore_path(path: &str) -> String {
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    }
+}
+
+/// The revision scope for a `git log` invocation.
+pub(crate) enum LogScope {
+    /// HEAD / the current branch.
+    Current,
+    /// All refs (`--all`).
+    All,
+    /// A specific ref.
+    Ref(String),
+}
+
+/// Assemble a `git log` argument list in the order git requires: flags and
+/// options, a commit limit (defaulted when unset), the revision scope, then any
+/// pathspecs behind a `--`.
+pub(crate) fn build_log_args(
+    mut flags: Vec<String>,
+    scope: LogScope,
+    paths: Vec<String>,
+    limit: usize,
+) -> Vec<String> {
+    if !flags
+        .iter()
+        .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))
+    {
+        flags.push(format!("--max-count={limit}"));
+    }
+    match scope {
+        LogScope::Current => flags.push("HEAD".to_string()),
+        LogScope::All => flags.push("--all".to_string()),
+        LogScope::Ref(r) => flags.push(r),
+    }
+    if !paths.is_empty() {
+        flags.push("--".to_string());
+        flags.extend(paths);
+    }
+    flags
+}

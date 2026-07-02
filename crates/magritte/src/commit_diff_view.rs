@@ -431,3 +431,13 @@ impl StatusView {
         }
     }
 }
+
+pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {
+    if paths.is_empty() {
+        base.to_string()
+    } else if paths.len() == 1 {
+        format!("{base} -- {}", paths[0])
+    } else {
+        format!("{base} -- {} paths", paths.len())
+    }
+}

@@ -616,3 +616,72 @@ fn section_depth(row: &Row) -> Option<u8> {
         RowKind::Plain { .. } | RowKind::Diff { .. } => None,
     }
 }
+
+// --- Scroll math for the read-only list views ------------------------------
+
+/// The viewport height in rows — a "page" for the scroll/paging keys.
+pub(crate) fn page_rows(window: &Window) -> usize {
+    let height = window.viewport_size().height.as_f32();
+    // Leave a few rows for the header/padding so paging keeps a little overlap.
+    ((height / ROW_HEIGHT) as usize).saturating_sub(3).max(1)
+}
+
+/// Apply a vi-style scroll key to a `uniform_list`, updating the caller-tracked
+/// top-row index (`top`) and scrolling the handle to it. We track `top`
+/// ourselves because the handle's index getter is test-only. Returns whether
+/// `key` was a recognized scroll command: `j`/`k` line, `Ctrl-d`/`Ctrl-u`
+/// half-page, `Ctrl-f`/`Ctrl-b`/`Space` full-page, and `g`/`G` to the ends.
+/// Half-page requires Ctrl so plain `d`/`u` stay free for future commands
+/// (`d` diff, `u` unstage).
+/// The new top-row index a scroll key moves to, or `None` if `key` isn't a
+/// scroll command. Clamped so the last page stays on screen. Pure (no handle)
+/// so the motion/clamp math is unit-testable; [`apply_scroll_key`] adds the
+/// actual scroll. `j`/`k` line, `Ctrl-d`/`Ctrl-u` half-page, `Ctrl-f`/`Ctrl-b`/
+/// `Space` full-page, `g`/`G` to the ends.
+pub(crate) fn scroll_target(top: usize, len: usize, key: &str, shift: bool, ctrl: bool, page: usize) -> Option<usize> {
+    let page = (page as isize).max(1);
+    let half = (page / 2).max(1);
+    let cur = top as isize;
+    // The furthest the top can scroll: keep a full last page on screen rather
+    // than scrolling content off the bottom.
+    let max_top = (len as isize - page).max(0);
+    let target = match key {
+        "j" => cur + 1,
+        "k" => cur - 1,
+        "d" if ctrl => cur + half,
+        "u" if ctrl => cur - half,
+        "space" => cur + page,
+        "f" if ctrl => cur + page,
+        "b" if ctrl => cur - page,
+        "g" if shift => max_top, // G → bottom (last page)
+        "g" => 0,                // g → top
+        _ => return None,
+    };
+    Some(target.clamp(0, max_top) as usize)
+}
+
+pub(crate) fn apply_scroll_key(
+    handle: &UniformListScrollHandle,
+    top: &mut usize,
+    len: usize,
+    key: &str,
+    shift: bool,
+    ctrl: bool,
+    page: usize,
+) -> bool {
+    let Some(new_top) = scroll_target(*top, len, key, shift, ctrl, page) else {
+        return false;
+    };
+    *top = new_top;
+    let max_top = len.saturating_sub(page.max(1));
+    // Strict scrolling positions the row even when it's already visible, so line
+    // and half-page motions actually move. On the last page, pin the final row
+    // to the *bottom* instead — the page-size estimate (header/padding overhead)
+    // is slightly off, and pinning guarantees the very last row is reachable.
+    if *top >= max_top && len > 0 {
+        handle.scroll_to_item_strict(len - 1, gpui::ScrollStrategy::Bottom);
+    } else {
+        handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
+    }
+    true
+}

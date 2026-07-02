@@ -396,6 +396,27 @@ fn line_spans(
     spans
 }
 
+/// Read the first and last ~1 KB of a file (lossy UTF-8) for modeline/shebang
+/// detection. Returns empty strings on error.
+pub(crate) fn file_head_tail(path: &std::path::Path) -> (String, String) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (String::new(), String::new());
+    };
+    let mut head = [0u8; 1024];
+    let hn = file.read(&mut head).unwrap_or(0);
+    // Tail: only when the file is larger than the head we already read.
+    let mut tail = [0u8; 1024];
+    let tn = match file.seek(SeekFrom::End(-1024)) {
+        Ok(_) => file.read(&mut tail).unwrap_or(0),
+        Err(_) => 0,
+    };
+    (
+        String::from_utf8_lossy(&head[..hn]).into_owned(),
+        String::from_utf8_lossy(&tail[..tn]).into_owned(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
