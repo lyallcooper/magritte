@@ -97,11 +97,13 @@ impl TransientState {
     }
 
     /// The active switch set from a saved set (magit's `transient-save`),
-    /// reconciled against the transient's switches. A plain switch is on iff the
-    /// set names its key. A *negatable* (config-derived) switch is forced on or
-    /// off only when the set names its key or its negation flag explicitly —
-    /// otherwise it keeps its config default, so an old or empty saved set can't
-    /// silently flip e.g. gpg-signing off by mere omission.
+    /// reconciled against the transient's switches. Saved entries are the git
+    /// *arguments* (`--all`, `--no-gpg-sign`), not keystrokes, so remapping or
+    /// swapping a switch key can't misread a default. A plain switch is on iff
+    /// the set names its argument. A *negatable* (config-derived) switch is
+    /// forced on or off only when the set names its argument or its negation
+    /// explicitly — otherwise it keeps its config default, so an old or empty
+    /// saved set can't silently flip e.g. gpg-signing off by mere omission.
     pub(crate) fn apply_saved(
         def: &Transient,
         saved: &[String],
@@ -110,10 +112,10 @@ impl TransientState {
         let mut active = std::collections::HashSet::new();
         for sw in def.switches() {
             let on = match &sw.negation {
-                Some(_) if saved.contains(sw.key.as_str()) => true,
+                Some(_) if saved.contains(sw.arg.as_str()) => true,
                 Some(neg) if saved.contains(neg.as_str()) => false,
                 Some(_) => sw.default_on,
-                None => saved.contains(sw.key.as_str()),
+                None => saved.contains(sw.arg.as_str()),
             };
             if on {
                 active.insert(sw.key.clone());
@@ -122,47 +124,74 @@ impl TransientState {
         active
     }
 
-    /// The option values from a saved set. Saved value entries use the compact
-    /// `-k=value` form, so old switch-only files keep working unchanged.
+    /// The option values from a saved set. Entries are the emitted git argument
+    /// (`--grep=fix bug`, `-n50`, or a `--…-order` flag), matched back to their
+    /// option: by the option's argument prefix, or — for a fixed-choice option
+    /// whose value *is* the flag (log's order) — by the choice list. Pathspec
+    /// options aren't saved (see [`saved_overrides`](Self::saved_overrides)).
     pub(crate) fn apply_saved_values(
         def: &Transient,
         saved: &[String],
     ) -> std::collections::HashMap<String, String> {
-        let option_keys: std::collections::HashSet<&str> = def.options().map(|o| o.key).collect();
-        saved
-            .iter()
-            .filter_map(|entry| {
-                let (key, value) = entry.split_once('=')?;
-                option_keys
-                    .contains(key)
-                    .then(|| (key.to_string(), value.to_string()))
-            })
-            .collect()
+        // Longest argument prefix first, so a more specific option wins.
+        let mut prefixed: Vec<&transient::Opt> = def
+            .options()
+            .filter(|o| !o.pathspec && !o.arg.is_empty())
+            .collect();
+        prefixed.sort_by_key(|o| std::cmp::Reverse(o.arg.len()));
+
+        let mut out = std::collections::HashMap::new();
+        for entry in saved {
+            // A bare switch argument (or negation) belongs to apply_saved.
+            if def
+                .switches()
+                .any(|s| s.arg == *entry || s.negation.as_deref() == Some(entry.as_str()))
+            {
+                continue;
+            }
+            if let Some(opt) = prefixed.iter().find(|o| entry.starts_with(o.arg)) {
+                out.insert(opt.key.to_string(), entry[opt.arg.len()..].to_string());
+                continue;
+            }
+            // A fixed-choice option whose value is itself the flag (log's `-o`).
+            if let Some(opt) = def.options().find(|o| {
+                o.arg.is_empty()
+                    && matches!(o.completion, transient::Completion::OneOf(c) if c.contains(&entry.as_str()))
+            }) {
+                out.insert(opt.key.to_string(), entry.clone());
+            }
+        }
+        out
     }
 
-    /// The argument overrides to persist: a plain switch when on, a negatable
-    /// switch only when it differs from its config default — recorded as the key
-    /// (forced on) or the negation flag (forced off), so omission round-trips as
-    /// "follow config" — plus set options as `key=value` entries. The inverse
-    /// of [`apply_saved`](Self::apply_saved) / [`apply_saved_values`](Self::apply_saved_values).
+    /// The argument overrides to persist: the git argument each override emits
+    /// — a plain switch when on, a negatable switch only when it differs from
+    /// its config default (its argument when forced on, its negation when
+    /// forced off, so omission round-trips as "follow config"), plus each set
+    /// value option as `{arg}{value}` (exactly what [`args`](Self::args)
+    /// emits). Pathspec options are per-invocation file scoping, not defaults,
+    /// so they're excluded. Storing arguments rather than keystrokes keeps a
+    /// saved set correct across key remaps. The inverse of
+    /// [`apply_saved`](Self::apply_saved) / [`apply_saved_values`](Self::apply_saved_values).
     pub(crate) fn saved_overrides(&self) -> Vec<String> {
         let mut out = Vec::new();
         for sw in self.def.switches() {
             let on = self.active.contains(&sw.key);
             match &sw.negation {
                 Some(neg) if on != sw.default_on => {
-                    out.push(if on { sw.key.clone() } else { neg.clone() })
+                    out.push(if on { sw.arg.clone() } else { neg.clone() })
                 }
                 Some(_) => {}
-                None if on => out.push(sw.key.clone()),
+                None if on => out.push(sw.arg.clone()),
                 None => {}
             }
         }
-        let option_keys: std::collections::HashSet<&str> =
-            self.def.options().map(|o| o.key).collect();
-        for (key, value) in &self.values {
-            if option_keys.contains(key.as_str()) {
-                out.push(format!("{key}={value}"));
+        for opt in self.def.options() {
+            if opt.pathspec {
+                continue;
+            }
+            if let Some(value) = self.values.get(opt.key) {
+                out.push(format!("{}{}", opt.arg, value));
             }
         }
         out.sort();

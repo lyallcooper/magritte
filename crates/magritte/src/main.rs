@@ -1226,34 +1226,39 @@ mod tests {
         assert!(!on(&build(false, &[]), "-S"));
 
         // Explicit forms override the config default either way, and round-trip.
+        // Saved entries are the git arguments, not the keystrokes.
         let off = build(true, &["--no-gpg-sign"]); // forced off against config-on
         assert!(!on(&off, "-S"));
         assert_eq!(off.saved_overrides(), vec!["--no-gpg-sign".to_string()]);
-        let forced_on = build(false, &["-S"]); // forced on against config-off
+        let forced_on = build(false, &["--gpg-sign"]); // forced on against config-off
         assert!(on(&forced_on, "-S"));
-        assert_eq!(forced_on.saved_overrides(), vec!["-S".to_string()]);
+        assert_eq!(forced_on.saved_overrides(), vec!["--gpg-sign".to_string()]);
 
         // A switch matching its config default isn't persisted (config drives it);
-        // a plain switch persists by its key.
-        let mut s = build(true, &["-a"]);
+        // a plain switch persists by its argument.
+        let mut s = build(true, &["--all"]);
         assert!(on(&s, "-S") && on(&s, "-a"));
-        assert_eq!(s.saved_overrides(), vec!["-a".to_string()]);
+        assert_eq!(s.saved_overrides(), vec!["--all".to_string()]);
         // Turn the config-on switch off → it now persists as the negation.
         s.active.remove("-S");
         assert_eq!(
             s.saved_overrides(),
-            vec!["--no-gpg-sign".to_string(), "-a".to_string()]
+            vec!["--all".to_string(), "--no-gpg-sign".to_string()]
         );
     }
 
     #[test]
     fn saved_set_round_trips_option_values() {
+        // Saved entries are the git arguments the transient emits, matched back
+        // to their switch/option by argument (not keystroke): a plain switch,
+        // a value option by its arg prefix (`-n50`, `--grep=…`), and a
+        // fixed-choice option whose value is itself the flag (`-o`, order).
         let def = transient::log_transient();
         let saved = vec![
-            "-r".to_string(),
-            "-n=50".to_string(),
-            "-F=fix bug".to_string(),
-            "--=src/main.rs".to_string(),
+            "--reverse".to_string(),
+            "-n50".to_string(),
+            "--grep=fix bug".to_string(),
+            "--author-date-order".to_string(),
         ];
         let mut state = TransientState::new("log", def, RemoteTargets::default());
         state.active = TransientState::apply_saved(&state.def, &saved);
@@ -1262,27 +1267,23 @@ mod tests {
         assert_eq!(state.values.get("-n").map(String::as_str), Some("50"));
         assert_eq!(state.values.get("-F").map(String::as_str), Some("fix bug"));
         assert_eq!(
-            state.values.get("--").map(String::as_str),
-            Some("src/main.rs")
+            state.values.get("-o").map(String::as_str),
+            Some("--author-date-order")
         );
         assert_eq!(
             state.args(),
             vec![
                 "--reverse".to_string(),
+                "--author-date-order".to_string(),
                 "-n50".to_string(),
                 "--grep=fix bug".to_string(),
             ]
         );
-        assert_eq!(state.pathspecs(), vec!["src/main.rs".to_string()]);
-        assert_eq!(
-            state.saved_overrides(),
-            vec![
-                "--=src/main.rs".to_string(),
-                "-F=fix bug".to_string(),
-                "-n=50".to_string(),
-                "-r".to_string(),
-            ]
-        );
+        // The set round-trips through save unchanged (sorted); pathspec file
+        // limits are deliberately not persisted as defaults.
+        let mut expected = saved.clone();
+        expected.sort();
+        assert_eq!(state.saved_overrides(), expected);
     }
 
     #[test]

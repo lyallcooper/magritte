@@ -355,7 +355,9 @@ starts from them.
 `Ctrl-s` then asks for a **scope** — press **`g`** to save *globally* or **`l`**
 to save *for this repo* (anything else, incl. `Esc`, cancels):
 
-- **Global** → `transient-arguments.toml` beside the config (e.g. `commit = ["-a", "-s"]`, `log = ["-n=50"]`).
+- **Global** → `transient-arguments.toml` beside the config. Entries are the git
+  arguments themselves (e.g. `commit = ["--all", "--signoff"]`, `log = ["-n50", "--grep=fix"]`),
+  so a keybinding remap never disturbs a saved default.
 - **This repo** → `.git/magritte/transient-arguments.toml` in the repo (shared
   across its worktrees, never committed).
 

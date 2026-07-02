@@ -626,9 +626,10 @@ pub fn save_usage(usage: &Usage) {
 }
 
 /// Saved default argument sets per transient (magit's `transient-save`), keyed
-/// by transient command id → active switch keys plus option values as
-/// `key=value`. Persisted next to the config as `transient-arguments.toml` (e.g.
-/// `commit = ["-a", "-s"]`, `log = ["-n=50"]`).
+/// by transient command id → the git arguments to pre-apply (`--all`,
+/// `--grep=fix`, `-n50`), not the keystrokes that toggle them, so a keybinding
+/// remap can't misread a default. Persisted next to the config as
+/// `transient-arguments.toml` (e.g. `commit = ["--all", "--signoff"]`).
 pub type TransientArguments = BTreeMap<String, Vec<String>>;
 
 pub const TRANSIENT_ARGUMENTS_FILE: &str = "transient-arguments.toml";
