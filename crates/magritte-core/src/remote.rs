@@ -67,7 +67,9 @@ impl Repo {
 
     /// `git remote add [args] <name> <url>`.
     pub fn add_remote(&self, name: &str, url: &str, args: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["remote", "add"], args, &[name, url]))?.status_line())
+        Ok(self
+            .run(git_args(&["remote", "add"], args, &[name, url]))?
+            .status_line())
     }
 
     /// `git remote rename <old> <new>`.
@@ -138,7 +140,9 @@ impl Repo {
         } else {
             &["push"]
         };
-        Ok(self.run(git_args(lead, switches, &[remote, branch]))?.report())
+        Ok(self
+            .run(git_args(lead, switches, &[remote, branch]))?
+            .report())
     }
 
     /// `git push [switches] <remote> <local>:<target>` — push the local branch
@@ -151,17 +155,23 @@ impl Repo {
         switches: &[String],
     ) -> Result<String> {
         let refspec = format!("{local}:{target}");
-        Ok(self.run(git_args(&["push"], switches, &[remote, &refspec]))?.report())
+        Ok(self
+            .run(git_args(&["push"], switches, &[remote, &refspec]))?
+            .report())
     }
 
     /// `git pull [switches] <remote> <branch>`.
     pub fn pull_from(&self, remote: &str, branch: &str, switches: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["pull"], switches, &[remote, branch]))?.report())
+        Ok(self
+            .run(git_args(&["pull"], switches, &[remote, branch]))?
+            .report())
     }
 
     /// `git fetch [switches] <remote>`.
     pub fn fetch_from(&self, remote: &str, switches: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["fetch"], switches, &[remote]))?.report())
+        Ok(self
+            .run(git_args(&["fetch"], switches, &[remote]))?
+            .report())
     }
 
     /// `git fetch [switches]` — the current branch's configured remote, with no
@@ -173,7 +183,9 @@ impl Repo {
 
     /// `git fetch --all [switches]`.
     pub fn fetch_all(&self, switches: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["fetch", "--all"], switches, &[]))?.report())
+        Ok(self
+            .run(git_args(&["fetch", "--all"], switches, &[]))?
+            .report())
     }
 }
 

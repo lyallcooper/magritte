@@ -56,5 +56,8 @@ fn create_annotated_tag_without_editor() {
     repo.create_annotated_tag("v1.0.0", &head, false).unwrap();
 
     assert_eq!(t.git(["rev-parse", "v1.0.0^{}"]), head);
-    assert_eq!(t.git(["for-each-ref", "--format=%(objecttype)", "refs/tags/v1.0.0"]), "tag");
+    assert_eq!(
+        t.git(["for-each-ref", "--format=%(objecttype)", "refs/tags/v1.0.0"]),
+        "tag"
+    );
 }

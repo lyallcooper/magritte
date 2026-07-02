@@ -3,7 +3,9 @@
 //! displays), and opening or focusing a repo window for single-instance
 //! handoff.
 
-use gpui::{point, px, size, AnyWindowHandle, App, AppContext, Bounds, Window, WindowBounds, WindowOptions};
+use gpui::{
+    point, px, size, AnyWindowHandle, App, AppContext, Bounds, Window, WindowBounds, WindowOptions,
+};
 use std::path::{Path, PathBuf};
 
 use crate::*;
@@ -12,7 +14,9 @@ use crate::*;
 /// without continuing a forked process into AppKit. The child opts out of this
 /// handoff with `MAGRITTE_FOREGROUND`, so it follows the normal app path.
 pub(crate) fn detach_into_background(args: &[String]) -> bool {
-    let Ok(exe) = std::env::current_exe() else { return false };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
     std::process::Command::new(exe)
         .args(args)
         .env("MAGRITTE_FOREGROUND", "1")
@@ -34,7 +38,10 @@ pub(crate) fn repo_window_key(start_dir: Option<&Path>) -> PathBuf {
         .unwrap_or(root)
 }
 
-pub(crate) fn status_window_options(worktree_scope_dir: Option<&Path>, cx: &mut App) -> WindowOptions {
+pub(crate) fn status_window_options(
+    worktree_scope_dir: Option<&Path>,
+    cx: &mut App,
+) -> WindowOptions {
     // Restore the repo/worktree frame first, then the global default. On first
     // launch, avoid the stiff "exactly centered on the primary display" feel:
     // place a reasonably sized window near the top-left of the usable display
@@ -62,7 +69,11 @@ pub(crate) fn load_window_state(worktree_scope_dir: Option<&Path>) -> Option<sta
         })
 }
 
-pub(crate) fn save_window_state(worktree_scope_dir: Option<&Path>, window: &mut Window, cx: &mut App) {
+pub(crate) fn save_window_state(
+    worktree_scope_dir: Option<&Path>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let state = window_state_from_window(window, cx);
     if let Some(dir) = worktree_scope_dir {
         state::save_toml(&state::scoped_path(dir, state::WINDOW_FILE), &state);
@@ -73,10 +84,11 @@ pub(crate) fn save_window_state(worktree_scope_dir: Option<&Path>, window: &mut 
 }
 
 pub(crate) fn default_status_window_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
-    if let Some(bounds) = cx
-        .active_window()
-        .and_then(|window| window.update(cx, |_, window, _| window.window_bounds().get_bounds()).ok())
-    {
+    if let Some(bounds) = cx.active_window().and_then(|window| {
+        window
+            .update(cx, |_, window, _| window.window_bounds().get_bounds())
+            .ok()
+    }) {
         return fit_window_bounds_on_display(
             Bounds::new(bounds.origin + point(px(25.0), px(25.0)), bounds.size),
             None,
@@ -141,7 +153,10 @@ pub(crate) fn primary_visible_bounds(cx: &App) -> Bounds<gpui::Pixels> {
         .unwrap_or_else(|| Bounds::new(point(px(0.0), px(0.0)), size(px(1280.0), px(800.0))))
 }
 
-pub(crate) fn window_state_to_bounds(state: state::WindowState, cx: &mut App) -> Option<WindowBounds> {
+pub(crate) fn window_state_to_bounds(
+    state: state::WindowState,
+    cx: &mut App,
+) -> Option<WindowBounds> {
     if !(state.x.is_finite()
         && state.y.is_finite()
         && state.width.is_finite()
@@ -195,16 +210,18 @@ pub(crate) fn discover_worktree_scope_dir(start_dir: Option<&Path>) -> Option<Pa
         .map(|dir| config::repo_dir(&dir))
 }
 
-pub(crate) fn open_repo_window(start_dir: Option<PathBuf>, cx: &mut App) -> Option<AnyWindowHandle> {
+pub(crate) fn open_repo_window(
+    start_dir: Option<PathBuf>,
+    cx: &mut App,
+) -> Option<AnyWindowHandle> {
     let (cfg, cfg_warning) = config::load_reporting();
     theme::apply_appearance(&cfg, cx);
     let worktree_scope_dir = discover_worktree_scope_dir(start_dir.as_deref());
     let options = status_window_options(worktree_scope_dir.as_deref(), cx);
     let window = cx
         .open_window(options, |window, cx| {
-            let view = cx.new(|cx| {
-                StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx)
-            });
+            let view = cx
+                .new(|cx| StatusView::new(start_dir.clone(), cfg.clone(), cfg_warning.clone(), cx));
             // Now that the window exists, install the live-reload watchers (the
             // appearance observer needs `&mut Window`).
             view.update(cx, |view, cx| {

@@ -21,8 +21,14 @@ fn current_branch_on_normal_unborn_and_detached_head() {
     // push/pull/fetch transients must open before the first commit.
     let unborn = TestRepo::new();
     let unborn_repo = Repo::discover(unborn.path()).unwrap();
-    assert_eq!(unborn_repo.current_branch().unwrap().as_deref(), Some("main"));
-    assert!(unborn_repo.remote_targets().is_ok(), "remote_targets on an unborn branch");
+    assert_eq!(
+        unborn_repo.current_branch().unwrap().as_deref(),
+        Some("main")
+    );
+    assert!(
+        unborn_repo.remote_targets().is_ok(),
+        "remote_targets on an unborn branch"
+    );
 
     // Detached HEAD: no branch.
     t.git(["checkout", "--detach", "HEAD"]);

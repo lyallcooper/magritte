@@ -13,7 +13,10 @@ fn config_get_and_bool_read_repo_config() {
     let repo = open(&t);
     assert_eq!(repo.config_get("magritte.missing").unwrap(), None);
     t.git(["config", "test.value", "hello"]);
-    assert_eq!(repo.config_get("test.value").unwrap().as_deref(), Some("hello"));
+    assert_eq!(
+        repo.config_get("test.value").unwrap().as_deref(),
+        Some("hello")
+    );
     assert!(!repo.config_bool("test.flag"));
     t.git(["config", "test.flag", "yes"]); // git canonicalizes to true
     assert!(repo.config_bool("test.flag"));
@@ -44,14 +47,20 @@ fn git_common_dir_is_shared_across_worktrees() {
     t.write("f", "x\n");
     t.commit_all("init");
     let main_git = t.path().join(".git").canonicalize().unwrap();
-    assert_eq!(open(&t).git_common_dir().unwrap().canonicalize().unwrap(), main_git);
+    assert_eq!(
+        open(&t).git_common_dir().unwrap().canonicalize().unwrap(),
+        main_git
+    );
 
     // A linked worktree's common dir is still the main repo's .git.
     let wt = tempfile::tempdir().unwrap();
     let wt_path = wt.path().join("wt");
     t.git(["worktree", "add", wt_path.to_str().unwrap(), "-b", "wt"]);
     let linked = Repo::discover(&wt_path).unwrap();
-    assert_eq!(linked.git_common_dir().unwrap().canonicalize().unwrap(), main_git);
+    assert_eq!(
+        linked.git_common_dir().unwrap().canonicalize().unwrap(),
+        main_git
+    );
     // While the per-worktree git dir is its own.
     assert_ne!(linked.git_dir().unwrap().canonicalize().unwrap(), main_git);
 }

@@ -340,7 +340,8 @@ impl StatusView {
 
     /// The inclusive row range of the active visual selection, if any.
     pub(crate) fn visual_range(&self) -> Option<(usize, usize)> {
-        self.selection.visual
+        self.selection
+            .visual
             .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
     }
 

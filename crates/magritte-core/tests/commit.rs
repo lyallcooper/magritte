@@ -134,7 +134,10 @@ fn published_on_uses_ancestry_against_the_given_branches() {
 
     // c1 is an ancestor of origin/master → published; origin/main is skipped
     // (it doesn't exist) rather than erroring.
-    assert_eq!(repo.published_on(&c1, &published).as_deref(), Some("origin/master"));
+    assert_eq!(
+        repo.published_on(&c1, &published).as_deref(),
+        Some("origin/master")
+    );
     // HEAD (c2) is not on origin/master → unpublished.
     assert_eq!(repo.published_on("HEAD", &published), None);
     // A list naming only a missing branch never matches.

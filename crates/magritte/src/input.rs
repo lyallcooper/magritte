@@ -14,7 +14,12 @@ use magritte_core::{
 use crate::*;
 
 impl StatusView {
-    pub(crate) fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // While the editor is open the focused Input handles keys; commit/cancel
         // are caught in the capture phase (on_capture_key).
         if self.editor().is_some() {
@@ -289,7 +294,9 @@ impl StatusView {
                 }
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
-                "r" if select_rebase.is_none() => return self.rebase_since_selected(Vec::new(), cx),
+                "r" if select_rebase.is_none() => {
+                    return self.rebase_since_selected(Vec::new(), cx)
+                }
                 // Vanilla copy: `C-w` isn't in the log's keymap dispatch, so
                 // handle it here alongside the shared verbs.
                 "ctrl-w" => return self.copy_log_commit(cx),
@@ -392,7 +399,12 @@ impl StatusView {
 
     /// Click on a value-reading option row: prompt for its value, stashing the
     /// transient to reopen after (mirrors pressing the option's `-X` key).
-    pub(crate) fn click_option(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn click_option(
+        &mut self,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let opt = match &self.popup {
             Some(Popup::Transient(s)) => s
                 .def
@@ -510,7 +522,12 @@ impl StatusView {
 
     /// Run a resolved custom command (`sh -c`), surfacing its full output as a
     /// toast and refreshing unless opted out — like the `!` prompt.
-    pub(crate) fn run_custom_shell(&mut self, command: String, refresh: bool, cx: &mut Context<Self>) {
+    pub(crate) fn run_custom_shell(
+        &mut self,
+        command: String,
+        refresh: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.run_command_job(
             format!("{command}…"),
             refresh,
@@ -543,7 +560,12 @@ impl StatusView {
     /// lightweight bottom strip. The sequence then waits indefinitely for the
     /// next key; after `which_key_delay_ms` the strip expands into the which-key
     /// list of continuations.
-    pub(crate) fn enter_prefix(&mut self, seq: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn enter_prefix(
+        &mut self,
+        seq: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let gen = self.prefix_gen.bump();
         self.pending_prefix = Some(PendingPrefix {
             seq,
@@ -574,7 +596,12 @@ impl StatusView {
     /// Feed the next key into the pending sequence. Appends it and re-classifies:
     /// a complete binding runs (closing any dispatch popup), a deeper prefix
     /// keeps waiting, and an unbound sequence reports "… is unbound".
-    pub(crate) fn advance_prefix(&mut self, next: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn advance_prefix(
+        &mut self,
+        next: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(p) = self.pending_prefix.take() else {
             return;
         };
@@ -688,10 +715,7 @@ impl StatusView {
             "A" => self.run_stash_action(StashAction::Pop, reference, cx),
             "a" => self.run_stash_action(StashAction::Apply, reference, cx),
             "x" => {
-                self.confirm = Some((
-                    format!("Drop {reference}?"),
-                    Confirm::DropStash(reference),
-                ));
+                self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
                 cx.notify();
             }
             "y" if self.is_evil() => self.copy_to_clipboard(reference, cx),
@@ -829,8 +853,9 @@ impl StatusView {
 
 fn dispatch_has_key(def: &Transient, key: &str) -> bool {
     def.groups.iter().any(|group| {
-        group.suffixes.iter().any(|suffix| {
-            matches!(suffix, Suffix::Info(info) if info.keys == key)
-        })
+        group
+            .suffixes
+            .iter()
+            .any(|suffix| matches!(suffix, Suffix::Info(info) if info.keys == key))
     })
 }

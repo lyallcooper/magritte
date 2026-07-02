@@ -185,7 +185,8 @@ fn discard_staged_file_reverts_to_head() {
     let repo = open(&t);
     repo.stage_file("file.txt").unwrap();
 
-    repo.discard_staged_file(&live_entry(&repo, "file.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "file.txt"))
+        .unwrap();
 
     let s = repo.status().unwrap();
     assert!(entry(&s, "file.txt").is_none(), "file should be clean");
@@ -213,7 +214,8 @@ fn discard_staged_file_preserves_unstaged_edit() {
     t.write("file.txt", &format!("{}\n", lines.join("\n")));
 
     let repo = open(&t);
-    repo.discard_staged_file(&live_entry(&repo, "file.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "file.txt"))
+        .unwrap();
 
     // line 2 reverted (staged delta gone); line 9 still carries the unstaged edit.
     let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
@@ -273,7 +275,8 @@ fn discard_staged_new_file_deletes_it() {
     t.git(["add", "added.txt"]);
 
     let repo = open(&t);
-    repo.discard_staged_file(&live_entry(&repo, "added.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "added.txt"))
+        .unwrap();
     assert!(
         !t.path().join("added.txt").exists(),
         "new file should be removed"
@@ -293,7 +296,8 @@ fn discard_staged_new_file_with_unstaged_becomes_untracked() {
     t.write("added.txt", "v1\nv2\n"); // unstaged edit on top of the staged add
 
     let repo = open(&t);
-    repo.discard_staged_file(&live_entry(&repo, "added.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "added.txt"))
+        .unwrap();
 
     assert!(t.path().join("added.txt").exists(), "file should be kept");
     let s = repo.status().unwrap();
@@ -333,7 +337,8 @@ fn discard_staged_deletion_resurrects() {
     t.git(["rm", "doomed.txt"]); // stages the deletion
 
     let repo = open(&t);
-    repo.discard_staged_file(&live_entry(&repo, "doomed.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "doomed.txt"))
+        .unwrap();
 
     // No longer a staged deletion; HEAD content is back in the index.
     let s = repo.status().unwrap();
@@ -351,7 +356,8 @@ fn discard_staged_rename_renames_back() {
     t.git(["mv", "old.txt", "new.txt"]); // stages the rename
 
     let repo = open(&t);
-    repo.discard_staged_file(&live_entry(&repo, "new.txt")).unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "new.txt"))
+        .unwrap();
 
     assert!(
         t.path().join("old.txt").exists(),

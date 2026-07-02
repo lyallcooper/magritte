@@ -81,8 +81,7 @@ impl StatusView {
     /// which falls out of scanning upward for the nearest start.
     pub(crate) fn select_section(&mut self, forward: bool) {
         let next = if forward {
-            (self.selected + 1..self.rows.len())
-                .find(|&i| section_depth(&self.rows[i]).is_some())
+            (self.selected + 1..self.rows.len()).find(|&i| section_depth(&self.rows[i]).is_some())
         } else {
             (0..self.selected)
                 .rev()
@@ -149,7 +148,13 @@ impl StatusView {
     }
 
     /// Page the cursor by a half- or full-screen in the active view.
-    pub(crate) fn nav_page(&mut self, down: bool, full: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn nav_page(
+        &mut self,
+        down: bool,
+        full: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let page = page_rows(window) as isize;
         let amount = if full { page } else { (page / 2).max(1) };
         let delta = if down { amount } else { -amount };
@@ -169,7 +174,10 @@ impl StatusView {
     /// Jump to the first/last row of the active view.
     pub(crate) fn nav_edge(&mut self, to_bottom: bool, cx: &mut Context<Self>) {
         match self.screen {
-            Screen::Log(_) | Screen::Commit { .. } | Screen::Diff { .. } | Screen::RebaseTodo(_) => self.nav_line(
+            Screen::Log(_)
+            | Screen::Commit { .. }
+            | Screen::Diff { .. }
+            | Screen::RebaseTodo(_) => self.nav_line(
                 if to_bottom {
                     isize::MAX / 2
                 } else {
@@ -266,7 +274,11 @@ impl StatusView {
                         status
                             .unstaged()
                             .map(|e| (DiffSource::Unstaged, e.path.clone()))
-                            .chain(status.staged().map(|e| (DiffSource::Staged, e.path.clone())))
+                            .chain(
+                                status
+                                    .staged()
+                                    .map(|e| (DiffSource::Staged, e.path.clone())),
+                            )
                             .collect()
                     })
                     .unwrap_or_default();
@@ -520,10 +532,12 @@ impl StatusView {
     /// The section a row belongs to, by scanning back to the nearest section
     /// header at or above it.
     pub(crate) fn enclosing_section(&self, ix: usize) -> Option<SectionId> {
-        (0..=ix).rev().find_map(|i| match self.rows.get(i).map(|r| &r.fold) {
-            Some(Some(FoldKey::Section(s))) => Some(*s),
-            _ => None,
-        })
+        (0..=ix)
+            .rev()
+            .find_map(|i| match self.rows.get(i).map(|r| &r.fold) {
+                Some(Some(FoldKey::Section(s))) => Some(*s),
+                _ => None,
+            })
     }
 
     /// The row indices belonging to a section: its header through the row before
@@ -654,7 +668,14 @@ pub(crate) fn page_rows(window: &Window) -> usize {
 /// so the motion/clamp math is unit-testable; [`apply_scroll_key`] adds the
 /// actual scroll. `j`/`k` line, `Ctrl-d`/`Ctrl-u` half-page, `Ctrl-f`/`Ctrl-b`/
 /// `Space` full-page, `g`/`G` to the ends.
-pub(crate) fn scroll_target(top: usize, len: usize, key: &str, shift: bool, ctrl: bool, page: usize) -> Option<usize> {
+pub(crate) fn scroll_target(
+    top: usize,
+    len: usize,
+    key: &str,
+    shift: bool,
+    ctrl: bool,
+    page: usize,
+) -> Option<usize> {
     let page = (page as isize).max(1);
     let half = (page / 2).max(1);
     let cur = top as isize;

@@ -398,7 +398,11 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("diff-worktree", "Diff worktree", Leaf::DiffWorktree),
         leaf!("diff-commit", "Show commit", Leaf::DiffCommit),
         leaf!("cherry-pick", "Cherry-pick commit", Leaf::CherryPick),
-        leaf!("cherry-pick-range", "Cherry-pick range", Leaf::CherryPickRange),
+        leaf!(
+            "cherry-pick-range",
+            "Cherry-pick range",
+            Leaf::CherryPickRange
+        ),
         leaf!("cherry-apply", "Apply commit", Leaf::CherryApply),
         leaf!("revert", "Revert commit", Leaf::RevertCommit),
         leaf!("revert-range", "Revert range", Leaf::RevertRange),
@@ -533,10 +537,18 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_section(true, cx)),
         nav!("prev-section", "Previous section", "ctrl-k", |t, _w, cx| t
             .nav_section(false, cx)),
-        nav!("next-sibling-section", "Next sibling section", "g j", |t, _w, cx| t
-            .nav_section_sibling(true, cx)),
-        nav!("prev-sibling-section", "Previous sibling section", "g k", |t, _w, cx| t
-            .nav_section_sibling(false, cx)),
+        nav!(
+            "next-sibling-section",
+            "Next sibling section",
+            "g j",
+            |t, _w, cx| t.nav_section_sibling(true, cx)
+        ),
+        nav!(
+            "prev-sibling-section",
+            "Previous sibling section",
+            "g k",
+            |t, _w, cx| t.nav_section_sibling(false, cx)
+        ),
         nav!("section-up", "Parent section", "^", |t, _w, cx| t
             .nav_section_up(cx)),
         // Fold depth (magit's magit-section-show-level-N, applied buffer-wide;
@@ -570,10 +582,26 @@ pub(crate) fn commands() -> &'static [Command] {
             },
         },
         jump!("jump-to-stashes", "Jump to stashes", SectionId::Stashes),
-        jump!("jump-to-untracked", "Jump to untracked files", SectionId::Untracked),
-        jump!("jump-to-ignored", "Jump to ignored files", SectionId::Ignored),
-        jump!("jump-to-unstaged", "Jump to unstaged changes", SectionId::Unstaged),
-        jump!("jump-to-staged", "Jump to staged changes", SectionId::Staged),
+        jump!(
+            "jump-to-untracked",
+            "Jump to untracked files",
+            SectionId::Untracked
+        ),
+        jump!(
+            "jump-to-ignored",
+            "Jump to ignored files",
+            SectionId::Ignored
+        ),
+        jump!(
+            "jump-to-unstaged",
+            "Jump to unstaged changes",
+            SectionId::Unstaged
+        ),
+        jump!(
+            "jump-to-staged",
+            "Jump to staged changes",
+            SectionId::Staged
+        ),
         jump!(
             "jump-to-unpulled-upstream",
             "Jump to unpulled commits",
@@ -724,15 +752,26 @@ pub(crate) fn jump_transient() -> Transient {
                 entry("u", "Unstaged changes", "jump-to-unstaged"),
                 entry("s", "Staged changes", "jump-to-staged"),
                 entry("fu", "Unpulled from upstream", "jump-to-unpulled-upstream"),
-                entry("fp", "Unpulled from push remote", "jump-to-unpulled-pushremote"),
+                entry(
+                    "fp",
+                    "Unpulled from push remote",
+                    "jump-to-unpulled-pushremote",
+                ),
                 entry("pu", "Unpushed to upstream", "jump-to-unpushed-upstream"),
-                entry("pp", "Unpushed to push remote", "jump-to-unpushed-pushremote"),
+                entry(
+                    "pp",
+                    "Unpushed to push remote",
+                    "jump-to-unpushed-pushremote",
+                ),
             ],
         }],
     }
 }
 
-pub(crate) fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Option<&'static str> {
+pub(crate) fn default_key_for_command(
+    preset: config::KeymapPreset,
+    cmd: &Command,
+) -> Option<&'static str> {
     use config::KeymapPreset::*;
     match preset {
         EvilCollection => cmd.key,
@@ -781,7 +820,9 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
             "." => ">".to_string(),
             "/" => "?".to_string(),
             "`" => "~".to_string(),
-            _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => key.to_uppercase(),
+            _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
+                key.to_uppercase()
+            }
             _ => key.to_string(),
         }
     } else {
@@ -979,16 +1020,16 @@ pub(crate) fn command_toast(run: &magritte_core::CommandRun, log_key: Option<&st
 /// frontend confirms first, like the built-in destructive ops. A word-level
 /// scan for `clean`, `--hard`, or `--force`/`--force-with-lease`.
 pub(crate) fn command_is_destructive(command: &str) -> bool {
-    command.split_whitespace().any(|w| {
-        matches!(w, "clean" | "--hard" | "--force" | "--force-with-lease")
-    })
+    command
+        .split_whitespace()
+        .any(|w| matches!(w, "clean" | "--hard" | "--force" | "--force-with-lease"))
 }
 
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
 /// sections for suffix injection.
 pub(crate) const TRANSIENT_IDS: &[&str] = &[
-    "commit", "branch", "tag", "remote", "stash", "reset", "rebase", "merge", "ignore",
-    "log", "diff", "push", "pull", "fetch",
+    "commit", "branch", "tag", "remote", "stash", "reset", "rebase", "merge", "ignore", "log",
+    "diff", "push", "pull", "fetch",
 ];
 
 /// The keystroke sequence to reach the command with this palette title, as
@@ -1145,7 +1186,10 @@ pub(crate) fn current_key(
 /// `dispatch_menu_covers_every_command` test cross-checks it against the keys
 /// `run_dispatch` actually handles, so a command can't be shown-but-dead or
 /// invocable-but-hidden.
-pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::Config) -> Transient {
+pub(crate) fn dispatch_menu(
+    keymap: &HashMap<String, String>,
+    config: &config::Config,
+) -> Transient {
     let group = |cat: Category| Group {
         title: transient::plain_title(cat.title()),
         suffixes: commands()
@@ -1226,7 +1270,14 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
             groups: vec![group(
                 "Commit detail",
                 vec![
-                    info("a", if cv.show_details { "Hide details" } else { "Show details" }),
+                    info(
+                        "a",
+                        if cv.show_details {
+                            "Hide details"
+                        } else {
+                            "Show details"
+                        },
+                    ),
                     info("v", "Visual selection"),
                     info(copy_key, "Copy"),
                     info("q", "Back"),
@@ -1237,7 +1288,11 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
             title: transient::plain_title("Help"),
             groups: vec![group(
                 "Diff",
-                vec![info("v", "Visual selection"), info(copy_key, "Copy"), info("q", "Back")],
+                vec![
+                    info("v", "Visual selection"),
+                    info(copy_key, "Copy"),
+                    info("q", "Back"),
+                ],
             )],
         },
         Screen::Log(log) => {
@@ -1284,8 +1339,14 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
         },
         _ => {
             let mut menu = dispatch_menu(&view.keymap, &view.config);
-            if view.rows.get(view.selected).and_then(|r| r.target.as_ref()).is_none() {
-                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+            if view
+                .rows
+                .get(view.selected)
+                .and_then(|r| r.target.as_ref())
+                .is_none()
+            {
+                menu.groups
+                    .retain(|g| group_text(g) != Category::Applying.title());
             }
             if let Some((_hash, _short, _subject)) = view.point_commit() {
                 let (revert, reverse) = match view.config.keymap_preset {
@@ -1307,7 +1368,8 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                         ],
                     ),
                 );
-                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+                menu.groups
+                    .retain(|g| group_text(g) != Category::Applying.title());
             } else if let Some((_reference, _message)) = view.point_stash() {
                 menu.groups.insert(
                     0,
@@ -1322,7 +1384,8 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                         ],
                     ),
                 );
-                menu.groups.retain(|g| group_text(g) != Category::Applying.title());
+                menu.groups
+                    .retain(|g| group_text(g) != Category::Applying.title());
             }
             menu.groups.retain(|g| !g.suffixes.is_empty());
             menu

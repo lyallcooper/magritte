@@ -13,6 +13,8 @@ impl Repo {
     pub fn merge(&self, target: &str, args: &[String]) -> Result<String> {
         // merge reports on stderr ("Merge made by…", conflict notices), falling
         // back to stdout — exactly `GitOutput::status_line`.
-        Ok(self.run(git_args(&["merge", "--no-edit"], args, &[target]))?.status_line())
+        Ok(self
+            .run(git_args(&["merge", "--no-edit"], args, &[target]))?
+            .status_line())
     }
 }

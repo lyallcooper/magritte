@@ -90,11 +90,17 @@ fn upstream_divergence_splits_unpushed_and_unpulled() {
     let (unpushed, unpulled) = repo.upstream_divergence().unwrap();
 
     assert_eq!(
-        unpushed.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(),
+        unpushed
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
         ["local-only"]
     );
     assert_eq!(
-        unpulled.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(),
+        unpulled
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
         ["upstream-only"]
     );
 }

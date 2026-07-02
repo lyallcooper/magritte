@@ -202,7 +202,10 @@ impl Repo {
     pub fn refresh_snapshot_with(&self, needs: RefreshNeeds) -> Result<RefreshSnapshot> {
         let mut status = self.status()?;
         self.enrich_status(&mut status, needs);
-        let sequence = self.git_dir().ok().and_then(|dir| self.sequence_in_dir(&dir));
+        let sequence = self
+            .git_dir()
+            .ok()
+            .and_then(|dir| self.sequence_in_dir(&dir));
         Ok(RefreshSnapshot { status, sequence })
     }
 

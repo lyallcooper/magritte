@@ -53,9 +53,7 @@ fn reorder_swaps_commit_order() {
     let todo = open(&t).rebase_todo(&base).unwrap();
     // Reorder to A, C, B (C and B independent files, so no conflict).
     let reordered = vec![todo[0].clone(), todo[2].clone(), todo[1].clone()];
-    open(&t)
-        .rebase_interactive(&base, &reordered, &[])
-        .unwrap();
+    open(&t).rebase_interactive(&base, &reordered, &[]).unwrap();
     assert_eq!(subjects(&t), ["B", "C", "A", "base"]);
 }
 
@@ -79,7 +77,10 @@ fn reword_stops_for_app_managed_message_edit() {
     todo[1].action = RebaseAction::Reword;
     let repo = open(&t);
     repo.rebase_interactive(&base, &todo, &[]).unwrap();
-    assert_eq!(repo.rebase_stopped_sha().as_deref(), Some(original_b.as_str()));
+    assert_eq!(
+        repo.rebase_stopped_sha().as_deref(),
+        Some(original_b.as_str())
+    );
     repo.commit("B rewritten", magritte_core::CommitMode::Reword, &[])
         .unwrap();
     repo.sequence_continue(magritte_core::SequenceKind::Rebase)
@@ -126,7 +127,11 @@ fn edit_todo_rewrites_the_remaining_plan() {
     repo.rebase_edit_todo(&remaining[..1]).unwrap(); // keep only B
     repo.sequence_continue(magritte_core::SequenceKind::Rebase)
         .unwrap();
-    assert_eq!(subjects(&t), ["B", "A", "base"], "C dropped via --edit-todo");
+    assert_eq!(
+        subjects(&t),
+        ["B", "A", "base"],
+        "C dropped via --edit-todo"
+    );
 }
 
 #[test]
@@ -136,7 +141,5 @@ fn all_dropped_is_refused() {
     for step in &mut todo {
         step.action = RebaseAction::Drop;
     }
-    assert!(open(&t)
-        .rebase_interactive(&base, &todo, &[])
-        .is_err());
+    assert!(open(&t).rebase_interactive(&base, &todo, &[]).is_err());
 }

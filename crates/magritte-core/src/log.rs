@@ -155,7 +155,10 @@ fn parse_log_record(record: &str) -> Option<LogEntry> {
 fn parse_left_right_log(stdout: &[u8]) -> (Vec<LogEntry>, Vec<LogEntry>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
-    for record in String::from_utf8_lossy(stdout).split('\0').filter(|r| !r.is_empty()) {
+    for record in String::from_utf8_lossy(stdout)
+        .split('\0')
+        .filter(|r| !r.is_empty())
+    {
         let Some((side, rest)) = record.split_once('\u{1f}') else {
             continue;
         };

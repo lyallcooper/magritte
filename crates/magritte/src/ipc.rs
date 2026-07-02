@@ -48,7 +48,9 @@ pub(crate) fn start_server(tx: Sender<PathBuf>) -> bool {
     use std::os::unix::net::UnixListener;
 
     let path = socket_path();
-    let Some(dir) = path.parent() else { return false };
+    let Some(dir) = path.parent() else {
+        return false;
+    };
     let _ = fs::create_dir_all(dir);
     let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
 
@@ -61,7 +63,9 @@ pub(crate) fn start_server(tx: Sender<PathBuf>) -> bool {
                 return false;
             }
             let _ = fs::remove_file(&path);
-            let Ok(listener) = UnixListener::bind(&path) else { return false };
+            let Ok(listener) = UnixListener::bind(&path) else {
+                return false;
+            };
             listener
         }
     };

@@ -1,0 +1,4 @@
+# Stock rustfmt (the repo was formatted by hand close to the defaults, which
+# measured as the least-churn config when fmt was adopted). Only the edition is
+# pinned, for direct `rustfmt` invocations; `cargo fmt` reads it from Cargo.toml.
+edition = "2021"

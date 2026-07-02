@@ -34,8 +34,8 @@ mod controller;
 #[cfg(feature = "debug")]
 mod debug;
 mod editor_launch;
-mod generation;
 mod editors;
+mod generation;
 mod git_action;
 mod highlight;
 mod input;
@@ -60,6 +60,7 @@ mod window;
 pub(crate) use commands::*;
 pub(crate) use commit_diff_view::*;
 pub(crate) use commit_editor::*;
+use controller::StatusToast;
 pub(crate) use log_view::*;
 pub(crate) use navigation::*;
 pub(crate) use palette::*;
@@ -67,15 +68,14 @@ pub(crate) use row_build::*;
 pub(crate) use staging::*;
 pub(crate) use transient_state::*;
 pub(crate) use window::*;
-use controller::StatusToast;
 
 /// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
 type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
-use settings::SettingsCaches;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{file_head_tail, FileHighlights, Span};
 use picker::{CreateMode, PickerList};
+use settings::SettingsCaches;
 
 /// Key context for our status view, used so our `tab` binding takes precedence
 /// over gpui-component Root's focus-navigation `tab`.
@@ -540,9 +540,7 @@ impl StatusView {
         // UI state local to this checkout (folds, window placement) lives in the
         // *per-worktree* git dir instead — `.git/magritte` for the main worktree,
         // `.git/worktrees/<name>/magritte` for a linked one.
-        let worktree_git_dir = repo
-            .as_ref()
-            .and_then(|r| r.git_dir().ok());
+        let worktree_git_dir = repo.as_ref().and_then(|r| r.git_dir().ok());
         let worktree_scope_dir = worktree_git_dir.as_ref().map(|d| config::repo_dir(d));
         let repo_transient_arguments = repo_scope_dir
             .as_ref()
@@ -789,7 +787,10 @@ impl StatusView {
     /// Which keymap preset is active — for the handful of hardcoded
     /// act-at-point keys that differ between evil-collection and vanilla magit.
     pub(crate) fn is_evil(&self) -> bool {
-        matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection)
+        matches!(
+            self.config.keymap_preset,
+            config::KeymapPreset::EvilCollection
+        )
     }
 
     pub(crate) fn is_vanilla(&self) -> bool {
@@ -815,7 +816,6 @@ impl StatusView {
     fn next_screen_gen(&mut self) -> u64 {
         self.screen_gen.bump()
     }
-
 }
 
 // --- Small row/value helpers ---------------------------------------------
@@ -826,7 +826,9 @@ fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
         .strip_prefix("refs/tags/")
         .unwrap_or(version.trim())
         .trim_start_matches('v');
-    let stable = version.split_once('-').map_or(version, |(stable, _)| stable);
+    let stable = version
+        .split_once('-')
+        .map_or(version, |(stable, _)| stable);
     let mut parts = stable.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -883,7 +885,10 @@ fn latest_release_version() -> std::result::Result<String, String> {
 }
 
 fn version_status_message(current: &str, latest: &str) -> String {
-    match (parse_release_version(current), parse_release_version(latest)) {
+    match (
+        parse_release_version(current),
+        parse_release_version(latest),
+    ) {
         (Some(current_version), Some(latest_version)) if current_version < latest_version => {
             format!("Magritte {current}; latest is {latest} (update available)")
         }
@@ -1197,7 +1202,10 @@ mod tests {
         // The reported bug: an empty saved set must NOT force a config-on switch
         // off — it keeps the config default.
         let s = build(true, &[]);
-        assert!(on(&s, "-S"), "empty saved set keeps gpg-sign on when config enables it");
+        assert!(
+            on(&s, "-S"),
+            "empty saved set keeps gpg-sign on when config enables it"
+        );
         assert!(!on(&s, "-a"));
         // Config off + empty: stays off.
         assert!(!on(&build(false, &[]), "-S"));
@@ -1268,7 +1276,9 @@ mod tests {
         config.status.sections = vec!["staged".into(), "bogus".into()];
         let (_, warnings) = build_keymap(&config);
         assert!(
-            warnings.iter().any(|w| w.contains("unknown section \"bogus\"")),
+            warnings
+                .iter()
+                .any(|w| w.contains("unknown section \"bogus\"")),
             "expected an unknown-section warning, got {warnings:?}"
         );
     }
@@ -1298,9 +1308,18 @@ mod tests {
         assert_eq!(km.get("Z").map(String::as_str), Some("stash"));
         assert_eq!(km.get("|").map(String::as_str), Some("git-command"));
         assert_eq!(km.get("V").map(String::as_str), Some("visual"));
-        assert_eq!(command_keys(&km, &config, "Delete branch").as_deref(), Some("b x"));
-        assert_eq!(command_keys(&km, &config, "Delete tag").as_deref(), Some("t x"));
-        assert_eq!(command_keys(&km, &config, "Remove remote").as_deref(), Some("M x"));
+        assert_eq!(
+            command_keys(&km, &config, "Delete branch").as_deref(),
+            Some("b x")
+        );
+        assert_eq!(
+            command_keys(&km, &config, "Delete tag").as_deref(),
+            Some("t x")
+        );
+        assert_eq!(
+            command_keys(&km, &config, "Remove remote").as_deref(),
+            Some("M x")
+        );
 
         let mut config = config::Config::default();
         config.keymap_preset = config::KeymapPreset::Vanilla;
@@ -1314,14 +1333,26 @@ mod tests {
         assert_eq!(km.get("p").map(String::as_str), Some("prev-section"));
         assert_eq!(km.get(":").map(String::as_str), Some("git-command"));
         assert_eq!(km.get("!").map(String::as_str), Some("git-command"));
-        assert!(!km.contains_key("V"), "vanilla leaves V for commit-at-point revert");
+        assert!(
+            !km.contains_key("V"),
+            "vanilla leaves V for commit-at-point revert"
+        );
         assert_eq!(command_keys(&km, &config, "Push").as_deref(), Some("P"));
         assert_eq!(command_keys(&km, &config, "Reset").as_deref(), Some("X"));
         assert_eq!(command_keys(&km, &config, "Stash").as_deref(), Some("z"));
         assert_eq!(command_keys(&km, &config, "Discard").as_deref(), Some("k"));
-        assert_eq!(command_keys(&km, &config, "Delete branch").as_deref(), Some("b k"));
-        assert_eq!(command_keys(&km, &config, "Delete tag").as_deref(), Some("t k"));
-        assert_eq!(command_keys(&km, &config, "Remove remote").as_deref(), Some("M k"));
+        assert_eq!(
+            command_keys(&km, &config, "Delete branch").as_deref(),
+            Some("b k")
+        );
+        assert_eq!(
+            command_keys(&km, &config, "Delete tag").as_deref(),
+            Some("t k")
+        );
+        assert_eq!(
+            command_keys(&km, &config, "Remove remote").as_deref(),
+            Some("M k")
+        );
     }
 
     #[test]
@@ -1334,7 +1365,10 @@ mod tests {
         assert_eq!(km.get("g x").map(String::as_str), Some("stage"));
         assert_eq!(km.get(". c").map(String::as_str), Some("commit"));
         assert_eq!(km.get("a b c").map(String::as_str), Some("stage"));
-        assert!(warnings.is_empty(), "any-depth sequence is fine: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "any-depth sequence is fine: {warnings:?}"
+        );
     }
 
     #[test]
@@ -1349,7 +1383,7 @@ mod tests {
         });
         config.keymap.insert("X".into(), "user.wip".into());
         config.keymap.insert("Y".into(), "user.nope".into()); // unknown id
-        // Injected into a transient too — a valid target there, no warning.
+                                                              // Injected into a transient too — a valid target there, no warning.
         config
             .transient
             .entry("commit".into())
@@ -1542,7 +1576,8 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$", // commands
+            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",",
+            "$", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
@@ -1649,7 +1684,7 @@ mod tests {
         assert_eq!(scroll_target(0, 100, "g", true, false, 10), Some(90)); // G → bottom
         assert_eq!(scroll_target(50, 100, "g", false, false, 10), Some(0)); // g → top
         assert_eq!(scroll_target(85, 100, "space", false, false, 10), Some(90)); // clamp high
-        // Half-page needs ctrl; plain d/u (and unknown keys) aren't scrolls.
+                                                                                 // Half-page needs ctrl; plain d/u (and unknown keys) aren't scrolls.
         assert_eq!(scroll_target(5, 100, "d", false, false, 10), None);
         assert_eq!(scroll_target(5, 100, "z", false, false, 10), None);
         // Fewer rows than a page → max_top 0, everything pins to top.

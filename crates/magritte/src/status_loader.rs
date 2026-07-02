@@ -55,8 +55,10 @@ impl StatusView {
             })
             .collect();
         self.diffs.retain(|key, _| expanded_diff_keys.contains(key));
-        self.highlights.retain(|key, _| expanded_diff_keys.contains(key));
-        self.diff_langs.retain(|key, _| expanded_diff_keys.contains(key));
+        self.highlights
+            .retain(|key, _| expanded_diff_keys.contains(key));
+        self.diff_langs
+            .retain(|key, _| expanded_diff_keys.contains(key));
         self.transient_config_defaults.clear();
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
@@ -97,8 +99,8 @@ impl StatusView {
 
         let recent_count = self.config.status.recent_count;
         let want_tags = self.config.show_tags_in_title_bar;
-        let upstream_configured = configured.contains(&SectionId::Unpushed)
-            || configured.contains(&SectionId::Unpulled);
+        let upstream_configured =
+            configured.contains(&SectionId::Unpushed) || configured.contains(&SectionId::Unpulled);
         let pushremote_configured = configured.contains(&SectionId::UnpushedPushremote)
             || configured.contains(&SectionId::UnpulledPushremote);
 
@@ -211,10 +213,7 @@ impl StatusView {
                     .status
                     .as_ref()
                     .is_some_and(|s| s.head.upstream.is_some());
-                let triangular = this
-                    .status
-                    .as_ref()
-                    .is_some_and(|s| s.head.push.is_some());
+                let triangular = this.status.as_ref().is_some_and(|s| s.head.push.is_some());
                 // Divergence sections only exist when their target exists; clear
                 // any stale listings otherwise so they don't linger from a prior
                 // state (do it before the rebuild so the rows reflect it).

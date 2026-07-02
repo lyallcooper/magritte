@@ -404,17 +404,14 @@ impl Transient {
     /// the keystrokes typed so far could still resolve to a multi-key suffix
     /// (magit's `fu`/`pu` jump keys).
     pub fn has_key_prefix(&self, prefix: &str) -> bool {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .any(|s| {
-                let key: &str = match s {
-                    Suffix::Action(a) => a.key,
-                    Suffix::Custom(c) => &c.key,
-                    _ => return false,
-                };
-                key.len() > prefix.len() && key.starts_with(prefix)
-            })
+        self.groups.iter().flat_map(|g| g.suffixes.iter()).any(|s| {
+            let key: &str = match s {
+                Suffix::Action(a) => a.key,
+                Suffix::Custom(c) => &c.key,
+                _ => return false,
+            };
+            key.len() > prefix.len() && key.starts_with(prefix)
+        })
     }
 }
 
@@ -458,7 +455,11 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                     Suffix::Switch(Switch::new("-n", "--dry-run", "Dry run")),
                     Suffix::Switch(Switch::new("-u", "--set-upstream", "Set upstream")),
                     Suffix::Switch(Switch::new("-T", "--tags", "Include all tags")),
-                    Suffix::Switch(Switch::new("-t", "--follow-tags", "Include related annotated tags")),
+                    Suffix::Switch(Switch::new(
+                        "-t",
+                        "--follow-tags",
+                        "Include related annotated tags",
+                    )),
                 ],
             },
             Group {
@@ -516,7 +517,11 @@ pub fn tag_transient(style: KeymapStyle) -> Transient {
             },
             Group {
                 title: plain_title("Do"),
-                suffixes: vec![Action::suffix(style.delete_key(), "delete", Command::TagDelete)],
+                suffixes: vec![Action::suffix(
+                    style.delete_key(),
+                    "delete",
+                    Command::TagDelete,
+                )],
             },
         ],
     }
@@ -665,9 +670,21 @@ pub fn diff_transient() -> Transient {
                         completion: Completion::OneOf(&["untracked", "dirty", "all"]),
                         pathspec: false,
                     }),
-                    Suffix::Switch(Switch::new("-b", "--ignore-space-change", "Ignore whitespace changes")),
-                    Suffix::Switch(Switch::new("-w", "--ignore-all-space", "Ignore all whitespace")),
-                    Suffix::Switch(Switch::new("-D", "--irreversible-delete", "Omit preimage for deletes")),
+                    Suffix::Switch(Switch::new(
+                        "-b",
+                        "--ignore-space-change",
+                        "Ignore whitespace changes",
+                    )),
+                    Suffix::Switch(Switch::new(
+                        "-w",
+                        "--ignore-all-space",
+                        "Ignore all whitespace",
+                    )),
+                    Suffix::Switch(Switch::new(
+                        "-D",
+                        "--irreversible-delete",
+                        "Omit preimage for deletes",
+                    )),
                 ],
             },
             Group {
@@ -680,7 +697,11 @@ pub fn diff_transient() -> Transient {
                         completion: Completion::None,
                         pathspec: false,
                     }),
-                    Suffix::Switch(Switch::new("-W", "--function-context", "Show surrounding functions")),
+                    Suffix::Switch(Switch::new(
+                        "-W",
+                        "--function-context",
+                        "Show surrounding functions",
+                    )),
                 ],
             },
             Group {
@@ -713,7 +734,11 @@ pub fn diff_transient() -> Transient {
                     Suffix::Switch(Switch::new("-M", "-M", "Detect renames")),
                     Suffix::Switch(Switch::new("-C", "-C", "Detect copies")),
                     Suffix::Switch(Switch::new("-R", "-R", "Reverse sides")),
-                    Suffix::Switch(Switch::new("-x", "--no-ext-diff", "Disallow external diff drivers")),
+                    Suffix::Switch(Switch::new(
+                        "-x",
+                        "--no-ext-diff",
+                        "Disallow external diff drivers",
+                    )),
                 ],
             },
             Group {
@@ -738,7 +763,11 @@ pub fn commit_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch::new("-a", "--all", "Stage all modified and deleted files")),
+                    Suffix::Switch(Switch::new(
+                        "-a",
+                        "--all",
+                        "Stage all modified and deleted files",
+                    )),
                     Suffix::Switch(Switch::new("-e", "--allow-empty", "Allow empty commit")),
                     Suffix::Switch(Switch::new("-n", "--no-verify", "Disable hooks")),
                     Suffix::Switch(Switch::new(
@@ -761,7 +790,11 @@ pub fn commit_transient() -> Transient {
                         "commit.gpgSign",
                         "Sign using gpg",
                     )),
-                    Suffix::Switch(Switch::new("-D", "--date=now", "Use current time as author date")),
+                    Suffix::Switch(Switch::new(
+                        "-D",
+                        "--date=now",
+                        "Use current time as author date",
+                    )),
                 ],
             },
             Group {
@@ -778,7 +811,11 @@ pub fn commit_transient() -> Transient {
             },
             Group {
                 title: plain_title("Edit and rebase"),
-                suffixes: vec![Action::suffix("R", "Reword past", Command::CommitRewordPast)],
+                suffixes: vec![Action::suffix(
+                    "R",
+                    "Reword past",
+                    Command::CommitRewordPast,
+                )],
             },
         ],
     }
@@ -863,7 +900,11 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch::on("-a", "--autostash", "Stash uncommitted changes around the rebase")),
+                    Suffix::Switch(Switch::on(
+                        "-a",
+                        "--autostash",
+                        "Stash uncommitted changes around the rebase",
+                    )),
                     Suffix::Switch(Switch::negatable(
                         "-s",
                         "--autosquash",
@@ -872,7 +913,11 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
                         "Honor fixup!/squash! commits",
                     )),
                     Suffix::Switch(Switch::new("-m", "--rebase-merges", "Rebase merge commits")),
-                    Suffix::Switch(Switch::new("-u", "--update-refs", "Update branches in the rebased range")),
+                    Suffix::Switch(Switch::new(
+                        "-u",
+                        "--update-refs",
+                        "Update branches in the rebased range",
+                    )),
                 ],
             },
             Group {
@@ -925,7 +970,11 @@ pub fn cherry_pick_transient() -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::on("-F", "--ff", "Attempt fast-forward")),
-                    Suffix::Switch(Switch::new("-x", "-x", "Reference cherry in commit message")),
+                    Suffix::Switch(Switch::new(
+                        "-x",
+                        "-x",
+                        "Reference cherry in commit message",
+                    )),
                     Suffix::Switch(Switch::new("-e", "--edit", "Edit commit messages")),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
                     Suffix::Option(Opt {
@@ -1000,7 +1049,11 @@ pub fn sequence_transient(kind: SequenceKind, style: KeymapStyle) -> Transient {
         SequenceKind::Merge | SequenceKind::Rebase => "r",
     };
     if kind.can_continue() {
-        suffixes.push(Action::suffix(continue_key, "continue", Command::SequenceContinue));
+        suffixes.push(Action::suffix(
+            continue_key,
+            "continue",
+            Command::SequenceContinue,
+        ));
     }
     if kind.can_skip() {
         suffixes.push(Action::suffix("s", "skip", Command::SequenceSkip));
@@ -1027,8 +1080,16 @@ pub fn ignore_transient() -> Transient {
         groups: vec![Group {
             title: plain_title("Gitignore"),
             suffixes: vec![
-                Action::suffix("t", "shared at toplevel (.gitignore)", Command::IgnoreToplevel),
-                Action::suffix("s", "shared in subdirectory (.gitignore)", Command::IgnoreSubdir),
+                Action::suffix(
+                    "t",
+                    "shared at toplevel (.gitignore)",
+                    Command::IgnoreToplevel,
+                ),
+                Action::suffix(
+                    "s",
+                    "shared in subdirectory (.gitignore)",
+                    Command::IgnoreSubdir,
+                ),
                 Action::suffix("p", "privately (.git/info/exclude)", Command::IgnorePrivate),
                 Action::suffix("g", "privately for all repositories", Command::IgnoreGlobal),
             ],
@@ -1045,12 +1106,14 @@ pub fn reset_transient() -> Transient {
                 Action::suffix("m", "mixed (HEAD and index)", Command::ResetMixed),
                 Action::suffix("s", "soft (HEAD only)", Command::ResetSoft),
                 Action::suffix("h", "hard (HEAD, index, working tree)", Command::ResetHard),
-                Action::suffix("k", "keep (HEAD and index, keep uncommitted)", Command::ResetKeep),
+                Action::suffix(
+                    "k",
+                    "keep (HEAD and index, keep uncommitted)",
+                    Command::ResetKeep,
+                ),
                 Action::suffix("i", "index (only)", Command::ResetIndex),
                 Action::suffix("w", "worktree (only)", Command::ResetWorktree),
             ],
         }],
     }
 }
-
-

@@ -9,8 +9,8 @@
 //! cached, so rendering/scrolling never re-parses.
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Once;
 
 use gpui::{App, Hsla};
@@ -500,8 +500,14 @@ mod tests {
         assert_eq!(language_for_path("Program.cs"), Some("csharp"));
         assert_eq!(language_for_path("schema/service.proto"), Some("proto"));
         assert_eq!(language_for_path("cmake/toolchain.cmake"), Some("cmake"));
-        assert_eq!(detect_language("x", "// -*- mode: csharp -*-\n", ""), Some("csharp"));
-        assert_eq!(detect_language("x", "// vim: ft=proto\n", ""), Some("proto"));
+        assert_eq!(
+            detect_language("x", "// -*- mode: csharp -*-\n", ""),
+            Some("csharp")
+        );
+        assert_eq!(
+            detect_language("x", "// vim: ft=proto\n", ""),
+            Some("proto")
+        );
     }
 
     #[test]

@@ -72,7 +72,9 @@ impl TransientState {
                 // A negatable switch reflects a git-config default: emit a flag
                 // only when the toggle differs from that default — the positive
                 // arg when turned on, the negation (e.g. --no-gpg-sign) when off.
-                Some(neg) => (on != s.default_on).then(|| if on { s.arg.clone() } else { neg.clone() }),
+                Some(neg) => {
+                    (on != s.default_on).then(|| if on { s.arg.clone() } else { neg.clone() })
+                }
                 None => on.then(|| s.arg.clone()),
             }
         });
@@ -100,7 +102,10 @@ impl TransientState {
     /// off only when the set names its key or its negation flag explicitly —
     /// otherwise it keeps its config default, so an old or empty saved set can't
     /// silently flip e.g. gpg-signing off by mere omission.
-    pub(crate) fn apply_saved(def: &Transient, saved: &[String]) -> std::collections::HashSet<String> {
+    pub(crate) fn apply_saved(
+        def: &Transient,
+        saved: &[String],
+    ) -> std::collections::HashSet<String> {
         let saved: std::collections::HashSet<&str> = saved.iter().map(String::as_str).collect();
         let mut active = std::collections::HashSet::new();
         for sw in def.switches() {
@@ -123,13 +128,14 @@ impl TransientState {
         def: &Transient,
         saved: &[String],
     ) -> std::collections::HashMap<String, String> {
-        let option_keys: std::collections::HashSet<&str> =
-            def.options().map(|o| o.key).collect();
+        let option_keys: std::collections::HashSet<&str> = def.options().map(|o| o.key).collect();
         saved
             .iter()
             .filter_map(|entry| {
                 let (key, value) = entry.split_once('=')?;
-                option_keys.contains(key).then(|| (key.to_string(), value.to_string()))
+                option_keys
+                    .contains(key)
+                    .then(|| (key.to_string(), value.to_string()))
             })
             .collect()
     }
@@ -271,9 +277,15 @@ pub(crate) enum PickerAction {
     },
     /// Diff the chosen revision/range, with args/pathspecs gathered from the
     /// diff transient.
-    DiffRange { args: Vec<String>, paths: Vec<String> },
+    DiffRange {
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
     /// Show the chosen commit with args/pathspecs gathered from the diff transient.
-    DiffCommit { args: Vec<String>, paths: Vec<String> },
+    DiffCommit {
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
     /// Run a registry [`Command`] chosen from the `:` palette (matched by title).
     RunCommand,
     /// Reset HEAD to the chosen commit, in the carried mode (hard is confirmed).
@@ -350,9 +362,7 @@ impl PickerAction {
                 transient::plain_title("Cherry-pick range")
             }
             PickerAction::PickRange(PickOp::Revert) => transient::plain_title("Revert range"),
-            PickerAction::PickRange(PickOp::CherryApply) => {
-                transient::plain_title("Apply range")
-            }
+            PickerAction::PickRange(PickOp::CherryApply) => transient::plain_title("Apply range"),
             PickerAction::PickRange(PickOp::RevertNoCommit) => {
                 transient::plain_title("Revert changes in range")
             }
@@ -602,7 +612,9 @@ impl StatusView {
     /// re-baselining so the save hint hides. Repo scope is a no-op with no repo.
     pub(crate) fn save_transient_defaults(&mut self, repo_scope: bool, cx: &mut Context<Self>) {
         let to_save = match &self.popup {
-            Some(Popup::Transient(s)) if !s.id.is_empty() => Some((s.id.clone(), s.saved_overrides())),
+            Some(Popup::Transient(s)) if !s.id.is_empty() => {
+                Some((s.id.clone(), s.saved_overrides()))
+            }
             _ => None,
         };
         let Some((id, switches)) = to_save else {
@@ -637,7 +649,11 @@ impl StatusView {
             s.baseline = s.active.clone();
             s.baseline_values = s.values.clone();
         }
-        let scope = if repo_scope { "for this repo" } else { "globally" };
+        let scope = if repo_scope {
+            "for this repo"
+        } else {
+            "globally"
+        };
         self.set_status(format!("Saved arguments {scope}"), true, cx);
     }
 
@@ -678,7 +694,12 @@ impl StatusView {
         value
     }
 
-    pub(crate) fn handle_transient_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn handle_transient_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A save is in progress (the save key was pressed): this key picks the
         // scope — `g`lobal or `l`ocal (this repo). Any other key, including
         // Esc/C-g, cancels and stays in the transient. Handled first so it
@@ -756,8 +777,7 @@ impl StatusView {
         // fires below like any single-key suffix.
         let candidate = format!("{}{key}", state.pending_key);
         state.pending_key.clear();
-        if state.def.action_for(&candidate).is_none()
-            && state.def.custom_for(&candidate).is_none()
+        if state.def.action_for(&candidate).is_none() && state.def.custom_for(&candidate).is_none()
         {
             if state.def.has_key_prefix(&candidate) {
                 state.pending_key = candidate;

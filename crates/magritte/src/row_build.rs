@@ -183,7 +183,11 @@ pub(crate) fn commit_metadata_lines(metadata: &CommitMetadata) -> Vec<String> {
 }
 
 pub(crate) fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[String]) {
-    if details.is_empty() || rows.iter().any(|row| matches!(row, CommitDiffRow::Detail(_))) {
+    if details.is_empty()
+        || rows
+            .iter()
+            .any(|row| matches!(row, CommitDiffRow::Detail(_)))
+    {
         return;
     }
     while matches!(rows.first(), Some(CommitDiffRow::Note(n)) if n.is_empty()) {

@@ -41,9 +41,9 @@ impl StatusView {
             // a prior focus), so rapid app-switching — or macOS firing several
             // activation events for one focus change — doesn't re-run a full
             // status each time.
-            let recent = view.last_refresh.is_some_and(|t| {
-                t.elapsed() < Duration::from_millis(FOCUS_REFRESH_COOLDOWN_MS)
-            });
+            let recent = view
+                .last_refresh
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(FOCUS_REFRESH_COOLDOWN_MS));
             if !recent {
                 view.refresh(cx);
             }
@@ -92,8 +92,8 @@ impl StatusView {
             TransientArguments,
             RepoTransientArguments,
         }
-        let tv_target = config::transient_arguments_path()
-            .and_then(|p| p.file_name().map(|n| dir.join(n)));
+        let tv_target =
+            config::transient_arguments_path().and_then(|p| p.file_name().map(|n| dir.join(n)));
         // The repo scope's settings dir, if it exists yet (canonicalize fails
         // otherwise) — so we can watch its config.toml / transient-arguments.toml.
         // Created lazily on the first repo-scoped save, so a brand-new repo picks
@@ -102,7 +102,9 @@ impl StatusView {
             .repo_scope_dir
             .as_ref()
             .and_then(|d| std::fs::canonicalize(d).ok());
-        let repo_tv_target = repo_scope.as_ref().map(|d| config::repo_transient_arguments_path(d));
+        let repo_tv_target = repo_scope
+            .as_ref()
+            .map(|d| config::repo_transient_arguments_path(d));
         // For re-resolving the merged config: the plain repo config path (its
         // existence is checked at load time, so it works even if created later).
         let repo_config_load = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml"));
@@ -114,7 +116,9 @@ impl StatusView {
                 // Either config file (global or repo scope) re-resolves the merged
                 // config — one path for both.
                 if event.paths.contains(&watch_target)
-                    || cb_repo_config.as_ref().is_some_and(|t| event.paths.contains(t))
+                    || cb_repo_config
+                        .as_ref()
+                        .is_some_and(|t| event.paths.contains(t))
                 {
                     let _ = tx.send_blocking(Changed::Config);
                 } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
@@ -204,7 +208,12 @@ impl StatusView {
     /// Adopt a freshly-loaded config: store it, re-apply theme/appearance,
     /// update the font, and rebuild the effective keymap — so a `[keymap]` edit
     /// takes effect on save, like the other settings (any unknown id re-warns).
-    pub(crate) fn apply_config(&mut self, cfg: config::Config, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn apply_config(
+        &mut self,
+        cfg: config::Config,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let fetch_changed = self.config.fetch != cfg.fetch;
         let update_check_changed = self.config.check_for_updates != cfg.check_for_updates;
         // Some settings change *fetched data*, not just how it's painted — the

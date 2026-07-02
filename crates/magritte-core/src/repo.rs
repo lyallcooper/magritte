@@ -689,8 +689,7 @@ impl Repo {
     pub fn run_with_sequence_editor(&self, todo: &str, args: &[String]) -> Result<GitOutput> {
         // A unique temp file holds the todo; pid+counter keeps concurrent runs
         // (and parallel tests) from sharing one file.
-        let path =
-            std::env::temp_dir().join(format!("magritte-seq-todo-{}", unique_temp_suffix()));
+        let path = std::env::temp_dir().join(format!("magritte-seq-todo-{}", unique_temp_suffix()));
         std::fs::write(&path, todo)
             .map_err(|e| Error::Message(format!("{}: {e}", path.display())))?;
 
@@ -698,10 +697,7 @@ impl Repo {
         // (escaping any quote inside it) rather than trusting temp_dir to be
         // shell-clean.
         let quoted = path.display().to_string().replace('\'', "'\\''");
-        let mut argv = vec![
-            "-c".to_string(),
-            format!("sequence.editor=cp '{quoted}'"),
-        ];
+        let mut argv = vec!["-c".to_string(), format!("sequence.editor=cp '{quoted}'")];
         argv.extend(args.iter().cloned());
 
         let result = self.run_with_env(&argv, "GIT_EDITOR", "true");

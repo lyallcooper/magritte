@@ -218,7 +218,10 @@ impl StatusConfig {
     /// when none is set.
     pub fn section_ids(&self) -> Vec<String> {
         if self.sections.is_empty() {
-            DEFAULT_STATUS_SECTIONS.iter().map(|s| s.to_string()).collect()
+            DEFAULT_STATUS_SECTIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
             self.sections.clone()
         }
@@ -311,10 +314,7 @@ impl TransientSuffix {
                 description: "",
                 group: None,
             },
-            TransientSuffix::Bare(s) => SuffixKind::Action {
-                id: s,
-                group: None,
-            },
+            TransientSuffix::Bare(s) => SuffixKind::Action { id: s, group: None },
             TransientSuffix::Action { command, group } => SuffixKind::Action {
                 id: command,
                 group: group.as_deref(),
@@ -476,7 +476,10 @@ fn read_config_value(path: &Path, warnings: &mut Vec<String>) -> toml::Value {
         Ok(text) => match toml::from_str::<toml::Value>(&text) {
             Ok(v) => v,
             Err(e) => {
-                warnings.push(format!("Ignoring invalid config at {}: {e}", path.display()));
+                warnings.push(format!(
+                    "Ignoring invalid config at {}: {e}",
+                    path.display()
+                ));
                 empty_table()
             }
         },
@@ -615,7 +618,6 @@ pub fn load_usage() -> Usage {
         .unwrap_or_default()
 }
 
-
 /// Persist command usage (atomic). Best-effort.
 pub fn save_usage(usage: &Usage) {
     if let Some(path) = usage_path() {
@@ -726,7 +728,12 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         config.dark_theme.is_empty(),
     );
     set_string(&mut doc, "font", &config.font, config.font.is_empty());
-    set_string(&mut doc, "ui_font", &config.ui_font, config.ui_font.is_empty());
+    set_string(
+        &mut doc,
+        "ui_font",
+        &config.ui_font,
+        config.ui_font.is_empty(),
+    );
     set_bool(
         &mut doc,
         "commit_title_ruler",
@@ -854,7 +861,8 @@ mod tests {
 
     #[test]
     fn deep_merge_overlays_scalars_and_tables() {
-        let mut base = val("dark_theme = \"A\"\nfont = \"F\"\n[keymap]\nx = \"commit\"\nk = \"move-up\"\n");
+        let mut base =
+            val("dark_theme = \"A\"\nfont = \"F\"\n[keymap]\nx = \"commit\"\nk = \"move-up\"\n");
         let overlay = val("dark_theme = \"B\"\n[keymap]\nx = \"unbound\"\nK = \"branch-delete\"\n");
         deep_merge(&mut base, overlay);
         assert_eq!(base.get("dark_theme").and_then(|v| v.as_str()), Some("B")); // overridden
@@ -862,7 +870,8 @@ mod tests {
         let km = base.get("keymap").unwrap();
         assert_eq!(km.get("x").and_then(|v| v.as_str()), Some("unbound")); // overridden
         assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
-        assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete")); // added by repo
+        assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete"));
+        // added by repo
     }
 
     #[test]
@@ -901,9 +910,21 @@ run = "git fetch && git push"
         assert!(!saved.contains("commit_body_wrap"));
         assert!(!saved.contains("command = []"));
         let saved_value: toml::Value = toml::from_str(&saved).unwrap();
-        assert_eq!(saved_value.get("show_tags_in_title_bar").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(saved_value.get("refresh_on_focus").and_then(|v| v.as_bool()), Some(true));
-        assert!(saved_value["command"][0].get("show_tags_in_title_bar").is_none());
+        assert_eq!(
+            saved_value
+                .get("show_tags_in_title_bar")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            saved_value
+                .get("refresh_on_focus")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(saved_value["command"][0]
+            .get("show_tags_in_title_bar")
+            .is_none());
 
         cfg.show_tags_in_title_bar = false;
         cfg.font.clear();
@@ -943,14 +964,20 @@ run = "git fetch && git push"
         assert_eq!(c.recent_count, 10);
         assert!(c.sections.is_empty());
         // Empty falls back to the built-in ordered set.
-        let default: Vec<String> = DEFAULT_STATUS_SECTIONS.iter().map(|s| s.to_string()).collect();
+        let default: Vec<String> = DEFAULT_STATUS_SECTIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(c.section_ids(), default);
         // A set list is used verbatim (order preserved).
         let c2 = StatusConfig {
             sections: vec!["staged".into(), "recent".into()],
             recent_count: 5,
         };
-        assert_eq!(c2.section_ids(), vec!["staged".to_string(), "recent".to_string()]);
+        assert_eq!(
+            c2.section_ids(),
+            vec!["staged".to_string(), "recent".to_string()]
+        );
     }
 
     #[test]
@@ -967,14 +994,10 @@ run = "git fetch && git push"
 
     #[test]
     fn deep_merge_concats_commands_dedup_by_id() {
-        let mut base = val(
-            "[[command]]\nid = \"a\"\ntitle = \"A\"\nrun = \"ga\"\n\
-             [[command]]\nid = \"b\"\ntitle = \"B\"\nrun = \"gb\"\n",
-        );
-        let overlay = val(
-            "[[command]]\nid = \"b\"\ntitle = \"B2\"\nrun = \"gb2\"\n\
-             [[command]]\nid = \"c\"\ntitle = \"C\"\nrun = \"gc\"\n",
-        );
+        let mut base = val("[[command]]\nid = \"a\"\ntitle = \"A\"\nrun = \"ga\"\n\
+             [[command]]\nid = \"b\"\ntitle = \"B\"\nrun = \"gb\"\n");
+        let overlay = val("[[command]]\nid = \"b\"\ntitle = \"B2\"\nrun = \"gb2\"\n\
+             [[command]]\nid = \"c\"\ntitle = \"C\"\nrun = \"gc\"\n");
         deep_merge(&mut base, overlay);
         let cmds = base.get("command").and_then(|v| v.as_array()).unwrap();
         let ids: Vec<&str> = cmds

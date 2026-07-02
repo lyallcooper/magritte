@@ -15,11 +15,12 @@ cargo test                              # core integration tests (crates/magritt
 cargo test <name_substring>             # run a single test by name filter
 cargo test -p magritte-core --test status   # run one integration-test file
 cargo clippy --all-targets              # keep this warning-clean
+cargo fmt                               # stock rustfmt; run before committing
 ```
 
 `cargo run` detaches into the background like a GUI app; pass `--foreground` (or set `MAGRITTE_FOREGROUND`) to keep it attached for logs/debugging.
 
-**Do NOT blindly run `cargo fmt`.** This repo uses compact hand-formatting and has no `rustfmt.toml`; default rustfmt reflows fine code and produces large unwanted churn across the whole crate. Match the surrounding style by hand instead.
+Formatting is stock `cargo fmt` (config in `rustfmt.toml`); run it (or `cargo fmt --check`) before committing.
 
 ### Live UI debugging (`scripts/dbg.sh`)
 
@@ -68,7 +69,13 @@ Key cross-cutting models:
 
 ## Conventions
 
-- **Comments** carry only what a future reader needs — don't narrate alternatives considered or justify a choice against one. Match the surrounding comment density.
+- **Comments** carry only what a future reader needs—don't narrate alternatives considered or justify a choice against one. Match the surrounding comment density.
 - **Commits:** committing with `git commit --no-gpg-sign` is fine here (1Password signing is often locked). Do not include AI/tool attribution or thread-reference trailers in commit messages (no Claude/Codex/Amp co-author lines, generated-by lines, or Amp thread IDs). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md`, `PLAN.md`, and the `scripts/` dev helpers stay out of commits unless asked.
 - **Verify UI changes live** with `scripts/dbg.sh` + a screenshot before considering them done; verify core changes with `cargo test`.
 - **Refactors:** don't be afraid of big refactors. Instead of always working incrementally, constantly asking yourself if the code is in the best possible state. If there is a better architecture, tech debt you can pay down, abstractions you could improve, then you should do the work now to leave the code better than you found it. Of course you still need to do so carefully to ensure you don't break anything along the way.
+- **Writing style:** When writing anything user facing (e.g. docs), we must follow some simple rules:
+  - Remember the audience: information should be directly relevant to users, and not contain references to internals that they do not care about.
+  - Keep it succinct but accurate: information should be presented directly, without fluff or padding, as to provide maximum utility to the user.
+  - Keep it organized: sections should be laid out in a logical order, with higher relevance items coming first as appropriate
+  - Use examples: whenever helpful, show via example instead of just telling via description. But be strategic so we don't make the docs overly long
+  - Basic style: only use em dashes ('—') when appropriate. And don't put spaces on either sides of the dash when using them. Remember that em dashes look bad in monospace text, so prefer two hyphens ('--') instead in that context.

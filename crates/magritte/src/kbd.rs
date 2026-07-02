@@ -64,7 +64,11 @@ pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
 /// `Cmd+Enter`). A lone token is word-ified (`tab` → `Tab`).
 pub(crate) fn format_keys(key: &str) -> String {
     if key.contains(' ') {
-        return key.split(' ').map(format_keys).collect::<Vec<_>>().join(" ");
+        return key
+            .split(' ')
+            .map(format_keys)
+            .collect::<Vec<_>>()
+            .join(" ");
     }
     let parts: Vec<&str> = key.split('-').collect();
     if is_chord(&parts) {

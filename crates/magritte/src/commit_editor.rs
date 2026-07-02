@@ -67,7 +67,12 @@ impl StatusView {
     /// refuse (nothing to commit at all) or offer to commit everything (`--all`,
     /// like `git commit -a`). An explicit `--all`/`--allow-empty` switch means
     /// the user already decided, so we skip straight to the editor.
-    pub(crate) fn start_commit(&mut self, switches: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start_commit(
+        &mut self,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let has_staged = self
             .status
             .as_ref()

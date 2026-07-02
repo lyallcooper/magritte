@@ -37,7 +37,8 @@ impl FlatDiff {
         }
         let last = self.rows.len() as isize - 1;
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-        self.scroll.scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+        self.scroll
+            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
     }
 
     /// Toggle a visual selection anchored at the cursor.
@@ -107,10 +108,24 @@ pub(crate) struct DiffView {
 
 #[derive(Clone)]
 pub(crate) enum DiffRequest {
-    Unstaged { args: Vec<String>, paths: Vec<String> },
-    Staged { args: Vec<String>, paths: Vec<String> },
-    Worktree { rev: String, args: Vec<String>, paths: Vec<String> },
-    Range { range: String, args: Vec<String>, paths: Vec<String> },
+    Unstaged {
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
+    Staged {
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
+    Worktree {
+        rev: String,
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
+    Range {
+        range: String,
+        args: Vec<String>,
+        paths: Vec<String>,
+    },
 }
 
 impl DiffRequest {
@@ -149,7 +164,13 @@ impl StatusView {
 
     /// Open a commit's diff detail, overlaying the current screen (restored on
     /// close). Shared by the log view and status commit rows.
-    pub(crate) fn open_commit(&mut self, hash: String, short: String, subject: String, cx: &mut Context<Self>) {
+    pub(crate) fn open_commit(
+        &mut self,
+        hash: String,
+        short: String,
+        subject: String,
+        cx: &mut Context<Self>,
+    ) {
         self.open_commit_inner(hash, short, subject, Vec::new(), Vec::new(), cx);
     }
 
@@ -254,7 +275,11 @@ impl StatusView {
         }
     }
 
-    pub(crate) fn populate_commit_view(&mut self, entry: &CommitCacheEntry, cx: &mut Context<Self>) {
+    pub(crate) fn populate_commit_view(
+        &mut self,
+        entry: &CommitCacheEntry,
+        cx: &mut Context<Self>,
+    ) {
         let details = commit_metadata_lines(&entry.metadata);
         let show_details = self.commit_view().is_some_and(|cv| cv.show_details);
         let mut rows = self.commit_detail_rows(&entry.message, &entry.files, cx);
@@ -424,7 +449,9 @@ impl StatusView {
             if cv.show_details {
                 prepend_commit_details(&mut cv.body.rows, &cv.details);
             } else {
-                cv.body.rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
+                cv.body
+                    .rows
+                    .retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
                 cv.body.selected = cv.body.selected.min(cv.body.rows.len().saturating_sub(1));
                 // Re-anchor the viewport too: removing rows can leave it
                 // scrolled past the new end.

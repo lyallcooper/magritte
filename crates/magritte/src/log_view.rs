@@ -70,7 +70,10 @@ impl StatusView {
         let scroll = UniformListScrollHandle::new();
         let last = self.git_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
-        self.screen = Screen::GitLog { view: ScrollView { scroll, top: last }, show_all: false };
+        self.screen = Screen::GitLog {
+            view: ScrollView { scroll, top: last },
+            show_all: false,
+        };
         cx.notify();
     }
 
@@ -121,7 +124,11 @@ impl StatusView {
     /// Open the log to pick the commit to rebase interactively *since* — magit's
     /// `magit-log-select`. The chosen commit and everything above it become the
     /// editable todo; `switches` carries the rebase transient's flags.
-    pub(crate) fn start_log_select_rebase(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn start_log_select_rebase(
+        &mut self,
+        switches: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
         self.spawn_log(
             LogPurpose::SelectRebaseBase { args: switches },
@@ -130,7 +137,11 @@ impl StatusView {
         );
     }
 
-    pub(crate) fn start_log_select_rebase_reword(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
+    pub(crate) fn start_log_select_rebase_reword(
+        &mut self,
+        switches: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
         self.spawn_log(
             LogPurpose::SelectRebaseReword { args: switches },
@@ -352,7 +363,12 @@ impl StatusView {
     /// point in a status commit section, then return to the status view (so a
     /// conflict shows in the in-progress banner). Runs on the background
     /// executor.
-    pub(crate) fn pick_selected(&mut self, op: PickOp, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn pick_selected(
+        &mut self,
+        op: PickOp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.pick_selected_with_args(op, Vec::new(), window, cx);
     }
 
@@ -398,7 +414,11 @@ impl StatusView {
                 PickOp::CherryPick => repo.cherry_pick_with_args(&rev, &args),
                 PickOp::CherryApply => repo.cherry_apply_with_args(&rev, &args),
                 PickOp::Revert => {
-                    let args = if args.is_empty() { vec!["--no-edit".to_string()] } else { args };
+                    let args = if args.is_empty() {
+                        vec!["--no-edit".to_string()]
+                    } else {
+                        args
+                    };
                     repo.revert_with_args(&rev, &args)
                 }
                 PickOp::RevertNoCommit => repo.revert_no_commit_with_args(&rev, &args),

@@ -14,13 +14,19 @@ impl Repo {
 
     /// `git cherry-pick [args] <rev>` — the transient-driven form.
     pub fn cherry_pick_with_args(&self, rev: &str, args: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["cherry-pick"], args, &[rev]))?.status_line())
+        Ok(self
+            .run(git_args(&["cherry-pick"], args, &[rev]))?
+            .status_line())
     }
 
     /// Apply a commit's changes without committing (`git cherry-pick --no-commit`).
     pub fn cherry_apply_with_args(&self, rev: &str, args: &[String]) -> Result<String> {
         // `--ff` contradicts `--no-commit`; drop it if toggled.
-        let switches: Vec<String> = args.iter().filter(|a| a.as_str() != "--ff").cloned().collect();
+        let switches: Vec<String> = args
+            .iter()
+            .filter(|a| a.as_str() != "--ff")
+            .cloned()
+            .collect();
         Ok(self
             .run(git_args(&["cherry-pick", "--no-commit"], &switches, &[rev]))?
             .status_line())
@@ -39,6 +45,8 @@ impl Repo {
 
     /// Apply a commit's inverse without committing (`git revert --no-commit`).
     pub fn revert_no_commit_with_args(&self, rev: &str, args: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["revert", "--no-commit"], args, &[rev]))?.status_line())
+        Ok(self
+            .run(git_args(&["revert", "--no-commit"], args, &[rev]))?
+            .status_line())
     }
 }

@@ -61,9 +61,10 @@ impl Repo {
     /// index, then check that out over the working tree. Overwrites uncommitted
     /// changes, so the frontend confirms it like a hard reset.
     pub fn reset_worktree(&self, target: &str) -> Result<String> {
-        let tmp = self
-            .git_dir()?
-            .join(format!("magritte-reset-worktree-index-{}", unique_temp_suffix()));
+        let tmp = self.git_dir()?.join(format!(
+            "magritte-reset-worktree-index-{}",
+            unique_temp_suffix()
+        ));
         let tmp_str = tmp.to_string_lossy().into_owned();
         // Populate the temp index from the target's tree, then write those files
         // to the working tree from it — neither touches the real index or HEAD.

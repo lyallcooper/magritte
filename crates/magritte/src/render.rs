@@ -6,8 +6,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, Context, Entity, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::input::Input;
 use gpui_component::menu::ContextMenuExt;
@@ -61,7 +61,11 @@ impl StatusView {
     /// as adjacent runs (no gap) — plus the add/remove background tint the
     /// caller applies under its own selection rules. Shared by the status rows
     /// and the flattened diff screens.
-    fn diff_line_body(&self, kind: LineKind, spans: &[(String, Hsla)]) -> (gpui::Div, Option<Hsla>) {
+    fn diff_line_body(
+        &self,
+        kind: LineKind,
+        spans: &[(String, Hsla)],
+    ) -> (gpui::Div, Option<Hsla>) {
         let (sign, sign_color, tint) = match kind {
             LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
             LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
@@ -324,7 +328,11 @@ impl StatusView {
                 .any(|s| matches!(s, Suffix::Switch(_) | Suffix::Option(_)))
         };
         let arg_groups = def.groups.iter().filter(has_args).collect::<Vec<_>>();
-        let command_groups = def.groups.iter().filter(|g| !has_args(g)).collect::<Vec<_>>();
+        let command_groups = def
+            .groups
+            .iter()
+            .filter(|g| !has_args(g))
+            .collect::<Vec<_>>();
         let group_rows = |group: &Group, cap: usize| {
             let n = group.suffixes.len();
             let cols = n.div_ceil(cap).max(1);
@@ -334,7 +342,11 @@ impl StatusView {
             let arg_height = if arg_groups.len() <= 1 {
                 arg_groups.first().map_or(0, |g| group_rows(g, cap))
             } else {
-                arg_groups.iter().map(|g| group_rows(g, cap)).max().unwrap_or(0)
+                arg_groups
+                    .iter()
+                    .map(|g| group_rows(g, cap))
+                    .max()
+                    .unwrap_or(0)
                     + arg_groups.len().saturating_sub(1)
             };
             let command_height = command_groups
@@ -442,7 +454,11 @@ impl StatusView {
                         .gap_2()
                         .text_xs()
                         .text_color(self.palette.dim)
-                        .child(kbd::key_chip(TRANSIENT_SAVE_KEY, self.palette.dim, &self.font))
+                        .child(kbd::key_chip(
+                            TRANSIENT_SAVE_KEY,
+                            self.palette.dim,
+                            &self.font,
+                        ))
                         .child(SharedString::from("save these arguments as the default")),
                 )
             })
@@ -1044,11 +1060,11 @@ impl StatusView {
             // `tag_info`).
             if self.config.show_tags_in_title_bar && !entries.is_empty() {
                 let label = if entries.len() > 1 { "Tags:" } else { "Tag:" };
-                let mut seg = div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(div().text_color(self.palette.dim).child(SharedString::from(label)));
+                let mut seg = div().flex().items_center().gap_1().child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(label)),
+                );
                 for (i, (name, count)) in entries.iter().enumerate() {
                     let mut text = name.clone();
                     if *count > 0 {
@@ -1285,7 +1301,11 @@ impl StatusView {
             .vertical_scrollbar(&ed.diff_scroll)
     }
 
-    pub(crate) fn render_commit_diff_row(&self, row: &CommitDiffRow, highlighted: bool) -> AnyElement {
+    pub(crate) fn render_commit_diff_row(
+        &self,
+        row: &CommitDiffRow,
+        highlighted: bool,
+    ) -> AnyElement {
         let base = div()
             .h(px(ROW_HEIGHT))
             .w_full()
@@ -1721,7 +1741,12 @@ impl StatusView {
     /// The virtualized row list shared by the flattened diff screens: rows
     /// come from the active screen's [`FlatDiff`], with the cursor/visual
     /// highlight applied.
-    fn flat_diff_body(&self, id: &'static str, fd: &FlatDiff, view: &Entity<Self>) -> gpui::UniformList {
+    fn flat_diff_body(
+        &self,
+        id: &'static str,
+        fd: &FlatDiff,
+        view: &Entity<Self>,
+    ) -> gpui::UniformList {
         uniform_list(id, fd.rows.len(), {
             let view = view.clone();
             move |range, _window, cx| {
@@ -1800,7 +1825,11 @@ impl StatusView {
                     .child(self.key_action(
                         "commit-view-details",
                         "a",
-                        if cv.show_details { "hide details" } else { "details" },
+                        if cv.show_details {
+                            "hide details"
+                        } else {
+                            "details"
+                        },
                         view,
                         |this, _window, cx| this.toggle_commit_details(cx),
                     )),
@@ -2235,12 +2264,16 @@ impl StatusView {
                             return;
                         }
                         view.update(cx, |v, vcx| {
-                            let Some(anchor) = v.selection.drag_anchor else { return };
+                            let Some(anchor) = v.selection.drag_anchor else {
+                                return;
+                            };
                             if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 return;
                             }
                             // Skip redundant work while the cursor stays on one row.
-                            if v.selected == ix && (ix == anchor || v.selection.visual == Some(anchor)) {
+                            if v.selected == ix
+                                && (ix == anchor || v.selection.visual == Some(anchor))
+                            {
                                 return;
                             }
                             if ix != anchor {
@@ -2272,7 +2305,9 @@ impl StatusView {
                     let view = view.clone();
                     el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.selection.visual.is_none() && v.rows.get(ix).is_some_and(|r| r.selectable) {
+                            if v.selection.visual.is_none()
+                                && v.rows.get(ix).is_some_and(|r| r.selectable)
+                            {
                                 v.selected = ix;
                                 vcx.notify();
                             }
@@ -2369,20 +2404,17 @@ impl StatusView {
                 }
             }
             for (token, title) in conts {
-                bar = bar.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(kbd::key_chip(&token, self.palette.dim, &self.font))
-                        .child(
-                            div()
-                                .text_color(self.palette.dim)
-                                .child(SharedString::from(
-                                    title.unwrap_or_else(|| "…".to_string()),
-                                )),
-                        ),
-                );
+                bar =
+                    bar.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(kbd::key_chip(&token, self.palette.dim, &self.font))
+                            .child(div().text_color(self.palette.dim).child(SharedString::from(
+                                title.unwrap_or_else(|| "…".to_string()),
+                            ))),
+                    );
             }
         }
         Some(bar)
@@ -2663,16 +2695,32 @@ impl Render for StatusView {
                 return self.render_overlays(root.child(self.render_editor(ed, &view)), &view, cx);
             }
             Screen::GitLog { view: scroll, .. } => {
-                return self.render_overlays(root.child(self.render_git_log(scroll, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_git_log(scroll, &view)),
+                    &view,
+                    cx,
+                );
             }
             Screen::RebaseTodo(rt) => {
-                return self.render_overlays(root.child(self.render_rebase_todo(rt, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_rebase_todo(rt, &view)),
+                    &view,
+                    cx,
+                );
             }
             Screen::Commit { view: cv, .. } => {
-                return self.render_overlays(root.child(self.render_commit_view(cv, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_commit_view(cv, &view)),
+                    &view,
+                    cx,
+                );
             }
             Screen::Diff { view: dv, .. } => {
-                return self.render_overlays(root.child(self.render_diff_view(dv, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_diff_view(dv, &view)),
+                    &view,
+                    cx,
+                );
             }
             Screen::Log(log) => {
                 return self.render_overlays(root.child(self.render_log(log, &view)), &view, cx);

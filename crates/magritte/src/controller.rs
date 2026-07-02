@@ -84,7 +84,9 @@ impl StatusView {
                 self.dispatch_branch(command, window, cx)
             }
             TagCreate | TagDelete => self.dispatch_tag(command, args, window, cx),
-            RemoteAdd | RemoteRename | RemoteRemove => self.dispatch_remote(command, args, window, cx),
+            RemoteAdd | RemoteRename | RemoteRemove => {
+                self.dispatch_remote(command, args, window, cx)
+            }
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
             }
@@ -92,9 +94,7 @@ impl StatusView {
                 self.dispatch_merge(command, args, window, cx)
             }
             CherryPick | CherryPickRange | CherryApply | RevertCommit | RevertRange
-            | RevertNoCommit => {
-                self.dispatch_pick(command, args, window, cx)
-            }
+            | RevertNoCommit => self.dispatch_pick(command, args, window, cx),
             RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
             | RebaseRewordCommit => self.dispatch_rebase(command, args, &targets, window, cx),
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
@@ -174,7 +174,8 @@ impl StatusView {
             return;
         }
         const FIRST_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
-        const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+        const UPDATE_CHECK_INTERVAL: std::time::Duration =
+            std::time::Duration::from_secs(24 * 60 * 60);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FIRST_CHECK_DELAY).await;
             loop {
@@ -186,7 +187,8 @@ impl StatusView {
                 if !alive {
                     break;
                 }
-                this.update(cx, |this, cx| this.run_silent_update_check(cx)).ok();
+                this.update(cx, |this, cx| this.run_silent_update_check(cx))
+                    .ok();
                 cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
             }
         })
@@ -194,13 +196,19 @@ impl StatusView {
     }
 
     fn run_silent_update_check(&mut self, cx: &mut Context<Self>) {
-        let task = cx.background_executor().spawn(async { latest_release_version() });
+        let task = cx
+            .background_executor()
+            .spawn(async { latest_release_version() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
                 let Ok(latest) = result else { return };
-                let Some(current_version) = parse_release_version(CURRENT_VERSION) else { return };
-                let Some(latest_version) = parse_release_version(&latest) else { return };
+                let Some(current_version) = parse_release_version(CURRENT_VERSION) else {
+                    return;
+                };
+                let Some(latest_version) = parse_release_version(&latest) else {
+                    return;
+                };
                 if current_version < latest_version
                     && this.notified_update_version.as_deref() != Some(latest.as_str())
                 {
@@ -540,10 +548,7 @@ impl StatusView {
             } else {
                 "Hard reset"
             };
-            self.confirm = Some((
-                format!("{what} to {target}?"),
-                Confirm::Reset(mode, target),
-            ));
+            self.confirm = Some((format!("{what} to {target}?"), Confirm::Reset(mode, target)));
             cx.notify();
         } else {
             self.do_reset(mode, target, cx);
@@ -711,7 +716,11 @@ impl StatusView {
             .is_some_and(|s| s.unstaged().next().is_some())
         {
             self.open_diff(DiffRequest::Unstaged { args, paths }, cx);
-        } else if self.status.as_ref().is_some_and(|s| s.staged().next().is_some()) {
+        } else if self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.staged().next().is_some())
+        {
             self.open_diff(DiffRequest::Staged { args, paths }, cx);
         } else {
             self.open_picker(
@@ -923,7 +932,9 @@ impl StatusView {
                 .background_executor()
                 .spawn(async move {
                     let result = match rt.mode {
-                        RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+                        RebaseTodoMode::Start => {
+                            repo.rebase_interactive(&rt.base, &rt.steps, &rt.args)
+                        }
                         RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
                     };
                     let stopped = if result.is_ok() {
@@ -1712,7 +1723,11 @@ impl StatusView {
                     );
                 }
                 PickerAction::DiffCommit { args, paths } => {
-                    let rev = chosen.split_whitespace().next().unwrap_or(&chosen).to_string();
+                    let rev = chosen
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(&chosen)
+                        .to_string();
                     self.open_commit_with_args(rev.clone(), rev, String::new(), args, paths, cx);
                 }
                 // Resolve the chosen title back to its command (built-in or a
@@ -1790,11 +1805,15 @@ impl StatusView {
     /// Check the latest GitHub release tag and report whether this build is current.
     pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         self.set_progress("Checking for updates…".to_string(), cx);
-        let task = cx.background_executor().spawn(async { latest_release_version() });
+        let task = cx
+            .background_executor()
+            .spawn(async { latest_release_version() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| match result {
-                Ok(latest) => this.set_status(version_status_message(CURRENT_VERSION, &latest), false, cx),
+                Ok(latest) => {
+                    this.set_status(version_status_message(CURRENT_VERSION, &latest), false, cx)
+                }
                 Err(e) => this.set_status(format!("Update check failed: {e}"), false, cx),
             })
             .ok();
@@ -2097,7 +2116,9 @@ impl StatusView {
             return;
         }
         let force = switches.iter().any(|s| s == "--force");
-        let target = self.selected_commit_hash().unwrap_or_else(|| "HEAD".to_string());
+        let target = self
+            .selected_commit_hash()
+            .unwrap_or_else(|| "HEAD".to_string());
         let (verb, done) = match action {
             TagAction::Create { .. } => ("Tagging", "Tagged"),
             TagAction::Delete => ("Deleting tag", "Deleted tag"),
@@ -2334,12 +2355,9 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_rebase_reword_after_commit(
-            stopped_sha,
-            window,
-            cx,
-            move |repo| repo.commit(&message, CommitMode::Reword, &[]),
-        );
+        self.run_rebase_reword_after_commit(stopped_sha, window, cx, move |repo| {
+            repo.commit(&message, CommitMode::Reword, &[])
+        });
     }
 
     pub(crate) fn run_rebase_reword_with_external_editor(
@@ -2349,12 +2367,9 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.run_rebase_reword_after_commit(
-            stopped_sha,
-            window,
-            cx,
-            move |repo| repo.commit_with_editor(CommitMode::Reword, &[], &git_editor),
-        );
+        self.run_rebase_reword_after_commit(stopped_sha, window, cx, move |repo| {
+            repo.commit_with_editor(CommitMode::Reword, &[], &git_editor)
+        });
     }
 
     pub(crate) fn run_rebase_reword_after_commit<F>(
@@ -2378,7 +2393,8 @@ impl StatusView {
                 .spawn(async move {
                     let commit_result = commit(&repo);
                     let committed = commit_result.is_ok();
-                    let result = commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
+                    let result =
+                        commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
                     let stopped = if result.is_ok() {
                         repo.rebase_stopped_sha()
                     } else {

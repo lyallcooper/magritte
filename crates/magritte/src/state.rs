@@ -95,7 +95,9 @@ mod tests {
     fn fold_state_round_trips_and_defaults_empty() {
         let missing = std::env::temp_dir().join("magritte-no-such-folds.toml");
         let _ = std::fs::remove_file(&missing);
-        assert!(load_toml_or_default::<FoldState>(&missing).collapsed.is_empty());
+        assert!(load_toml_or_default::<FoldState>(&missing)
+            .collapsed
+            .is_empty());
 
         let path = std::env::temp_dir().join("magritte-fold-state-test.toml");
         save_toml(
@@ -104,7 +106,10 @@ mod tests {
                 collapsed: vec!["staged".into(), "ignored".into()],
             },
         );
-        assert_eq!(load_toml_or_default::<FoldState>(&path).collapsed, vec!["staged", "ignored"]);
+        assert_eq!(
+            load_toml_or_default::<FoldState>(&path).collapsed,
+            vec!["staged", "ignored"]
+        );
         let _ = std::fs::remove_file(path);
     }
 

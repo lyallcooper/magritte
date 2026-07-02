@@ -31,7 +31,10 @@ fn cherry_pick_creates_a_commit() {
     open(&t).cherry_pick(&rev).unwrap();
     assert_eq!(head_subject(&t), "add feature");
     assert!(t.path().join("feature.txt").exists());
-    assert!(t.git(["status", "--porcelain"]).is_empty(), "clean after the pick");
+    assert!(
+        t.git(["status", "--porcelain"]).is_empty(),
+        "clean after the pick"
+    );
 }
 
 #[test]
@@ -51,7 +54,10 @@ fn revert_creates_an_inverse_commit() {
     t.commit_all("second");
     open(&t).revert("HEAD").unwrap();
     assert!(head_subject(&t).starts_with("Revert"));
-    assert_eq!(std::fs::read_to_string(t.path().join("f")).unwrap(), "base\n");
+    assert_eq!(
+        std::fs::read_to_string(t.path().join("f")).unwrap(),
+        "base\n"
+    );
 }
 
 #[test]

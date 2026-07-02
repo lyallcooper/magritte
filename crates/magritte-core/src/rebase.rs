@@ -67,7 +67,9 @@ impl Repo {
     /// conflict exits non-zero and leaves the rebase paused, which the frontend
     /// surfaces as the in-progress sequence.
     pub fn rebase(&self, onto: &str, args: &[String]) -> Result<String> {
-        Ok(self.run(git_args(&["rebase"], args, &[onto]))?.status_line())
+        Ok(self
+            .run(git_args(&["rebase"], args, &[onto]))?
+            .status_line())
     }
 
     /// The default interactive-rebase todo for `base..HEAD`: every commit as a
@@ -158,7 +160,11 @@ impl Repo {
     /// if git exposes one. Present for `edit` stops and therefore for app-managed
     /// `reword` stops (which are written as `edit` in git's todo).
     pub fn rebase_stopped_sha(&self) -> Option<String> {
-        let path = self.git_dir().ok()?.join("rebase-merge").join("stopped-sha");
+        let path = self
+            .git_dir()
+            .ok()?
+            .join("rebase-merge")
+            .join("stopped-sha");
         std::fs::read_to_string(path)
             .ok()
             .map(|s| s.trim().to_string())

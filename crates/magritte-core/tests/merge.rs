@@ -26,7 +26,11 @@ fn clean_merge_creates_a_merge_commit() {
     assert!(t.path().join("h.txt").exists());
     assert!(repo.sequence().is_none(), "nothing left in progress");
     let parents = t.git(["rev-list", "--parents", "-1", "HEAD"]);
-    assert_eq!(parents.split_whitespace().count(), 3, "merge commit has two parents");
+    assert_eq!(
+        parents.split_whitespace().count(),
+        3,
+        "merge commit has two parents"
+    );
 }
 
 #[test]

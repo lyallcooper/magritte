@@ -19,7 +19,9 @@ impl Repo {
     /// `git tag [-f] <name> <target>` — create a lightweight tag.
     pub fn create_tag(&self, name: &str, target: &str, force: bool) -> Result<String> {
         let lead: &[&str] = if force { &["tag", "--force"] } else { &["tag"] };
-        Ok(self.run(git_args(lead, &[], &[name, target]))?.status_line())
+        Ok(self
+            .run(git_args(lead, &[], &[name, target]))?
+            .status_line())
     }
 
     /// `git tag -a [-f] -m <name> <name> <target>` — create an annotated tag

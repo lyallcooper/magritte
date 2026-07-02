@@ -9,9 +9,9 @@ use gpui::prelude::*;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::switch::Switch;
 use gpui_component::{IconName, Sizable};
-use gpui_component::scroll::ScrollableElement;
 
 use crate::*;
 
@@ -191,7 +191,13 @@ impl StatusView {
             let cur = self.config.editor.trim().to_string();
             let mut editor_items: Vec<SharedString> =
                 vec![SharedString::from(editors::EDITOR_OS_DEFAULT_LABEL)];
-            if !cur.is_empty() && !self.settings_caches.editors.iter().any(|(n, _)| n.as_ref() == cur) {
+            if !cur.is_empty()
+                && !self
+                    .settings_caches
+                    .editors
+                    .iter()
+                    .any(|(n, _)| n.as_ref() == cur)
+            {
                 editor_items.push(SharedString::from(cur.clone()));
             }
             editor_items.extend(self.settings_caches.editors.iter().map(|(n, _)| n.clone()));
@@ -613,7 +619,11 @@ impl StatusView {
     /// Render the live settings screen as a form of dropdowns. The `Select`
     /// components carry their own mouse + keyboard handling; Tab moves between
     /// them, Esc closes.
-    pub(crate) fn render_settings(&self, s: &SettingsState, view: &Entity<Self>) -> impl IntoElement {
+    pub(crate) fn render_settings(
+        &self,
+        s: &SettingsState,
+        view: &Entity<Self>,
+    ) -> impl IntoElement {
         // A labelled control row: fixed-width label + the control.
         let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
@@ -899,7 +909,7 @@ impl StatusView {
                     .bottom_0()
                     .overflow_y_scroll()
                     .track_scroll(&s.scroll)
-                    .child(content)
+                    .child(content),
             )
             .vertical_scrollbar(&s.scroll)
     }
@@ -912,7 +922,6 @@ impl StatusView {
             self.launch_editor(&path, None);
         }
     }
-
 
     /// Copy the config file's path to the clipboard.
     pub(crate) fn copy_config_path(&mut self, cx: &mut Context<Self>) {

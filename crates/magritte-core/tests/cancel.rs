@@ -78,9 +78,17 @@ fn timeout_applies_to_succeeds_and_run_optional() {
     // Both still behave normally when the command completes.
     let plain = open(&t);
     assert!(plain.succeeds(["rev-parse", "--verify", "HEAD"]).unwrap());
-    assert!(!plain.succeeds(["rev-parse", "--verify", "no-such-ref"]).unwrap());
-    assert!(plain.run_optional(["rev-parse", "--verify", "HEAD"]).unwrap().is_some());
-    assert!(plain.run_optional(["config", "--get", "no.such.key"]).unwrap().is_none());
+    assert!(!plain
+        .succeeds(["rev-parse", "--verify", "no-such-ref"])
+        .unwrap());
+    assert!(plain
+        .run_optional(["rev-parse", "--verify", "HEAD"])
+        .unwrap()
+        .is_some());
+    assert!(plain
+        .run_optional(["config", "--get", "no.such.key"])
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -129,16 +137,27 @@ fn cancel_does_not_orphan_the_index_lock() {
     while !lock.exists() && start.elapsed() < Duration::from_secs(3) {
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(lock.exists(), "commit -a should hold the index lock during the hook");
+    assert!(
+        lock.exists(),
+        "commit -a should hold the index lock during the hook"
+    );
     cancel.store(true, Ordering::Relaxed);
 
     let res = worker.join().unwrap();
-    assert!(matches!(res, Err(Error::Cancelled)), "expected Cancelled, got {res:?}");
-    assert!(!lock.exists(), "index.lock was orphaned after a cancelled commit");
+    assert!(
+        matches!(res, Err(Error::Cancelled)),
+        "expected Cancelled, got {res:?}"
+    );
+    assert!(
+        !lock.exists(),
+        "index.lock was orphaned after a cancelled commit"
+    );
     // The lock is gone, so a fresh commit succeeds (--no-verify skips the hook,
     // which the cancelled run left running in the background).
     assert!(
-        open(&t).run(["commit", "-a", "-m", "y", "--no-verify"]).is_ok(),
+        open(&t)
+            .run(["commit", "-a", "-m", "y", "--no-verify"])
+            .is_ok(),
         "a commit after the cancelled one should succeed"
     );
 }
