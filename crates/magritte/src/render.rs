@@ -629,6 +629,18 @@ impl StatusView {
             Suffix::Action(a) => {
                 let view = view.clone();
                 let key = SharedString::from(a.key);
+                // A collapsed push-remote/upstream entry shows both keys (`p/u`).
+                let keycap = match a.also_key {
+                    Some(also) => div()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .child(kbd::key_chip(a.key, self.palette.dim, &self.font))
+                        .child(div().text_color(self.palette.dim).child("/"))
+                        .child(kbd::key_chip(also, self.palette.dim, &self.font))
+                        .into_any_element(),
+                    None => kbd::key_chip(a.key, self.palette.dim, &self.font),
+                };
                 div()
                     .id(a.key)
                     .relative()
@@ -640,7 +652,7 @@ impl StatusView {
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
                     .child(track_target(a.key))
-                    .child(kbd::key_chip(a.key, self.palette.dim, &self.font))
+                    .child(keycap)
                     .child(self.hover_label(&a.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));

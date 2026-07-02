@@ -292,6 +292,10 @@ pub struct Opt {
 #[derive(Debug, Clone)]
 pub struct Action {
     pub key: &'static str,
+    /// A second key that invokes the same action, shown as `key/also_key`. Used
+    /// when push-remote and upstream collapse to one entry (they hit the same
+    /// ref), so both `p` and `u` still work.
+    pub also_key: Option<&'static str>,
     pub description: String,
     pub command: Command,
 }
@@ -301,6 +305,22 @@ impl Action {
     pub fn suffix(key: &'static str, description: impl Into<String>, command: Command) -> Suffix {
         Suffix::Action(Action {
             key,
+            also_key: None,
+            description: description.into(),
+            command,
+        })
+    }
+
+    /// An action row invokable by either of two keys (rendered `key/also`).
+    pub fn suffix_dual(
+        key: &'static str,
+        also: &'static str,
+        description: impl Into<String>,
+        command: Command,
+    ) -> Suffix {
+        Suffix::Action(Action {
+            key,
+            also_key: Some(also),
             description: description.into(),
             command,
         })
@@ -400,13 +420,13 @@ impl Transient {
         self.options().find(|o| o.key == key)
     }
 
-    /// The action bound to `key`, if any.
+    /// The action bound to `key` (its primary or secondary key), if any.
     pub fn action_for(&self, key: &str) -> Option<&Action> {
         self.groups
             .iter()
             .flat_map(|g| g.suffixes.iter())
             .find_map(|s| match s {
-                Suffix::Action(a) if a.key == key => Some(a),
+                Suffix::Action(a) if a.key == key || a.also_key == Some(key) => Some(a),
                 _ => None,
             })
     }
@@ -426,14 +446,16 @@ impl Transient {
     /// the keystrokes typed so far could still resolve to a multi-key suffix
     /// (magit's `fu`/`pu` jump keys).
     pub fn has_key_prefix(&self, prefix: &str) -> bool {
-        self.groups.iter().flat_map(|g| g.suffixes.iter()).any(|s| {
-            let key: &str = match s {
-                Suffix::Action(a) => a.key,
-                Suffix::Custom(c) => &c.key,
-                _ => return false,
-            };
-            key.len() > prefix.len() && key.starts_with(prefix)
-        })
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .flat_map(|s| match s {
+                Suffix::Action(a) => vec![Some(a.key), a.also_key],
+                Suffix::Custom(c) => vec![Some(c.key.as_str())],
+                _ => vec![],
+            })
+            .flatten()
+            .any(|key| key.len() > prefix.len() && key.starts_with(prefix))
     }
 }
 
@@ -486,11 +508,20 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
             },
             Group {
                 title: push_to,
-                suffixes: vec![
-                    Action::suffix("p", push_remote_label(t), Command::PushPushRemote),
-                    Action::suffix("u", upstream_label(t), Command::PushUpstream),
-                    Action::suffix("e", "elsewhere", Command::PushElsewhere),
-                ],
+                // When the push-remote and upstream are the same ref, one entry
+                // (`p/u`) covers both; otherwise show them separately.
+                suffixes: if t.push_matches_upstream() {
+                    vec![
+                        Action::suffix_dual("p", "u", upstream_label(t), Command::PushUpstream),
+                        Action::suffix("e", "elsewhere", Command::PushElsewhere),
+                    ]
+                } else {
+                    vec![
+                        Action::suffix("p", push_remote_label(t), Command::PushPushRemote),
+                        Action::suffix("u", upstream_label(t), Command::PushUpstream),
+                        Action::suffix("e", "elsewhere", Command::PushElsewhere),
+                    ]
+                },
             },
         ],
     }
@@ -871,11 +902,18 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
             },
             Group {
                 title: plain_title("Pull from"),
-                suffixes: vec![
-                    Action::suffix("p", push_remote, Command::PullPushRemote),
-                    Action::suffix("u", upstream_label(t), Command::PullUpstream),
-                    Action::suffix("e", "elsewhere", Command::PullElsewhere),
-                ],
+                suffixes: if t.push_matches_upstream() {
+                    vec![
+                        Action::suffix_dual("p", "u", upstream_label(t), Command::PullUpstream),
+                        Action::suffix("e", "elsewhere", Command::PullElsewhere),
+                    ]
+                } else {
+                    vec![
+                        Action::suffix("p", push_remote, Command::PullPushRemote),
+                        Action::suffix("u", upstream_label(t), Command::PullUpstream),
+                        Action::suffix("e", "elsewhere", Command::PullElsewhere),
+                    ]
+                },
             },
         ],
     }
@@ -907,12 +945,20 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
             },
             Group {
                 title: plain_title("Fetch from"),
-                suffixes: vec![
-                    Action::suffix("p", push_remote, Command::FetchPushRemote),
-                    Action::suffix("u", upstream, Command::FetchUpstream),
-                    Action::suffix("a", "all remotes", Command::FetchAll),
-                    Action::suffix("e", "elsewhere", Command::FetchElsewhere),
-                ],
+                suffixes: if t.push_remote_is_upstream_remote() {
+                    vec![
+                        Action::suffix_dual("p", "u", upstream, Command::FetchUpstream),
+                        Action::suffix("a", "all remotes", Command::FetchAll),
+                        Action::suffix("e", "elsewhere", Command::FetchElsewhere),
+                    ]
+                } else {
+                    vec![
+                        Action::suffix("p", push_remote, Command::FetchPushRemote),
+                        Action::suffix("u", upstream, Command::FetchUpstream),
+                        Action::suffix("a", "all remotes", Command::FetchAll),
+                        Action::suffix("e", "elsewhere", Command::FetchElsewhere),
+                    ]
+                },
             },
         ],
     }

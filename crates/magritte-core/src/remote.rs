@@ -50,6 +50,25 @@ impl RemoteTargets {
             upstream,
         }
     }
+
+    /// Whether pushing/pulling via the push-remote hits the same ref as the
+    /// upstream (non-triangular: same remote *and* branch). The push/pull menus
+    /// collapse `p` and `u` into one entry when so.
+    pub fn push_matches_upstream(&self) -> bool {
+        match (&self.branch, &self.push_remote, &self.upstream) {
+            (Some(b), Some(pr), Some(u)) => *pr == u.remote && *b == u.branch,
+            _ => false,
+        }
+    }
+
+    /// Whether the push-remote is the upstream's remote. Fetch acts on a whole
+    /// remote (no branch), so its menu collapses `p`/`u` on this alone.
+    pub fn push_remote_is_upstream_remote(&self) -> bool {
+        matches!(
+            (&self.push_remote, &self.upstream),
+            (Some(pr), Some(u)) if *pr == u.remote
+        )
+    }
 }
 
 fn parse_upstream(s: &str) -> Option<Upstream> {
@@ -212,6 +231,56 @@ mod tests {
                     branch: "main".to_string(),
                 }),
             }
+        );
+    }
+
+    fn targets(branch: &str, push_remote: &str, up_remote: &str, up_branch: &str) -> RemoteTargets {
+        RemoteTargets {
+            branch: Some(branch.to_string()),
+            push_remote: Some(push_remote.to_string()),
+            upstream: Some(Upstream {
+                remote: up_remote.to_string(),
+                branch: up_branch.to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn push_and_upstream_coincide_when_same_remote_and_branch() {
+        // Non-triangular: same remote and branch → collapses.
+        let t = targets("main", "origin", "origin", "main");
+        assert!(t.push_matches_upstream());
+        assert!(t.push_remote_is_upstream_remote());
+    }
+
+    #[test]
+    fn triangular_push_remote_does_not_collapse() {
+        // Different push remote → push/pull keep both entries; fetch (remote
+        // only) also stays split.
+        let t = targets("main", "fork", "origin", "main");
+        assert!(!t.push_matches_upstream());
+        assert!(!t.push_remote_is_upstream_remote());
+    }
+
+    #[test]
+    fn differing_branch_name_collapses_fetch_but_not_push() {
+        // Same remote, different branch name: fetch acts on the remote alone so
+        // it collapses, but the push/pull refs differ so they stay split.
+        let t = targets("feature", "origin", "origin", "main");
+        assert!(!t.push_matches_upstream());
+        assert!(t.push_remote_is_upstream_remote());
+    }
+
+    #[test]
+    fn action_dispatches_on_either_collapsed_key() {
+        // The collapsed push entry is invokable by both `p` and `u`.
+        let t = targets("main", "origin", "origin", "main");
+        let push = crate::transient::push_transient(&t);
+        assert!(push.action_for("p").is_some());
+        assert!(push.action_for("u").is_some());
+        assert_eq!(
+            push.action_for("p").map(|a| &a.command),
+            push.action_for("u").map(|a| &a.command),
         );
     }
 }
