@@ -142,4 +142,23 @@ impl Repo {
             .run(git_args(&["commit", "--amend", "--no-edit"], args, &[]))?
             .first_line())
     }
+
+    /// Create a `fixup!` commit targeting `commit` (`git commit --fixup=`): a
+    /// commit that a later autosquash rebase folds into its target, keeping the
+    /// target's message. No editor — git generates the `fixup! <subject>`
+    /// message. Requires staged changes (git errors otherwise).
+    pub fn commit_fixup(&self, commit: &str, args: &[String]) -> Result<String> {
+        Ok(self
+            .run(git_args(&["commit", &format!("--fixup={commit}")], args, &[]))?
+            .first_line())
+    }
+
+    /// Create a `squash!` commit targeting `commit` (`git commit --squash=`):
+    /// like a fixup, but a later autosquash rebase lets the target's message be
+    /// edited to fold in this commit's. No editor at creation time.
+    pub fn commit_squash(&self, commit: &str, args: &[String]) -> Result<String> {
+        Ok(self
+            .run(git_args(&["commit", &format!("--squash={commit}")], args, &[]))?
+            .first_line())
+    }
 }

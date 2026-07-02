@@ -143,3 +143,53 @@ fn all_dropped_is_refused() {
     }
     assert!(open(&t).rebase_interactive(&base, &todo, &[]).is_err());
 }
+
+#[test]
+fn fixup_and_autosquash_folds_into_target() {
+    // base -- A -- B; a fixup targeting A, then autosquash, should fold the
+    // fixup into A and leave B on top.
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    t.write("a.txt", "a");
+    t.commit_all("A");
+    let a = t.git(["rev-parse", "HEAD"]);
+    t.write("b.txt", "b");
+    t.commit_all("B");
+
+    // A staged change to fold into A.
+    t.write("a.txt", "a fixed");
+    t.git(["add", "a.txt"]);
+    let repo = open(&t);
+    repo.commit_fixup(&a, &[]).unwrap();
+    assert_eq!(subjects(&t), ["fixup! A", "B", "A", "base"], "fixup created on top of HEAD");
+
+    repo.rebase_autosquash(&format!("{a}^"), &[]).unwrap();
+    assert_eq!(subjects(&t), ["B", "A", "base"], "fixup folded into A");
+    // A's content now carries the fix; B untouched.
+    assert_eq!(t.git(["show", "HEAD~1:a.txt"]), "a fixed");
+    assert!(t.path().join("b.txt").exists());
+}
+
+#[test]
+fn squash_creates_squash_commit() {
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    t.write("a.txt", "a");
+    t.commit_all("A");
+    let a = t.git(["rev-parse", "HEAD"]);
+    t.write("a.txt", "a more");
+    t.git(["add", "a.txt"]);
+
+    open(&t).commit_squash(&a, &[]).unwrap();
+    assert_eq!(subjects(&t), ["squash! A", "A", "base"]);
+}
+
+#[test]
+fn upstream_merge_base_is_none_without_upstream() {
+    let t = TestRepo::new();
+    t.write("f", "x\n");
+    t.commit_all("init");
+    assert_eq!(open(&t).upstream_merge_base(), None);
+}

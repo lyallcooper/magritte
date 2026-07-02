@@ -156,6 +156,48 @@ impl Repo {
         Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
     }
 
+    /// Autosquash `fixup!`/`squash! ` commits into their targets: an
+    /// interactive rebase since `base` with `--autosquash`, accepting git's
+    /// auto-generated (and reordered) todo unedited. Unlike
+    /// [`rebase_interactive`](Self::rebase_interactive), which injects our own
+    /// todo, this hands git a no-op sequence editor (`true`) so its autosquash
+    /// ordering stands; `GIT_EDITOR=true` keeps a `squash!` from blocking on a
+    /// message editor (it takes the combined message). `--keep-empty` preserves
+    /// any intentionally-empty commit in the range. A conflict pauses the
+    /// rebase, surfaced as the in-progress sequence.
+    pub fn rebase_autosquash(&self, base: &str, args: &[String]) -> Result<String> {
+        // `-c sequence.editor=true` accepts git's auto-generated todo unedited;
+        // GIT_EDITOR=true (via run_with_env) keeps a `squash!` from blocking on
+        // a message editor, taking the combined message instead.
+        let argv = git_args(
+            &[
+                "-c",
+                "sequence.editor=true",
+                "rebase",
+                "-i",
+                "--autosquash",
+                "--keep-empty",
+            ],
+            args,
+            &[base],
+        );
+        Ok(self
+            .run_with_env(&argv, "GIT_EDITOR", "true")?
+            .status_line())
+    }
+
+    /// The merge base of `@{upstream}` and HEAD, the default starting point for
+    /// an autosquash (magit's `magit-rebase-autosquash`): only commits since
+    /// the upstream are candidates. `None` when there's no upstream or no merge
+    /// base (a fresh branch), leaving the caller to pick a base.
+    pub fn upstream_merge_base(&self) -> Option<String> {
+        let out = self
+            .run_optional(["merge-base", "@{upstream}", "HEAD"])
+            .ok()??;
+        let base = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!base.is_empty()).then_some(base)
+    }
+
     /// The original commit at which an interactive rebase is currently stopped,
     /// if git exposes one. Present for `edit` stops and therefore for app-managed
     /// `reword` stops (which are written as `edit` in git's todo).
