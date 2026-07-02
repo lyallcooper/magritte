@@ -778,32 +778,33 @@ impl StatusView {
             {
                 let current = app_icon::resolved_icon(&self.config.app_icon);
                 let cell = |id: &'static str, thumb: &'static [u8], selected: bool| {
+                    // Every cell has a stroke hugging its image: a 2px accent for
+                    // the selected one, a thin subtle border otherwise. The image
+                    // grows by the border difference (56 vs 58) so image+border is
+                    // always 60px and the row never shifts. The image is rounded
+                    // flush inside the stroke (outer radius 13, inner = 13 minus
+                    // the stroke width).
+                    let (img_size, img_radius) = if selected { (56.0, 11.0) } else { (58.0, 12.0) };
                     div()
                         .id(SharedString::from(format!("app-icon-{id}")))
                         .cursor_pointer()
-                        // The selected icon is marked by a stroke hugging its
-                        // edge; the border stays (transparent when unselected)
-                        // so the row doesn't shift. Wrapping the image, the
-                        // border's outer radius is 13 and its inner radius 11
-                        // (13 minus the 2px stroke), so the image is rounded
-                        // to 11 to sit flush inside it.
                         .rounded(px(13.0))
-                        .border_2()
-                        .border_color(if selected {
-                            self.palette.section
-                        } else {
-                            gpui::transparent_black()
+                        .when(selected, |el| {
+                            el.border_2().border_color(self.palette.section)
+                        })
+                        .when(!selected, |el| {
+                            el.border_1().border_color(self.palette.border)
                         })
                         .child(
-                            // A plain square thumbnail, rounded here at
-                            // render — so the corners match the stroke with
-                            // no baked margin to leave a gap.
+                            // A plain square thumbnail, rounded here at render —
+                            // so the corners match the stroke with no baked margin
+                            // to leave a gap.
                             gpui::img(std::sync::Arc::new(gpui::Image::from_bytes(
                                 gpui::ImageFormat::Png,
                                 thumb.to_vec(),
                             )))
-                            .size(px(56.0))
-                            .rounded(px(11.0)),
+                            .size(px(img_size))
+                            .rounded(px(img_radius)),
                         )
                         .on_click({
                             let view = view.clone();
