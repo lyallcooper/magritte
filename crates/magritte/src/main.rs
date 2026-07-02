@@ -68,6 +68,9 @@ pub(crate) use staging::*;
 pub(crate) use transient_state::*;
 pub(crate) use window::*;
 use controller::StatusToast;
+
+/// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
+type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
 use settings::SettingsCaches;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
@@ -502,6 +505,9 @@ struct StatusView {
     picker_gen: Generation,
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
+    /// Memoized `$`-log rows, keyed on (command-log sequence, show-all) — see
+    /// [`Self::git_log_rows`]. RefCell because render derives it with `&self`.
+    git_log_cache: GitLogCache,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     /// Colors for the current theme, refreshed at the top of each render.
@@ -650,6 +656,7 @@ impl StatusView {
             },
             picker_gen: Generation::default(),
             confirm: None,
+            git_log_cache: GitLogCache::default(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             palette: Palette::default(),

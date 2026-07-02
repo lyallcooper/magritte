@@ -39,6 +39,10 @@ pub(crate) fn unique_temp_suffix() -> String {
 pub struct Repo {
     workdir: PathBuf,
     log: Arc<Mutex<VecDeque<GitCommand>>>,
+    /// Total commands ever recorded (monotonic, unlike the capped log's
+    /// length), so a UI can cheaply tell whether the log changed since it last
+    /// flattened it.
+    log_seq: Arc<std::sync::atomic::AtomicU64>,
     /// When set, every invocation polls this flag and kills the child (returning
     /// [`Error::Cancelled`]) once it flips true — so a superseded or user
     /// -cancelled job stops *running*, not just gets its result dropped. Shared
@@ -294,6 +298,7 @@ impl Repo {
         Ok(Repo {
             workdir: PathBuf::from(top),
             log: Arc::new(Mutex::new(VecDeque::new())),
+            log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cancel: None,
             timeout: None,
         })
@@ -304,6 +309,7 @@ impl Repo {
         Repo {
             workdir: workdir.into(),
             log: Arc::new(Mutex::new(VecDeque::new())),
+            log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cancel: None,
             timeout: None,
         }
@@ -357,7 +363,14 @@ impl Repo {
                 q.pop_front();
             }
             q.push_back(cmd);
+            self.log_seq.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// How many commands have ever been recorded — a cheap change stamp for
+    /// [`command_log`](Self::command_log) consumers that cache a derived view.
+    pub fn command_log_seq(&self) -> u64 {
+        self.log_seq.load(Ordering::Relaxed)
     }
 
     /// Record an internal git call (the UI's own invocations): a `git` command,

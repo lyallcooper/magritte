@@ -1271,7 +1271,8 @@ impl StatusView {
                         let this = view.read(cx);
                         match this.editor() {
                             Some(ed) => range
-                                .map(|ix| this.render_commit_diff_row(&ed.diff[ix], false))
+                                .filter_map(|ix| ed.diff.get(ix))
+                                .map(|row| this.render_commit_diff_row(row, false))
                                 .collect::<Vec<_>>(),
                             None => Vec::new(),
                         }
@@ -1405,7 +1406,24 @@ impl StatusView {
     /// The command log flattened into uniform rows: each invocation becomes a
     /// command row followed by its (dim, indented) stderr lines — git's
     /// progress/error narrative.
-    pub(crate) fn git_log_rows(&self) -> Vec<GitLogRow> {
+    /// The `$` log's flattened rows, memoized: flattening walks every recorded
+    /// command and splits all its output lines, so doing it per frame (twice —
+    /// count + visible range) scales with session length. The cache is keyed on
+    /// the log's monotonic sequence and the show-all toggle.
+    pub(crate) fn git_log_rows(&self) -> Rc<Vec<GitLogRow>> {
+        let seq = self.repo.as_ref().map(|r| r.command_log_seq()).unwrap_or(0);
+        let show_all = self.git_log_show_all();
+        if let Some((cached_seq, cached_show, rows)) = self.git_log_cache.borrow().as_ref() {
+            if *cached_seq == seq && *cached_show == show_all {
+                return rows.clone();
+            }
+        }
+        let rows = Rc::new(self.build_git_log_rows());
+        *self.git_log_cache.borrow_mut() = Some((seq, show_all, rows.clone()));
+        rows
+    }
+
+    fn build_git_log_rows(&self) -> Vec<GitLogRow> {
         let Some(repo) = self.repo.as_ref() else {
             return Vec::new();
         };
@@ -1550,10 +1568,11 @@ impl StatusView {
                     let this = view.read(cx);
                     match this.log() {
                         Some(log) => range
-                            .map(|ix| {
+                            .filter_map(|ix| log.entries.get(ix).map(|e| (ix, e)))
+                            .map(|(ix, entry)| {
                                 this.render_log_row(
                                     ix,
-                                    &log.entries[ix],
+                                    entry,
                                     ix == log.selected,
                                     hash_width,
                                     &view,
@@ -1711,10 +1730,11 @@ impl StatusView {
                     Some(fd) => {
                         let vis = fd.visual.map(|a| (a.min(fd.selected), a.max(fd.selected)));
                         range
-                            .map(|ix| {
+                            .filter_map(|ix| fd.rows.get(ix).map(|row| (ix, row)))
+                            .map(|(ix, row)| {
                                 let highlighted = ix == fd.selected
                                     || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-                                this.render_commit_diff_row(&fd.rows[ix], highlighted)
+                                this.render_commit_diff_row(row, highlighted)
                             })
                             .collect::<Vec<_>>()
                     }
@@ -1845,7 +1865,8 @@ impl StatusView {
                 let this = view.read(cx);
                 match this.rebase_todo() {
                     Some(rt) => range
-                        .map(|ix| this.render_rebase_todo_row(rt, ix))
+                        .filter_map(|ix| rt.steps.get(ix).map(|s| (ix, s)))
+                        .map(|(ix, step)| this.render_rebase_todo_row(rt, step, ix))
                         .collect(),
                     None => Vec::new(),
                 }
@@ -1932,8 +1953,12 @@ impl StatusView {
     }
 
     /// One row of the rebase-todo editor.
-    pub(crate) fn render_rebase_todo_row(&self, rt: &RebaseTodoView, ix: usize) -> gpui::Div {
-        let step = &rt.steps[ix];
+    pub(crate) fn render_rebase_todo_row(
+        &self,
+        rt: &RebaseTodoView,
+        step: &magritte_core::RebaseStep,
+        ix: usize,
+    ) -> gpui::Div {
         let selected = ix == rt.selected;
         let (keyword, color) = self.rebase_action_style(step.action);
         let dropped = step.action == RebaseAction::Drop;
@@ -2000,6 +2025,9 @@ impl StatusView {
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
         };
+        // One id string per row per frame, shared by the element id and the
+        // debug target registry.
+        let row_id = SharedString::from(format!("status-row-{ix}"));
         let selected = ix == self.selected && row.selectable;
         let clickable = row.selectable || row.fold.is_some();
         let in_region = self
@@ -2007,7 +2035,7 @@ impl StatusView {
             .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
 
         let mut el = div()
-            .id(SharedString::from(format!("status-row-{ix}")))
+            .id(row_id.clone())
             .flex()
             .items_center()
             .gap_2()
@@ -2164,7 +2192,7 @@ impl StatusView {
         if clickable {
             let el = content
                 .relative()
-                .child(track_target(format!("status-row-{ix}")))
+                .child(track_target(row_id.to_string()))
                 .on_click({
                     let view = view.clone();
                     move |_, _window, cx: &mut App| {
