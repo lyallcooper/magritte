@@ -35,11 +35,11 @@ fn stage_and_unstage_whole_file() {
     repo.stage_file("file.txt").unwrap();
     let s = repo.status().unwrap();
     assert!(entry(&s, "file.txt").unwrap().is_staged());
-    assert!(!entry(&s, "file.txt").unwrap().is_unstaged());
+    assert!(!entry(&s, "file.txt").unwrap().has_worktree_changes());
 
     repo.unstage_file("file.txt").unwrap();
     let s = repo.status().unwrap();
-    assert!(entry(&s, "file.txt").unwrap().is_unstaged());
+    assert!(entry(&s, "file.txt").unwrap().has_worktree_changes());
     assert!(!entry(&s, "file.txt").unwrap().is_staged());
 }
 
@@ -223,7 +223,7 @@ fn discard_staged_file_preserves_unstaged_edit() {
     let s = repo.status().unwrap();
     let e = entry(&s, "file.txt").unwrap();
     assert!(!e.is_staged(), "staged delta should be discarded");
-    assert!(e.is_unstaged(), "unstaged edit should remain");
+    assert!(e.has_worktree_changes(), "unstaged edit should remain");
 }
 
 /// When the unstaged edit overlaps the staged hunk, the worktree `--reject`

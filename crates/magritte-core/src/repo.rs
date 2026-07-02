@@ -12,9 +12,19 @@ use crate::error::{Error, Result};
 /// How many recent git invocations the command log keeps (a ring buffer).
 const LOG_CAPACITY: usize = 500;
 
-/// Distinguishes concurrent sequence-editor todo temp files (parallel tests, or
-/// two rebases at once), since the pid alone isn't unique across threads.
-static SEQ_TODO_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Distinguishes concurrent throwaway files (parallel tests, or two operations
+/// at once), since the pid alone isn't unique across threads.
+static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A `pid-counter` suffix that makes a temp-file name unique within and across
+/// processes (sequence-editor todos, throwaway index files).
+pub(crate) fn unique_temp_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// A handle to a git working tree.
 ///
@@ -107,6 +117,9 @@ impl GitCommand {
             // mutating stash verbs (push/pop/apply/drop/show) are user actions,
             // so they stay visible.
             Some("stash") => self.args.get(1).map(String::as_str) == Some("list"),
+            // A bare `git remote` is the remote-name listing the pickers issue;
+            // the mutating verbs (add/rename/remove/prune) stay visible.
+            Some("remote") => self.args.len() == 1,
             _ => false,
         }
     }
@@ -500,13 +513,19 @@ impl Repo {
                         .stderr(Stdio::piped())
                         .spawn()
                         .map_err(|source| Error::Spawn { source })?;
-                    {
-                        let mut stdin = child.stdin.take().expect("stdin piped");
-                        let _ = stdin.write_all(input);
-                    }
-                    child
+                    // Write stdin on its own thread, like the guarded path: a
+                    // large patch could otherwise deadlock against git filling
+                    // the stdout pipe before it has consumed stdin.
+                    let mut stdin = child.stdin.take().expect("stdin piped");
+                    let buf = input.to_vec();
+                    let writer = std::thread::spawn(move || {
+                        let _ = stdin.write_all(&buf);
+                    });
+                    let out = child
                         .wait_with_output()
-                        .map_err(|source| Error::Spawn { source })?
+                        .map_err(|source| Error::Spawn { source })?;
+                    let _ = writer.join();
+                    out
                 }
             };
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -655,20 +674,20 @@ impl Repo {
     /// removed regardless of outcome. This isolates the no-TTY plumbing from the
     /// callers' domain logic (which just builds the todo + argv).
     pub fn run_with_sequence_editor(&self, todo: &str, args: &[String]) -> Result<GitOutput> {
-        // A unique temp file (space-free path) holds the todo; pid+counter keeps
-        // concurrent runs (and parallel tests) from sharing one file.
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            SEQ_TODO_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let path = std::env::temp_dir().join(format!("magritte-seq-todo-{unique}"));
+        // A unique temp file holds the todo; pid+counter keeps concurrent runs
+        // (and parallel tests) from sharing one file.
+        let path =
+            std::env::temp_dir().join(format!("magritte-seq-todo-{}", unique_temp_suffix()));
         std::fs::write(&path, todo)
             .map_err(|e| Error::Message(format!("{}: {e}", path.display())))?;
 
+        // git runs sequence.editor through the shell, so single-quote the path
+        // (escaping any quote inside it) rather than trusting temp_dir to be
+        // shell-clean.
+        let quoted = path.display().to_string().replace('\'', "'\\''");
         let mut argv = vec![
             "-c".to_string(),
-            format!("sequence.editor=cp '{}'", path.display()),
+            format!("sequence.editor=cp '{quoted}'"),
         ];
         argv.extend(args.iter().cloned());
 
@@ -803,15 +822,15 @@ impl Repo {
     /// The repository's common git directory (`git rev-parse --git-common-dir`),
     /// as an absolute path. It's shared across linked worktrees, so per-repo
     /// state keyed off it lands in one place for the whole repo. `None` on error.
-    pub fn git_common_dir(&self) -> Option<PathBuf> {
-        let out = self.run(["rev-parse", "--git-common-dir"]).ok()?;
+    pub fn git_common_dir(&self) -> Result<PathBuf> {
+        let out = self.run(["rev-parse", "--git-common-dir"])?;
         let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if raw.is_empty() {
-            return None;
+            return Err(Error::Message("git reported no common dir".to_string()));
         }
         // git reports it relative to the working tree we ran in (`-C workdir`).
         let dir = PathBuf::from(&raw);
-        Some(if dir.is_absolute() {
+        Ok(if dir.is_absolute() {
             dir
         } else {
             self.workdir.join(dir)

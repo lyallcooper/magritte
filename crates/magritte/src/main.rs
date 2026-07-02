@@ -1483,7 +1483,7 @@ impl StatusView {
         // *common* git dir, so config/arguments are shared across worktrees.
         let repo_scope_dir = repo
             .as_ref()
-            .and_then(|r| r.git_common_dir())
+            .and_then(|r| r.git_common_dir().ok())
             .map(|d| config::repo_dir(&d));
         // UI state local to this checkout (folds, window placement) lives in the
         // *per-worktree* git dir instead — `.git/magritte` for the main worktree,

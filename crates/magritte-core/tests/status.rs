@@ -123,7 +123,7 @@ fn staged_addition_and_worktree_modification() {
         .expect("added.txt present");
     assert_eq!(added.index, Change::Added);
     assert!(added.is_staged());
-    assert!(!added.is_unstaged());
+    assert!(!added.has_worktree_changes());
 
     let readme = status
         .entries
@@ -131,7 +131,7 @@ fn staged_addition_and_worktree_modification() {
         .find(|e| e.path == "README.md")
         .expect("README.md present");
     assert_eq!(readme.worktree, Change::Modified);
-    assert!(readme.is_unstaged());
+    assert!(readme.has_worktree_changes());
     assert!(!readme.is_staged());
 }
 
@@ -149,7 +149,7 @@ fn partially_staged_file_appears_in_both_groups() {
     let entry = &status.entries[0];
     assert_eq!(entry.index, Change::Modified);
     assert_eq!(entry.worktree, Change::Modified);
-    assert!(entry.is_staged() && entry.is_unstaged());
+    assert!(entry.is_staged() && entry.has_worktree_changes());
 }
 
 #[test]

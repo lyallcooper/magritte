@@ -887,8 +887,8 @@ impl StatusView {
         key: &str,
         glyph: &str,
         name: &str,
-        ahead: i64,
-        behind: i64,
+        ahead: u32,
+        behind: u32,
     ) -> gpui::Div {
         let mut chunk = div()
             .flex()

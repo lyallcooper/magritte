@@ -95,8 +95,11 @@ impl FileEntry {
             || self.is_intent_to_add()
     }
 
-    /// Whether this entry has changes not yet staged.
-    pub fn is_unstaged(&self) -> bool {
+    /// Whether this entry has content in the working tree that isn't in the
+    /// index — including untracked and conflicted files. Note the *Unstaged
+    /// changes* section is narrower: [`Status::unstaged`] excludes untracked
+    /// entries (they get their own section).
+    pub fn has_worktree_changes(&self) -> bool {
         matches!(self.kind, EntryKind::Untracked | EntryKind::Unmerged)
             || self.worktree.is_modified()
     }
@@ -110,8 +113,8 @@ pub struct HeadInfo {
     /// Current branch name, or `None` when detached.
     pub branch: Option<String>,
     pub upstream: Option<String>,
-    pub ahead: i64,
-    pub behind: i64,
+    pub ahead: u32,
+    pub behind: u32,
     pub detached: bool,
     /// The remote part of `@{push}` (e.g. `origin`), even when the push target
     /// equals the upstream and therefore isn't shown as a separate title-bar
@@ -122,8 +125,8 @@ pub struct HeadInfo {
     /// there's no push target or it's the same ref as the upstream.
     pub push: Option<String>,
     /// Ahead/behind the push target (only meaningful when `push` is set).
-    pub push_ahead: i64,
-    pub push_behind: i64,
+    pub push_ahead: u32,
+    pub push_behind: u32,
 }
 
 /// The full parsed status of a working tree.
@@ -162,7 +165,7 @@ impl Status {
     pub fn unstaged(&self) -> impl Iterator<Item = &FileEntry> {
         self.entries
             .iter()
-            .filter(|e| e.is_unstaged() && e.kind != EntryKind::Untracked)
+            .filter(|e| e.has_worktree_changes() && e.kind != EntryKind::Untracked)
     }
 
     pub fn untracked(&self) -> impl Iterator<Item = &FileEntry> {

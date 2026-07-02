@@ -108,7 +108,7 @@ mod tests {
         // `git add -N`: porcelain `.A` (index unmodified, worktree added).
         let ita = entry(EntryKind::Tracked, Change::Unmodified, Change::Added);
         assert!(ita.is_intent_to_add());
-        assert!(ita.is_staged() && ita.is_unstaged(), "appears in both sections");
+        assert!(ita.is_staged() && ita.has_worktree_changes(), "appears in both sections");
         assert_eq!(status_label(&ita, SectionId::Staged), "new file");
         assert_eq!(status_label(&ita, SectionId::Unstaged), "modified");
     }
