@@ -7,7 +7,7 @@
 //! commands against a chosen remote rather than leaning on bare `git push`.
 
 use crate::error::Result;
-use crate::repo::Repo;
+use crate::repo::{git_args, Repo};
 use crate::status::HeadInfo;
 
 /// A branch's upstream, split into its remote and remote-branch parts.
@@ -62,22 +62,12 @@ fn parse_upstream(s: &str) -> Option<Upstream> {
 impl Repo {
     /// Configured remote names (`git remote`).
     pub fn remotes(&self) -> Result<Vec<String>> {
-        let out = self.run(["remote"])?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect())
+        Ok(self.run(["remote"])?.lines())
     }
 
     /// `git remote add [args] <name> <url>`.
     pub fn add_remote(&self, name: &str, url: &str, args: &[String]) -> Result<String> {
-        let mut argv = vec!["remote".to_string(), "add".to_string()];
-        argv.extend(args.iter().cloned());
-        argv.push(name.to_string());
-        argv.push(url.to_string());
-        Ok(self.run(argv)?.status_line())
+        Ok(self.run(git_args(&["remote", "add"], args, &[name, url]))?.status_line())
     }
 
     /// `git remote rename <old> <new>`.
@@ -96,12 +86,9 @@ impl Repo {
     /// also drop entries without a `/`.
     pub fn remote_branches(&self) -> Result<Vec<String>> {
         let out = self.run(["for-each-ref", "--format=%(refname:short)", "refs/remotes/"])?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.contains('/') && !l.ends_with("/HEAD"))
-            .map(str::to_string)
-            .collect())
+        let mut branches = out.lines();
+        branches.retain(|l| l.contains('/') && !l.ends_with("/HEAD"));
+        Ok(branches)
     }
 
     /// Resolve the current branch's push-remote and upstream.
@@ -146,14 +133,12 @@ impl Repo {
         set_upstream: bool,
         switches: &[String],
     ) -> Result<String> {
-        let mut args = vec!["push".to_string()];
-        if set_upstream {
-            args.push("--set-upstream".into());
-        }
-        args.extend(switches.iter().cloned());
-        args.push(remote.to_string());
-        args.push(branch.to_string());
-        Ok(self.run(&args)?.report())
+        let lead: &[&str] = if set_upstream {
+            &["push", "--set-upstream"]
+        } else {
+            &["push"]
+        };
+        Ok(self.run(git_args(lead, switches, &[remote, branch]))?.report())
     }
 
     /// `git push [switches] <remote> <local>:<target>` — push the local branch
@@ -165,44 +150,30 @@ impl Repo {
         target: &str,
         switches: &[String],
     ) -> Result<String> {
-        let mut args = vec!["push".to_string()];
-        args.extend(switches.iter().cloned());
-        args.push(remote.to_string());
-        args.push(format!("{local}:{target}"));
-        Ok(self.run(&args)?.report())
+        let refspec = format!("{local}:{target}");
+        Ok(self.run(git_args(&["push"], switches, &[remote, &refspec]))?.report())
     }
 
     /// `git pull [switches] <remote> <branch>`.
     pub fn pull_from(&self, remote: &str, branch: &str, switches: &[String]) -> Result<String> {
-        let mut args = vec!["pull".to_string()];
-        args.extend(switches.iter().cloned());
-        args.push(remote.to_string());
-        args.push(branch.to_string());
-        Ok(self.run(&args)?.report())
+        Ok(self.run(git_args(&["pull"], switches, &[remote, branch]))?.report())
     }
 
     /// `git fetch [switches] <remote>`.
     pub fn fetch_from(&self, remote: &str, switches: &[String]) -> Result<String> {
-        let mut args = vec!["fetch".to_string()];
-        args.extend(switches.iter().cloned());
-        args.push(remote.to_string());
-        Ok(self.run(&args)?.report())
+        Ok(self.run(git_args(&["fetch"], switches, &[remote]))?.report())
     }
 
     /// `git fetch [switches]` — the current branch's configured remote, with no
     /// explicit remote or `--all`. Used for the lightweight background
     /// auto-fetch (keeps unpushed/unpulled current without touching every remote).
     pub fn fetch_default(&self, switches: &[String]) -> Result<String> {
-        let mut args = vec!["fetch".to_string()];
-        args.extend(switches.iter().cloned());
-        Ok(self.run(&args)?.report())
+        Ok(self.run(git_args(&["fetch"], switches, &[]))?.report())
     }
 
     /// `git fetch --all [switches]`.
     pub fn fetch_all(&self, switches: &[String]) -> Result<String> {
-        let mut args = vec!["fetch".to_string(), "--all".to_string()];
-        args.extend(switches.iter().cloned());
-        Ok(self.run(&args)?.report())
+        Ok(self.run(git_args(&["fetch", "--all"], switches, &[]))?.report())
     }
 }
 

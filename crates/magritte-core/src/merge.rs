@@ -4,18 +4,15 @@
 //! in-progress sequence (resolve, then commit) — see [`crate::sequence`].
 
 use crate::error::Result;
-use crate::repo::Repo;
+use crate::repo::{git_args, Repo};
 
 impl Repo {
     /// `git merge --no-edit [args] <target>`. `args` carries the toggled
     /// switches (`--no-ff`, `--ff-only`) and the action's mode (`--squash` /
     /// `--no-commit`).
     pub fn merge(&self, target: &str, args: &[String]) -> Result<String> {
-        let mut argv = vec!["merge".to_string(), "--no-edit".to_string()];
-        argv.extend(args.iter().cloned());
-        argv.push(target.to_string());
         // merge reports on stderr ("Merge made by…", conflict notices), falling
         // back to stdout — exactly `GitOutput::status_line`.
-        Ok(self.run(&argv)?.status_line())
+        Ok(self.run(git_args(&["merge", "--no-edit"], args, &[target]))?.status_line())
     }
 }

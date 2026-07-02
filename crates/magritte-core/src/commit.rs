@@ -5,7 +5,7 @@
 //! from the user's git config, exactly as on the command line.
 
 use crate::error::Result;
-use crate::repo::Repo;
+use crate::repo::{git_args, Repo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitMetadata {
@@ -138,9 +138,8 @@ impl Repo {
 
     /// Amend HEAD with the staged changes, keeping its message (`--no-edit`).
     pub fn commit_extend(&self, args: &[String]) -> Result<String> {
-        let mut argv: Vec<String> = vec!["commit".into(), "--amend".into(), "--no-edit".into()];
-        argv.extend(args.iter().cloned());
-        let out = self.run(&argv)?;
-        Ok(out.first_line())
+        Ok(self
+            .run(git_args(&["commit", "--amend", "--no-edit"], args, &[]))?
+            .first_line())
     }
 }

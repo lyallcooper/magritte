@@ -128,6 +128,17 @@ pub struct CommandRun {
     pub stderr: String,
 }
 
+/// Assemble a git argv from fixed leading words, a transient's toggled switch
+/// arguments, and trailing operands — the `git <verb> [switches] <operands>`
+/// shape every command wrapper shares.
+pub(crate) fn git_args(lead: &[&str], switches: &[String], trail: &[&str]) -> Vec<String> {
+    lead.iter()
+        .map(|s| s.to_string())
+        .chain(switches.iter().cloned())
+        .chain(trail.iter().map(|s| s.to_string()))
+        .collect()
+}
+
 /// Configure a child process for spawning from our GPUI worker threads — shared
 /// by the `git` wrapper, the `!` prompt's arbitrary commands, and user
 /// `[[command]]` shell commands so they all behave the same (it matters once any
@@ -193,6 +204,17 @@ impl GitOutput {
     /// Trimmed stdout as text (lossy UTF-8).
     fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).trim().to_string()
+    }
+
+    /// stdout as trimmed, non-empty lines — the shape of every name-listing
+    /// query (branches, tags, remotes).
+    pub fn lines(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     /// The one-line summary for commands whose result is the first line of

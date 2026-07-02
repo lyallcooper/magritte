@@ -3,7 +3,8 @@
 //! (continue/skip/abort) in [`crate::sequence`].
 
 use crate::error::{Error, Result};
-use crate::repo::Repo;
+use crate::repo::{git_args, Repo};
+use crate::sequence::parse_todo_line;
 
 /// What to do with a commit in an interactive-rebase todo (git's instructions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,10 +67,7 @@ impl Repo {
     /// conflict exits non-zero and leaves the rebase paused, which the frontend
     /// surfaces as the in-progress sequence.
     pub fn rebase(&self, onto: &str, args: &[String]) -> Result<String> {
-        let mut argv = vec!["rebase".to_string()];
-        argv.extend(args.iter().cloned());
-        argv.push(onto.to_string());
-        Ok(self.run(&argv)?.status_line())
+        Ok(self.run(git_args(&["rebase"], args, &[onto]))?.status_line())
     }
 
     /// The default interactive-rebase todo for `base..HEAD`: every commit as a
@@ -105,23 +103,11 @@ impl Repo {
         };
         Ok(text
             .lines()
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .filter_map(|line| {
-                let mut parts = line.splitn(3, ' ');
-                let action = RebaseAction::from_keyword(parts.next()?)?;
-                // The todo stores full oids; abbreviate for display (git still
-                // resolves the prefix against the rebase's own commits on write).
-                let oid: String = parts.next()?.chars().take(7).collect();
-                // git may write the oneline as a trailing comment ("# subject");
-                // strip the marker so the editor shows a clean subject.
-                let subject = parts
-                    .next()
-                    .unwrap_or("")
-                    .trim_start_matches("# ")
-                    .to_string();
+            .filter_map(parse_todo_line)
+            .filter_map(|(verb, oid, subject)| {
                 Some(RebaseStep {
-                    action,
-                    oid,
+                    action: RebaseAction::from_keyword(verb)?,
+                    oid: oid?,
                     subject,
                 })
             })
@@ -164,9 +150,7 @@ impl Repo {
             .iter()
             .map(|s| format!("{} {}\n", rebase_action_for_git(s.action).keyword(), s.oid))
             .collect();
-        let mut argv = vec!["rebase".to_string(), "-i".to_string()];
-        argv.extend(args.iter().cloned());
-        argv.push(base.to_string());
+        let argv = git_args(&["rebase", "-i"], args, &[base]);
         Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
     }
 

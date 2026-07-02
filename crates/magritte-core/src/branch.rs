@@ -20,18 +20,14 @@ impl Repo {
     /// Local branch names (`refs/heads`), most-recently-committed first so the
     /// branches you're likely to want are near the top of the picker.
     pub fn local_branches(&self) -> Result<Vec<String>> {
-        let out = self.run([
-            "for-each-ref",
-            "--sort=-committerdate",
-            "--format=%(refname:short)",
-            "refs/heads/",
-        ])?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect())
+        Ok(self
+            .run([
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ])?
+            .lines())
     }
 
     /// Check out `target`, DWIM-creating a local tracking branch when a

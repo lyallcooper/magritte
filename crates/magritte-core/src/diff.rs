@@ -104,18 +104,19 @@ impl Repo {
         args
     }
 
+    /// The base argv for diffing a [`DiffSource`] (`--cached` for the index).
+    fn diff_source_args(source: DiffSource) -> Vec<String> {
+        let mut args = Self::diff_base(&[]);
+        if source == DiffSource::Staged {
+            args.push("--cached".to_string());
+        }
+        args
+    }
+
     /// Diff a single path against the index or HEAD. Returns `None` when there
     /// is no diff (e.g. the path is unchanged for that source).
     pub fn diff_path(&self, source: DiffSource, path: &str) -> Result<Option<FileDiff>> {
-        let mut args = DIFF_BASE.to_vec();
-        if source == DiffSource::Staged {
-            args.push("--cached");
-        }
-        args.push("--");
-        args.push(path);
-
-        let out = self.run(args)?;
-        let mut diffs = parse_diff(&out.stdout)?;
+        let mut diffs = self.diff_with(Self::diff_source_args(source), &[path.to_string()])?;
         Ok(if diffs.is_empty() {
             None
         } else {
@@ -127,12 +128,7 @@ impl Repo {
     /// --cached` for all staged changes). Used to show the full staged diff in
     /// the commit editor.
     pub fn diff_all(&self, source: DiffSource) -> Result<Vec<FileDiff>> {
-        let mut args = DIFF_BASE.to_vec();
-        if source == DiffSource::Staged {
-            args.push("--cached");
-        }
-        let out = self.run(args)?;
-        parse_diff(&out.stdout)
+        self.diff_with(Self::diff_source_args(source), &[])
     }
 
     /// Every tracked change vs. HEAD (`git diff HEAD`): staged and unstaged
@@ -145,10 +141,9 @@ impl Repo {
         if !self.succeeds(["rev-parse", "--verify", "--quiet", "HEAD"])? {
             return self.diff_all(DiffSource::Staged);
         }
-        let mut args = DIFF_BASE.to_vec();
-        args.push("HEAD");
-        let out = self.run(args)?;
-        parse_diff(&out.stdout)
+        let mut args = Self::diff_base(&[]);
+        args.push("HEAD".to_string());
+        self.diff_with(args, &[])
     }
 
     /// The standalone diff transient's unstaged action (`git diff [args]`).

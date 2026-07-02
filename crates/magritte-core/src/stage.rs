@@ -146,26 +146,24 @@ impl Repo {
         reverse: bool,
         check_only: bool,
     ) -> Result<()> {
-        let mut args: Vec<&str> = vec!["apply"];
+        let mut flags: Vec<&str> = Vec::new();
         if target == ApplyTarget::Index {
-            args.push("--cached");
+            flags.push("--cached");
         }
         if reverse {
-            args.push("--reverse");
+            flags.push("--reverse");
         }
         if check_only {
             // --check verifies the patch applies without modifying anything.
-            args.push("--check");
+            flags.push("--check");
         }
-        // Let git infer hunk line counts from the patch body; our `build_patch`
-        // also computes them, but this is a cheap robustness margin.
-        args.push("--recount");
-        // git apply reads the patch from stdin when given no file arguments.
-        self.run_with_input(args, patch.as_bytes())?;
-        Ok(())
+        self.git_apply(patch, &flags)
     }
 
-    /// Run `git apply <flags> --recount` over `patch` (from stdin).
+    /// Run `git apply <flags> --recount` over `patch` (from stdin — git apply
+    /// reads it there when given no file arguments). `--recount` lets git infer
+    /// hunk line counts from the patch body; our `build_patch` also computes
+    /// them, but this is a cheap robustness margin.
     fn git_apply(&self, patch: &str, flags: &[&str]) -> Result<()> {
         let mut args: Vec<&str> = vec!["apply"];
         args.extend_from_slice(flags);

@@ -102,10 +102,12 @@ impl Repo {
         if has("rebase-merge") || has("rebase-apply/onto") {
             return Some(self.rebase_sequence(dir));
         }
-        if has("CHERRY_PICK_HEAD") || self.sequencer_first_verb(dir).as_deref() == Some("pick") {
+        // One `sequencer/todo` read serves both checks below.
+        let sequencer_verb = self.sequencer_first_verb(dir);
+        if has("CHERRY_PICK_HEAD") || sequencer_verb.as_deref() == Some("pick") {
             return Some(self.sequencer_sequence(dir, SequenceKind::CherryPick, "Cherry Picking"));
         }
-        if has("REVERT_HEAD") || self.sequencer_first_verb(dir).as_deref() == Some("revert") {
+        if has("REVERT_HEAD") || sequencer_verb.as_deref() == Some("revert") {
             return Some(self.sequencer_sequence(dir, SequenceKind::Revert, "Reverting"));
         }
         if has("MERGE_HEAD") {
@@ -258,30 +260,37 @@ impl Repo {
 /// blanks, comments, and `noop`.
 fn parse_todo(text: &str) -> Vec<SequenceStep> {
     text.lines()
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|line| {
-            let mut parts = line.splitn(3, ' ');
-            let action = parts.next()?.to_string();
-            if action == "noop" {
-                return None;
-            }
-            let oid = parts.next().map(short);
-            // git may write the oneline as a trailing comment ("# subject").
-            let subject = parts
-                .next()
-                .unwrap_or("")
-                .trim_start_matches("# ")
-                .to_string();
-            Some(SequenceStep {
-                action,
-                oid,
-                subject,
-            })
+        .filter_map(parse_todo_line)
+        .filter(|(action, ..)| *action != "noop")
+        .map(|(action, oid, subject)| SequenceStep {
+            action: action.to_string(),
+            oid,
+            subject,
         })
         .collect()
 }
 
-fn short(oid: &str) -> String {
+/// Split one git-todo line into `(verb, abbreviated oid, subject)`, or `None`
+/// for a blank/comment line. Shared by the sequence and rebase todo parsers:
+/// oids are abbreviated for display, and git may write the oneline as a
+/// trailing comment ("# subject"), which is stripped.
+pub(crate) fn parse_todo_line(line: &str) -> Option<(&str, Option<String>, String)> {
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let mut parts = line.splitn(3, ' ');
+    let action = parts.next()?;
+    let oid = parts.next().map(short);
+    let subject = parts
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("# ")
+        .to_string();
+    Some((action, oid, subject))
+}
+
+/// Abbreviate a full oid for display (git resolves the prefix on write).
+pub(crate) fn short(oid: &str) -> String {
     oid.chars().take(7).collect()
 }
 
