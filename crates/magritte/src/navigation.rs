@@ -121,8 +121,7 @@ impl StatusView {
     pub(crate) fn nav_line(&mut self, delta: isize, cx: &mut Context<Self>) {
         match self.screen {
             Screen::Log(_) => self.log_move(delta, cx),
-            Screen::Commit { .. } => self.commit_view_move(delta, cx),
-            Screen::Diff { .. } => self.diff_view_move(delta, cx),
+            Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
             _ => {
                 self.move_selection(delta);
@@ -140,8 +139,7 @@ impl StatusView {
         let delta = if down { amount } else { -amount };
         match self.screen {
             Screen::Log(_) => self.log_move(delta, cx),
-            Screen::Commit { .. } => self.commit_view_move(delta, cx),
-            Screen::Diff { .. } => self.diff_view_move(delta, cx),
+            Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
             _ => {
                 self.page_selection(delta);

@@ -1692,22 +1692,22 @@ impl StatusView {
         .into_any_element()
     }
 
-    /// Render a commit's diff detail (opened from the log): a header with the
-    /// hash + subject, then the diff as the same rows the commit editor uses.
-    pub(crate) fn render_commit_view(&self, cv: &CommitView, view: &Entity<Self>) -> gpui::Div {
-        let count = cv.rows.len();
-        let body = uniform_list("commit-view-rows", count, {
+    /// The virtualized row list shared by the flattened diff screens: rows
+    /// come from the active screen's [`FlatDiff`], with the cursor/visual
+    /// highlight applied.
+    fn flat_diff_body(&self, id: &'static str, fd: &FlatDiff, view: &Entity<Self>) -> gpui::UniformList {
+        uniform_list(id, fd.rows.len(), {
             let view = view.clone();
             move |range, _window, cx| {
                 let this = view.read(cx);
-                match this.commit_view() {
-                    Some(cv) => {
-                        let vis = cv.visual.map(|a| (a.min(cv.selected), a.max(cv.selected)));
+                match this.flat_diff() {
+                    Some(fd) => {
+                        let vis = fd.visual.map(|a| (a.min(fd.selected), a.max(fd.selected)));
                         range
                             .map(|ix| {
-                                let highlighted = ix == cv.selected
+                                let highlighted = ix == fd.selected
                                     || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-                                this.render_commit_diff_row(&cv.rows[ix], highlighted)
+                                this.render_commit_diff_row(&fd.rows[ix], highlighted)
                             })
                             .collect::<Vec<_>>()
                     }
@@ -1715,8 +1715,14 @@ impl StatusView {
                 }
             }
         })
-        .track_scroll(&cv.scroll)
-        .flex_grow(1.0);
+        .track_scroll(&fd.scroll)
+        .flex_grow(1.0)
+    }
+
+    /// Render a commit's diff detail (opened from the log): a header with the
+    /// hash + subject, then the diff as the same rows the commit editor uses.
+    pub(crate) fn render_commit_view(&self, cv: &CommitView, view: &Entity<Self>) -> gpui::Div {
+        let body = self.flat_diff_body("commit-view-rows", &cv.body, view);
 
         div()
             .flex()
@@ -1777,28 +1783,7 @@ impl StatusView {
 
     /// Render a standalone diff buffer opened from the `d` diff transient.
     pub(crate) fn render_diff_view(&self, dv: &DiffView, view: &Entity<Self>) -> gpui::Div {
-        let count = dv.rows.len();
-        let body = uniform_list("diff-view-rows", count, {
-            let view = view.clone();
-            move |range, _window, cx| {
-                let this = view.read(cx);
-                match this.diff_view() {
-                    Some(dv) => {
-                        let vis = dv.visual.map(|a| (a.min(dv.selected), a.max(dv.selected)));
-                        range
-                            .map(|ix| {
-                                let highlighted = ix == dv.selected
-                                    || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-                                this.render_commit_diff_row(&dv.rows[ix], highlighted)
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                    None => Vec::new(),
-                }
-            }
-        })
-        .track_scroll(&dv.scroll)
-        .flex_grow(1.0);
+        let body = self.flat_diff_body("diff-view-rows", &dv.body, view);
 
         div()
             .flex()

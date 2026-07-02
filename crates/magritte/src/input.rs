@@ -213,21 +213,21 @@ impl StatusView {
             match key.as_str() {
                 // Cancel a visual selection first; otherwise leave the view.
                 "escape" | "q" => {
-                    if self.commit_view().is_some_and(|cv| cv.visual.is_some()) {
-                        if let Some(cv) = self.commit_view_mut() {
-                            cv.visual = None;
+                    if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
+                        if let Some(fd) = self.flat_diff_mut() {
+                            fd.visual = None;
                         }
                         cx.notify();
                     } else {
                         self.close_commit_view(window, cx);
                     }
                 }
-                "v" => self.commit_view_toggle_visual(cx),
+                "v" => self.flat_diff_toggle_visual(cx),
                 "a" => self.toggle_commit_details(cx),
                 // Copy: evil's `y`; magit-mode-map's `C-w` (the vanilla key).
-                "y" if self.is_evil() => self.copy_commit_selection(cx),
-                "w" if ctrl => self.copy_commit_selection(cx),
-                "c" if cmd => self.copy_commit_selection(cx),
+                "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
+                "w" if ctrl => self.copy_flat_diff_selection(cx),
+                "c" if cmd => self.copy_flat_diff_selection(cx),
                 _ => {}
             }
             return;
@@ -239,19 +239,19 @@ impl StatusView {
             }
             match key.as_str() {
                 "escape" | "q" => {
-                    if self.diff_view().is_some_and(|dv| dv.visual.is_some()) {
-                        if let Some(dv) = self.diff_view_mut() {
-                            dv.visual = None;
+                    if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
+                        if let Some(fd) = self.flat_diff_mut() {
+                            fd.visual = None;
                         }
                         cx.notify();
                     } else {
                         self.close_diff_view(window, cx);
                     }
                 }
-                "v" => self.diff_view_toggle_visual(cx),
-                "y" if self.is_evil() => self.copy_diff_selection(cx),
-                "w" if ctrl => self.copy_diff_selection(cx),
-                "c" if cmd => self.copy_diff_selection(cx),
+                "v" => self.flat_diff_toggle_visual(cx),
+                "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
+                "w" if ctrl => self.copy_flat_diff_selection(cx),
+                "c" if cmd => self.copy_flat_diff_selection(cx),
                 _ => {}
             }
             return;
@@ -721,8 +721,8 @@ impl StatusView {
         if self.commit_view().is_some() {
             match key {
                 "a" => self.toggle_commit_details(cx),
-                "v" => self.commit_view_toggle_visual(cx),
-                "y" | "ctrl-w" => self.copy_commit_selection(cx),
+                "v" => self.flat_diff_toggle_visual(cx),
+                "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_commit_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -730,8 +730,8 @@ impl StatusView {
         }
         if self.diff_view().is_some() {
             match key {
-                "v" => self.diff_view_toggle_visual(cx),
-                "y" | "ctrl-w" => self.copy_diff_selection(cx),
+                "v" => self.flat_diff_toggle_visual(cx),
+                "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_diff_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
