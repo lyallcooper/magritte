@@ -5529,63 +5529,6 @@ fn anchored_ignore_path(path: &str) -> String {
     }
 }
 
-fn describe_command(command: transient::Command) -> &'static str {
-    use transient::Command::*;
-    match command {
-        PushPushRemote | PushUpstream | PushElsewhere => "Pushing",
-        PullPushRemote | PullUpstream | PullElsewhere => "Pulling",
-        FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetching",
-        CommitCreate | CommitAmend | CommitReword | CommitRewordPast | CommitExtend => "Committing",
-        // Branch, stash, and log commands route through their own picker/runner.
-        BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
-            "Working"
-        }
-        TagCreate | TagAnnotated | TagDelete => "Tagging",
-        RemoteAdd | RemoteRename | RemoteRemove => "Working",
-        StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashing",
-        DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Diffing",
-        LogCurrent | LogAll | LogOther | LogReflog => "Logging",
-        ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Resetting",
-        MergePlain | MergeNoCommit | MergeSquash => "Merging",
-        CherryPick | CherryPickRange | CherryApply => "Cherry-picking",
-        RevertCommit | RevertRange | RevertNoCommit => "Reverting",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
-        | RebaseRewordCommit => "Rebasing",
-        IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignoring",
-        // These route through run_sequence / the todo editor, which set their
-        // own progress text.
-        SequenceContinue | SequenceSkip | SequenceAbort | SequenceEditTodo => "Working",
-    }
-}
-
-/// Past-tense success notice for a command (shown briefly when it succeeds).
-fn command_done(command: transient::Command) -> &'static str {
-    use transient::Command::*;
-    match command {
-        PushPushRemote | PushUpstream | PushElsewhere => "Pushed",
-        PullPushRemote | PullUpstream | PullElsewhere => "Pulled",
-        FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => "Fetched",
-        CommitCreate | CommitAmend | CommitReword | CommitRewordPast | CommitExtend => "Committed",
-        BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
-            "Done"
-        }
-        TagCreate | TagAnnotated => "Tagged",
-        TagDelete => "Deleted tag",
-        RemoteAdd | RemoteRename | RemoteRemove => "Done",
-        StashPush | StashPushAll | StashApply | StashPop | StashDrop => "Stashed",
-        DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => "Done",
-        LogCurrent | LogAll | LogOther | LogReflog => "Done",
-        ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => "Reset",
-        MergePlain | MergeNoCommit | MergeSquash => "Merged",
-        CherryPick | CherryPickRange | CherryApply => "Cherry-picked",
-        RevertCommit | RevertRange | RevertNoCommit => "Reverted",
-        RebaseOntoUpstream | RebaseOntoPushRemote | RebaseElsewhere | RebaseInteractive
-        | RebaseRewordCommit => "Rebased",
-        IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => "Ignored",
-        SequenceContinue | SequenceSkip | SequenceAbort | SequenceEditTodo => "Done",
-    }
-}
-
 /// The revision scope for a `git log` invocation.
 enum LogScope {
     /// HEAD / the current branch.

@@ -62,7 +62,7 @@ impl StatusView {
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
                 self.dispatch_branch(command, window, cx)
             }
-            TagCreate | TagAnnotated | TagDelete => self.dispatch_tag(command, args, window, cx),
+            TagCreate | TagDelete => self.dispatch_tag(command, args, window, cx),
             RemoteAdd | RemoteRename | RemoteRemove => self.dispatch_remote(command, args, window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
@@ -431,14 +431,6 @@ impl StatusView {
                     cx,
                 )
             }
-            TagAnnotated => self.open_picker(
-                PickerAction::Tag(TagAction::Create { annotated: true }),
-                Vec::new(),
-                CreateMode::Any,
-                args,
-                window,
-                cx,
-            ),
             TagDelete => self.open_listed_picker(
                 PickerAction::Tag(TagAction::Delete),
                 CreateMode::None,
@@ -1215,35 +1207,14 @@ impl StatusView {
             transient::Command::CommitReword => {
                 self.open_editor(CommitMode::Reword, switches, window, cx)
             }
-            _ => self.run_command(command, switches, cx),
+            // Extend is the one rewrite that runs straight away (no editor).
+            _ => self.run_job(
+                "Committing…",
+                "Committed",
+                move |repo| repo.commit_extend(&switches),
+                cx,
+            ),
         }
-    }
-
-    /// Run a transient command on the background executor, showing progress in
-    /// the bottom bar, then refresh.
-    pub(crate) fn run_command(
-        &mut self,
-        command: transient::Command,
-        switches: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        self.set_progress(format!("{}…", describe_command(command)), cx);
-
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.execute(command, &switches) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.report(command_done(command), result, cx);
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
     }
 
     // --- In-progress sequence (merge/rebase/cherry-pick/revert/am) -------

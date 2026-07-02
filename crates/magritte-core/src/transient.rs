@@ -5,11 +5,9 @@
 //! actions). The model is UI-agnostic: it carries keys and descriptions as
 //! data, but knows nothing about rendering. The frontend renders the popup,
 //! tracks which switches are toggled on, and dispatches keys; when an action
-//! fires it calls [`Repo::execute`] with the active switch arguments.
+//! fires it runs the [`Command`]'s operation with the active switch arguments.
 
-use crate::error::{Error, Result};
 use crate::remote::{RemoteTargets, Upstream};
-use crate::repo::Repo;
 use crate::sequence::SequenceKind;
 
 /// Which built-in key style to use for transient suffixes that differ between
@@ -19,6 +17,17 @@ use crate::sequence::SequenceKind;
 pub enum KeymapStyle {
     EvilCollection,
     Vanilla,
+}
+
+impl KeymapStyle {
+    /// The delete/remove key for this preset (evil `x`, vanilla/Magit `k`),
+    /// shared by the branch/tag/remote transients.
+    fn delete_key(self) -> &'static str {
+        match self {
+            KeymapStyle::EvilCollection => "x",
+            KeymapStyle::Vanilla => "k",
+        }
+    }
 }
 
 /// The git operation an [`Action`] runs. Push/pull/fetch come in magit's three
@@ -42,7 +51,11 @@ pub enum Command {
     CommitAmend,
     /// Reword HEAD (needs a message).
     CommitReword,
-    /// Reword an older commit using an interactive rebase.
+    /// Reword an older commit using an interactive rebase — the commit
+    /// transient's `c R`. Distinct from [`Command::RebaseRewordCommit`] (`r w`)
+    /// because the hosting transient's switches differ: commit switches (e.g.
+    /// `--date=now`) are not valid rebase options, so this variant drops them,
+    /// while `r w` carries the rebase transient's switches through.
     CommitRewordPast,
     /// Amend HEAD with staged changes, keeping its message.
     CommitExtend,
@@ -58,9 +71,6 @@ pub enum Command {
     BranchDelete,
     /// Create a lightweight tag at point/HEAD (prompts for name).
     TagCreate,
-    /// Create an annotated tag at point/HEAD (legacy command id; the built-in
-    /// transient uses `TagCreate` plus the `--annotate` switch, like Magit).
-    TagAnnotated,
     /// Delete a local tag (prompts for the tag).
     TagDelete,
     /// Add a remote (prompts for name then URL).
@@ -264,6 +274,17 @@ pub struct Action {
     pub command: Command,
 }
 
+impl Action {
+    /// An action row — the one-per-menu-entry shorthand the builders use.
+    pub fn suffix(key: &'static str, description: impl Into<String>, command: Command) -> Suffix {
+        Suffix::Action(Action {
+            key,
+            description: description.into(),
+            command,
+        })
+    }
+}
+
 /// A keys-and-description row with no toggle state of its own (e.g. the rows of
 /// the `?` dispatch menu). The frontend decides what a row does when invoked;
 /// `keys` is the *current* binding (so the menu reflects remaps) and may list
@@ -294,6 +315,7 @@ pub enum Suffix {
     Custom(Custom),
 }
 
+#[derive(Debug, Clone)]
 pub struct Group {
     pub title: Vec<TitleSpan>,
     pub suffixes: Vec<Suffix>,
@@ -322,6 +344,7 @@ pub fn plain_title(s: impl Into<String>) -> Vec<TitleSpan> {
     vec![TitleSpan::Text(s.into())]
 }
 
+#[derive(Debug, Clone)]
 pub struct Transient {
     pub title: Vec<TitleSpan>,
     pub groups: Vec<Group>,
@@ -441,21 +464,9 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: push_to,
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "p",
-                        description: push_remote_label(t),
-                        command: Command::PushPushRemote,
-                    }),
-                    Suffix::Action(Action {
-                        key: "u",
-                        description: upstream_label(t),
-                        command: Command::PushUpstream,
-                    }),
-                    Suffix::Action(Action {
-                        key: "e",
-                        description: "elsewhere".to_string(),
-                        command: Command::PushElsewhere,
-                    }),
+                    Action::suffix("p", push_remote_label(t), Command::PushPushRemote),
+                    Action::suffix("u", upstream_label(t), Command::PushUpstream),
+                    Action::suffix("e", "elsewhere", Command::PushElsewhere),
                 ],
             },
         ],
@@ -469,42 +480,19 @@ pub fn branch_transient(style: KeymapStyle) -> Transient {
             Group {
                 title: plain_title("Checkout"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "b",
-                        description: "branch/revision".to_string(),
-                        command: Command::BranchCheckout,
-                    }),
-                    Suffix::Action(Action {
-                        key: "c",
-                        description: "new branch".to_string(),
-                        command: Command::BranchCreateCheckout,
-                    }),
+                    Action::suffix("b", "branch/revision", Command::BranchCheckout),
+                    Action::suffix("c", "new branch", Command::BranchCreateCheckout),
                 ],
             },
             Group {
                 title: plain_title("Create"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: "n",
-                    description: "new branch".to_string(),
-                    command: Command::BranchCreate,
-                })],
+                suffixes: vec![Action::suffix("n", "new branch", Command::BranchCreate)],
             },
             Group {
                 title: plain_title("Do"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "m",
-                        description: "rename".to_string(),
-                        command: Command::BranchRename,
-                    }),
-                    Suffix::Action(Action {
-                        key: match style {
-                            KeymapStyle::EvilCollection => "x",
-                            KeymapStyle::Vanilla => "k",
-                        },
-                        description: "delete".to_string(),
-                        command: Command::BranchDelete,
-                    }),
+                    Action::suffix("m", "rename", Command::BranchRename),
+                    Action::suffix(style.delete_key(), "delete", Command::BranchDelete),
                 ],
             },
         ],
@@ -524,22 +512,11 @@ pub fn tag_transient(style: KeymapStyle) -> Transient {
             },
             Group {
                 title: plain_title("Create"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: "t",
-                    description: "tag".to_string(),
-                    command: Command::TagCreate,
-                })],
+                suffixes: vec![Action::suffix("t", "tag", Command::TagCreate)],
             },
             Group {
                 title: plain_title("Do"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: match style {
-                        KeymapStyle::EvilCollection => "x",
-                        KeymapStyle::Vanilla => "k",
-                    },
-                    description: "delete".to_string(),
-                    command: Command::TagDelete,
-                })],
+                suffixes: vec![Action::suffix(style.delete_key(), "delete", Command::TagDelete)],
             },
         ],
     }
@@ -556,24 +533,9 @@ pub fn remote_transient(style: KeymapStyle) -> Transient {
             Group {
                 title: plain_title("Actions"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "add".to_string(),
-                        command: Command::RemoteAdd,
-                    }),
-                    Suffix::Action(Action {
-                        key: "r",
-                        description: "rename".to_string(),
-                        command: Command::RemoteRename,
-                    }),
-                    Suffix::Action(Action {
-                        key: match style {
-                            KeymapStyle::EvilCollection => "x",
-                            KeymapStyle::Vanilla => "k",
-                        },
-                        description: "remove".to_string(),
-                        command: Command::RemoteRemove,
-                    }),
+                    Action::suffix("a", "add", Command::RemoteAdd),
+                    Action::suffix("r", "rename", Command::RemoteRename),
+                    Action::suffix(style.delete_key(), "remove", Command::RemoteRemove),
                 ],
             },
         ],
@@ -587,36 +549,16 @@ pub fn stash_transient() -> Transient {
             Group {
                 title: plain_title("Stash"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "z",
-                        description: "both".to_string(),
-                        command: Command::StashPush,
-                    }),
-                    Suffix::Action(Action {
-                        key: "Z",
-                        description: "both, incl. untracked".to_string(),
-                        command: Command::StashPushAll,
-                    }),
+                    Action::suffix("z", "both", Command::StashPush),
+                    Action::suffix("Z", "both, incl. untracked", Command::StashPushAll),
                 ],
             },
             Group {
                 title: plain_title("Use"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "apply".to_string(),
-                        command: Command::StashApply,
-                    }),
-                    Suffix::Action(Action {
-                        key: "p",
-                        description: "pop".to_string(),
-                        command: Command::StashPop,
-                    }),
-                    Suffix::Action(Action {
-                        key: "k",
-                        description: "drop".to_string(),
-                        command: Command::StashDrop,
-                    }),
+                    Action::suffix("a", "apply", Command::StashApply),
+                    Action::suffix("p", "pop", Command::StashPop),
+                    Action::suffix("k", "drop", Command::StashDrop),
                 ],
             },
         ],
@@ -692,26 +634,10 @@ pub fn log_transient() -> Transient {
             Group {
                 title: plain_title("Log"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "l",
-                        description: "current".to_string(),
-                        command: Command::LogCurrent,
-                    }),
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "all branches".to_string(),
-                        command: Command::LogAll,
-                    }),
-                    Suffix::Action(Action {
-                        key: "o",
-                        description: "other".to_string(),
-                        command: Command::LogOther,
-                    }),
-                    Suffix::Action(Action {
-                        key: "r",
-                        description: "reflog".to_string(),
-                        command: Command::LogReflog,
-                    }),
+                    Action::suffix("l", "current", Command::LogCurrent),
+                    Action::suffix("a", "all branches", Command::LogAll),
+                    Action::suffix("o", "other", Command::LogOther),
+                    Action::suffix("r", "reflog", Command::LogReflog),
                 ],
             },
         ],
@@ -793,36 +719,12 @@ pub fn diff_transient() -> Transient {
             Group {
                 title: plain_title("Actions"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "d",
-                        description: "smart".to_string(),
-                        command: Command::DiffDwim,
-                    }),
-                    Suffix::Action(Action {
-                        key: "r",
-                        description: "range".to_string(),
-                        command: Command::DiffRange,
-                    }),
-                    Suffix::Action(Action {
-                        key: "u",
-                        description: "unstaged".to_string(),
-                        command: Command::DiffUnstaged,
-                    }),
-                    Suffix::Action(Action {
-                        key: "s",
-                        description: "staged".to_string(),
-                        command: Command::DiffStaged,
-                    }),
-                    Suffix::Action(Action {
-                        key: "w",
-                        description: "worktree".to_string(),
-                        command: Command::DiffWorktree,
-                    }),
-                    Suffix::Action(Action {
-                        key: "c",
-                        description: "show commit".to_string(),
-                        command: Command::DiffCommit,
-                    }),
+                    Action::suffix("d", "smart", Command::DiffDwim),
+                    Action::suffix("r", "range", Command::DiffRange),
+                    Action::suffix("u", "unstaged", Command::DiffUnstaged),
+                    Action::suffix("s", "staged", Command::DiffStaged),
+                    Action::suffix("w", "worktree", Command::DiffWorktree),
+                    Action::suffix("c", "show commit", Command::DiffCommit),
                 ],
             },
         ],
@@ -864,39 +766,19 @@ pub fn commit_transient() -> Transient {
             },
             Group {
                 title: plain_title("Create"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: "c",
-                    description: "Commit".to_string(),
-                    command: Command::CommitCreate,
-                })],
+                suffixes: vec![Action::suffix("c", "Commit", Command::CommitCreate)],
             },
             Group {
                 title: plain_title("Edit HEAD"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "e",
-                        description: "Extend (keep message)".to_string(),
-                        command: Command::CommitExtend,
-                    }),
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "Amend".to_string(),
-                        command: Command::CommitAmend,
-                    }),
-                    Suffix::Action(Action {
-                        key: "w",
-                        description: "Reword (message only)".to_string(),
-                        command: Command::CommitReword,
-                    }),
+                    Action::suffix("e", "Extend (keep message)", Command::CommitExtend),
+                    Action::suffix("a", "Amend", Command::CommitAmend),
+                    Action::suffix("w", "Reword (message only)", Command::CommitReword),
                 ],
             },
             Group {
                 title: plain_title("Edit and rebase"),
-                suffixes: vec![Suffix::Action(Action {
-                    key: "R",
-                    description: "Reword past".to_string(),
-                    command: Command::CommitRewordPast,
-                })],
+                suffixes: vec![Action::suffix("R", "Reword past", Command::CommitRewordPast)],
             },
         ],
     }
@@ -924,21 +806,9 @@ pub fn pull_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Pull from"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "p",
-                        description: push_remote,
-                        command: Command::PullPushRemote,
-                    }),
-                    Suffix::Action(Action {
-                        key: "u",
-                        description: upstream_label(t),
-                        command: Command::PullUpstream,
-                    }),
-                    Suffix::Action(Action {
-                        key: "e",
-                        description: "elsewhere".to_string(),
-                        command: Command::PullElsewhere,
-                    }),
+                    Action::suffix("p", push_remote, Command::PullPushRemote),
+                    Action::suffix("u", upstream_label(t), Command::PullUpstream),
+                    Action::suffix("e", "elsewhere", Command::PullElsewhere),
                 ],
             },
         ],
@@ -972,26 +842,10 @@ pub fn fetch_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Fetch from"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "p",
-                        description: push_remote,
-                        command: Command::FetchPushRemote,
-                    }),
-                    Suffix::Action(Action {
-                        key: "u",
-                        description: upstream,
-                        command: Command::FetchUpstream,
-                    }),
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "all remotes".to_string(),
-                        command: Command::FetchAll,
-                    }),
-                    Suffix::Action(Action {
-                        key: "e",
-                        description: "elsewhere".to_string(),
-                        command: Command::FetchElsewhere,
-                    }),
+                    Action::suffix("p", push_remote, Command::FetchPushRemote),
+                    Action::suffix("u", upstream, Command::FetchUpstream),
+                    Action::suffix("a", "all remotes", Command::FetchAll),
+                    Action::suffix("e", "elsewhere", Command::FetchElsewhere),
                 ],
             },
         ],
@@ -1024,36 +878,16 @@ pub fn rebase_transient(t: &RemoteTargets) -> Transient {
             Group {
                 title: plain_title("Rebase onto"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "p",
-                        description: push_remote,
-                        command: Command::RebaseOntoPushRemote,
-                    }),
-                    Suffix::Action(Action {
-                        key: "u",
-                        description: upstream_label(t),
-                        command: Command::RebaseOntoUpstream,
-                    }),
-                    Suffix::Action(Action {
-                        key: "e",
-                        description: "elsewhere".to_string(),
-                        command: Command::RebaseElsewhere,
-                    }),
+                    Action::suffix("p", push_remote, Command::RebaseOntoPushRemote),
+                    Action::suffix("u", upstream_label(t), Command::RebaseOntoUpstream),
+                    Action::suffix("e", "elsewhere", Command::RebaseElsewhere),
                 ],
             },
             Group {
                 title: plain_title("Rebase"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "i",
-                        description: "interactively".to_string(),
-                        command: Command::RebaseInteractive,
-                    }),
-                    Suffix::Action(Action {
-                        key: "w",
-                        description: "to reword a commit".to_string(),
-                        command: Command::RebaseRewordCommit,
-                    }),
+                    Action::suffix("i", "interactively", Command::RebaseInteractive),
+                    Action::suffix("w", "to reword a commit", Command::RebaseRewordCommit),
                 ],
             },
         ],
@@ -1074,21 +908,9 @@ pub fn merge_transient() -> Transient {
             Group {
                 title: plain_title("Merge"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "m",
-                        description: "merge".to_string(),
-                        command: Command::MergePlain,
-                    }),
-                    Suffix::Action(Action {
-                        key: "n",
-                        description: "merge, don't commit".to_string(),
-                        command: Command::MergeNoCommit,
-                    }),
-                    Suffix::Action(Action {
-                        key: "s",
-                        description: "squash merge".to_string(),
-                        command: Command::MergeSquash,
-                    }),
+                    Action::suffix("m", "merge", Command::MergePlain),
+                    Action::suffix("n", "merge, don't commit", Command::MergeNoCommit),
+                    Action::suffix("s", "squash merge", Command::MergeSquash),
                 ],
             },
         ],
@@ -1118,21 +940,9 @@ pub fn cherry_pick_transient() -> Transient {
             Group {
                 title: plain_title("Apply here"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: "A",
-                        description: "pick".to_string(),
-                        command: Command::CherryPick,
-                    }),
-                    Suffix::Action(Action {
-                        key: "a",
-                        description: "apply".to_string(),
-                        command: Command::CherryApply,
-                    }),
-                    Suffix::Action(Action {
-                        key: "r",
-                        description: "range".to_string(),
-                        command: Command::CherryPickRange,
-                    }),
+                    Action::suffix("A", "pick", Command::CherryPick),
+                    Action::suffix("a", "apply", Command::CherryApply),
+                    Action::suffix("r", "range", Command::CherryPickRange),
                 ],
             },
         ],
@@ -1165,21 +975,9 @@ pub fn revert_transient(style: KeymapStyle) -> Transient {
             Group {
                 title: plain_title("Actions"),
                 suffixes: vec![
-                    Suffix::Action(Action {
-                        key: revert_key,
-                        description: "revert commit".to_string(),
-                        command: Command::RevertCommit,
-                    }),
-                    Suffix::Action(Action {
-                        key: reverse_key,
-                        description: "revert changes".to_string(),
-                        command: Command::RevertNoCommit,
-                    }),
-                    Suffix::Action(Action {
-                        key: "r",
-                        description: "range".to_string(),
-                        command: Command::RevertRange,
-                    }),
+                    Action::suffix(revert_key, "revert commit", Command::RevertCommit),
+                    Action::suffix(reverse_key, "revert changes", Command::RevertNoCommit),
+                    Action::suffix("r", "range", Command::RevertRange),
                 ],
             },
         ],
@@ -1202,31 +1000,15 @@ pub fn sequence_transient(kind: SequenceKind, style: KeymapStyle) -> Transient {
         SequenceKind::Merge | SequenceKind::Rebase => "r",
     };
     if kind.can_continue() {
-        suffixes.push(Suffix::Action(Action {
-            key: continue_key,
-            description: "continue".to_string(),
-            command: Command::SequenceContinue,
-        }));
+        suffixes.push(Action::suffix(continue_key, "continue", Command::SequenceContinue));
     }
     if kind.can_skip() {
-        suffixes.push(Suffix::Action(Action {
-            key: "s",
-            description: "skip".to_string(),
-            command: Command::SequenceSkip,
-        }));
+        suffixes.push(Action::suffix("s", "skip", Command::SequenceSkip));
     }
     if kind.can_edit_todo() {
-        suffixes.push(Suffix::Action(Action {
-            key: "e",
-            description: "edit".to_string(),
-            command: Command::SequenceEditTodo,
-        }));
+        suffixes.push(Action::suffix("e", "edit", Command::SequenceEditTodo));
     }
-    suffixes.push(Suffix::Action(Action {
-        key: "a",
-        description: "abort".to_string(),
-        command: Command::SequenceAbort,
-    }));
+    suffixes.push(Action::suffix("a", "abort", Command::SequenceAbort));
     let label = kind.label();
     let mut title = label.to_string();
     title[..1].make_ascii_uppercase();
@@ -1245,26 +1027,10 @@ pub fn ignore_transient() -> Transient {
         groups: vec![Group {
             title: plain_title("Gitignore"),
             suffixes: vec![
-                Suffix::Action(Action {
-                    key: "t",
-                    description: "shared at toplevel (.gitignore)".to_string(),
-                    command: Command::IgnoreToplevel,
-                }),
-                Suffix::Action(Action {
-                    key: "s",
-                    description: "shared in subdirectory (.gitignore)".to_string(),
-                    command: Command::IgnoreSubdir,
-                }),
-                Suffix::Action(Action {
-                    key: "p",
-                    description: "privately (.git/info/exclude)".to_string(),
-                    command: Command::IgnorePrivate,
-                }),
-                Suffix::Action(Action {
-                    key: "g",
-                    description: "privately for all repositories".to_string(),
-                    command: Command::IgnoreGlobal,
-                }),
+                Action::suffix("t", "shared at toplevel (.gitignore)", Command::IgnoreToplevel),
+                Action::suffix("s", "shared in subdirectory (.gitignore)", Command::IgnoreSubdir),
+                Action::suffix("p", "privately (.git/info/exclude)", Command::IgnorePrivate),
+                Action::suffix("g", "privately for all repositories", Command::IgnoreGlobal),
             ],
         }],
     }
@@ -1276,52 +1042,15 @@ pub fn reset_transient() -> Transient {
         groups: vec![Group {
             title: plain_title("Reset"),
             suffixes: vec![
-                Suffix::Action(Action {
-                    key: "m",
-                    description: "mixed (HEAD and index)".to_string(),
-                    command: Command::ResetMixed,
-                }),
-                Suffix::Action(Action {
-                    key: "s",
-                    description: "soft (HEAD only)".to_string(),
-                    command: Command::ResetSoft,
-                }),
-                Suffix::Action(Action {
-                    key: "h",
-                    description: "hard (HEAD, index, working tree)".to_string(),
-                    command: Command::ResetHard,
-                }),
-                Suffix::Action(Action {
-                    key: "k",
-                    description: "keep (HEAD and index, keep uncommitted)".to_string(),
-                    command: Command::ResetKeep,
-                }),
-                Suffix::Action(Action {
-                    key: "i",
-                    description: "index (only)".to_string(),
-                    command: Command::ResetIndex,
-                }),
-                Suffix::Action(Action {
-                    key: "w",
-                    description: "worktree (only)".to_string(),
-                    command: Command::ResetWorktree,
-                }),
+                Action::suffix("m", "mixed (HEAD and index)", Command::ResetMixed),
+                Action::suffix("s", "soft (HEAD only)", Command::ResetSoft),
+                Action::suffix("h", "hard (HEAD, index, working tree)", Command::ResetHard),
+                Action::suffix("k", "keep (HEAD and index, keep uncommitted)", Command::ResetKeep),
+                Action::suffix("i", "index (only)", Command::ResetIndex),
+                Action::suffix("w", "worktree (only)", Command::ResetWorktree),
             ],
         }],
     }
 }
 
-impl Repo {
-    /// Run a transient command that doesn't need a resolved remote or a message:
-    /// currently only commit-extend. Push/pull/fetch are run via the dedicated
-    /// [`Repo::push_to`]/[`pull_from`](Repo::pull_from)/etc. methods (the frontend
-    /// resolves the remote first), and the message commits go through the editor.
-    pub fn execute(&self, command: Command, switches: &[String]) -> Result<String> {
-        match command {
-            Command::CommitExtend => self.commit_extend(switches),
-            _ => Err(Error::Message(
-                "command is not run via execute()".to_string(),
-            )),
-        }
-    }
-}
+
