@@ -4,7 +4,7 @@
 //! cursor. `impl StatusView` like the other view slices.
 
 use gpui::{Context, UniformListScrollHandle, Window};
-use magritte_core::transient;
+use magritte_core::{transient, LogEntry, Repo};
 
 use crate::*;
 
@@ -91,57 +91,52 @@ impl StatusView {
     /// Open the commit-log view for `git log <args>`: show it immediately
     /// (empty), then load the commits off the UI thread. Args are assembled by
     /// [`build_log_args`] (including the default limit).
-    pub(crate) fn start_log(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+    /// Show the log view (loading) for `purpose`, run `load` on the background
+    /// executor, and fill the log when it lands — the shape all four log
+    /// openers share. The screen-load generation guards against a superseded
+    /// open populating a newer screen.
+    fn spawn_log<F>(&mut self, purpose: LogPurpose, load: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(Repo) -> magritte_core::Result<Vec<LogEntry>> + Send + 'static,
+    {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        let gen = self.show_log_loading(LogPurpose::Browse, cx);
+        let gen = self.show_log_loading(purpose, cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { repo.log_with(&args) })
+                .spawn(async move { load(repo) })
                 .await;
             this.update(cx, |this, cx| this.fill_log(gen, result, cx))
                 .ok();
         })
         .detach();
+    }
+
+    pub(crate) fn start_log(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        self.spawn_log(LogPurpose::Browse, move |repo| repo.log_with(&args), cx);
     }
 
     /// Open the log to pick the commit to rebase interactively *since* — magit's
     /// `magit-log-select`. The chosen commit and everything above it become the
     /// editable todo; `switches` carries the rebase transient's flags.
     pub(crate) fn start_log_select_rebase(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.show_log_loading(LogPurpose::SelectRebaseBase { args: switches }, cx);
         let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.log_with(&args) })
-                .await;
-            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
-                .ok();
-        })
-        .detach();
+        self.spawn_log(
+            LogPurpose::SelectRebaseBase { args: switches },
+            move |repo| repo.log_with(&args),
+            cx,
+        );
     }
 
     pub(crate) fn start_log_select_rebase_reword(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.show_log_loading(LogPurpose::SelectRebaseReword { args: switches }, cx);
         let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.log_with(&args) })
-                .await;
-            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
-                .ok();
-        })
-        .detach();
+        self.spawn_log(
+            LogPurpose::SelectRebaseReword { args: switches },
+            move |repo| repo.log_with(&args),
+            cx,
+        );
     }
 
     /// Begin an interactive rebase since the commit selected in the log (its
@@ -291,19 +286,7 @@ impl StatusView {
 
     /// Open the reflog view (`l r`).
     pub(crate) fn start_reflog(&mut self, limit: usize, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.show_log_loading(LogPurpose::Browse, cx);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.reflog(limit) })
-                .await;
-            this.update(cx, |this, cx| this.fill_log(gen, result, cx))
-                .ok();
-        })
-        .detach();
+        self.spawn_log(LogPurpose::Browse, move |repo| repo.reflog(limit), cx);
     }
 
     /// Show the (empty) log view immediately while commits load, returning the

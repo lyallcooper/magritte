@@ -718,6 +718,45 @@ impl StatusView {
         true
     }
 
+    /// Close the open picker. If it was prompting for a transient option value,
+    /// reopen that transient unchanged rather than dismissing everything.
+    pub(crate) fn cancel_popup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Popup::Picker(p)) = self.popup.take() {
+            if let Some(ts) = p.resume {
+                self.popup = Some(Popup::Transient(*ts));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Mouse click on a status row: select it, and toggle its fold if foldable.
+    pub(crate) fn click_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.popup.is_some() {
+            self.popup = None;
+            cx.notify();
+            return;
+        }
+        // A shift-click already set up the extended selection in `on_mouse_down`;
+        // don't also toggle the row's fold.
+        if self.selection.shift_click {
+            self.selection.shift_click = false;
+            cx.notify();
+            return;
+        }
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        let foldable = row.fold.is_some();
+        if row.selectable {
+            self.selected = ix;
+        }
+        if foldable {
+            self.toggle_fold(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     pub(crate) fn run_info_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
         if self.commit_view().is_some() {

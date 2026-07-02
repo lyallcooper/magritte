@@ -7,7 +7,10 @@
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
+use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
+use gpui_component::switch::Switch;
+use gpui_component::{IconName, Sizable};
 use gpui_component::scroll::ScrollableElement;
 
 use crate::*;
@@ -361,6 +364,160 @@ impl StatusView {
             _subs: subs,
         });
         cx.notify();
+    }
+
+    /// The settings "Open config file" control: a split button whose main half
+    /// opens the config in the OS default app, and whose dropdown offers "Copy
+    /// path" plus an "Open in" list of the installed editors. It's an escape
+    /// hatch for settings the UI doesn't expose, and a way to see where the file
+    /// lives. Menu items dispatch actions routed to the status view's focus.
+    pub(crate) fn open_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
+        let focus = self.focus.clone();
+        let main = Button::new("open-config-main")
+            .label("Open global config")
+            .outline()
+            .xsmall()
+            .icon(IconName::ExternalLink)
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    view.update(cx, |this, _| this.open_config_file());
+                }
+            });
+        DropdownButton::new("open-config")
+            .outline()
+            .xsmall()
+            .button(main)
+            .dropdown_menu(move |menu, _window, _cx| {
+                menu.action_context(focus.clone())
+                    .menu("Copy path", Box::new(CopyConfigPath))
+            })
+    }
+
+    /// overlay), creating it if absent, with a "Copy path" dropdown item. Shown
+    /// only when there's a repo.
+    /// A button that opens this repo's `.git/magritte/config.toml` (the per-repo
+    /// overlay), creating it if absent, with a "Copy path" dropdown item. Shown
+    /// only when there's a repo.
+    pub(crate) fn open_repo_config_button(&self, view: &Entity<Self>) -> impl IntoElement {
+        let focus = self.focus.clone();
+        let main = Button::new("open-repo-config-main")
+            .label("Open repo config")
+            .outline()
+            .xsmall()
+            .icon(IconName::ExternalLink)
+            .on_click({
+                let view = view.clone();
+                move |_, _window, cx| {
+                    view.update(cx, |this, _| this.open_repo_config_file());
+                }
+            });
+        DropdownButton::new("open-repo-config")
+            .outline()
+            .xsmall()
+            .button(main)
+            .dropdown_menu(move |menu, _window, _cx| {
+                menu.action_context(focus.clone())
+                    .menu("Copy path", Box::new(CopyRepoConfigPath))
+            })
+    }
+
+    /// Copy the repo-scoped config's path to the clipboard.
+    pub(crate) fn copy_repo_config_path(&mut self, cx: &mut Context<Self>) {
+        if let Some(dir) = &self.repo_scope_dir {
+            let path = dir.join("config.toml").to_string_lossy().into_owned();
+            self.copy_to_clipboard(path, cx);
+        }
+    }
+
+    /// Open the repo-scoped config (`.git/magritte/config.toml`), creating an
+    /// empty file (and its dir) first so the editor has something to open.
+    pub(crate) fn open_repo_config_file(&self) {
+        let Some(dir) = self.repo_scope_dir.clone() else {
+            return;
+        };
+        let path = dir.join("config.toml");
+        if !path.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, "");
+        }
+        self.launch_editor(&path, None);
+    }
+
+    /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
+    /// an info icon whose tooltip explains the setting. The tooltip shows
+    /// immediately on hover (zero show-delay, unlike the library's 500ms managed
+    /// tooltip) and wraps to a readable width rather than one long line. The
+    /// switch flips the field and persists on click; all of it is mouse-driven,
+    /// like the rest of the settings screen (not part of the Tab focus ring).
+    pub(crate) fn toggle_control(
+        &self,
+        id: &'static str,
+        checked: bool,
+        explanation: &'static str,
+        view: &Entity<Self>,
+        // Whether flipping this toggle changes fetched data (e.g. the title-bar
+        // tag segment) rather than just how the current data is painted. When
+        // set, the change refreshes so it takes effect live; otherwise a repaint
+        // suffices.
+        refetch: bool,
+        set: fn(&mut config::Config, bool),
+    ) -> AnyElement {
+        let switch = Switch::new(id).checked(checked).on_click({
+            let view = view.clone();
+            move |on, _window, cx| {
+                let on = *on;
+                view.update(cx, |this, cx| {
+                    // Apply to both the live merged config and the global-only
+                    // config that's persisted, so the save doesn't leak the repo
+                    // overlay into the global file.
+                    set(&mut this.config, on);
+                    set(&mut this.config_global, on);
+                    config::save_settings(&this.config_global);
+                    if refetch {
+                        this.refresh(cx);
+                    } else {
+                        cx.notify();
+                    }
+                });
+            }
+        });
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(switch)
+            .child(self.info_icon(format!("{id}-info"), explanation))
+            .into_any_element()
+    }
+
+    /// The update-check toggle restarts/stops its background loop immediately,
+    /// so it is separate from the generic config-only switch helper.
+    pub(crate) fn update_check_toggle_control(&self, view: &Entity<Self>) -> AnyElement {
+        let switch = Switch::new("check-for-updates")
+            .checked(self.config.check_for_updates)
+            .on_click({
+                let view = view.clone();
+                move |on, _window, cx| {
+                    let on = *on;
+                    view.update(cx, |this, cx| {
+                        this.edit_global(|c| c.check_for_updates = on);
+                        config::save_settings(&this.config_global);
+                        this.start_update_checks(cx);
+                        cx.notify();
+                    });
+                }
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(switch)
+            .child(self.info_icon(
+                "check-for-updates-info".to_string(),
+                "Periodically check for published Magritte releases.",
+            ))
+            .into_any_element()
     }
 
     /// Apply a global-settings change to both the live merged config (for the
