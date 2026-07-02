@@ -537,6 +537,18 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_section_sibling(true, cx)),
         nav!("prev-sibling-section", "Previous sibling section", "g k", |t, _w, cx| t
             .nav_section_sibling(false, cx)),
+        nav!("section-up", "Parent section", "^", |t, _w, cx| t
+            .nav_section_up(cx)),
+        // Fold depth (magit's magit-section-show-level-N, applied buffer-wide;
+        // M-1..M-4 alias in both presets).
+        nav!("show-level-1", "Fold to sections", "1", |t, _w, cx| t
+            .nav_show_level(1, cx)),
+        nav!("show-level-2", "Fold to files", "2", |t, _w, cx| t
+            .nav_show_level(2, cx)),
+        nav!("show-level-3", "Fold to hunks", "3", |t, _w, cx| t
+            .nav_show_level(3, cx)),
+        nav!("show-level-4", "Unfold everything", "4", |t, _w, cx| t
+            .nav_show_level(4, cx)),
         // Section jumps (magit-status-jump): the `j` transient in vanilla,
         // direct `g`-sequences in evil (evil-collection's gz/gn/gu/gs/gf*/gp*).
         Command {
@@ -630,6 +642,11 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("V", "visual"),
     // magit-mode-map's C-w (copy the value at point) — kept in both presets.
     ("ctrl-w", "yank"),
+    // Fold-level aliases (magit's M-1..M-4).
+    ("alt-1", "show-level-1"),
+    ("alt-2", "show-level-2"),
+    ("alt-3", "show-level-3"),
+    ("alt-4", "show-level-4"),
     // Section jumps: evil-collection's direct `g`-sequences (vanilla gets the
     // `j` transient instead).
     ("g z", "jump-to-stashes"),
@@ -673,6 +690,11 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-w", "yank"),
     // Magit binds both `h` and `?` to the dispatch (`?` is the fixed key).
     ("h", "help"),
+    // Fold-level aliases (magit's M-1..M-4).
+    ("alt-1", "show-level-1"),
+    ("alt-2", "show-level-2"),
+    ("alt-3", "show-level-3"),
+    ("alt-4", "show-level-4"),
     // Magit's `G` is refresh-all; we have one buffer, so alias plain refresh.
     ("G", "refresh"),
     (":", "git-command"),
@@ -747,6 +769,7 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
         match key {
             "1" => "!".to_string(),
             "4" => "$".to_string(),
+            "6" => "^".to_string(),
             "-" => "_".to_string(),
             "=" => "+".to_string(),
             "[" => "{".to_string(),

@@ -1297,6 +1297,11 @@ struct StatusView {
     /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
     /// to expanded, so this tracks the exceptions rather than `expanded` does.
     collapsed_hunks: HashSet<FoldKey>,
+    /// Set by fold level 3 (files open, hunks closed): diffs that finish
+    /// loading afterwards get their hunks collapsed on arrival, so the level
+    /// covers lazily loaded diffs too. Cleared by any manual fold toggle, a
+    /// refresh, or another level.
+    collapse_new_hunks: bool,
     diffs: HashMap<(DiffSource, String), DiffState>,
     /// Cached syntax highlighting per file diff, keyed like `diffs`.
     highlights: HashMap<(DiffSource, String), FileHighlights>,
@@ -1555,6 +1560,7 @@ impl StatusView {
             error: None,
             expanded,
             collapsed_hunks: HashSet::new(),
+            collapse_new_hunks: false,
             diffs: HashMap::new(),
             highlights: HashMap::new(),
             diff_langs: HashMap::new(),
@@ -2087,6 +2093,7 @@ impl StatusView {
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
         self.collapsed_hunks.clear();
+        self.collapse_new_hunks = false;
         self.error = None;
 
         if self.read_repo().is_none() {
@@ -2462,6 +2469,14 @@ impl StatusView {
                             let default = cx.theme().foreground;
                             let hl = highlight::highlight_diff(diff, lang, cx, default);
                             this.highlights.insert(key.clone(), hl);
+                        }
+                    }
+                    // Fold level 3 (hunks closed) extends to diffs that were
+                    // still loading when it was applied.
+                    if this.collapse_new_hunks {
+                        for ix in 0..diff.hunks.len() {
+                            this.collapsed_hunks
+                                .insert(FoldKey::Hunk(key.0, key.1.clone(), ix));
                         }
                     }
                 }

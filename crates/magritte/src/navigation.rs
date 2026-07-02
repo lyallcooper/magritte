@@ -193,6 +193,100 @@ impl StatusView {
         }
     }
 
+    /// Move to the parent section's start (magit-section-up). The current
+    /// section of a content row is the one it's inside, so a diff line's
+    /// parent is its file — as in magit.
+    pub(crate) fn nav_section_up(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Status) {
+            return;
+        }
+        let Some(cur) = (0..=self.selected)
+            .rev()
+            .find(|&i| section_depth(&self.rows[i]).is_some())
+        else {
+            return;
+        };
+        let depth = section_depth(&self.rows[cur]).unwrap();
+        let parent = (0..cur)
+            .rev()
+            .find(|&i| section_depth(&self.rows[i]).is_some_and(|d| d < depth));
+        if let Some(i) = parent {
+            self.selected = i;
+            self.scroll
+                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Set the fold depth buffer-wide (magit's `magit-section-show-level-N`):
+    /// 1 = sections collapsed, 2 = files visible, 3 = hunks visible (closed),
+    /// 4 = everything open. Levels 3/4 expand every file, which loads any
+    /// diffs not yet fetched; level 3 marks those so their hunks arrive
+    /// collapsed too.
+    pub(crate) fn nav_show_level(&mut self, level: u8, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Status) {
+            return;
+        }
+        self.visual = None;
+        self.collapse_new_hunks = false;
+        self.collapsed_hunks.clear();
+        match level {
+            1 => self.expanded.clear(),
+            2 => {
+                self.expanded = SectionId::ALL
+                    .iter()
+                    .map(|s| FoldKey::Section(*s))
+                    .collect();
+            }
+            3 | 4 => {
+                self.expanded = SectionId::ALL
+                    .iter()
+                    .map(|s| FoldKey::Section(*s))
+                    .collect();
+                // Expand every file in the diff-backed sections, loading any
+                // diff not yet fetched (the same path a manual expand takes).
+                let files: Vec<(DiffSource, String)> = self
+                    .status
+                    .as_ref()
+                    .map(|status| {
+                        status
+                            .unstaged()
+                            .map(|e| (DiffSource::Unstaged, e.path.clone()))
+                            .chain(status.staged().map(|e| (DiffSource::Staged, e.path.clone())))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for (source, path) in files {
+                    self.expanded.insert(FoldKey::File(source, path.clone()));
+                    self.ensure_diff(source, path, cx);
+                }
+                if level == 3 {
+                    let loaded: Vec<(DiffSource, String, usize)> = self
+                        .diffs
+                        .iter()
+                        .filter_map(|((source, path), state)| match state {
+                            DiffState::Loaded(diff) => {
+                                Some((*source, path.clone(), diff.hunks.len()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    for (source, path, hunks) in loaded {
+                        for ix in 0..hunks {
+                            self.collapsed_hunks
+                                .insert(FoldKey::Hunk(source, path.clone(), ix));
+                        }
+                    }
+                    self.collapse_new_hunks = true;
+                }
+            }
+            _ => return,
+        }
+        self.persist_fold_state();
+        self.rebuild_preserving_selection();
+        cx.notify();
+    }
+
     /// Jump to a status section's header (magit-status-jump). A section with
     /// nothing in it has no rows, so the miss reports rather than moving.
     pub(crate) fn jump_to_section(&mut self, id: SectionId, cx: &mut Context<Self>) {
@@ -281,6 +375,8 @@ impl StatusView {
         let Some(key) = key else {
             return;
         };
+        // A manual toggle ends fold level 3's claim on newly loaded diffs.
+        self.collapse_new_hunks = false;
         let is_section = matches!(key, FoldKey::Section(_));
         // Hunks default to expanded, so their state lives in `collapsed_hunks`
         // (present = collapsed); sections/files use `expanded` (present = open).
