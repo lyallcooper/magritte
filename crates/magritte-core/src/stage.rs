@@ -24,7 +24,7 @@ use std::path::Path;
 use crate::diff::{DiffSource, FileDiff, Hunk, LineKind};
 use crate::error::{Error, Result};
 use crate::repo::Repo;
-use crate::status::Change;
+use crate::status::{Change, FileEntry};
 
 /// Where a patch is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,19 +44,18 @@ impl Repo {
         Ok(())
     }
 
-    /// Unstage `path`, resetting its index entry to HEAD. For a staged rename,
-    /// reset both the new and original paths — `reset -- <new>` alone leaves the
-    /// original's staged deletion behind (`D <old>`).
-    pub fn unstage_file(&self, path: &str) -> Result<()> {
-        let orig = self
-            .status()
-            .ok()
-            .and_then(|s| s.entries.into_iter().find(|e| e.path == path))
-            .filter(|e| e.index == Change::Renamed)
-            .and_then(|e| e.orig_path);
+    /// Unstage `entry`'s path, resetting its index entry to HEAD. Takes the
+    /// caller's already-parsed entry (rather than re-running `git status` per
+    /// file) because a staged rename must reset both the new and original
+    /// paths — `reset -- <new>` alone leaves the original's staged deletion
+    /// behind (`D <old>`).
+    pub fn unstage_file(&self, entry: &FileEntry) -> Result<()> {
+        let orig = (entry.index == Change::Renamed)
+            .then(|| entry.orig_path.clone())
+            .flatten();
         match orig {
-            Some(old) => self.run(["reset", "-q", "--", path, &old])?,
-            None => self.run(["reset", "-q", "--", path])?,
+            Some(old) => self.run(["reset", "-q", "--", &entry.path, &old])?,
+            None => self.run(["reset", "-q", "--", &entry.path])?,
         };
         Ok(())
     }
@@ -218,14 +217,12 @@ impl Repo {
     // working tree while preserving any unrelated unstaged edits, mirroring
     // magit's `magit-discard-files` / `magit-discard-apply`. **Destructive.**
 
-    /// Discard a staged file, dispatching on its status the way magit does —
-    /// `checkout HEAD -- path` is *not* used (it would also blow away unstaged
-    /// worktree edits and fails on staged new/renamed files).
-    pub fn discard_staged_file(&self, path: &str) -> Result<()> {
-        let status = self.status()?;
-        let Some(entry) = status.entries.iter().find(|e| e.path == path) else {
-            return Ok(());
-        };
+    /// Discard a staged file, dispatching on its already-parsed status entry
+    /// the way magit does — `checkout HEAD -- path` is *not* used (it would
+    /// also blow away unstaged worktree edits and fails on staged new/renamed
+    /// files).
+    pub fn discard_staged_file(&self, entry: &FileEntry) -> Result<()> {
+        let path = &entry.path;
         match entry.index {
             // Staged new/copied file: delete it (or, if it also has unstaged
             // edits, fall back to untracked via add+reset, keeping the content).

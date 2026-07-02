@@ -24,6 +24,15 @@ fn entry<'a>(status: &'a magritte_core::Status, path: &str) -> Option<&'a FileEn
     status.entries.iter().find(|e| e.path == path)
 }
 
+/// The current status entry for `path` — the parsed context the file-level
+/// unstage/discard operations now take instead of re-reading status themselves.
+fn live_entry(repo: &Repo, path: &str) -> FileEntry {
+    let status = repo.status().unwrap();
+    entry(&status, path)
+        .unwrap_or_else(|| panic!("no status entry for {path}"))
+        .clone()
+}
+
 #[test]
 fn stage_and_unstage_whole_file() {
     let t = TestRepo::new();
@@ -37,7 +46,7 @@ fn stage_and_unstage_whole_file() {
     assert!(entry(&s, "file.txt").unwrap().is_staged());
     assert!(!entry(&s, "file.txt").unwrap().has_worktree_changes());
 
-    repo.unstage_file("file.txt").unwrap();
+    repo.unstage_file(&live_entry(&repo, "file.txt")).unwrap();
     let s = repo.status().unwrap();
     assert!(entry(&s, "file.txt").unwrap().has_worktree_changes());
     assert!(!entry(&s, "file.txt").unwrap().is_staged());
@@ -176,7 +185,7 @@ fn discard_staged_file_reverts_to_head() {
     let repo = open(&t);
     repo.stage_file("file.txt").unwrap();
 
-    repo.discard_staged_file("file.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "file.txt")).unwrap();
 
     let s = repo.status().unwrap();
     assert!(entry(&s, "file.txt").is_none(), "file should be clean");
@@ -204,7 +213,7 @@ fn discard_staged_file_preserves_unstaged_edit() {
     t.write("file.txt", &format!("{}\n", lines.join("\n")));
 
     let repo = open(&t);
-    repo.discard_staged_file("file.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "file.txt")).unwrap();
 
     // line 2 reverted (staged delta gone); line 9 still carries the unstaged edit.
     let contents = std::fs::read_to_string(t.path().join("file.txt")).unwrap();
@@ -240,7 +249,7 @@ fn discard_staged_file_reports_partial_on_overlap() {
     t.write("file.txt", "line1\nWORKONLY\nline3\n");
 
     let repo = open(&t);
-    let result = repo.discard_staged_file("file.txt");
+    let result = repo.discard_staged_file(&live_entry(&repo, "file.txt"));
     assert!(
         result.is_err(),
         "overlapping worktree hunk should report partial"
@@ -264,7 +273,7 @@ fn discard_staged_new_file_deletes_it() {
     t.git(["add", "added.txt"]);
 
     let repo = open(&t);
-    repo.discard_staged_file("added.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "added.txt")).unwrap();
     assert!(
         !t.path().join("added.txt").exists(),
         "new file should be removed"
@@ -284,7 +293,7 @@ fn discard_staged_new_file_with_unstaged_becomes_untracked() {
     t.write("added.txt", "v1\nv2\n"); // unstaged edit on top of the staged add
 
     let repo = open(&t);
-    repo.discard_staged_file("added.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "added.txt")).unwrap();
 
     assert!(t.path().join("added.txt").exists(), "file should be kept");
     let s = repo.status().unwrap();
@@ -303,7 +312,7 @@ fn unstage_staged_rename_is_complete() {
     t.git(["mv", "old.txt", "new.txt"]);
 
     let repo = open(&t);
-    repo.unstage_file("new.txt").unwrap();
+    repo.unstage_file(&live_entry(&repo, "new.txt")).unwrap();
 
     // Nothing should remain staged (no lingering `D old.txt`).
     let s = repo.status().unwrap();
@@ -324,7 +333,7 @@ fn discard_staged_deletion_resurrects() {
     t.git(["rm", "doomed.txt"]); // stages the deletion
 
     let repo = open(&t);
-    repo.discard_staged_file("doomed.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "doomed.txt")).unwrap();
 
     // No longer a staged deletion; HEAD content is back in the index.
     let s = repo.status().unwrap();
@@ -342,7 +351,7 @@ fn discard_staged_rename_renames_back() {
     t.git(["mv", "old.txt", "new.txt"]); // stages the rename
 
     let repo = open(&t);
-    repo.discard_staged_file("new.txt").unwrap();
+    repo.discard_staged_file(&live_entry(&repo, "new.txt")).unwrap();
 
     assert!(
         t.path().join("old.txt").exists(),

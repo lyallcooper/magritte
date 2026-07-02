@@ -3,7 +3,7 @@
 //! background executor against a [`Repo`]. This module is UI-free — it depends
 //! only on the core — so the mutation logic stays separate from rendering.
 
-use magritte_core::{ApplyTarget, FileDiff, Repo};
+use magritte_core::{ApplyTarget, FileDiff, Repo, FileEntry};
 
 /// The staging verb a keypress requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub enum RegionKind {
 /// A resolved git mutation, runnable on the background executor.
 pub enum Action {
     StageFile(String),
-    UnstageFile(String),
+    UnstageFile(FileEntry),
     DiscardTracked(String),
     DiscardUntracked(String),
     StageAll,
@@ -40,7 +40,7 @@ pub enum Action {
     StageLines(FileDiff, usize, Vec<usize>),
     UnstageLines(FileDiff, usize, Vec<usize>),
     DiscardLines(FileDiff, usize, Vec<usize>),
-    DiscardStagedFile(String),
+    DiscardStagedFile(FileEntry),
     DiscardStagedHunk(FileDiff, usize),
     DiscardStagedLines(FileDiff, usize, Vec<usize>),
     /// A region selection spanning one file's hunks: hunk index -> line indices.
@@ -64,7 +64,7 @@ impl Action {
         let to_err = |r: magritte_core::Result<()>| r.map_err(|e| e.to_string());
         match self {
             Action::StageFile(p) => to_err(repo.stage_file(&p)),
-            Action::UnstageFile(p) => to_err(repo.unstage_file(&p)),
+            Action::UnstageFile(e) => to_err(repo.unstage_file(&e)),
             Action::DiscardTracked(p) => to_err(repo.discard_tracked_file(&p)),
             Action::DiscardUntracked(p) => to_err(repo.discard_untracked_file(&p)),
             Action::StageAll => to_err(repo.stage_all()),
@@ -87,7 +87,7 @@ impl Action {
             Action::DiscardLines(f, h, l) => {
                 hunk(&f, h).and_then(|_| to_err(repo.discard_lines(&f, &f.hunks[h], &l)))
             }
-            Action::DiscardStagedFile(p) => to_err(repo.discard_staged_file(&p)),
+            Action::DiscardStagedFile(e) => to_err(repo.discard_staged_file(&e)),
             Action::DiscardStagedHunk(f, h) => {
                 hunk(&f, h).and_then(|_| to_err(repo.discard_staged_hunk(&f, &f.hunks[h])))
             }
@@ -167,7 +167,7 @@ pub fn describe_discard(action: &Action) -> String {
         Action::DiscardLines(f, _, l) => {
             format!("Discard {} line(s) in {}?", l.len(), f.display_path())
         }
-        Action::DiscardStagedFile(p) => format!("Discard staged changes to {p}?"),
+        Action::DiscardStagedFile(e) => format!("Discard staged changes to {}?", e.path),
         Action::DiscardStagedHunk(f, _) => {
             format!("Discard staged hunk in {}?", f.display_path())
         }

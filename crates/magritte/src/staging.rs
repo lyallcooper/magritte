@@ -244,12 +244,27 @@ impl StatusView {
             (Op::Stage, SectionId::Untracked | SectionId::Unstaged) => {
                 Action::StageFile(f.path.clone())
             }
-            (Op::Unstage, SectionId::Staged) => Action::UnstageFile(f.path.clone()),
+            // Unstage and staged-discard carry the parsed status entry: the
+            // core dispatches on it (rename origins, unstaged edits) without
+            // re-running `git status` per file.
+            (Op::Unstage, SectionId::Staged) => Action::UnstageFile(self.file_entry(&f.path)?),
             (Op::Discard, SectionId::Untracked) => Action::DiscardUntracked(f.path.clone()),
             (Op::Discard, SectionId::Unstaged) => Action::DiscardTracked(f.path.clone()),
-            (Op::Discard, SectionId::Staged) => Action::DiscardStagedFile(f.path.clone()),
+            (Op::Discard, SectionId::Staged) => {
+                Action::DiscardStagedFile(self.file_entry(&f.path)?)
+            }
             _ => return None,
         })
+    }
+
+    /// The parsed status entry for `path`, cloned for embedding in an [`Action`].
+    fn file_entry(&self, path: &str) -> Option<FileEntry> {
+        self.status
+            .as_ref()?
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .cloned()
     }
 
     /// Resolve the row at point + verb into a concrete git action, if the verb
