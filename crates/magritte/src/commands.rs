@@ -461,17 +461,17 @@ pub(crate) fn commands() -> &'static [Command] {
         ),
         top!(
             "stage-all",
-            "Stage all",
+            "Stage all tracked",
             Category::Applying,
             "S",
-            |t, _w, cx| { t.run_action(Action::StageAll, cx) }
+            |t, _w, cx| { t.stage_all_command(cx) }
         ),
         top!(
             "unstage-all",
             "Unstage all",
             Category::Applying,
             "U",
-            |t, _w, cx| { t.run_action(Action::UnstageAll, cx) }
+            |t, _w, cx| { t.unstage_all_command(cx) }
         ),
         top!(
             "discard",

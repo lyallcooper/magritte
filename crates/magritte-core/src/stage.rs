@@ -60,9 +60,22 @@ impl Repo {
         Ok(())
     }
 
-    /// Stage every change in the working tree (`git add -A`).
-    pub fn stage_all(&self) -> Result<()> {
-        self.run(["add", "-A"])?;
+    /// Stage all changes to tracked files (`git add -u`, magit's
+    /// stage-modified): new content and deletions, but not untracked files —
+    /// those stage per file or via their section.
+    pub fn stage_modified(&self) -> Result<()> {
+        self.run(["add", "-u"])?;
+        Ok(())
+    }
+
+    /// Stage the given untracked paths (the Untracked section's header verb).
+    pub fn stage_untracked(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["add".to_string(), "--".to_string()];
+        args.extend(paths.iter().cloned());
+        self.run(&args)?;
         Ok(())
     }
 

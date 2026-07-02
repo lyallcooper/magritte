@@ -34,7 +34,10 @@ pub enum Action {
     UnstageFile(FileEntry),
     DiscardTracked(String),
     DiscardUntracked(String),
+    /// Stage all tracked changes (`git add -u`).
     StageAll,
+    /// Stage the carried untracked paths.
+    StageUntracked(Vec<String>),
     UnstageAll,
     StageHunk(Arc<FileDiff>, usize),
     UnstageHunk(Arc<FileDiff>, usize),
@@ -69,7 +72,8 @@ impl Action {
             Action::UnstageFile(e) => to_err(repo.unstage_file(&e)),
             Action::DiscardTracked(p) => to_err(repo.discard_tracked_file(&p)),
             Action::DiscardUntracked(p) => to_err(repo.discard_untracked_file(&p)),
-            Action::StageAll => to_err(repo.stage_all()),
+            Action::StageAll => to_err(repo.stage_modified()),
+            Action::StageUntracked(paths) => to_err(repo.stage_untracked(&paths)),
             Action::UnstageAll => to_err(repo.unstage_all()),
             Action::StageHunk(f, h) => {
                 hunk(&f, h).and_then(|_| to_err(repo.stage_hunk(&f, &f.hunks[h])))

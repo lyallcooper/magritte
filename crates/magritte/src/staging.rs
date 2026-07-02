@@ -187,6 +187,12 @@ pub(crate) enum Confirm {
     CustomShell { command: String, refresh: bool },
     /// Drop the stash at point (`x` on a stash row): on `y`, drop the reference.
     DropStash(String),
+    /// `S` with changes already staged (magit confirms: it blurs the
+    /// staged/unstaged split): on `y`, stage all tracked changes.
+    StageAll,
+    /// `U` with unstaged/untracked changes present (same rationale): on `y`,
+    /// unstage everything.
+    UnstageAll,
 }
 
 impl StatusView {
@@ -639,6 +645,41 @@ impl StatusView {
     }
 
     /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
+    /// `S`: stage all tracked changes (`git add -u`, magit's stage-modified).
+    /// Confirms first when something is already staged — the operation blurs
+    /// the staged/unstaged split the user has built up (magit confirms too).
+    pub(crate) fn stage_all_command(&mut self, cx: &mut Context<Self>) {
+        let anything_staged = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.staged().next().is_some());
+        if anything_staged {
+            self.confirm = Some(("Stage all tracked changes?".to_string(), Confirm::StageAll));
+            cx.notify();
+        } else {
+            self.run_action(Action::StageAll, cx);
+        }
+    }
+
+    /// `U`: unstage everything. Errors when nothing is staged; confirms when
+    /// unstaged or untracked changes exist alongside (magit's rule).
+    pub(crate) fn unstage_all_command(&mut self, cx: &mut Context<Self>) {
+        let Some(status) = self.status.as_ref() else {
+            return;
+        };
+        if status.staged().next().is_none() {
+            self.set_status("Nothing to unstage".to_string(), false, cx);
+            return;
+        }
+        let dirty = status.unstaged().next().is_some() || status.untracked().next().is_some();
+        if dirty {
+            self.confirm = Some(("Unstage all changes?".to_string(), Confirm::UnstageAll));
+            cx.notify();
+        } else {
+            self.run_action(Action::UnstageAll, cx);
+        }
+    }
+
     pub(crate) fn act(&mut self, op: Op, cx: &mut Context<Self>) {
         // A conflicted file in the selection: staging it marks it resolved, so
         // allow that once its markers are gone (manual resolution); otherwise
@@ -653,6 +694,38 @@ impl StatusView {
                 };
                 self.set_status(msg, false, cx);
                 return;
+            }
+        }
+        // On a section header, the verb acts on the whole section (magit's
+        // list scope): `s` on Untracked stages all untracked, `s` on Unstaged
+        // stages all tracked changes, `u` on Staged unstages everything.
+        if self.selection.visual.is_none() {
+            if let Some(Row {
+                kind: RowKind::Section { .. },
+                fold: Some(FoldKey::Section(id)),
+                ..
+            }) = self.rows.get(self.selected)
+            {
+                match (op, id) {
+                    (Op::Stage, SectionId::Untracked) => {
+                        let paths: Vec<String> = self
+                            .status
+                            .as_ref()
+                            .map(|s| s.untracked().map(|e| e.path.clone()).collect())
+                            .unwrap_or_default();
+                        self.run_action(Action::StageUntracked(paths), cx);
+                        return;
+                    }
+                    (Op::Stage, SectionId::Unstaged) => {
+                        self.stage_all_command(cx);
+                        return;
+                    }
+                    (Op::Unstage, SectionId::Staged) => {
+                        self.unstage_all_command(cx);
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
         let resolved = if self.selection.visual.is_some() {
@@ -725,6 +798,8 @@ impl StatusView {
             Some((_, Confirm::DropStash(reference))) => {
                 self.run_stash_action(StashAction::Drop, reference, cx)
             }
+            Some((_, Confirm::StageAll)) => self.run_action(Action::StageAll, cx),
+            Some((_, Confirm::UnstageAll)) => self.run_action(Action::UnstageAll, cx),
             None => {}
         }
         cx.notify();

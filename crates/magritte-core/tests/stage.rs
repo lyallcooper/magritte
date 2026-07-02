@@ -512,3 +512,24 @@ index 1111111..2222222 100644
     // old side: 1,2,3,4,5 = 5 lines; new side: 1,TWO,3,4,5 = 5 lines.
     assert!(patch.contains("@@ -1,5 +1,5 @@"));
 }
+
+#[test]
+fn stage_modified_stages_tracked_only() {
+    let t = TestRepo::new();
+    t.write("tracked.txt", "a\n");
+    t.commit_all("init");
+    t.write("tracked.txt", "b\n"); // tracked modification
+    t.write("new.txt", "n\n"); // untracked
+
+    let repo = open(&t);
+    repo.stage_modified().unwrap();
+    let s = repo.status().unwrap();
+    assert!(entry(&s, "tracked.txt").unwrap().is_staged());
+    let new = entry(&s, "new.txt").unwrap();
+    assert!(!new.is_staged(), "untracked stays unstaged");
+
+    // The Untracked section's header verb stages the listed paths.
+    repo.stage_untracked(&["new.txt".to_string()]).unwrap();
+    let s = repo.status().unwrap();
+    assert!(entry(&s, "new.txt").unwrap().is_staged());
+}

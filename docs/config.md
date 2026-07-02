@@ -251,8 +251,8 @@ appears only while the (opt-in) Ignored section is shown, and the other
 | `git-command` | `!` | Run a command (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
-| `stage-all` | `S` | Stage all |
-| `unstage-all` | `U` | Unstage all |
+| `stage-all` | `S` | Stage all tracked changes (confirms if something is already staged) |
+| `unstage-all` | `U` | Unstage all (confirms if unstaged changes exist alongside) |
 | `discard` | `x` | Discard the selection |
 | `open-file` | `Return` | Open file at point in `editor` |
 | `fold` | `Tab` | Fold / unfold |

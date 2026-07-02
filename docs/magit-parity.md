@@ -44,9 +44,6 @@ strategies, and stash's index/worktree/snapshot variants.
   incompatible, and `--ff` is on by default, so it's easy to hit; git then
   errors). Our transient model has no incompatibility mechanism.
 - Our revert defaults to `--no-edit`; magit defaults to `--edit`.
-- `S` stage-all runs `git add -A` (includes untracked); magit's
-  `S` stages tracked files only — and magit confirms `S`/`U` when they would
-  blur the staged/unstaged split, which we never do.
 - Discarded files are deleted permanently; magit moves them to the trash.
 - `SPC` pages; magit's `SPC` *previews* the commit/stash at point without
   leaving the status buffer (a heavily used flow we lack entirely).
@@ -118,7 +115,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `v` | reverse change at point | ≈ revert-no-commit on commit rows only; no diff-region reverse |
 | `k` | discard | ✓ ours `x` (vanilla `k`) |
 | `s` / `u` | stage / unstage | ✓ |
-| `S` | stage-modified | ≈ ours stage-all runs `git add -A` (includes untracked); magit stages tracked only |
+| `S` | stage-modified | ✓ (`git add -u`, confirm when something is staged) |
 | `U` | unstage-all | ✓ |
 | `g` | refresh | ✓ ours `g r` (vanilla `g`) |
 | `q` | bury-buffer | ≈ Esc/`q` close sub-screens; quit is palette-only |
@@ -615,7 +612,7 @@ users lean on it to skim unpushed/recent commits without leaving status).
 | `s` untracked | `git add` (prefix → `--intent-to-add`) | `git add` | ≈ no intent-to-add |
 | `s` unstaged file/hunk/region | add / apply --cached | same, line-granular | ✓ |
 | `s` staged/committed | loud user-error | silent no-op | ≈ |
-| `s` on section headers | stages the section (with confirm for stage-modified) | headers aren't verb targets (use `S`/visual) | ✗ |
+| `s` on section headers | stages the section (with confirm for stage-modified) | `s` on Untracked stages all untracked; `s` on Unstaged = stage-modified; `u` on Staged = unstage-all | ✓ |
 | `u` staged file/hunk/region | reverse-apply / reset | same, rename-aware | ✓ |
 | `u` unstaged file | drops intent-to-add entries | no-op | ✗ (no ita support) |
 | `u` committed change | **reverses it in the index** (`magit-unstage-committed` t) — the "extract a change from HEAD" flow | nothing | ✗ notable |
@@ -726,7 +723,7 @@ Covered above per area; the residual key-level notes:
 | Operation | magit default | Magritte | Status |
 |---|---|---|---|
 | single stage/unstage | never confirms | never confirms | ✓ |
-| `S` with staged present / `U` with unstaged present | confirms (blurs the staged/unstaged split) | no confirm | ✗ looser |
+| `S` with staged present / `U` with unstaged present | confirms (blurs the staged/unstaged split) | confirms | ✓ |
 | discard (any granularity) | confirms; deletions go to **trash** | confirms; deletions permanent | ≈ |
 | reverse `v` | confirms | no verb | ✗ |
 | stash drop / clear | prompt / confirm | `x` confirms; picker drop relies on the pick; no clear | ≈ |
@@ -749,8 +746,6 @@ Grouped by kind, roughly ordered within each group.
    is user-hostile today; also needed before adding pull `--ff-only`).
 2. Match magit's revert default (`--edit` on) or make the divergence a
    documented choice.
-4. Make `S` stage tracked-only (magit semantics) and add the `S`/`U`
-   confirms when both sides have changes.
 5. Vanilla stash-row drop should be `k` (it's hardcoded `x`).
 6. Honor `status.showUntrackedFiles` instead of hardcoding.
 7. Cap unpushed/unpulled listings and show `(N+)`.
