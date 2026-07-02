@@ -28,6 +28,10 @@ pub(crate) struct Palette {
     pub(crate) added_bg: Hsla,
     pub(crate) removed_bg: Hsla,
     pub(crate) banner: Hsla,
+    /// Local branch names in ref decorations, magit's blue `branch-local` face
+    /// (the title bar's current-branch chip is the header anchor; inline ref
+    /// decorations use this color instead).
+    pub(crate) branch_local: Hsla,
     /// Remote-tracking refs (`origin/main`), magit's green `branch-remote` face.
     pub(crate) branch_remote: Hsla,
     /// Tag names (`v0.4.0`), magit's yellow `tag` face.
@@ -68,6 +72,7 @@ impl Palette {
             // yellow. They share the theme's success/warning hues (as the diff
             // added/modified colors do) — context disambiguates a ref from a
             // diff line.
+            branch_local: t.primary,
             branch_remote: status.success(cx),
             tag: status.warning(cx),
         }
@@ -95,6 +100,7 @@ impl Default for Palette {
             added_bg: ga(0x1a7f371f),
             removed_bg: ga(0xcf222e1f),
             banner: ga(0xb088002e),
+            branch_local: g(0x2f6feb),
             branch_remote: g(0x1a7f37),
             tag: g(0xb08800),
         }

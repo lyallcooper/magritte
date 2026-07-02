@@ -1644,7 +1644,8 @@ mod tests {
 
     #[test]
     fn parse_refs_classifies_decorations() {
-        let got = parse_refs("HEAD -> main, origin/main, tag: v1.0, feature, HEAD");
+        // No upstream context → no folding; every ref classified on its own.
+        let got = parse_refs("HEAD -> main, origin/main, tag: v1.0, feature, HEAD", None);
         assert_eq!(
             got,
             vec![
@@ -1655,7 +1656,37 @@ mod tests {
                 ("HEAD".to_string(), RefKind::Head),
             ]
         );
-        assert!(parse_refs("").is_empty());
+        assert!(parse_refs("", None).is_empty());
+    }
+
+    #[test]
+    fn parse_refs_drops_remote_head_pointer() {
+        // `origin/HEAD` is a symbolic pointer, not a real branch — magit hides it.
+        let got = parse_refs("HEAD -> main, origin/main, origin/HEAD", None);
+        assert_eq!(
+            got,
+            vec![
+                ("main".to_string(), RefKind::Head),
+                ("origin/main".to_string(), RefKind::Remote),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_refs_folds_current_branch_with_upstream() {
+        // With the branch's upstream known, `main` + `origin/main` collapse into
+        // one synced entry; `origin/HEAD` is still dropped; the tag survives.
+        let got = parse_refs(
+            "HEAD -> main, origin/main, origin/HEAD, tag: v1.0",
+            Some("origin/main"),
+        );
+        assert_eq!(
+            got,
+            vec![
+                ("origin/main".to_string(), RefKind::SyncedHead),
+                ("v1.0".to_string(), RefKind::Tag),
+            ]
+        );
     }
 
     #[test]

@@ -132,26 +132,65 @@ pub(crate) enum RefKind {
     Local,
     Remote,
     Tag,
+    /// The current branch folded together with its matching upstream ref (both
+    /// on this commit): the label is the full `remote/branch`, rendered with the
+    /// remote prefix in the remote color and the branch in the current-branch
+    /// color — magit's combined display.
+    SyncedHead,
+}
+
+/// Classify one `%D` decoration entry (e.g. `origin/main`, `tag: v1`).
+fn classify_ref(entry: &str) -> (String, RefKind) {
+    if let Some(tag) = entry.strip_prefix("tag: ") {
+        (tag.to_string(), RefKind::Tag)
+    } else if let Some(branch) = entry.strip_prefix("HEAD -> ") {
+        (branch.to_string(), RefKind::Head)
+    } else if entry == "HEAD" {
+        ("HEAD".to_string(), RefKind::Head)
+    } else if entry.contains('/') {
+        (entry.to_string(), RefKind::Remote)
+    } else {
+        (entry.to_string(), RefKind::Local)
+    }
 }
 
 /// Parse a commit's `%D` decoration (e.g. `HEAD -> main, origin/main, tag: v1`)
-/// into labeled, classified entries for rendering.
-pub(crate) fn parse_refs(refs: &str) -> Vec<(String, RefKind)> {
-    refs.split(',')
+/// into labeled, classified entries for rendering. `upstream` is the current
+/// branch's upstream ref (e.g. `origin/main`), used to fold the current branch
+/// and its upstream into one entry when both decorate this commit. Remote
+/// `*/HEAD` pointers are dropped (magit hides them).
+pub(crate) fn parse_refs(refs: &str, upstream: Option<&str>) -> Vec<(String, RefKind)> {
+    let classified: Vec<(String, RefKind)> = refs
+        .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|entry| {
-            if let Some(tag) = entry.strip_prefix("tag: ") {
-                (tag.to_string(), RefKind::Tag)
-            } else if let Some(branch) = entry.strip_prefix("HEAD -> ") {
-                (branch.to_string(), RefKind::Head)
-            } else if entry == "HEAD" {
-                ("HEAD".to_string(), RefKind::Head)
-            } else if entry.contains('/') {
-                (entry.to_string(), RefKind::Remote)
-            } else {
-                (entry.to_string(), RefKind::Local)
-            }
+        .map(classify_ref)
+        .filter(|(name, kind)| {
+            !(*kind == RefKind::Remote && name.rsplit('/').next() == Some("HEAD"))
+        })
+        .collect();
+
+    // Fold the current branch + its upstream (`main` and `origin/main`) into a
+    // single synced entry when both are present on this commit.
+    let synced = upstream.and_then(|u| u.rsplit_once('/').map(|(_, b)| (u, b)));
+    let fold = synced.is_some_and(|(u, b)| {
+        classified
+            .iter()
+            .any(|(n, k)| *k == RefKind::Head && n == b)
+            && classified
+                .iter()
+                .any(|(n, k)| *k == RefKind::Remote && n == u)
+    });
+    if !fold {
+        return classified;
+    }
+    let (u, b) = synced.unwrap();
+    classified
+        .into_iter()
+        .filter_map(|(name, kind)| match kind {
+            RefKind::Head if name == b => Some((u.to_string(), RefKind::SyncedHead)),
+            RefKind::Remote if name == u => None, // folded into the synced entry
+            _ => Some((name, kind)),
         })
         .collect()
 }
@@ -491,6 +530,10 @@ impl StatusView {
         if !expanded {
             return;
         }
+        let upstream = self
+            .status
+            .as_ref()
+            .and_then(|s| s.head.upstream.as_deref());
         for c in commits {
             rows.push(Row {
                 indent: 1,
@@ -501,7 +544,7 @@ impl StatusView {
                     hash: c.hash.clone(),
                     short_hash: c.short_hash.clone(),
                     subject: c.subject.clone(),
-                    refs: parse_refs(&c.refs),
+                    refs: parse_refs(&c.refs, upstream),
                 },
             });
         }

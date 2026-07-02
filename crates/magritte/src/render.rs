@@ -1717,6 +1717,48 @@ impl StatusView {
             .child(body)
     }
 
+    /// One ref decoration, colored by kind per the app-wide rule: local branch
+    /// blue, remote-tracking ref green, tag yellow, current branch bold. A
+    /// synced entry (current branch folded with its upstream) shows the
+    /// `remote/` prefix green and the branch name in the current-branch color.
+    pub(crate) fn ref_chip(&self, label: &str, kind: RefKind) -> AnyElement {
+        if kind == RefKind::SyncedHead {
+            let (prefix, branch) = label.rsplit_once('/').unwrap_or(("", label));
+            return div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .text_color(self.palette.branch_remote)
+                        .child(SharedString::from(format!("{prefix}/"))),
+                )
+                .child(
+                    div()
+                        .text_color(self.palette.branch_local)
+                        .font_weight(FontWeight::BOLD)
+                        .child(SharedString::from(branch.to_string())),
+                )
+                .into_any_element();
+        }
+        let (color, bold) = match kind {
+            RefKind::Tag => (self.palette.tag, false),
+            RefKind::Head => (self.palette.branch_local, true),
+            RefKind::Local => (self.palette.branch_local, false),
+            RefKind::Remote => (self.palette.branch_remote, false),
+            RefKind::SyncedHead => unreachable!("handled above"),
+        };
+        let chip = div()
+            .flex_shrink_0()
+            .text_color(color)
+            .child(SharedString::from(label.to_string()));
+        if bold {
+            chip.font_weight(FontWeight::BOLD).into_any_element()
+        } else {
+            chip.into_any_element()
+        }
+    }
+
     /// One commit row: short hash, ref decorations, and subject; highlighted
     /// when current, clickable to open its diff.
     pub(crate) fn render_log_row(
@@ -1757,13 +1799,15 @@ impl StatusView {
                 .text_color(self.palette.modified)
                 .child(SharedString::from(entry.short_hash.clone())),
         );
-        if !entry.refs.is_empty() {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(format!("({})", entry.refs))),
-            );
+        // Ref decorations, classified and colored like the status commit rows
+        // (local blue, remote green, tag yellow, current branch bold) rather
+        // than a single flat blob.
+        let upstream = self
+            .status
+            .as_ref()
+            .and_then(|s| s.head.upstream.as_deref());
+        for (label, kind) in parse_refs(&entry.refs, upstream) {
+            row = row.child(self.ref_chip(&label, kind));
         }
         row.child(
             div()
@@ -2229,24 +2273,11 @@ impl StatusView {
                         .text_color(self.palette.dim)
                         .child(SharedString::from(short_hash.clone())),
                 );
-                // Ref labels (branches/tags/remotes), colored magit-style: tags
-                // accent, branches added-green (current branch bold), remotes
-                // section-blue. Parsed at row-build time (see RowKind::Commit).
+                // Ref decorations, colored by kind (see `ref_chip`): local blue,
+                // remote green, tag yellow, current branch bold. Parsed at
+                // row-build time (see RowKind::Commit).
                 for (label, kind) in refs {
-                    let (color, bold) = match kind {
-                        RefKind::Tag => (self.palette.modified, false),
-                        RefKind::Head => (self.palette.added, true),
-                        RefKind::Local => (self.palette.added, false),
-                        RefKind::Remote => (self.palette.section, false),
-                    };
-                    let mut chip = div()
-                        .flex_shrink_0()
-                        .text_color(color)
-                        .child(SharedString::from(label.clone()));
-                    if bold {
-                        chip = chip.font_weight(FontWeight::BOLD);
-                    }
-                    el = el.child(chip);
+                    el = el.child(self.ref_chip(label, *kind));
                 }
                 el.child(SharedString::from(subject.clone()))
             }
