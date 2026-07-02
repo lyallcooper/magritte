@@ -30,6 +30,58 @@ fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
 }
 
 impl StatusView {
+    /// The bottom popup panel (picker / transient): full-width, top border,
+    /// panel background, padded column.
+    fn bottom_panel(&self) -> gpui::Div {
+        div()
+            .w_full()
+            .border_t_1()
+            .border_color(self.palette.border)
+            .bg(self.palette.panel)
+            .py_2()
+            .px_3()
+            .flex()
+            .flex_col()
+    }
+
+    /// A thin bottom bar (status toast, confirm prompt, visual indicator): one
+    /// bordered row over `bg`.
+    fn bottom_bar(&self, bg: Hsla) -> gpui::Div {
+        div()
+            .w_full()
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(self.palette.border)
+            .bg(bg)
+            .text_color(self.palette.fg)
+    }
+
+    /// One diff line's body — the +/- sign and its syntax-highlighted content
+    /// as adjacent runs (no gap) — plus the add/remove background tint the
+    /// caller applies under its own selection rules. Shared by the status rows
+    /// and the flattened diff screens.
+    fn diff_line_body(&self, kind: LineKind, spans: &[(String, Hsla)]) -> (gpui::Div, Option<Hsla>) {
+        let (sign, sign_color, tint) = match kind {
+            LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
+            LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
+            _ => (' ', self.palette.dim, None),
+        };
+        let mut line = div().flex().child(
+            div()
+                .text_color(sign_color)
+                .child(SharedString::from(sign.to_string())),
+        );
+        for (text, color) in spans {
+            line = line.child(
+                div()
+                    .text_color(*color)
+                    .child(SharedString::from(text.clone())),
+            );
+        }
+        (line, tint)
+    }
+
     /// Render a popup (command transient or the `?` help menu) as a bottom
     /// panel. `state` is `None` for the help menu, which has no toggled
     /// switches and no pending-dash prefix.
@@ -124,15 +176,7 @@ impl StatusView {
             .into_any_element()
         };
 
-        div()
-            .w_full()
-            .border_t_1()
-            .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .py_2()
-            .px_3()
-            .flex()
-            .flex_col()
+        self.bottom_panel()
             .gap_1()
             // Prompt with the query typed inline (vertico minibuffer).
             .child(
@@ -360,15 +404,7 @@ impl StatusView {
         });
         let has_repo = self.repo_scope_dir.is_some();
 
-        div()
-            .w_full()
-            .border_t_1()
-            .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .py_2()
-            .px_3()
-            .flex()
-            .flex_col()
+        self.bottom_panel()
             .gap_2()
             .when(saving, |el| {
                 let mut row = div()
@@ -1281,26 +1317,10 @@ impl StatusView {
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
             CommitDiffRow::Line { kind, spans } => {
-                let (sign, sign_color, tint) = match kind {
-                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
-                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
-                    _ => (' ', self.palette.dim, None),
-                };
+                let (line, tint) = self.diff_line_body(*kind, spans);
                 let mut el = base;
                 if let Some(t) = tint {
                     el = el.bg(t);
-                }
-                let mut line = div().flex().child(
-                    div()
-                        .text_color(sign_color)
-                        .child(SharedString::from(sign.to_string())),
-                );
-                for (text, color) in spans {
-                    line = line.child(
-                        div()
-                            .text_color(*color)
-                            .child(SharedString::from(text.clone())),
-                    );
                 }
                 el.child(line).into_any_element()
             }
@@ -2087,29 +2107,12 @@ impl StatusView {
                 )
             }
             RowKind::Diff { kind, spans } => {
-                let (sign, sign_color, tint) = match kind {
-                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
-                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
-                    _ => (' ', self.palette.dim, None),
-                };
+                let (line, tint) = self.diff_line_body(*kind, spans);
                 // Add/remove background tint, unless the row is selected/in-region.
                 if let Some(t) = tint {
                     if !selected && !in_region {
                         el = el.bg(t);
                     }
-                }
-                // Sign + syntax-highlighted content as adjacent runs (no gap).
-                let mut line = div().flex().child(
-                    div()
-                        .text_color(sign_color)
-                        .child(SharedString::from(sign.to_string())),
-                );
-                for (text, color) in spans {
-                    line = line.child(
-                        div()
-                            .text_color(*color)
-                            .child(SharedString::from(text.clone())),
-                    );
                 }
                 el.child(line)
             }
@@ -2359,15 +2362,9 @@ impl StatusView {
     /// a copy confirmation is visible there too, not only in the status view.
     pub(crate) fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         let msg = self.toast.message.clone()?;
-        let bar = div()
+        let bar = self
+            .bottom_bar(self.palette.panel)
             .id("status-bar")
-            .w_full()
-            .px_2()
-            .py_1()
-            .border_t_1()
-            .border_color(self.palette.border)
-            .bg(self.palette.panel)
-            .text_color(self.palette.fg)
             .cursor_pointer()
             .on_click(cx.listener(|this, _, _window, cx| {
                 this.clear_status(cx);
@@ -2453,14 +2450,7 @@ impl StatusView {
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(self.palette.border)
-                    .bg(self.palette.banner)
-                    .text_color(self.palette.fg)
+                self.bottom_bar(self.palette.banner)
                     .flex()
                     .items_center()
                     .gap_3()
@@ -2470,14 +2460,7 @@ impl StatusView {
             );
         } else if self.selection.visual.is_some() {
             root = root.child(
-                div()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(self.palette.border)
-                    .bg(self.palette.visual)
-                    .text_color(self.palette.fg)
+                self.bottom_bar(self.palette.visual)
                     .flex()
                     .items_center()
                     .gap_3()
