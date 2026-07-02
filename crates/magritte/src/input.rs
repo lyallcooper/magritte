@@ -270,45 +270,32 @@ impl StatusView {
             if self.try_nav(&key, shift, ctrl, alt, window, cx) {
                 return;
             }
-            match key.as_str() {
-                "escape" | "q" => self.close_log(window, cx),
+            let chorded = chord(&key, shift, ctrl, alt, cmd);
+            match chorded.as_str() {
+                "escape" | "q" => return self.close_log(window, cx),
                 // Cmd+Return confirms the pending select (rebase since); plain
                 // Return opens the commit's diff — in select mode too, so you can
                 // inspect commits before choosing (magit lets you visit from the
                 // log-select).
-                "enter" if cmd => {
-                    if let Some((args, reword)) = select_rebase.clone() {
+                "cmd-enter" => {
+                    if let Some((args, reword)) = select_rebase {
                         if reword {
                             self.reword_past_selected(args, window, cx);
                         } else {
                             self.rebase_since_selected(args, cx);
                         }
                     }
-                }
-                "enter" => self.open_commit_view(cx),
-                // Apply the selected commit to the current branch (Magit's `A`),
-                // or revert it (evil-collection's `_`). Both return to the
-                // status view, where a conflict surfaces as the in-progress banner.
-                "a" if shift => self.pick_selected(PickOp::CherryPick, window, cx),
-                // Revert is `_` (evil-collection-magit); `V` is visual-line there.
-                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    self.pick_selected(PickOp::Revert, window, cx)
-                }
-                "-" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    self.pick_selected(PickOp::Revert, window, cx)
-                }
-                "v" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
-                    self.pick_selected(PickOp::Revert, window, cx)
+                    return;
                 }
                 // `r`: rebase interactively since the commit at point (magit's
                 // commit-at-point path) — only while browsing, with default args.
-                "r" if select_rebase.is_none() => self.rebase_since_selected(Vec::new(), cx),
-                // Yank the selected commit's hash (evil `y`; vanilla `C-w`).
-                "y" if self.is_evil() => self.copy_log_commit(cx),
-                "w" if ctrl => self.copy_log_commit(cx),
-                "c" if cmd => self.copy_log_commit(cx),
+                "r" if select_rebase.is_none() => return self.rebase_since_selected(Vec::new(), cx),
+                // Vanilla copy: `C-w` isn't in the log's keymap dispatch, so
+                // handle it here alongside the shared verbs.
+                "ctrl-w" => return self.copy_log_commit(cx),
                 _ => {}
             }
+            self.log_commit_key(&chorded, window, cx);
             return;
         }
 
@@ -317,59 +304,15 @@ impl StatusView {
         if self.try_nav(&key, shift, ctrl, alt, window, cx) {
             return;
         }
-        // Act on the commit/stash at point in a status section (after motions, so
-        // j/k/g still work; only these verbs are intercepted — anything else falls
-        // through to the keymap). Commit rows mirror evil-collection-magit:
-        // `A`/`_` open the cherry-pick/revert transients with the commit at
-        // point as the default, while `a`/`-` apply/revert changes without
-        // committing.
-        // Stash rows: `Enter` shows it, `a` applies, `A` pops, `x` drops
-        // (confirmed), `y`/Cmd-C yanks the reference.
-        if let Some((hash, short, subject)) = self.point_commit() {
-            match key.as_str() {
-                "enter" => return self.open_commit(hash, short, subject, cx),
-                "a" if shift => return self.open_cherry_pick_transient(cx),
-                "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
-                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    return self.open_revert_transient(cx)
-                }
-                "-" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    return self.open_revert_transient(cx)
-                }
-                "-" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
-                }
-                "v" if shift && matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
-                    return self.open_revert_transient(cx)
-                }
-                "v" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
-                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
-                }
-                "r" => return self.invoke_command("rebase", window, cx),
-                // Evil-only: vanilla's copy is `C-w`, which resolves through
-                // the keymap to yank (copying the full hash for a commit row).
-                "y" if self.is_evil() => return self.copy_to_clipboard(hash, cx),
-                "c" if cmd => return self.copy_to_clipboard(hash, cx),
-                _ => {}
-            }
+        // Act on the commit/stash at point in a status section (after motions,
+        // so j/k/g still work; only the shared point verbs are intercepted —
+        // anything else falls through to the keymap).
+        let chorded = chord(&key, shift, ctrl, alt, cmd);
+        if self.point_commit_key(&chorded, window, cx) {
+            return;
         }
-        if let Some((reference, message)) = self.point_stash() {
-            match key.as_str() {
-                "enter" => return self.open_commit(reference.clone(), reference, message, cx),
-                "a" if shift => return self.run_stash_action(StashAction::Pop, reference, cx),
-                "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
-                "x" => {
-                    self.confirm = Some((
-                        format!("Drop {reference}?"),
-                        Confirm::DropStash(reference),
-                    ));
-                    cx.notify();
-                    return;
-                }
-                "y" if self.is_evil() => return self.copy_to_clipboard(reference, cx),
-                "c" if cmd => return self.copy_to_clipboard(reference, cx),
-                _ => {}
-            }
+        if self.point_stash_key(&chorded, window, cx) {
+            return;
         }
         match key.as_str() {
             // Tab toggles a fold (also delivered via the ToggleFold action, since
@@ -398,16 +341,6 @@ impl StatusView {
                     return self.run_dispatch(&cased, window, cx);
                 }
                 return self.open_command_palette(window, cx);
-            }
-            "?" => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
-                cx.notify();
-                return;
-            }
-            "/" if shift => {
-                self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
-                cx.notify();
-                return;
             }
             // Everything else resolves through the effective keymap (the
             // shift-cased keystroke → command id), so remap/unbind take effect.
@@ -709,11 +642,80 @@ impl StatusView {
     /// ToggleFold action, `g r`/`g g`/`g j`/`g k` via the g-prefix — so they're
     /// excluded even if a key like `g r` is bound.
     pub(crate) fn is_dispatch_key(keymap: &HashMap<String, String>, key: &str) -> bool {
-        if matches!(key, "tab" | "g r" | "g g" | "g j" | "g k") {
-            return false;
-        }
-        // Single-key motions (`j`/`k`/`G`) are registry commands in the keymap now.
+        // Only single-keystroke chords reach here (multi-key sequences resolve
+        // through the prefix machinery); motions are registry commands too.
         keymap.contains_key(key) || key == ":"
+    }
+
+    /// Act-at-point verbs for a status commit row. `key` is in encoded chord
+    /// form (`A`, `cmd-c`) — [`Self::on_key`] encodes its modifiers first, and
+    /// help-menu clicks arrive already encoded. Returns whether it handled the
+    /// key. Commit rows mirror evil-collection-magit: `A`/`_` open the
+    /// cherry-pick/revert transients with the commit at point as the default,
+    /// while `a`/`-` apply/revert changes without committing (vanilla uses
+    /// `V`/`v` for the revert pair).
+    fn point_commit_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((hash, short, subject)) = self.point_commit() else {
+            return false;
+        };
+        match key {
+            "enter" => self.open_commit(hash, short, subject, cx),
+            "A" => self.open_cherry_pick_transient(cx),
+            "a" => self.pick_selected(PickOp::CherryApply, window, cx),
+            "_" if self.is_evil() => self.open_revert_transient(cx),
+            "-" if self.is_evil() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
+            "V" if self.is_vanilla() => self.open_revert_transient(cx),
+            "v" if self.is_vanilla() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
+            "r" => self.invoke_command("rebase", window, cx),
+            // Evil-only `y`: vanilla's copy is `C-w`, which resolves through
+            // the keymap to yank (copying the full hash for a commit row).
+            "y" if self.is_evil() => self.copy_to_clipboard(hash, cx),
+            "cmd-c" => self.copy_to_clipboard(hash, cx),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Act-at-point verbs for a stash row (chord-form `key`, like
+    /// [`Self::point_commit_key`]): `Enter` shows it, `a` applies, `A` pops,
+    /// `x` drops (confirmed), `y`/Cmd-C yanks the reference.
+    fn point_stash_key(&mut self, key: &str, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((reference, message)) = self.point_stash() else {
+            return false;
+        };
+        match key {
+            "enter" => self.open_commit(reference.clone(), reference, message, cx),
+            "A" => self.run_stash_action(StashAction::Pop, reference, cx),
+            "a" => self.run_stash_action(StashAction::Apply, reference, cx),
+            "x" => {
+                self.confirm = Some((
+                    format!("Drop {reference}?"),
+                    Confirm::DropStash(reference),
+                ));
+                cx.notify();
+            }
+            "y" if self.is_evil() => self.copy_to_clipboard(reference, cx),
+            "cmd-c" => self.copy_to_clipboard(reference, cx),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Commit-at-point verbs for the log view (chord-form `key`): open the
+    /// commit, cherry-pick it (Magit's `A`), revert it (evil `_` / vanilla
+    /// `V`), or yank its hash. `r` (rebase since) stays with the callers — the
+    /// key handler guards it to browse mode.
+    fn log_commit_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match key {
+            "enter" => self.open_commit_view(cx),
+            "A" => self.pick_selected(PickOp::CherryPick, window, cx),
+            "_" if self.is_evil() => self.pick_selected(PickOp::Revert, window, cx),
+            "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
+            "y" if self.is_evil() => self.copy_log_commit(cx),
+            "cmd-c" => self.copy_log_commit(cx),
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn run_info_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -739,14 +741,14 @@ impl StatusView {
         }
         if self.log().is_some() {
             match key {
-                "enter" => self.open_commit_view(cx),
-                "A" => self.pick_selected(PickOp::CherryPick, window, cx),
-                "_" => self.pick_selected(PickOp::Revert, window, cx),
-                "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
                 "r" => self.rebase_since_selected(Vec::new(), cx),
                 "y" | "ctrl-w" => self.copy_log_commit(cx),
                 "q" => self.close_log(window, cx),
-                _ => self.run_dispatch(key, window, cx),
+                _ => {
+                    if !self.log_commit_key(key, window, cx) {
+                        self.run_dispatch(key, window, cx);
+                    }
+                }
             }
             return;
         }
@@ -765,46 +767,22 @@ impl StatusView {
             }
             return;
         }
-        if let Some((hash, short, subject)) = self.point_commit() {
-            match key {
-                "enter" => return self.open_commit(hash, short, subject, cx),
-                "A" => return self.open_cherry_pick_transient(cx),
-                "a" => return self.pick_selected(PickOp::CherryApply, window, cx),
-                "_" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    return self.open_revert_transient(cx)
-                }
-                "-" if matches!(self.config.keymap_preset, config::KeymapPreset::EvilCollection) => {
-                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
-                }
-                "V" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
-                    return self.open_revert_transient(cx)
-                }
-                "v" if matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla) => {
-                    return self.pick_selected(PickOp::RevertNoCommit, window, cx)
-                }
-                "r" => return self.invoke_command("rebase", window, cx),
-                "y" if self.is_evil() => return self.copy_to_clipboard(hash, cx),
-                "ctrl-w" => return self.copy_to_clipboard(hash, cx),
-                _ => {}
+        // Menu clicks deliver `ctrl-w` directly (the key path resolves it
+        // through the keymap to yank instead), so map it to the point copy
+        // before the shared verbs.
+        if key == "ctrl-w" {
+            if let Some((hash, ..)) = self.point_commit() {
+                return self.copy_to_clipboard(hash, cx);
+            }
+            if let Some((reference, _)) = self.point_stash() {
+                return self.copy_to_clipboard(reference, cx);
             }
         }
-        if let Some((reference, message)) = self.point_stash() {
-            match key {
-                "enter" => return self.open_commit(reference.clone(), reference, message, cx),
-                "A" => return self.run_stash_action(StashAction::Pop, reference, cx),
-                "a" => return self.run_stash_action(StashAction::Apply, reference, cx),
-                "x" => {
-                    self.confirm = Some((
-                        format!("Drop {reference}?"),
-                        Confirm::DropStash(reference),
-                    ));
-                    cx.notify();
-                    return;
-                }
-                "y" if self.is_evil() => return self.copy_to_clipboard(reference, cx),
-                "ctrl-w" => return self.copy_to_clipboard(reference, cx),
-                _ => {}
-            }
+        if self.point_commit_key(key, window, cx) {
+            return;
+        }
+        if self.point_stash_key(key, window, cx) {
+            return;
         }
         self.run_dispatch(key, window, cx);
     }

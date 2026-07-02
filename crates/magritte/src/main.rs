@@ -1098,17 +1098,16 @@ mod tests {
     }
 
     #[test]
-    fn is_dispatch_key_matches_single_key_menu_rows() {
-        // Against the default keymap: single-key commands route; multi-stroke /
-        // g-prefix entries don't.
+    fn is_dispatch_key_matches_bound_single_keys() {
+        // Against the default keymap: bound single-key commands route, unbound
+        // keys don't. Only single-keystroke chords reach the helper — multi-key
+        // sequences resolve through the prefix machinery, and `tab` is handled
+        // before dispatch.
         let (km, warnings) = build_keymap(&config::Config::default());
         assert!(warnings.is_empty(), "default config has no keymap warnings");
         assert!(StatusView::is_dispatch_key(&km, "c"));
         assert!(StatusView::is_dispatch_key(&km, "s"));
         assert!(StatusView::is_dispatch_key(&km, "G"));
-        assert!(!StatusView::is_dispatch_key(&km, "tab"));
-        assert!(!StatusView::is_dispatch_key(&km, "g g"));
-        assert!(!StatusView::is_dispatch_key(&km, "g r"));
         assert!(!StatusView::is_dispatch_key(&km, "z")); // not bound by default
     }
 
