@@ -624,7 +624,8 @@ impl StatusView {
         s: &SettingsState,
         view: &Entity<Self>,
     ) -> impl IntoElement {
-        // A labelled control row: fixed-width label + the control.
+        // A labelled control row: a fixed-width label with the control filling
+        // the rest of the row. One control per row so everything left-aligns.
         let field = |id: &'static str, label: &str, control: AnyElement| {
             div()
                 .flex()
@@ -632,7 +633,7 @@ impl StatusView {
                 .gap_3()
                 .child(
                     div()
-                        .w(px(130.0))
+                        .w(px(120.0))
                         .flex_shrink_0()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(label.to_string())),
@@ -640,40 +641,40 @@ impl StatusView {
                 .child(
                     div()
                         .relative()
-                        .w(px(320.0))
+                        .flex_1()
+                        .min_w(px(0.0))
                         .child(track_target(id))
                         .child(control),
                 )
         };
-        // A compact labelled toggle: label + switch inline, several of which
-        // pack onto one wrapping row instead of a full field row each.
-        let inline_toggle = |id: &'static str, label: &str, control: AnyElement| {
+        // A labelled toggle row: label on the left, switch (+ info) pinned to the
+        // right of the card. One per row, so every switch aligns down the column.
+        let toggle_field = |id: &'static str, label: &str, control: AnyElement| {
             div()
                 .flex()
                 .items_center()
-                .gap_2()
+                .justify_between()
+                .gap_3()
                 .child(
                     div()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(label.to_string())),
                 )
-                .child(div().relative().child(track_target(id)).child(control))
-                .into_any_element()
-        };
-        let toggle_row = |items: Vec<AnyElement>| {
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_x_6()
-                .gap_y_2()
-                .children(items)
+                .child(
+                    div()
+                        .relative()
+                        .flex_shrink_0()
+                        .child(track_target(id))
+                        .child(control),
+                )
         };
         // A titled group: an uppercase heading over a bordered card of rows.
+        // Fills its masonry column.
         let section = |title: &str, rows: Vec<gpui::Div>| {
             div()
                 .flex()
                 .flex_col()
+                .w_full()
                 .gap_2()
                 .child(
                     div()
@@ -697,252 +698,284 @@ impl StatusView {
 
         // The content column: width-capped and left-aligned. Wrapped below in a
         // full-width scroll container so the scrollbar sits at the window edge.
-        let content = div()
+        // Header: title on the left; actions on the right.
+        let header = div()
             .flex()
-            .flex_col()
-            .w_full()
-            .max_w(px(620.0))
-            .p_4()
-            .gap_4()
+            .items_center()
+            .justify_between()
             .child(
-                // Header: title on the left; actions on the right.
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.palette.section)
+                    .child(SharedString::from("Settings")),
+            )
+            .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(SharedString::from("Settings")),
-                    )
+                    // The related config buttons group tightly; the unrelated
+                    // "close" action sits further off.
+                    .gap_5()
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            // The related config buttons group tightly; the
-                            // unrelated "close" action sits further off.
-                            .gap_5()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(self.open_config_button(view))
-                                    .when(self.repo_scope_dir.is_some(), |el| {
-                                        el.child(self.open_repo_config_button(view))
-                                    }),
-                            )
-                            .child(self.key_action(
-                                "settings-close",
-                                "esc",
-                                "close",
-                                view,
-                                Self::close_settings,
-                            )),
-                    ),
-            )
-            .child(section("Appearance", {
-                let mut rows = vec![
-                    field(
-                        "appearance",
-                        "Mode",
-                        Select::new(&s.appearance).into_any_element(),
-                    ),
-                    field(
-                        "light-theme",
-                        "Light theme",
-                        Select::new(&s.light_theme)
-                            .search_placeholder("Search themes")
-                            .into_any_element(),
-                    ),
-                    field(
-                        "dark-theme",
-                        "Dark theme",
-                        Select::new(&s.dark_theme)
-                            .search_placeholder("Search themes")
-                            .into_any_element(),
-                    ),
-                    field(
-                        "font",
-                        "Monospace font",
-                        Select::new(&s.font)
-                            .search_placeholder("Search fonts")
-                            .into_any_element(),
-                    ),
-                    field(
-                        "ui-font",
-                        "UI font",
-                        Select::new(&s.ui_font)
-                            .search_placeholder("Search fonts")
-                            .into_any_element(),
-                    ),
-                ];
-                // The app-icon switcher sets the macOS Dock icon; no effect
-                // elsewhere, so it's macOS-only. A radio of the icon images
-                // themselves (no labels) — click one to select it.
-                #[cfg(target_os = "macos")]
-                {
-                    let current = app_icon::resolved_icon(&self.config.app_icon);
-                    let cell = |id: &'static str, thumb: &'static [u8], selected: bool| {
-                        div()
-                            .id(SharedString::from(format!("app-icon-{id}")))
-                            .cursor_pointer()
-                            // The selected icon is marked by a stroke hugging its
-                            // edge; the border stays (transparent when unselected)
-                            // so the row doesn't shift. Wrapping the image, the
-                            // border's outer radius is 13 and its inner radius 11
-                            // (13 minus the 2px stroke), so the image is rounded
-                            // to 11 to sit flush inside it.
-                            .rounded(px(13.0))
-                            .border_2()
-                            .border_color(if selected {
-                                self.palette.section
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .child(
-                                // A plain square thumbnail, rounded here at
-                                // render — so the corners match the stroke with
-                                // no baked margin to leave a gap.
-                                gpui::img(std::sync::Arc::new(gpui::Image::from_bytes(
-                                    gpui::ImageFormat::Png,
-                                    thumb.to_vec(),
-                                )))
-                                .size(px(56.0))
-                                .rounded(px(11.0)),
-                            )
-                            .on_click({
-                                let view = view.clone();
-                                move |_, _window, cx| {
-                                    view.update(cx, |this, cx| this.set_app_icon(id, cx));
-                                }
-                            })
-                    };
-                    let radio = div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .children(
-                            app_icon::ICONS
-                                .iter()
-                                .map(|icon| cell(icon.id, icon.thumb, icon.id == current)),
-                        )
-                        .into_any_element();
-                    rows.push(field("app-icon", "App icon", radio));
-                }
-                rows
-            }))
-            .child(section("Editor", {
-                #[cfg(target_os = "macos")]
-                let control = Select::new(&s.editor)
-                    .search_placeholder("Search editors")
-                    .into_any_element();
-                #[cfg(not(target_os = "macos"))]
-                let control = Input::new(&s.editor).into_any_element();
-                vec![
-                    field("editor", "External editor", control).child(self.info_icon(
-                        "editor-info".to_string(),
-                        "The editor used when opening a file",
+                            .gap_2()
+                            .child(self.open_config_button(view))
+                            .when(self.repo_scope_dir.is_some(), |el| {
+                                el.child(self.open_repo_config_button(view))
+                            }),
+                    )
+                    .child(self.key_action(
+                        "settings-close",
+                        "esc",
+                        "close",
+                        view,
+                        Self::close_settings,
                     )),
-                ]
-            }))
-            .child(section(
-                "Behavior",
-                vec![
-                    field(
-                        "keymap-preset",
-                        "Keybindings",
-                        Select::new(&s.keymap_preset).into_any_element(),
-                    ),
-                    toggle_row(vec![
-                        inline_toggle(
-                            "refresh-on-focus",
-                            "Refresh on focus",
-                            self.toggle_control(
-                                "refresh-on-focus",
-                                self.config.refresh_on_focus,
-                                "Refresh the status view automatically when window regains focus.",
-                                view,
-                                false,
-                                |cfg, on| cfg.refresh_on_focus = on,
-                            ),
-                        ),
-                        inline_toggle(
-                            "show-tags",
-                            "Tags in title bar",
-                            self.toggle_control(
-                                "show-tags",
-                                self.config.show_tags_in_title_bar,
-                                "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
-                                view,
-                                // Needs the tag data fetched, so refresh on toggle.
-                                true,
-                                |cfg, on| cfg.show_tags_in_title_bar = on,
-                            ),
-                        ),
-                        inline_toggle(
-                            "check-for-updates",
-                            "Check for updates",
-                            self.update_check_toggle_control(view),
-                        ),
-                    ]),
-                ],
-            ))
-            .child(section("Commit editor", {
-                let mut rows = vec![field(
-                    "commit-in-editor",
-                    "Use external editor",
+            );
+
+        let appearance = section("Appearance", {
+            let mut rows = vec![
+                field(
+                    "appearance",
+                    "Mode",
+                    Select::new(&s.appearance).into_any_element(),
+                ),
+                field(
+                    "light-theme",
+                    "Light theme",
+                    Select::new(&s.light_theme)
+                        .search_placeholder("Search themes")
+                        .into_any_element(),
+                ),
+                field(
+                    "dark-theme",
+                    "Dark theme",
+                    Select::new(&s.dark_theme)
+                        .search_placeholder("Search themes")
+                        .into_any_element(),
+                ),
+                field(
+                    "font",
+                    "Monospace font",
+                    Select::new(&s.font)
+                        .search_placeholder("Search fonts")
+                        .into_any_element(),
+                ),
+                field(
+                    "ui-font",
+                    "UI font",
+                    Select::new(&s.ui_font)
+                        .search_placeholder("Search fonts")
+                        .into_any_element(),
+                ),
+            ];
+            // The app-icon switcher sets the macOS Dock icon; no effect
+            // elsewhere, so it's macOS-only. A radio of the icon images
+            // themselves (no labels) — click one to select it.
+            #[cfg(target_os = "macos")]
+            {
+                let current = app_icon::resolved_icon(&self.config.app_icon);
+                let cell = |id: &'static str, thumb: &'static [u8], selected: bool| {
+                    div()
+                        .id(SharedString::from(format!("app-icon-{id}")))
+                        .cursor_pointer()
+                        // The selected icon is marked by a stroke hugging its
+                        // edge; the border stays (transparent when unselected)
+                        // so the row doesn't shift. Wrapping the image, the
+                        // border's outer radius is 13 and its inner radius 11
+                        // (13 minus the 2px stroke), so the image is rounded
+                        // to 11 to sit flush inside it.
+                        .rounded(px(13.0))
+                        .border_2()
+                        .border_color(if selected {
+                            self.palette.section
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .child(
+                            // A plain square thumbnail, rounded here at
+                            // render — so the corners match the stroke with
+                            // no baked margin to leave a gap.
+                            gpui::img(std::sync::Arc::new(gpui::Image::from_bytes(
+                                gpui::ImageFormat::Png,
+                                thumb.to_vec(),
+                            )))
+                            .size(px(56.0))
+                            .rounded(px(11.0)),
+                        )
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _window, cx| {
+                                view.update(cx, |this, cx| this.set_app_icon(id, cx));
+                            }
+                        })
+                };
+                let radio = div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .w_full()
+                    .gap_2()
+                    .children(
+                        app_icon::ICONS
+                            .iter()
+                            .map(|icon| cell(icon.id, icon.thumb, icon.id == current)),
+                    )
+                    .into_any_element();
+                rows.push(field("app-icon", "App icon", radio));
+            }
+            rows
+        });
+
+        let editor = section("Editor", {
+            #[cfg(target_os = "macos")]
+            let control = Select::new(&s.editor)
+                .search_placeholder("Search editors")
+                .into_any_element();
+            #[cfg(not(target_os = "macos"))]
+            let control = Input::new(&s.editor).into_any_element();
+            vec![
+                field("editor", "External editor", control).child(self.info_icon(
+                    "editor-info".to_string(),
+                    "The editor used when opening a file",
+                )),
+            ]
+        });
+
+        let behavior = section(
+            "Behavior",
+            vec![
+                field(
+                    "keymap-preset",
+                    "Keybindings",
+                    Select::new(&s.keymap_preset).into_any_element(),
+                ),
+                toggle_field(
+                    "refresh-on-focus",
+                    "Refresh on focus",
                     self.toggle_control(
-                        "commit-in-editor",
-                        self.config.commit_in_editor,
-                        "Write commit messages with the editor command below (an interactive \
-                         `git commit`) instead of the built-in editor.",
+                        "refresh-on-focus",
+                        self.config.refresh_on_focus,
+                        "Refresh the status view automatically when window regains focus.",
                         view,
                         false,
-                        |cfg, on| cfg.commit_in_editor = on,
+                        |cfg, on| cfg.refresh_on_focus = on,
                     ),
-                )];
-                // With the external editor on, only its command is relevant; the
-                // built-in editor's ruler/wrap aids don't apply, so hide them.
-                if self.config.commit_in_editor {
-                    rows.push(field(
-                        "commit-editor",
-                        "Editor command",
-                        Input::new(&s.commit_editor).into_any_element(),
-                    ));
-                } else {
-                    rows.push(toggle_row(vec![
-                        inline_toggle(
-                            "commit-title-ruler",
-                            "Summary ruler",
-                            self.toggle_control(
-                                "commit-title-ruler",
-                                self.config.commit_title_ruler,
-                                "Underlines characters past column 50 on the commit summary \
-                                 (first) line.",
-                                view,
-                                false,
-                                |cfg, on| cfg.commit_title_ruler = on,
-                            ),
-                        ),
-                        inline_toggle(
-                            "commit-body-wrap",
-                            "Body auto-wrap",
-                            self.toggle_control(
-                                "commit-body-wrap",
-                                self.config.commit_body_wrap,
-                                "Hard-wraps the commit body at 72 columns as you type at the end \
-                                 of a line (the summary line is never wrapped).",
-                                view,
-                                false,
-                                |cfg, on| cfg.commit_body_wrap = on,
-                            ),
-                        ),
-                    ]));
-                }
-                rows
-            }));
+                ),
+                toggle_field(
+                    "show-tags",
+                    "Tags in title bar",
+                    self.toggle_control(
+                        "show-tags",
+                        self.config.show_tags_in_title_bar,
+                        "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
+                        view,
+                        // Needs the tag data fetched, so refresh on toggle.
+                        true,
+                        |cfg, on| cfg.show_tags_in_title_bar = on,
+                    ),
+                ),
+                toggle_field(
+                    "check-for-updates",
+                    "Check for updates",
+                    self.update_check_toggle_control(view),
+                ),
+            ],
+        );
+
+        let commit = section("Commit editor", {
+            let mut rows = vec![toggle_field(
+                "commit-in-editor",
+                "Use external editor",
+                self.toggle_control(
+                    "commit-in-editor",
+                    self.config.commit_in_editor,
+                    "Write commit messages with the editor command below (an interactive \
+                     `git commit`) instead of the built-in editor.",
+                    view,
+                    false,
+                    |cfg, on| cfg.commit_in_editor = on,
+                ),
+            )];
+            // With the external editor on, only its command is relevant; the
+            // built-in editor's ruler/wrap aids don't apply, so hide them.
+            if self.config.commit_in_editor {
+                rows.push(field(
+                    "commit-editor",
+                    "Editor command",
+                    Input::new(&s.commit_editor).into_any_element(),
+                ));
+            } else {
+                rows.push(toggle_field(
+                    "commit-title-ruler",
+                    "Summary ruler",
+                    self.toggle_control(
+                        "commit-title-ruler",
+                        self.config.commit_title_ruler,
+                        "Underlines characters past column 50 on the commit summary (first) line.",
+                        view,
+                        false,
+                        |cfg, on| cfg.commit_title_ruler = on,
+                    ),
+                ));
+                rows.push(toggle_field(
+                    "commit-body-wrap",
+                    "Body auto-wrap",
+                    self.toggle_control(
+                        "commit-body-wrap",
+                        self.config.commit_body_wrap,
+                        "Hard-wraps the commit body at 72 columns as you type at the end of a \
+                         line (the summary line is never wrapped).",
+                        view,
+                        false,
+                        |cfg, on| cfg.commit_body_wrap = on,
+                    ),
+                ));
+            }
+            rows
+        });
+
+        // Two masonry columns of section cards: Appearance (the tallest) leads
+        // the left column; the rest stack on the right.
+        let columns = div()
+            .flex()
+            .items_start()
+            .gap_4()
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .gap_4()
+                    .child(appearance)
+                    .child(editor),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .gap_4()
+                    .child(behavior)
+                    .child(commit),
+            );
+
+        // The content column: width-capped and left-aligned. Wrapped below in a
+        // full-width scroll container so the scrollbar sits at the window edge.
+        let content = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_w(px(880.0))
+            .p_4()
+            .gap_4()
+            .child(header)
+            .child(columns);
 
         // Use the same two-layer shape as the virtualized views: the inner
         // element owns the scroll handle, and the outer full-height layer renders
