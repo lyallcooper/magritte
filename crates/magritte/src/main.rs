@@ -1131,6 +1131,21 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_switches_deactivate_each_other() {
+        // Cherry-pick declares --ff and -x incompatible (git rejects the
+        // combination); toggling either must turn the other off, in both
+        // directions even though only --ff carries the declaration.
+        let def = transient::cherry_pick_transient();
+        assert_eq!(conflicting_switch_keys(&def, "-x"), ["-F"]);
+        assert_eq!(conflicting_switch_keys(&def, "-F"), ["-x"]);
+        assert!(conflicting_switch_keys(&def, "-e").is_empty());
+
+        let merge = transient::merge_transient();
+        assert_eq!(conflicting_switch_keys(&merge, "-f"), ["-n"]);
+        assert_eq!(conflicting_switch_keys(&merge, "-n"), ["-f"]);
+    }
+
+    #[test]
     fn negatable_switch_emits_relative_to_config_default() {
         // A negatable switch (e.g. --gpg-sign, tied to commit.gpgSign) emits a
         // flag only when its toggle differs from the configured default: the

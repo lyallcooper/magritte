@@ -745,6 +745,11 @@ impl StatusView {
             let full = format!("-{key}");
             if state.def.switches().any(|s| s.key == full) {
                 if !state.active.remove(&full) {
+                    // Toggling on turns off any switch declared incompatible
+                    // with this one (magit's :incompatible).
+                    for key in conflicting_switch_keys(&state.def, &full) {
+                        state.active.remove(&key);
+                    }
                     state.active.insert(full);
                 }
                 cx.notify();
@@ -819,4 +824,21 @@ impl StatusView {
             self.invoke_command(&custom.id, window, cx);
         }
     }
+}
+
+/// The switch keys that must deactivate when the switch bound to `key`
+/// toggles on: every other switch declared mutually exclusive with it, in
+/// either direction (so one side's declaration suffices).
+pub(crate) fn conflicting_switch_keys(def: &Transient, key: &str) -> Vec<String> {
+    let Some(sw) = def.switches().find(|s| s.key == key) else {
+        return Vec::new();
+    };
+    def.switches()
+        .filter(|other| {
+            other.key != key
+                && (sw.exclusive_with.contains(&other.arg)
+                    || other.exclusive_with.contains(&sw.arg))
+        })
+        .map(|other| other.key.clone())
+        .collect()
 }

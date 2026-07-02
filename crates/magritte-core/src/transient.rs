@@ -183,9 +183,20 @@ pub struct Switch {
     /// (e.g. `commit.gpgSign`), resolved by the frontend at open time. `None` for
     /// a switch with a fixed default.
     pub config_key: Option<String>,
+    /// Arguments this switch cannot combine with (magit's `:incompatible`):
+    /// toggling this switch on turns off any active switch whose `arg` is
+    /// listed here. Checked symmetrically, so declaring one side suffices.
+    pub exclusive_with: Vec<String>,
 }
 
 impl Switch {
+    /// Declare `args` mutually exclusive with this switch — toggling it on
+    /// turns them off.
+    pub fn exclusive_with(mut self, args: &[&str]) -> Self {
+        self.exclusive_with = args.iter().map(|a| a.to_string()).collect();
+        self
+    }
+
     /// A switch that starts off (the common case).
     pub fn new(
         key: impl Into<String>,
@@ -199,6 +210,7 @@ impl Switch {
             default_on: false,
             negation: None,
             config_key: None,
+            exclusive_with: Vec::new(),
         }
     }
 
@@ -948,7 +960,10 @@ pub fn merge_transient() -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::new("-n", "--no-ff", "Always create a merge commit")),
-                    Suffix::Switch(Switch::new("-f", "--ff-only", "Fast-forward only")),
+                    Suffix::Switch(
+                        Switch::new("-f", "--ff-only", "Fast-forward only")
+                            .exclusive_with(&["--no-ff"]),
+                    ),
                 ],
             },
             Group {
@@ -970,7 +985,9 @@ pub fn cherry_pick_transient() -> Transient {
             Group {
                 title: plain_title("Arguments"),
                 suffixes: vec![
-                    Suffix::Switch(Switch::on("-F", "--ff", "Attempt fast-forward")),
+                    Suffix::Switch(
+                        Switch::on("-F", "--ff", "Attempt fast-forward").exclusive_with(&["-x"]),
+                    ),
                     Suffix::Switch(Switch::new(
                         "-x",
                         "-x",
