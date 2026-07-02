@@ -426,6 +426,11 @@ impl StatusView {
             } else {
                 cv.body.rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
                 cv.body.selected = cv.body.selected.min(cv.body.rows.len().saturating_sub(1));
+                // Re-anchor the viewport too: removing rows can leave it
+                // scrolled past the new end.
+                cv.body
+                    .scroll
+                    .scroll_to_item(cv.body.selected, gpui::ScrollStrategy::Top);
             }
             cx.notify();
         }

@@ -1,7 +1,13 @@
 //! Persistent user config: an XDG-style TOML file at
 //! `$XDG_CONFIG_HOME/magritte/config.toml` (falling back to
-//! `~/.config/magritte/config.toml`). Currently just the chosen theme and
-//! font; written when the settings screen closes, loaded at startup.
+//! `~/.config/magritte/config.toml`), deep-merged with a per-repo
+//! `.git/magritte/config.toml` overlay. Carries appearance/font/editor
+//! settings, the `[keymap]` and `[transient.*]` overrides, user `[[command]]`s,
+//! and the `[status]`/`[fetch]` tables — see docs/config.md for the user-facing
+//! reference. Loaded at startup, re-read live on change; in-app saves patch
+//! only the fields the Settings screen owns (via `toml_edit`), preserving the
+//! user's comments and layout. Also home to the sibling state files: command
+//! usage (palette frecency) and saved transient arguments.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

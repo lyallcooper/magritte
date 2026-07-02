@@ -21,7 +21,17 @@ pub(crate) fn try_handoff(start_dir: Option<&Path>) -> bool {
         return false;
     };
     let path = request_path(start_dir);
-    writeln!(stream, "{}", path.to_string_lossy()).is_ok()
+    if writeln!(stream, "{}", path.to_string_lossy()).is_err() {
+        return false;
+    }
+    // Close our write half so the server's read returns, then wait for its
+    // one-byte ack: a successful write alone doesn't mean the request was
+    // received (the server could die before reading), and a false success
+    // here would mean no window opens anywhere.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let mut ack = [0u8; 1];
+    stream.read_exact(&mut ack).is_ok()
 }
 
 #[cfg(not(unix))]
@@ -67,7 +77,10 @@ pub(crate) fn start_server(tx: Sender<PathBuf>) -> bool {
             if path.is_empty() {
                 continue;
             }
-            let _ = tx.send_blocking(PathBuf::from(path));
+            if tx.send_blocking(PathBuf::from(path)).is_ok() {
+                // Ack so the handing-off process knows the request landed.
+                let _ = stream.write_all(b"\n");
+            }
         }
     });
     true

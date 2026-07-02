@@ -2322,6 +2322,9 @@ impl StatusView {
             .text_xs()
             .flex()
             .items_center()
+            // Wrap onto further rows when a prefix has more continuations than
+            // fit one line, instead of overflowing off the right edge.
+            .flex_wrap()
             .gap_3();
         // The keys typed so far in a single keycap, with a trailing dash to show
         // the sequence is awaiting the next key (emacs' echo-area `g-` feedback).

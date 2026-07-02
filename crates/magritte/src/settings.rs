@@ -70,8 +70,9 @@ pub(crate) struct SettingsState {
 }
 
 impl StatusView {
-    /// Open the live settings screen: four `Select` dropdowns (appearance,
-    /// light theme, dark theme, font), each applying its selection immediately.
+    /// Open the live settings screen: appearance/theme/font/keymap dropdowns,
+    /// editor commands, and behavior toggles — every control applying its
+    /// change immediately (no save button).
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut theme_names: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
@@ -634,6 +635,30 @@ impl StatusView {
                         .child(control),
                 )
         };
+        // A compact labelled toggle: label + switch inline, several of which
+        // pack onto one wrapping row instead of a full field row each.
+        let inline_toggle = |id: &'static str, label: &str, control: AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(div().relative().child(track_target(id)).child(control))
+                .into_any_element()
+        };
+        let toggle_row = |items: Vec<AnyElement>| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x_6()
+                .gap_y_2()
+                .children(items)
+        };
         // A titled group: an uppercase heading over a bordered card of rows.
         let section = |title: &str, rows: Vec<gpui::Div>| {
             div()
@@ -767,36 +792,38 @@ impl StatusView {
                         "Keybindings",
                         Select::new(&s.keymap_preset).into_any_element(),
                     ),
-                    field(
-                        "refresh-on-focus",
-                        "Refresh on focus",
-                        self.toggle_control(
+                    toggle_row(vec![
+                        inline_toggle(
                             "refresh-on-focus",
-                            self.config.refresh_on_focus,
-                            "Refresh the status view automatically when window regains focus.",
-                            view,
-                            false,
-                            |cfg, on| cfg.refresh_on_focus = on,
+                            "Refresh on focus",
+                            self.toggle_control(
+                                "refresh-on-focus",
+                                self.config.refresh_on_focus,
+                                "Refresh the status view automatically when window regains focus.",
+                                view,
+                                false,
+                                |cfg, on| cfg.refresh_on_focus = on,
+                            ),
                         ),
-                    ),
-                    field(
-                        "show-tags",
-                        "Tags in title bar",
-                        self.toggle_control(
+                        inline_toggle(
                             "show-tags",
-                            self.config.show_tags_in_title_bar,
-                            "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
-                            view,
-                            // Needs the tag data fetched, so refresh on toggle.
-                            true,
-                            |cfg, on| cfg.show_tags_in_title_bar = on,
+                            "Tags in title bar",
+                            self.toggle_control(
+                                "show-tags",
+                                self.config.show_tags_in_title_bar,
+                                "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
+                                view,
+                                // Needs the tag data fetched, so refresh on toggle.
+                                true,
+                                |cfg, on| cfg.show_tags_in_title_bar = on,
+                            ),
                         ),
-                    ),
-                    field(
-                        "check-for-updates",
-                        "Check for updates",
-                        self.update_check_toggle_control(view),
-                    ),
+                        inline_toggle(
+                            "check-for-updates",
+                            "Check for updates",
+                            self.update_check_toggle_control(view),
+                        ),
+                    ]),
                 ],
             ))
             .child(section("Commit editor", {
@@ -822,32 +849,34 @@ impl StatusView {
                         Input::new(&s.commit_editor).into_any_element(),
                     ));
                 } else {
-                    rows.push(field(
-                        "commit-title-ruler",
-                        "Summary ruler",
-                        self.toggle_control(
+                    rows.push(toggle_row(vec![
+                        inline_toggle(
                             "commit-title-ruler",
-                            self.config.commit_title_ruler,
-                            "Underlines characters past column 50 on the commit summary (first) \
-                             line.",
-                            view,
-                            false,
-                            |cfg, on| cfg.commit_title_ruler = on,
+                            "Summary ruler",
+                            self.toggle_control(
+                                "commit-title-ruler",
+                                self.config.commit_title_ruler,
+                                "Underlines characters past column 50 on the commit summary \
+                                 (first) line.",
+                                view,
+                                false,
+                                |cfg, on| cfg.commit_title_ruler = on,
+                            ),
                         ),
-                    ));
-                    rows.push(field(
-                        "commit-body-wrap",
-                        "Body auto-wrap",
-                        self.toggle_control(
+                        inline_toggle(
                             "commit-body-wrap",
-                            self.config.commit_body_wrap,
-                            "Hard-wraps the commit body at 72 columns as you type at the end of a \
-                             line (the summary line is never wrapped).",
-                            view,
-                            false,
-                            |cfg, on| cfg.commit_body_wrap = on,
+                            "Body auto-wrap",
+                            self.toggle_control(
+                                "commit-body-wrap",
+                                self.config.commit_body_wrap,
+                                "Hard-wraps the commit body at 72 columns as you type at the end \
+                                 of a line (the summary line is never wrapped).",
+                                view,
+                                false,
+                                |cfg, on| cfg.commit_body_wrap = on,
+                            ),
                         ),
-                    ));
+                    ]));
                 }
                 rows
             }));

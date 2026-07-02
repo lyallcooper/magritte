@@ -228,6 +228,9 @@ keymap_preset = "evil"
 
 Any id below can be bound to a key. Top-level ones have a default key; the rest
 are reachable today only through their prefix's transient or the `:` palette.
+The palette hides commands that don't apply right now — e.g. `jump-to-ignored`
+appears only while the (opt-in) Ignored section is shown, and the other
+`jump-to-*` commands only while their section has content.
 
 | id | default key | command |
 |----|-------------|---------|
