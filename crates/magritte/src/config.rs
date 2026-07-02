@@ -486,7 +486,9 @@ fn read_config_value(path: &Path, warnings: &mut Vec<String>) -> toml::Value {
 /// Deep-merge `overlay` onto `base` (both TOML tables): tables merge key by key
 /// with the overlay winning; the top-level `command` array concatenates with
 /// dedup by `id` (so a repo adds or overrides commands); other scalars and
-/// arrays are replaced by the overlay.
+/// arrays are replaced by the overlay. Only the top level treats `command`
+/// specially — a nested `command` key (e.g. a `[transient.<id>]` action
+/// suffix) is ordinary data and merges like any other value.
 fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
     match (base, overlay) {
         (toml::Value::Table(b), toml::Value::Table(o)) => {
@@ -495,7 +497,24 @@ fn deep_merge(base: &mut toml::Value, overlay: toml::Value) {
                     let merged = merge_commands(b.get("command"), ov);
                     b.insert(k, merged);
                 } else if let Some(bv) = b.get_mut(&k) {
-                    deep_merge(bv, ov);
+                    merge_value(bv, ov);
+                } else {
+                    b.insert(k, ov);
+                }
+            }
+        }
+        (slot, o) => *slot = o,
+    }
+}
+
+/// The recursive arm of [`deep_merge`]: tables merge key by key, everything
+/// else is replaced by the overlay.
+fn merge_value(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(b), toml::Value::Table(o)) => {
+            for (k, ov) in o {
+                if let Some(bv) = b.get_mut(&k) {
+                    merge_value(bv, ov);
                 } else {
                     b.insert(k, ov);
                 }
@@ -989,6 +1008,23 @@ run = "git fetch && git push"
             .find(|c| c.get("id").and_then(|v| v.as_str()) == Some("b"))
             .unwrap();
         assert_eq!(b.get("title").and_then(|v| v.as_str()), Some("B2")); // repo wins
+        let parsed: Result<Config, _> = base.try_into();
+        assert!(parsed.is_ok(), "merged config deserializes");
+    }
+
+    #[test]
+    fn deep_merge_leaves_nested_command_keys_alone() {
+        // A table-form transient suffix carries a `command` key. When both
+        // configs define the same suffix, the overlay must replace it like any
+        // nested value — not get mangled by the top-level [[command]] concat.
+        let mut base = val("[transient.commit]\n\"A\" = { command = \"commit-amend\" }\n");
+        let overlay = val("[transient.commit]\n\"A\" = { command = \"commit-reword\" }\n");
+        deep_merge(&mut base, overlay);
+        let suffix = &base["transient"]["commit"]["A"];
+        assert_eq!(
+            suffix.get("command").and_then(|v| v.as_str()),
+            Some("commit-reword") // repo wins; still a string, not []
+        );
         let parsed: Result<Config, _> = base.try_into();
         assert!(parsed.is_ok(), "merged config deserializes");
     }
