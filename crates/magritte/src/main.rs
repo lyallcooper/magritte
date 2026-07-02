@@ -4019,6 +4019,9 @@ impl StatusView {
             diff_scroll: UniformListScrollHandle::new(),
             _sub: sub,
         });
+        // Stamp this editor instance so async loads started for it can't write
+        // into a different editor opened after it was cancelled.
+        let gen = self.next_screen_gen();
         // Amend/reword pre-fill HEAD's message — loaded off the UI thread (the
         // git call must not block the UI), then set into the input if the user
         // hasn't started typing.
@@ -4041,6 +4044,9 @@ impl StatusView {
                     // HEAD's message as the baseline, so canceling an unedited
                     // amend/reword doesn't prompt to discard.
                     let _ = this.update_in(cx, |this, window, cx| {
+                        if !this.screen_gen.is_current(gen) {
+                            return; // this editor was closed; don't touch a newer one
+                        }
                         if let Some(ed) = this.editor_mut() {
                             ed.initial = msg;
                         }
@@ -4068,6 +4074,10 @@ impl StatusView {
         let Some(ed) = self.editor() else {
             return;
         };
+        // The caller (open_editor_after) bumped screen_gen for this editor;
+        // capture it so a load outlived by its editor can't populate a newer
+        // one (whose mode/args — create vs reword vs --all — may differ).
+        let gen = self.screen_gen.current();
         let reword = ed.mode == CommitMode::Reword;
         let also_unstaged = ed.args.iter().any(|a| a == "--all");
         cx.spawn(async move |this, cx| {
@@ -4104,8 +4114,8 @@ impl StatusView {
                 .await;
             let (files, error) = files;
             this.update(cx, |this, cx| {
-                if this.editor().is_none() {
-                    return; // editor closed before the diff loaded
+                if !this.screen_gen.is_current(gen) || this.editor().is_none() {
+                    return; // this editor closed (or was replaced) before the diff loaded
                 }
                 if let Some(err) = error {
                     if let Some(ed) = this.editor_mut() {
