@@ -242,21 +242,28 @@ impl Repo {
         let Some(branch) = head.branch.clone() else {
             return;
         };
-        // The config-derived push ref name (e.g. `origin/main`), if any.
-        let Ok(Some(out)) = self.run_optional([
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            &format!("{branch}@{{push}}"),
-        ]) else {
+        // Derive the push remote from config rather than resolving `@{push}`:
+        // under the default `push.default = simple`, git refuses to resolve
+        // `@{push}` in a triangular workflow ("cannot resolve 'simple' push to a
+        // single destination") — exactly the case this reports. `pushRemote`
+        // wins, else `remote.pushDefault`; without either, pushes follow the
+        // upstream (already shown), so there is no distinct push target.
+        let config = |key: String| -> Option<String> {
+            let out = self.run_optional(["config", &key]).ok()??;
+            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!val.is_empty()).then_some(val)
+        };
+        let Some(remote) = config(format!("branch.{branch}.pushRemote"))
+            .or_else(|| config("remote.pushDefault".to_string()))
+        else {
             return;
         };
-        let push = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if let Some((remote, _)) = push.split_once('/') {
-            head.push_remote = Some(remote.to_string());
-        }
-        // Nothing configured, or the same ref the upstream line already shows.
-        if push.is_empty() || head.upstream.as_deref() == Some(push.as_str()) {
+        head.push_remote = Some(remote.clone());
+        // git pushes to the same-named branch on the push remote (push.default
+        // current/simple), so that ref is the push target.
+        let push = format!("{remote}/{branch}");
+        // The same ref the upstream line already shows → nothing extra.
+        if head.upstream.as_deref() == Some(push.as_str()) {
             return;
         }
         // Ahead/behind vs the push target: left = HEAD-only (to push),
