@@ -376,6 +376,23 @@ impl Transient {
                 _ => None,
             })
     }
+
+    /// Whether some action/custom suffix key strictly extends `prefix` — i.e.
+    /// the keystrokes typed so far could still resolve to a multi-key suffix
+    /// (magit's `fu`/`pu` jump keys).
+    pub fn has_key_prefix(&self, prefix: &str) -> bool {
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .any(|s| {
+                let key: &str = match s {
+                    Suffix::Action(a) => a.key,
+                    Suffix::Custom(c) => &c.key,
+                    _ => return false,
+                };
+                key.len() > prefix.len() && key.starts_with(prefix)
+            })
+    }
 }
 
 /// `branch → remote/branch`, the push-remote target label.

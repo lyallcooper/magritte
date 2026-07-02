@@ -193,6 +193,41 @@ impl StatusView {
         }
     }
 
+    /// Jump to a status section's header (magit-status-jump). A section with
+    /// nothing in it has no rows, so the miss reports rather than moving.
+    pub(crate) fn jump_to_section(&mut self, id: SectionId, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Status) {
+            return;
+        }
+        let header = self
+            .rows
+            .iter()
+            .position(|r| matches!(&r.fold, Some(FoldKey::Section(s)) if *s == id));
+        match header {
+            Some(i) => {
+                self.selected = i;
+                self.scroll
+                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+            }
+            None => {
+                let label = match id {
+                    SectionId::Untracked => "untracked files",
+                    SectionId::Unstaged => "unstaged changes",
+                    SectionId::Staged => "staged changes",
+                    SectionId::Stashes => "stashes",
+                    SectionId::Unpushed => "unpushed commits",
+                    SectionId::Unpulled => "unpulled commits",
+                    SectionId::UnpushedPushremote => "unpushed (push remote) commits",
+                    SectionId::UnpulledPushremote => "unpulled (push remote) commits",
+                    SectionId::Recent => "recent commits",
+                    SectionId::Ignored => "ignored files",
+                };
+                self.set_status(format!("No {label} section"), true, cx);
+            }
+        }
+        cx.notify();
+    }
+
     /// Shared key handling for the cursor views (status / log / commit / rebase
     /// todo): the `g` prefix, the fixed motion aliases (arrows, Ctrl-paging,
     /// `]`/`[`), and the remappable motion keys resolved through the effective

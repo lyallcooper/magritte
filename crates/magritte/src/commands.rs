@@ -142,6 +142,28 @@ pub(crate) fn commands() -> &'static [Command] {
             }
         };
     }
+    // A section jump (magit-status-jump): keyless in the registry — vanilla
+    // reaches them through the `j` transient, evil through `g`-sequences — but
+    // in the palette, offered only when the section is on screen.
+    macro_rules! jump {
+        ($id:literal, $title:literal, $section:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                category: Category::Navigation,
+                key: None,
+                menu: false,
+                palette: true,
+                enabled: |t| {
+                    t.rows
+                        .iter()
+                        .any(|r| matches!(&r.fold, Some(FoldKey::Section(s)) if *s == $section))
+                },
+                leaf: None,
+                run: |t, _w, cx| t.jump_to_section($section, cx),
+            }
+        };
+    }
     // A leaf subcommand (a transient suffix): no top-level key, palette-only —
     // it's surfaced in the `?` menu through its prefix's transient. Firing it
     // runs the action directly with default arguments.
@@ -515,6 +537,51 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_section_sibling(true, cx)),
         nav!("prev-sibling-section", "Previous sibling section", "g k", |t, _w, cx| t
             .nav_section_sibling(false, cx)),
+        // Section jumps (magit-status-jump): the `j` transient in vanilla,
+        // direct `g`-sequences in evil (evil-collection's gz/gn/gu/gs/gf*/gp*).
+        Command {
+            id: "status-jump",
+            title: "Jump to section",
+            category: Category::Essential,
+            key: None, // vanilla binds `j` (magit); evil uses the g-sequences
+            menu: true,
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |t, _w, cx| {
+                t.open_transient(
+                    "status-jump",
+                    jump_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            },
+        },
+        jump!("jump-to-stashes", "Jump to stashes", SectionId::Stashes),
+        jump!("jump-to-untracked", "Jump to untracked files", SectionId::Untracked),
+        jump!("jump-to-ignored", "Jump to ignored files", SectionId::Ignored),
+        jump!("jump-to-unstaged", "Jump to unstaged changes", SectionId::Unstaged),
+        jump!("jump-to-staged", "Jump to staged changes", SectionId::Staged),
+        jump!(
+            "jump-to-unpulled-upstream",
+            "Jump to unpulled commits",
+            SectionId::Unpulled
+        ),
+        jump!(
+            "jump-to-unpulled-pushremote",
+            "Jump to unpulled (push remote)",
+            SectionId::UnpulledPushremote
+        ),
+        jump!(
+            "jump-to-unpushed-upstream",
+            "Jump to unpushed commits",
+            SectionId::Unpushed
+        ),
+        jump!(
+            "jump-to-unpushed-pushremote",
+            "Jump to unpushed (push remote)",
+            SectionId::UnpushedPushremote
+        ),
         nav!("half-page-down", "Half page down", "ctrl-d", |t, w, cx| t
             .nav_page(true, false, w, cx)),
         nav!("half-page-up", "Half page up", "ctrl-u", |t, w, cx| t
@@ -563,6 +630,17 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("V", "visual"),
     // magit-mode-map's C-w (copy the value at point) — kept in both presets.
     ("ctrl-w", "yank"),
+    // Section jumps: evil-collection's direct `g`-sequences (vanilla gets the
+    // `j` transient instead).
+    ("g z", "jump-to-stashes"),
+    ("g n", "jump-to-untracked"),
+    ("g i", "jump-to-ignored"),
+    ("g u", "jump-to-unstaged"),
+    ("g s", "jump-to-staged"),
+    ("g f u", "jump-to-unpulled-upstream"),
+    ("g f p", "jump-to-unpulled-pushremote"),
+    ("g p u", "jump-to-unpushed-upstream"),
+    ("g p p", "jump-to-unpushed-pushremote"),
     // Evil-collection-magit remaps Magit's direct `:` git-command binding to
     // `|`; Magit's `!` run-command transient remains the canonical key.
     ("|", "git-command"),
@@ -602,7 +680,37 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-x ctrl-c", "quit"),
 ];
 
-fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Option<&'static str> {
+/// The `j` jump menu (magit-status-jump), suffixes keyed as magit keys them —
+/// including the two-keystroke `fu`/`fp`/`pu`/`pp`. Each entry dispatches its
+/// registry `jump-to-*` command.
+pub(crate) fn jump_transient() -> Transient {
+    let entry = |key: &str, description: &str, id: &str| {
+        Suffix::Custom(transient::Custom {
+            key: key.to_string(),
+            description: description.to_string(),
+            id: id.to_string(),
+        })
+    };
+    Transient {
+        title: transient::plain_title("Jump to section"),
+        groups: vec![Group {
+            title: transient::plain_title("Jump to"),
+            suffixes: vec![
+                entry("z", "Stashes", "jump-to-stashes"),
+                entry("n", "Untracked files", "jump-to-untracked"),
+                entry("i", "Ignored files", "jump-to-ignored"),
+                entry("u", "Unstaged changes", "jump-to-unstaged"),
+                entry("s", "Staged changes", "jump-to-staged"),
+                entry("fu", "Unpulled from upstream", "jump-to-unpulled-upstream"),
+                entry("fp", "Unpulled from push remote", "jump-to-unpulled-pushremote"),
+                entry("pu", "Unpushed to upstream", "jump-to-unpushed-upstream"),
+                entry("pp", "Unpushed to push remote", "jump-to-unpushed-pushremote"),
+            ],
+        }],
+    }
+}
+
+pub(crate) fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Option<&'static str> {
     use config::KeymapPreset::*;
     match preset {
         EvilCollection => cmd.key,
@@ -612,6 +720,7 @@ fn default_key_for_command(preset: config::KeymapPreset, cmd: &Command) -> Optio
             "stash" => Some("z"),
             "discard" => Some("k"),
             "refresh" => Some("g"),
+            "status-jump" => Some("j"),
             // `n`/`p` and `M-n`/`M-p` are aliases below; no Ctrl-j/`g j` in vanilla.
             "next-section" | "prev-section" => None,
             "next-sibling-section" | "prev-sibling-section" => None,
@@ -1020,7 +1129,10 @@ pub(crate) fn dispatch_menu(keymap: &HashMap<String, String>, config: &config::C
             .iter()
             .filter(|c| c.category == cat && c.menu)
             .filter_map(|c| {
-                current_key(keymap, c.id, c.key).map(|keys| {
+                // Prefer the preset's default key (e.g. vanilla `g` for
+                // refresh), not the registry's evil-collection one.
+                let default = default_key_for_command(config.keymap_preset, c);
+                current_key(keymap, c.id, default).map(|keys| {
                     Suffix::Info(transient::Info {
                         keys,
                         description: c.title.to_string(),

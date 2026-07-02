@@ -162,6 +162,9 @@ struct TransientState {
     baseline_values: std::collections::HashMap<String, String>,
     /// True after `-` is pressed, awaiting the switch/option letter (magit `-f`).
     pending_dash: bool,
+    /// Keystrokes so far of a multi-key suffix (magit's `fu`/`pu` jump keys),
+    /// kept while they prefix some suffix key. Empty when nothing is pending.
+    pending_key: String,
     /// True after the save key is pressed, awaiting the scope letter (`g`lobal /
     /// `l`ocal) — magit-style two-step save.
     pending_save: bool,
@@ -187,6 +190,7 @@ impl TransientState {
             values: std::collections::HashMap::new(),
             baseline_values: std::collections::HashMap::new(),
             pending_dash: false,
+            pending_key: String::new(),
             pending_save: false,
             targets,
         }
@@ -3715,14 +3719,36 @@ impl StatusView {
         }
         if key == "-" {
             state.pending_dash = true;
+            state.pending_key.clear();
             cx.notify();
             return;
         }
 
+        // Multi-key suffixes (magit's `fu`/`pu` jump keys): accumulate the
+        // keystrokes while they still prefix some suffix key; a full match
+        // fires below like any single-key suffix.
+        let candidate = format!("{}{key}", state.pending_key);
+        state.pending_key.clear();
+        if state.def.action_for(&candidate).is_none()
+            && state.def.custom_for(&candidate).is_none()
+        {
+            if state.def.has_key_prefix(&candidate) {
+                state.pending_key = candidate;
+                cx.notify();
+                return;
+            }
+            if candidate != key {
+                // An accumulated sequence that resolves to nothing: swallow it
+                // rather than firing the lone final key.
+                cx.notify();
+                return;
+            }
+        }
+
         // Invoke an action — or a user-injected custom suffix (which runs a
         // registry command by id, with default args).
-        let action = state.def.action_for(key).cloned();
-        let custom = state.def.custom_for(key).cloned();
+        let action = state.def.action_for(&candidate).cloned();
+        let custom = state.def.custom_for(&candidate).cloned();
         // The active git arguments: toggled switches plus set option values.
         let args = state.args();
         // Pathspec limits trail the revision behind a `--` (log only).
@@ -6068,16 +6094,19 @@ mod tests {
             if let Some(key) = c.key {
                 assert!(keys.insert(key), "duplicate command key: {key}");
             }
-            // Surface invariants: a `?`-menu command needs a key; a leaf (no key)
-            // must be palette-only.
-            assert_eq!(
-                c.menu,
-                c.menu && c.key.is_some(),
-                "menu command {:?} has no key",
-                c.id
-            );
-            if c.key.is_none() {
-                assert!(!c.menu, "keyless command {:?} can't be in the menu", c.id);
+            // Surface invariants: a `?`-menu command needs a key in at least one
+            // preset (the menu drops keyless entries per preset); a command with
+            // no key anywhere must be palette-only.
+            let bound_somewhere = c.key.is_some()
+                || default_key_for_command(config::KeymapPreset::Vanilla, c).is_some();
+            if c.menu {
+                assert!(
+                    bound_somewhere,
+                    "menu command {:?} has no key in any preset",
+                    c.id
+                );
+            }
+            if !bound_somewhere {
                 assert!(
                     c.palette,
                     "keyless command {:?} should be in the palette",
@@ -6085,25 +6114,37 @@ mod tests {
                 );
             }
         }
-        // Every menu command is actually reachable from the `?` dispatch menu.
-        let config = config::Config::default();
-        let km = build_keymap(&config).0;
-        let menu: HashSet<String> = dispatch_menu(&km, &config)
-            .groups
-            .iter()
-            .flat_map(|g| &g.suffixes)
-            .filter_map(|s| match s {
-                Suffix::Info(i) => Some(i.keys.clone()),
-                _ => None,
-            })
-            .collect();
-        for c in commands().iter().filter(|c| c.menu) {
-            let key = c.key.unwrap();
-            assert!(
-                menu.contains(key),
-                "menu command {:?} ({key}) missing from dispatch menu",
-                c.id
-            );
+        // Every menu command is reachable from the `?` dispatch menu, in each
+        // preset where it has a default key.
+        for preset in [
+            config::KeymapPreset::EvilCollection,
+            config::KeymapPreset::Vanilla,
+        ] {
+            let config = config::Config {
+                keymap_preset: preset,
+                ..config::Config::default()
+            };
+            let km = build_keymap(&config).0;
+            let menu: HashSet<String> = dispatch_menu(&km, &config)
+                .groups
+                .iter()
+                .flat_map(|g| &g.suffixes)
+                .filter_map(|s| match s {
+                    Suffix::Info(i) => Some(i.keys.clone()),
+                    _ => None,
+                })
+                .collect();
+            for c in commands().iter().filter(|c| c.menu) {
+                let Some(key) = default_key_for_command(preset, c) else {
+                    continue;
+                };
+                assert!(
+                    menu.contains(key),
+                    "menu command {:?} ({key}) missing from the {} dispatch menu",
+                    c.id,
+                    preset.as_str()
+                );
+            }
         }
     }
 
