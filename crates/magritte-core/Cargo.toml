@@ -7,6 +7,8 @@ repository.workspace = true
 description = "UI-agnostic git engine for Magritte: invokes the git CLI and returns structured data."
 
 [dependencies]
+# Move discarded files to the system trash instead of deleting them.
+trash = "5"
 
 # Restore default SIGPIPE in spawned git children (Rust ignores it
 # process-wide, which git's transport inherits and can deadlock on).

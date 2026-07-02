@@ -92,9 +92,15 @@ impl Repo {
         Ok(())
     }
 
-    /// Remove an untracked `path` from the working tree. **Destructive.**
+    /// Remove an untracked `path` from the working tree, moving it to the
+    /// system trash so a mistaken discard is recoverable (magit's
+    /// `magit-delete-by-moving-to-trash`). Falls back to `git clean` when the
+    /// trash is unavailable (odd filesystems, headless environments) — the
+    /// discard was confirmed either way.
     pub fn discard_untracked_file(&self, path: &str) -> Result<()> {
-        self.run(["clean", "-f", "-d", "-q", "--", path])?;
+        if !use_trash() || trash::delete(self.workdir().join(path)).is_err() {
+            self.run(["clean", "-f", "-d", "-q", "--", path])?;
+        }
         Ok(())
     }
 
@@ -245,7 +251,12 @@ impl Repo {
                     self.run(["reset", "-q", "--", path])?;
                 } else {
                     self.run(["rm", "--cached", "--force", "--", path])?;
-                    let _ = fs::remove_file(self.workdir().join(path));
+                    // To the trash, like the untracked discard; fall back to
+                    // removal if the trash is unavailable.
+                    let target = self.workdir().join(path);
+                    if !use_trash() || trash::delete(&target).is_err() {
+                        let _ = fs::remove_file(&target);
+                    }
                 }
             }
             // Staged deletion: resurrect by unstaging it.
@@ -348,6 +359,13 @@ impl Repo {
         let patch = build_file_patch(file, selections, true);
         self.discard_apply(&patch, DiffSource::Staged, file.display_path())
     }
+}
+
+/// Whether discards should go through the system trash. `MAGRITTE_NO_TRASH`
+/// is the test/CI escape hatch: the trash round-trip is slow and would fill
+/// the developer's trash with throwaway test files.
+fn use_trash() -> bool {
+    std::env::var_os("MAGRITTE_NO_TRASH").is_none()
 }
 
 /// Indices of all changed (Added/Removed) lines in a hunk.

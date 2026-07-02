@@ -11,6 +11,9 @@ pub struct TestRepo {
 
 impl TestRepo {
     pub fn new() -> TestRepo {
+        // Discards delete directly in tests — see `MAGRITTE_NO_TRASH` in
+        // stage.rs (the trash round-trip is slow and litters the real trash).
+        std::env::set_var("MAGRITTE_NO_TRASH", "1");
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo = TestRepo { dir };
         repo.git(["init", "--initial-branch=main"]);

@@ -121,8 +121,10 @@ recent_count = 10
 
 **Act at point** in a section: on a commit row, `Return` opens its diff and
 `y` (or `Cmd+C`) copies the hash; on a stash row, `Return` shows it, `a`
-applies, `A` pops, `x` drops (confirmed), and `y` copies the reference. File
-rows stage/unstage/discard as usual.
+applies, `A` pops, `x` (evil) / `k` (vanilla) drops (confirmed), and `y`
+copies the reference. File rows stage/unstage/discard as usual; discarded
+files go to the system trash. On a section header, `s`/`u` act on the whole
+section.
 
 Set `show_tags_in_title_bar = true` to show the nearest tag(s) in the title bar —
 `Tag: v1.0 (5)` (commits since) or `Tags: v1.0 (5), v1.1 (2)` (also the next

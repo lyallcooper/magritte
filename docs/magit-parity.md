@@ -40,11 +40,7 @@ strategies, and stash's index/worktree/snapshot variants.
 
 **Notable behavior differences in shared features:**
 
-- Our cherry-pick can emit `--ff` and `-x` together (magit marks them
-  incompatible, and `--ff` is on by default, so it's easy to hit; git then
-  errors). Our transient model has no incompatibility mechanism.
 - Our revert defaults to `--no-edit`; magit defaults to `--edit`.
-- Discarded files are deleted permanently; magit moves them to the trash.
 - `SPC` pages; magit's `SPC` *previews* the commit/stash at point without
   leaving the status buffer (a heavily used flow we lack entirely).
 - `1`–`4` fold levels are buffer-wide; magit's digits are section-local
@@ -616,7 +612,7 @@ users lean on it to skim unpushed/recent commits without leaving status).
 | `u` staged file/hunk/region | reverse-apply / reset | same, rename-aware | ✓ |
 | `u` unstaged file | drops intent-to-add entries | no-op | ✗ (no ita support) |
 | `u` committed change | **reverses it in the index** (`magit-unstage-committed` t) — the "extract a change from HEAD" flow | nothing | ✗ notable |
-| `k`/`x` discard untracked | delete → **system trash**, confirm | `git clean -f -d`, confirm | ≈ permanent delete |
+| `k`/`x` discard untracked | delete → **system trash**, confirm | system trash, confirm (git clean fallback when unavailable) | ✓ |
 | `k`/`x` discard unstaged/staged | confirm; entry-dispatched | mirrors magit exactly (incl. partial-discard `.rej` reporting) | ✓ |
 | `k` conflicted hunk | smerge-keep-current + per-hunk smerge keys | keyboard verbs refused; take-ours/theirs via right-click only | ∂ |
 | `v` reverse at point | reverse staged/committed hunk/file/region in worktree | no reverse verb (revert-no-commit on whole commit rows only) | ✗ |
@@ -724,7 +720,7 @@ Covered above per area; the residual key-level notes:
 |---|---|---|---|
 | single stage/unstage | never confirms | never confirms | ✓ |
 | `S` with staged present / `U` with unstaged present | confirms (blurs the staged/unstaged split) | confirms | ✓ |
-| discard (any granularity) | confirms; deletions go to **trash** | confirms; deletions permanent | ≈ |
+| discard (any granularity) | confirms; deletions go to **trash** | confirms; deletions go to trash (fallback: delete) | ✓ |
 | reverse `v` | confirms | no verb | ✗ |
 | stash drop / clear | prompt / confirm | `x` confirms; picker drop relies on the pick; no clear | ≈ |
 | hard / worktree-only reset | rev prompt only, no y/n | rev pick + y/n confirm | ✓ stricter |
@@ -742,19 +738,14 @@ Grouped by kind, roughly ordered within each group.
 
 **Behavior fixes in shared features (small, high value)**
 
-1. Enforce transient argument incompatibilities (`--ff`/`-x` on cherry-pick
-   is user-hostile today; also needed before adding pull `--ff-only`).
 2. Match magit's revert default (`--edit` on) or make the divergence a
    documented choice.
-5. Vanilla stash-row drop should be `k` (it's hardcoded `x`).
 6. Honor `status.showUntrackedFiles` instead of hardcoding.
 7. Cap unpushed/unpulled listings and show `(N+)`.
 8. Reconsider evil `z` = stash (evil-collection's default) with `Z` for
    "include untracked", or document the deviation.
 9. Rebase-todo `x`: reserve for exec (or drop the alias) before it
    entrenches.
-10. Prompt for a stash message (magit does).
-11. Trash instead of delete for discarded files (macOS makes this cheap).
 
 **High-value additions to existing surfaces**
 
