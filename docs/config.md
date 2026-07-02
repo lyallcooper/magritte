@@ -149,8 +149,10 @@ interval_minutes = 30  # default 30; minimum 1
 ## Keymap
 
 The default keymap mirrors evil-collection-magit. Set `keymap_preset = "vanilla"`
-for a vanilla Magit/Emacs base (`P` push, `X` reset, `z` stash, `n`/`p` section
-motion, `:` run command, etc.). A `[keymap]` table then overrides the selected
+for a vanilla Magit/Emacs base — `P` push, `X` reset, `z` stash, `k` discard,
+`n`/`p` section motion, `j` the jump-to-section menu, `:` run command, plus the
+Emacs staples (`C-n`/`C-p`, `C-v`/`M-v`, `M-<`/`M->`, `C-SPC` select, `C-w`
+copy, `h` help, DEL scroll back). A `[keymap]` table then overrides the selected
 preset: each entry maps a **keystroke** to a **command id**, or to the sentinel
 `"unbound"` to remove a default binding.
 
@@ -189,9 +191,18 @@ keymap_preset = "evil-collection"
   | arrows, `ctrl-n` / `ctrl-p` | move the cursor (alongside `j`/`k`) |
   | `space` | page down |
   | `ctrl-d` / `ctrl-u` | half-page down / up |
-  | `ctrl-j` / `ctrl-k` / `alt-j` / `alt-k` / `]` / `[` | previous / next section (evil preset) |
-  | `n` / `p` / `alt-n` / `alt-p` | next / previous section (vanilla preset) |
+  | `ctrl-j` / `ctrl-k` | next / previous section (evil; magit's `n`/`p` — visits files, commits, and hunks) |
+  | `alt-j` / `alt-k` / `]` / `[` | next / previous *sibling* section (evil; magit's `M-n`/`M-p`) |
+  | `n` / `p`, `alt-n` / `alt-p` | the same two motions (vanilla preset) |
+  | `alt-1` … `alt-4` | fold level 1–4 (alias of `1`–`4`) |
+  | `g z` `g n` `g i` `g u` `g s` `g f u` `g f p` `g p u` `g p p` | jump to a section (evil; vanilla uses the `j` menu) |
+  | `ctrl-w` | copy the value at point (magit's `C-w`) |
   | `V` | visual selection (alongside `v`, evil preset) |
+  | `ctrl-v` / `alt-v`, `backspace` | page down / up, page up (vanilla preset) |
+  | `alt-<` / `alt->` | top / bottom (vanilla preset) |
+  | `ctrl-space` | visual selection (vanilla preset) |
+  | `h` | help (vanilla preset; `?` everywhere) |
+  | `G` | refresh (vanilla preset) |
   | `|` | run command (evil preset alias for Magit's `:`) |
   | `ctrl-x ctrl-c` | quit |
 
@@ -205,9 +216,10 @@ keymap_preset = "evil-collection"
   - `?` opens help, unbound `:` opens the command palette, `Alt-x` opens the
     command palette, and `Cmd+C` yanks regardless of remaps. Bound symbols such
     as `!`, `|`, `$`, and vanilla `:` still go through the effective keymap.
-  - On a commit or stash row, the act-at-point verbs (`Return`, `y`, and for a
-    stash `a` apply / `A` pop / `x` drop) act on the item at point. Commit-row
-    revert keys follow the preset: evil `_`/`-`, vanilla `V`/`v`.
+  - On a commit or stash row, the act-at-point verbs (`Return`, and for a
+    stash `a` apply / `A` pop / `x` drop) act on the item at point. The copy
+    and revert keys follow the preset: copy is evil `y` / vanilla `Ctrl-w`,
+    revert is evil `_`/`-` / vanilla `V`/`v`.
 
   Keys typed inside a transient, picker, or the commit editor are consumed by
   that mode, not the keymap.
@@ -251,12 +263,20 @@ are reachable today only through their prefix's transient or the `:` palette.
 | `move-up` | `k` | Move cursor up |
 | `goto-top` | `g g` | Jump to top |
 | `goto-bottom` | `G` | Jump to bottom |
-| `next-section` | `g j` | Next section (status view) |
-| `prev-section` | `g k` | Previous section (status view) |
+| `next-section` | `ctrl-j` | Next section start — files, commits, hunks (status view) |
+| `prev-section` | `ctrl-k` | Previous section start (status view) |
+| `next-sibling-section` | `g j` | Next section at the same depth |
+| `prev-sibling-section` | `g k` | Previous section at the same depth |
+| `section-up` | `^` | Jump to the parent section |
+| `show-level-1` … `show-level-4` | `1` … `4` | Fold the buffer to level 1–4 (sections / files / hunks / everything) |
+| `status-jump` | vanilla `j` | Jump-to-section menu (magit-status-jump) |
+| `jump-to-untracked` / `jump-to-unstaged` / `jump-to-staged` / `jump-to-stashes` / `jump-to-ignored` | — | Jump to a file/stash section (evil: `g n`/`g u`/`g s`/`g z`/`g i`) |
+| `jump-to-unpulled-upstream` / `jump-to-unpulled-pushremote` / `jump-to-unpushed-upstream` / `jump-to-unpushed-pushremote` | — | Jump to a commits section (evil: `g f u`/`g f p`/`g p u`/`g p p`) |
 | `half-page-down` | `ctrl-d` | Scroll down half a page |
 | `half-page-up` | `ctrl-u` | Scroll up half a page |
 | `page-down` | `ctrl-f` | Scroll down a page |
 | `page-up` | `ctrl-b` | Scroll up a page |
+| `help` | vanilla `h` | Open the `?` help menu |
 | `quit` | `ctrl-x ctrl-c` | Quit Magritte |
 | `commit-create` | — | Create commit |
 | `commit-amend` | — | Amend commit |
