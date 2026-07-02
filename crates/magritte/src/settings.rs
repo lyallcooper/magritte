@@ -937,8 +937,10 @@ impl StatusView {
             rows
         });
 
-        // Two masonry columns of section cards: Appearance (the tallest) leads
-        // the left column; the rest stack on the right.
+        // Two masonry columns of section cards: Appearance (the tallest, with
+        // the widest controls) leads a wider left column; the rest stack on the
+        // narrower right. The 55/45 split is set via flex-basis so the overall
+        // width is unchanged.
         let columns = div()
             .flex()
             .items_start()
@@ -949,6 +951,7 @@ impl StatusView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .flex_basis(gpui::relative(0.55))
                     .min_w(px(0.0))
                     .gap_4()
                     .child(appearance)
@@ -959,6 +962,7 @@ impl StatusView {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .flex_basis(gpui::relative(0.45))
                     .min_w(px(0.0))
                     .gap_4()
                     .child(behavior)
