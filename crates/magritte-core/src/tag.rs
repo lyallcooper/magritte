@@ -4,12 +4,16 @@ use crate::error::Result;
 use crate::repo::{git_args, Repo};
 
 impl Repo {
-    /// Tag names, newest tagger date first where available.
+    /// Tag names in version order, highest first (so `v0.4.0` leads `v0.3.0`).
+    /// `version:refname` sorts embedded numbers naturally rather than
+    /// lexically, and falls back to a sensible order for non-version tags —
+    /// unlike `taggerdate`, which leaves lightweight tags (no tagger date)
+    /// unordered.
     pub fn tags(&self) -> Result<Vec<String>> {
         Ok(self
             .run([
                 "for-each-ref",
-                "--sort=-taggerdate",
+                "--sort=-version:refname",
                 "--format=%(refname:short)",
                 "refs/tags/",
             ])?

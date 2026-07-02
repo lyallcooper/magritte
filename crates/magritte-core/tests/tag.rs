@@ -49,6 +49,22 @@ fn tags_around_reports_nearest_behind_and_ahead() {
 }
 
 #[test]
+fn tags_listed_in_version_order_highest_first() {
+    let (t, repo) = repo();
+    let head = t.git(["rev-parse", "HEAD"]);
+    // Create out of order, including a two-digit minor that lexical sorting
+    // would misplace (v0.10.0 before v0.2.0).
+    for name in ["v0.2.0", "v0.10.0", "v1.0.0", "v0.3.0"] {
+        repo.create_tag(name, &head, false).unwrap();
+    }
+
+    assert_eq!(
+        repo.tags().unwrap(),
+        ["v1.0.0", "v0.10.0", "v0.3.0", "v0.2.0"]
+    );
+}
+
+#[test]
 fn create_annotated_tag_with_message() {
     let (t, repo) = repo();
     let head = t.git(["rev-parse", "HEAD"]);
