@@ -9,6 +9,7 @@
 //! cached, so rendering/scrolling never re-parses.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::ops::Range;
 use std::sync::Once;
 
@@ -21,7 +22,9 @@ use magritte_core::{FileDiff, LineKind};
 pub type Span = (String, Hsla);
 
 /// Highlighted spans for each `(hunk_index, line_index)` of a file diff.
-pub type FileHighlights = HashMap<(usize, usize), Vec<Span>>;
+/// Values are shared (`Rc`) with the row model, so a rebuild clones a handle
+/// per line instead of re-copying every span.
+pub type FileHighlights = HashMap<(usize, usize), Rc<[Span]>>;
 
 fn register_extra_highlight_queries() {
     static REGISTER: Once = Once::new();
@@ -339,7 +342,7 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
             for (line_ix, on_new, range) in &placements {
                 if *on_new {
                     let spans = line_spans(&highlighter, &new_block, range, hl_theme, default);
-                    out.insert((hunk_ix, *line_ix), spans);
+                    out.insert((hunk_ix, *line_ix), Rc::from(spans));
                 }
             }
         }
@@ -348,7 +351,7 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
             for (line_ix, on_new, range) in &placements {
                 if !*on_new {
                     let spans = line_spans(&highlighter, &old_block, range, hl_theme, default);
-                    out.insert((hunk_ix, *line_ix), spans);
+                    out.insert((hunk_ix, *line_ix), Rc::from(spans));
                 }
             }
         }

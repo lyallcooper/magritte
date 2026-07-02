@@ -9,6 +9,8 @@ use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{InputEvent, InputState, Position};
 use magritte_core::{CommitMode, DiffSource, FileDiff, LineKind};
 
+use std::rc::Rc;
+
 use crate::*;
 
 /// The in-app commit message editor, backed by gpui-component's multi-line
@@ -54,7 +56,7 @@ pub(crate) enum CommitDiffRow {
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
-    Line { kind: LineKind, spans: Vec<Span> },
+    Line { kind: LineKind, spans: Rc<[Span]> },
     /// A dim status note (e.g. when the staged diff couldn't be loaded).
     Note(String),
 }
@@ -435,7 +437,7 @@ impl StatusView {
                             } else {
                                 fg
                             };
-                            vec![(line.content.clone(), color)]
+                            Rc::from(vec![(line.content.clone(), color)])
                         });
                     rows.push(CommitDiffRow::Line {
                         kind: line.kind,

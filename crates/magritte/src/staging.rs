@@ -91,7 +91,9 @@ pub(crate) fn target_ops(target: &Target) -> (bool, bool, bool) {
 /// Async state of a single file's diff.
 pub(crate) enum DiffState {
     Loading,
-    Loaded(FileDiff),
+    /// Shared (`Arc`) between this cache and any [`Action`] built from it, so
+    /// staging one line doesn't clone the whole parsed file diff.
+    Loaded(Arc<FileDiff>),
     Empty,
     Failed(String),
 }
@@ -137,8 +139,9 @@ pub(crate) enum RowKind {
     },
     Diff {
         kind: LineKind,
-        /// Syntax-highlighted (or fallback) content runs.
-        spans: Vec<Span>,
+        /// Syntax-highlighted (or fallback) content runs, shared with the
+        /// highlight cache (see [`FileHighlights`]).
+        spans: Rc<[Span]>,
     },
     /// A commit row in a non-file section (unpushed/unpulled/recent): dim short
     /// hash, ref labels, and subject, like the log view. `hash` (full) drives
@@ -188,14 +191,18 @@ pub(crate) enum Confirm {
 
 impl StatusView {
     /// The loaded diff for a file in a given section, if available.
-    pub(crate) fn diff_for(&self, file: &FileRef) -> Option<FileDiff> {
-        self.diff_for_ref(file).cloned()
+    /// The loaded diff for `file`, shared for embedding in an [`Action`] (an
+    /// `Arc` clone, not a deep copy).
+    pub(crate) fn diff_for(&self, file: &FileRef) -> Option<Arc<FileDiff>> {
+        let source = section_source(file.section)?;
+        match self.diffs.get(&(source, file.path.clone()))? {
+            DiffState::Loaded(diff) => Some(diff.clone()),
+            _ => None,
+        }
     }
 
     /// Borrow the loaded diff for `file`, for read-only lookups (a hunk's line
-    /// count, a target line) that would otherwise clone the whole `FileDiff`
-    /// just to read a field. `diff_for` is the owning variant, used only when an
-    /// `Action` needs to keep the diff.
+    /// count, a target line).
     pub(crate) fn diff_for_ref(&self, file: &FileRef) -> Option<&FileDiff> {
         let source = section_source(file.section)?;
         match self.diffs.get(&(source, file.path.clone()))? {

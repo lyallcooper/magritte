@@ -423,7 +423,7 @@ impl StatusView {
                     return;
                 }
                 let state = match loaded {
-                    Ok(Some(diff)) => DiffState::Loaded(diff),
+                    Ok(Some(diff)) => DiffState::Loaded(std::sync::Arc::new(diff)),
                     Ok(None) => DiffState::Empty,
                     Err(e) => DiffState::Failed(e.to_string()),
                 };

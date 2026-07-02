@@ -3,7 +3,9 @@
 //! background executor against a [`Repo`]. This module is UI-free — it depends
 //! only on the core — so the mutation logic stays separate from rendering.
 
-use magritte_core::{ApplyTarget, FileDiff, Repo, FileEntry};
+use std::sync::Arc;
+
+use magritte_core::{ApplyTarget, FileDiff, FileEntry, Repo};
 
 /// The staging verb a keypress requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,19 +36,19 @@ pub enum Action {
     DiscardUntracked(String),
     StageAll,
     UnstageAll,
-    StageHunk(FileDiff, usize),
-    UnstageHunk(FileDiff, usize),
-    DiscardHunk(FileDiff, usize),
-    StageLines(FileDiff, usize, Vec<usize>),
-    UnstageLines(FileDiff, usize, Vec<usize>),
-    DiscardLines(FileDiff, usize, Vec<usize>),
+    StageHunk(Arc<FileDiff>, usize),
+    UnstageHunk(Arc<FileDiff>, usize),
+    DiscardHunk(Arc<FileDiff>, usize),
+    StageLines(Arc<FileDiff>, usize, Vec<usize>),
+    UnstageLines(Arc<FileDiff>, usize, Vec<usize>),
+    DiscardLines(Arc<FileDiff>, usize, Vec<usize>),
     DiscardStagedFile(FileEntry),
-    DiscardStagedHunk(FileDiff, usize),
-    DiscardStagedLines(FileDiff, usize, Vec<usize>),
+    DiscardStagedHunk(Arc<FileDiff>, usize),
+    DiscardStagedLines(Arc<FileDiff>, usize, Vec<usize>),
     /// A region selection spanning one file's hunks: hunk index -> line indices.
     ApplyRegion {
         kind: RegionKind,
-        file: FileDiff,
+        file: Arc<FileDiff>,
         selections: HunkSelections,
     },
     /// Several actions applied in sequence (a region spanning multiple files).

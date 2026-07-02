@@ -3,6 +3,8 @@
 //! parsed status + fold state + loaded diffs into [`Row`]s, plus the small
 //! row/text constructors the builders and copy paths share.
 
+use std::rc::Rc;
+
 use gpui::Hsla;
 use magritte_core::{CommitMetadata, DiffSource, EntryKind, LogEntry, Stash};
 
@@ -612,7 +614,7 @@ impl StatusView {
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
                         // Use cached highlight spans if present, else a single
                         // fallback span in the default color.
-                        let spans: Vec<Span> = file_hl
+                        let spans: Rc<[Span]> = file_hl
                             .and_then(|h| h.get(&(hunk_ix, line_ix)))
                             .cloned()
                             .unwrap_or_else(|| {
@@ -621,7 +623,7 @@ impl StatusView {
                                 } else {
                                     self.palette.fg
                                 };
-                                vec![(line.content.clone(), color)]
+                                Rc::from(vec![(line.content.clone(), color)])
                             });
                         rows.push(Row {
                             indent: 2,
