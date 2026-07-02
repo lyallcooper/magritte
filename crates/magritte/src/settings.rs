@@ -12,6 +12,20 @@ use gpui_component::scroll::ScrollableElement;
 
 use crate::*;
 
+/// Discovered option lists the settings screen needs (font families, installed
+/// GUI editors). Cached on the view so reopening settings doesn't re-query the
+/// system font list; only used by this screen.
+#[derive(Default)]
+pub(crate) struct SettingsCaches {
+    /// Monospace font families (computed on first settings open).
+    pub(crate) mono_fonts: Vec<SharedString>,
+    /// All font families, for the UI-font picker.
+    pub(crate) ui_fonts: Vec<SharedString>,
+    /// Installed GUI editors, as (display name, .app path), for the settings
+    /// "Open config file" dropdown. Refreshed each time settings opens.
+    pub(crate) editors: Vec<(SharedString, SharedString)>,
+}
+
 /// The appearance options, in display order. Label paired with config value.
 const APPEARANCE_OPTIONS: [(&str, &str); 3] = [
     ("Auto (system)", "auto"),
@@ -78,22 +92,22 @@ impl StatusView {
         let light_ix = pos(&theme_names, self.config.light_theme());
         let dark_ix = pos(&theme_names, self.config.dark_theme());
 
-        if self.mono_fonts.is_empty() {
-            self.mono_fonts = theme::monospace_font_names(cx);
+        if self.settings_caches.mono_fonts.is_empty() {
+            self.settings_caches.mono_fonts = theme::monospace_font_names(cx);
         }
-        self.editors = editors::text_editors();
+        self.settings_caches.editors = editors::text_editors();
         // Lead with a "System Default" entry (maps to an empty config value, so
         // it follows the OS monospace); the rest are concrete families.
         let mut font_items: Vec<SharedString> = vec![SharedString::from(theme::SYSTEM_FONT_LABEL)];
-        font_items.extend(self.mono_fonts.iter().cloned());
+        font_items.extend(self.settings_caches.mono_fonts.iter().cloned());
         let font_ix = if self.config.font.is_empty() {
             0
         } else {
             pos(&font_items, self.config.font.as_str())
         };
 
-        if self.ui_fonts.is_empty() {
-            self.ui_fonts = theme::all_font_names(cx);
+        if self.settings_caches.ui_fonts.is_empty() {
+            self.settings_caches.ui_fonts = theme::all_font_names(cx);
         }
         // Lead with "Same as monospace" (empty config = the monospace UI we had
         // before opting in) and "System Default" (the platform proportional
@@ -102,7 +116,7 @@ impl StatusView {
             SharedString::from(theme::UI_FONT_DEFAULT_LABEL),
             SharedString::from(theme::SYSTEM_FONT_LABEL),
         ];
-        ui_font_items.extend(self.ui_fonts.iter().cloned());
+        ui_font_items.extend(self.settings_caches.ui_fonts.iter().cloned());
         let ui_font_ix = match self.config.ui_font.as_str() {
             "" => 0,
             theme::SYSTEM_UI_FONT => 1,
@@ -171,10 +185,10 @@ impl StatusView {
             let cur = self.config.editor.trim().to_string();
             let mut editor_items: Vec<SharedString> =
                 vec![SharedString::from(editors::EDITOR_OS_DEFAULT_LABEL)];
-            if !cur.is_empty() && !self.editors.iter().any(|(n, _)| n.as_ref() == cur) {
+            if !cur.is_empty() && !self.settings_caches.editors.iter().any(|(n, _)| n.as_ref() == cur) {
                 editor_items.push(SharedString::from(cur.clone()));
             }
-            editor_items.extend(self.editors.iter().map(|(n, _)| n.clone()));
+            editor_items.extend(self.settings_caches.editors.iter().map(|(n, _)| n.clone()));
             let editor_ix = if cur.is_empty() {
                 0
             } else {

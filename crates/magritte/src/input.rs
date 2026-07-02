@@ -382,7 +382,7 @@ impl StatusView {
                 if self.cancel_job(cx) {
                     return;
                 }
-                if self.visual.take().is_some() || self.status_message.take().is_some() {
+                if self.selection.visual.take().is_some() || self.toast.message.take().is_some() {
                     cx.notify();
                 }
                 return;
@@ -667,7 +667,7 @@ impl StatusView {
     /// echo-area feedback), as a fading notice with the keys shown as keycaps.
     pub(crate) fn report_unbound(&mut self, seq: &str, cx: &mut Context<Self>) {
         self.set_status("is unbound".to_string(), true, cx);
-        self.status_keys = Some(seq.to_string());
+        self.toast.keys = Some(seq.to_string());
     }
 
     /// Note a command run *from the palette* for its frecency ranking, and

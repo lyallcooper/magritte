@@ -64,9 +64,11 @@ pub(crate) use log_view::*;
 pub(crate) use navigation::*;
 pub(crate) use palette::*;
 pub(crate) use row_build::*;
-pub(crate) use window::*;
 pub(crate) use staging::*;
 pub(crate) use transient_state::*;
+pub(crate) use window::*;
+use controller::StatusToast;
+use settings::SettingsCaches;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{file_head_tail, FileHighlights, Span};
@@ -321,7 +323,7 @@ enum Screen {
     Settings(settings::SettingsState),
     /// The git command-log view (magit's `$` process buffer); holds the scroll
     /// state, with entries read live from the repo.
-    GitLog(ScrollView),
+    GitLog { view: ScrollView, show_all: bool },
     /// The commit-log view (`l`).
     Log(LogState),
     /// A commit's diff detail, opened with Enter from the log or a status
@@ -384,15 +386,8 @@ struct StatusView {
     transient_config_defaults: HashMap<String, bool>,
     rows: Vec<Row>,
     selected: usize,
-    /// Anchor row of an active visual (region) selection; `None` when off.
-    /// The selection spans `min(anchor, selected)..=max(anchor, selected)`.
-    visual: Option<usize>,
-    /// Row where a left-button drag began, while the button is held. Dragging
-    /// across rows turns into a visual selection (mouse equivalent of `v`).
-    drag_anchor: Option<usize>,
-    /// Set by a shift-click mouse-down so the following click extends the
-    /// selection (and doesn't toggle the row's fold).
-    shift_click: bool,
+    /// The active visual/drag/shift-click range selection — see [`Selection`].
+    selection: Selection,
     generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
@@ -497,33 +492,14 @@ struct StatusView {
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
     /// tag ahead + commits-until). Refreshed with status when title-bar tags are on.
     tag_info: TagsAround,
-    /// Cached list of monospace font families (computed on first settings open).
-    mono_fonts: Vec<SharedString>,
-    /// Cached list of all font families, for the UI-font picker.
-    ui_fonts: Vec<SharedString>,
-    /// Installed GUI editors, as (display name, .app path), for the settings
-    /// "Open config file" dropdown. Refreshed each time settings opens.
-    editors: Vec<(SharedString, SharedString)>,
-    /// Last operation result / progress, shown in the bottom bar.
-    status_message: Option<String>,
-    /// For a copy confirmation, the copied value — rendered emphasized after the
-    /// `Copied` label. Set by [`copy_to_clipboard`]; shown only when the message
-    /// is exactly that label, so the many direct `status_message` writes that
-    /// don't clear it can't accidentally trail a stale value.
-    status_copied: Option<SharedString>,
-    /// A keystroke to render as keycap(s) before the message (e.g. the unbound
-    /// `g x` in "g x is unbound"). Cleared by every `status` post; set right
-    /// after by the few messages that lead with a key.
-    status_keys: Option<String>,
-    /// Bumped each time the status message changes, so an auto-dismiss timer
-    /// only clears the message it was scheduled for (not a newer one).
-    status_seq: Generation,
+    /// Font/editor option lists for the settings screen — see [`SettingsCaches`].
+    settings_caches: SettingsCaches,
+    /// The bottom status bar's toast (message / copied value / keycaps / fade
+    /// stamp) — see [`StatusToast`].
+    toast: StatusToast,
     /// Bumped per async picker open, stamped onto the picker, so a late
     /// candidate load only fills the picker it was started for.
     picker_gen: Generation,
-    /// In the `$` command-log view, whether to also show the UI's own read-only
-    /// queries (status/diff/ref lookups), which are hidden by default.
-    git_log_show_all: bool,
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
     focus: FocusHandle,
@@ -634,9 +610,7 @@ impl StatusView {
             transient_config_defaults: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
-            visual: None,
-            drag_anchor: None,
-            shift_click: false,
+            selection: Selection::default(),
             generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
@@ -669,15 +643,12 @@ impl StatusView {
             repo_scope_dir,
             worktree_scope_dir,
             worktree_git_dir,
-            mono_fonts: Vec::new(),
-            ui_fonts: Vec::new(),
-            editors: Vec::new(),
-            status_message: startup_warning,
-            status_copied: None,
-            status_keys: None,
-            status_seq: Generation::default(),
+            settings_caches: SettingsCaches::default(),
+            toast: StatusToast {
+                message: startup_warning,
+                ..StatusToast::default()
+            },
             picker_gen: Generation::default(),
-            git_log_show_all: false,
             confirm: None,
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
@@ -704,9 +675,15 @@ impl StatusView {
     }
     fn git_log(&self) -> Option<&ScrollView> {
         match &self.screen {
-            Screen::GitLog(s) => Some(s),
+            Screen::GitLog { view, .. } => Some(view),
             _ => None,
         }
+    }
+
+    /// Whether the `$` command-log view also shows the UI's own read-only
+    /// queries (hidden by default). Lives on the screen so it resets naturally.
+    pub(crate) fn git_log_show_all(&self) -> bool {
+        matches!(self.screen, Screen::GitLog { show_all: true, .. })
     }
     fn log(&self) -> Option<&LogState> {
         match &self.screen {
@@ -770,7 +747,7 @@ impl StatusView {
     }
     fn git_log_mut(&mut self) -> Option<&mut ScrollView> {
         match &mut self.screen {
-            Screen::GitLog(s) => Some(s),
+            Screen::GitLog { view, .. } => Some(view),
             _ => None,
         }
     }

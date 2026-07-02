@@ -13,6 +13,27 @@ use gpui::{Context, SharedString, UniformListScrollHandle, Window};
 
 use crate::*;
 
+/// The bottom-bar status toast — one logical value whose parts move together:
+/// the message, an optional emphasized copied value (rendered only while the
+/// message is the Copied label), optional leading keycaps, and the sequence
+/// stamp that keeps a stale fade timer from clearing a newer message.
+#[derive(Default)]
+pub(crate) struct StatusToast {
+    /// Last operation result / progress, shown in the bottom bar.
+    pub(crate) message: Option<String>,
+    /// For a copy confirmation, the copied value. Set by `copy_to_clipboard`;
+    /// shown only when the message is exactly the Copied label, so writes that
+    /// don't clear it can't accidentally trail a stale value.
+    pub(crate) copied: Option<SharedString>,
+    /// A keystroke to render as keycap(s) before the message (e.g. the unbound
+    /// `g x` in "g x is unbound"). Cleared by every status post; set right
+    /// after by the few messages that lead with a key.
+    pub(crate) keys: Option<String>,
+    /// Bumped each time the message changes, so an auto-dismiss timer only
+    /// clears the message it was scheduled for (not a newer one).
+    pub(crate) seq: Generation,
+}
+
 /// How a status-bar message behaves once shown. Every kind advances the status
 /// sequence; only a `Notice` schedules its own fade.
 pub(crate) enum StatusKind {
@@ -1725,11 +1746,11 @@ impl StatusView {
     /// pending fade. Only a `Notice` schedules its own fade; `Progress` stays
     /// until the job reports, `Sticky` until dismissed (Esc / click).
     pub(crate) fn status(&mut self, msg: String, kind: StatusKind, cx: &mut Context<Self>) {
-        let seq = self.status_seq.bump();
-        self.status_message = Some(msg);
+        let seq = self.toast.seq.bump();
+        self.toast.message = Some(msg);
         // Most messages have no leading keycap; the few that do set it right
         // after this call.
-        self.status_keys = None;
+        self.toast.keys = None;
         cx.notify();
         if matches!(kind, StatusKind::Notice) {
             cx.spawn(async move |this, cx| {
@@ -1738,8 +1759,8 @@ impl StatusView {
                     .await;
                 this.update(cx, |this, cx| {
                     // Only clear if no newer message has replaced it.
-                    if this.status_seq.is_current(seq) {
-                        this.status_message = None;
+                    if this.toast.seq.is_current(seq) {
+                        this.toast.message = None;
                         cx.notify();
                     }
                 })
@@ -1783,9 +1804,9 @@ impl StatusView {
 
     /// Clear the status bar (advancing the sequence so no pending timer fires).
     pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
-        self.status_seq.bump();
-        self.status_message = None;
-        self.status_keys = None;
+        self.toast.seq.bump();
+        self.toast.message = None;
+        self.toast.keys = None;
         cx.notify();
     }
 
@@ -1946,7 +1967,7 @@ impl StatusView {
             (!text.contains('\n') && text.chars().count() <= 40).then(|| SharedString::from(text));
         // Set the value before the message: `set_status` notifies, and the
         // render reads both, so the toast paints with the value present.
-        self.status_copied = value;
+        self.toast.copied = value;
         self.set_status(COPIED_LABEL.to_string(), true, cx);
     }
 

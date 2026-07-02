@@ -318,7 +318,7 @@ impl StatusView {
 
     /// The inclusive row range of the active visual selection, if any.
     pub(crate) fn visual_range(&self) -> Option<(usize, usize)> {
-        self.visual
+        self.selection.visual
             .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
     }
 
@@ -345,7 +345,7 @@ impl StatusView {
         } else {
             return;
         };
-        self.visual = None;
+        self.selection.visual = None;
         self.copy_to_clipboard(text, cx);
     }
 
@@ -632,7 +632,7 @@ impl StatusView {
                 return;
             }
         }
-        let resolved = if self.visual.is_some() {
+        let resolved = if self.selection.visual.is_some() {
             self.resolve_region_action(op)
         } else {
             self.resolve_action(op)
@@ -651,7 +651,7 @@ impl StatusView {
     /// Run a git mutation on the background executor, then refresh.
     pub(crate) fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
         self.confirm = None;
-        self.visual = None;
+        self.selection.visual = None;
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -727,7 +727,7 @@ impl StatusView {
     }
 
     pub(crate) fn visual_cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.visual = None;
+        self.selection.visual = None;
         cx.notify();
     }
 }

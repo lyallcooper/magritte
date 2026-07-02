@@ -507,7 +507,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Essential,
             "v",
             |t, _w, cx| {
-                t.visual = if t.visual.is_some() {
+                t.selection.visual = if t.selection.visual.is_some() {
                     None
                 } else {
                     Some(t.selected)
@@ -1259,7 +1259,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                 groups: vec![group("Commit at point", suffixes)],
             }
         }
-        Screen::GitLog(_) => Transient {
+        Screen::GitLog { .. } => Transient {
             title: transient::plain_title("Help"),
             groups: vec![group(
                 "Command log",

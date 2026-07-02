@@ -70,7 +70,7 @@ impl StatusView {
         let scroll = UniformListScrollHandle::new();
         let last = self.git_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
-        self.screen = Screen::GitLog(ScrollView { scroll, top: last });
+        self.screen = Screen::GitLog { view: ScrollView { scroll, top: last }, show_all: false };
         cx.notify();
     }
 
@@ -82,7 +82,9 @@ impl StatusView {
 
     /// Toggle whether the command log also lists the UI's own read-only queries.
     pub(crate) fn toggle_git_log_all(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.git_log_show_all = !self.git_log_show_all;
+        if let Screen::GitLog { show_all, .. } = &mut self.screen {
+            *show_all = !*show_all;
+        }
         cx.notify();
     }
 

@@ -6,6 +6,22 @@ use gpui::{Context, Window};
 
 use crate::*;
 
+/// The line-range selection gesture, in its three entry forms: `v` (or a drag)
+/// anchors a visual selection; a shift-click extends from the previous cursor
+/// row. One state machine spread over keyboard and mouse handlers.
+#[derive(Default)]
+pub(crate) struct Selection {
+    /// Anchor row of an active visual (region) selection; `None` when off.
+    /// The selection spans `min(anchor, selected)..=max(anchor, selected)`.
+    pub(crate) visual: Option<usize>,
+    /// Row where a left-button drag began, while the button is held. Dragging
+    /// across rows turns into a visual selection (mouse equivalent of `v`).
+    pub(crate) drag_anchor: Option<usize>,
+    /// Set by a shift-click mouse-down so the following click extends the
+    /// selection (and doesn't toggle the row's fold).
+    pub(crate) shift_click: bool,
+}
+
 impl StatusView {
     // --- Selection & folding ---------------------------------------------
 
@@ -225,7 +241,7 @@ impl StatusView {
         if !matches!(self.screen, Screen::Status) {
             return;
         }
-        self.visual = None;
+        self.selection.visual = None;
         self.collapse_new_hunks = false;
         self.collapsed_hunks.clear();
         match level {
@@ -359,7 +375,7 @@ impl StatusView {
 
     pub(crate) fn toggle_fold(&mut self, cx: &mut Context<Self>) {
         // Folding changes row indices, which would invalidate a visual anchor.
-        self.visual = None;
+        self.selection.visual = None;
         let row = self.rows.get(self.selected);
         // Use the row's own fold key, or — for a diff line — the enclosing hunk,
         // so `Tab` anywhere inside a hunk collapses/expands it (like magit).

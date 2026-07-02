@@ -1375,7 +1375,7 @@ impl StatusView {
                             .child(self.key_action(
                                 "command-log-all",
                                 "a",
-                                if self.git_log_show_all {
+                                if self.git_log_show_all() {
                                     "hide queries"
                                 } else {
                                     "show all"
@@ -1405,7 +1405,7 @@ impl StatusView {
         let mut rows = Vec::new();
         for c in repo.command_log() {
             // Hide the UI's own read-only queries unless asked to show all.
-            if !self.git_log_show_all && c.is_query() {
+            if !self.git_log_show_all() && c.is_query() {
                 continue;
             }
             rows.push(GitLogRow::Command {
@@ -2347,16 +2347,16 @@ impl StatusView {
                                 return;
                             }
                             if ev.modifiers.shift {
-                                let anchor = v.visual.unwrap_or(v.selected);
-                                v.visual = (ix != anchor).then_some(anchor);
+                                let anchor = v.selection.visual.unwrap_or(v.selected);
+                                v.selection.visual = (ix != anchor).then_some(anchor);
                                 v.selected = ix;
-                                v.drag_anchor = None;
-                                v.shift_click = true;
+                                v.selection.drag_anchor = None;
+                                v.selection.shift_click = true;
                             } else {
-                                v.drag_anchor = Some(ix);
-                                v.visual = None;
+                                v.selection.drag_anchor = Some(ix);
+                                v.selection.visual = None;
                                 v.selected = ix;
-                                v.shift_click = false;
+                                v.selection.shift_click = false;
                             }
                             vcx.notify();
                         });
@@ -2369,16 +2369,16 @@ impl StatusView {
                             return;
                         }
                         view.update(cx, |v, vcx| {
-                            let Some(anchor) = v.drag_anchor else { return };
+                            let Some(anchor) = v.selection.drag_anchor else { return };
                             if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 return;
                             }
                             // Skip redundant work while the cursor stays on one row.
-                            if v.selected == ix && (ix == anchor || v.visual == Some(anchor)) {
+                            if v.selected == ix && (ix == anchor || v.selection.visual == Some(anchor)) {
                                 return;
                             }
                             if ix != anchor {
-                                v.visual = Some(anchor);
+                                v.selection.visual = Some(anchor);
                             }
                             v.selected = ix;
                             vcx.notify();
@@ -2389,7 +2389,7 @@ impl StatusView {
                     let view = view.clone();
                     move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.drag_anchor.take().is_some() {
+                            if v.selection.drag_anchor.take().is_some() {
                                 vcx.notify();
                             }
                         });
@@ -2406,7 +2406,7 @@ impl StatusView {
                     let view = view.clone();
                     el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.visual.is_none() && v.rows.get(ix).is_some_and(|r| r.selectable) {
+                            if v.selection.visual.is_none() && v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 v.selected = ix;
                                 vcx.notify();
                             }
@@ -2449,8 +2449,8 @@ impl StatusView {
         }
         // A shift-click already set up the extended selection in `on_mouse_down`;
         // don't also toggle the row's fold.
-        if self.shift_click {
-            self.shift_click = false;
+        if self.selection.shift_click {
+            self.selection.shift_click = false;
             cx.notify();
             return;
         }
@@ -2551,7 +2551,7 @@ impl StatusView {
     /// bar. The full-window sub-views (settings, commit, log, …) append this so
     /// a copy confirmation is visible there too, not only in the status view.
     pub(crate) fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
-        let msg = self.status_message.clone()?;
+        let msg = self.toast.message.clone()?;
         let bar = div()
             .id("status-bar")
             .w_full()
@@ -2571,10 +2571,10 @@ impl StatusView {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _, _window, cx| {
-                    let Some(msg) = this.status_message.clone() else {
+                    let Some(msg) = this.toast.message.clone() else {
                         return;
                     };
-                    let text = match &this.status_keys {
+                    let text = match &this.toast.keys {
                         Some(keys) => format!("{keys} {msg}"),
                         None => msg,
                     };
@@ -2583,7 +2583,7 @@ impl StatusView {
             );
         // A keys-led message (e.g. "g x is unbound") renders each typed key as a
         // keycap before the text, matching the which-key strip.
-        if let Some(keys) = self.status_keys.clone() {
+        if let Some(keys) = self.toast.keys.clone() {
             return Some(
                 bar.flex()
                     .items_center()
@@ -2594,7 +2594,7 @@ impl StatusView {
         }
         // A copy confirmation renders the copied value emphasized — accent
         // color, monospace, italic — so a path or hash reads as a literal.
-        Some(match self.status_copied.clone() {
+        Some(match self.toast.copied.clone() {
             Some(value) if msg == COPIED_LABEL => bar
                 .flex()
                 .items_center()
@@ -2661,7 +2661,7 @@ impl StatusView {
                     .child(self.key_action("confirm-yes", "y", "yes", view, Self::confirm_yes))
                     .child(self.key_action("confirm-no", "n", "no", view, Self::confirm_no)),
             );
-        } else if self.visual.is_some() {
+        } else if self.selection.visual.is_some() {
             root = root.child(
                 div()
                     .w_full()
@@ -2708,8 +2708,8 @@ impl StatusView {
         }
 
         let bottom_bar = self.confirm.is_some()
-            || self.visual.is_some()
-            || self.status_message.is_some()
+            || self.selection.visual.is_some()
+            || self.toast.message.is_some()
             || self.pending_prefix.is_some();
         if self.popup.is_none() && !bottom_bar {
             let tip_font = self.font.clone();
@@ -2841,7 +2841,7 @@ impl Render for StatusView {
             Screen::Editor(ed) => {
                 return self.render_overlays(root.child(self.render_editor(ed, &view)), &view, cx);
             }
-            Screen::GitLog(scroll) => {
+            Screen::GitLog { view: scroll, .. } => {
                 return self.render_overlays(root.child(self.render_git_log(scroll, &view)), &view, cx);
             }
             Screen::RebaseTodo(rt) => {
@@ -2870,7 +2870,7 @@ impl Render for StatusView {
         // Clicking the list area dismisses an open popup or an active visual
         // selection — including clicks on empty space, not just on rows. (A
         // bottom popup panel is a sibling, so clicks on it don't reach here.)
-        let dismissable = self.popup.is_some() || self.visual.is_some();
+        let dismissable = self.popup.is_some() || self.selection.visual.is_some();
         root = root.child(
             div()
                 .id("list-area")
@@ -2882,7 +2882,7 @@ impl Render for StatusView {
                         if this.popup.is_some() {
                             this.popup = None;
                         } else {
-                            this.visual = None;
+                            this.selection.visual = None;
                         }
                         cx.notify();
                     }))
