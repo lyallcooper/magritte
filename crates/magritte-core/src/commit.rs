@@ -159,11 +159,13 @@ impl Repo {
 
     /// Create a `squash!` commit targeting `commit` (`git commit --squash=`):
     /// like a fixup, but a later autosquash rebase lets the target's message be
-    /// edited to fold in this commit's. No editor at creation time.
+    /// edited to fold in this commit's. Unlike `--fixup`, `--squash` opens an
+    /// editor by default (to augment the message now); `--no-edit` keeps
+    /// creation non-interactive, deferring any message edit to the rebase.
     pub fn commit_squash(&self, commit: &str, args: &[String]) -> Result<String> {
         Ok(self
             .run(git_args(
-                &["commit", &format!("--squash={commit}")],
+                &["commit", &format!("--squash={commit}"), "--no-edit"],
                 args,
                 &[],
             ))?
