@@ -17,7 +17,7 @@
 # Requires ImageMagick (`magick`) and macOS `iconutil`.
 set -euo pipefail
 
-DEFAULT=pipe        # the variant used for the bundle's Finder icon
+DEFAULT=son-of-man   # the variant used for the bundle's Finder icon
 CANVAS=1024
 BODY=824            # ~80% of the canvas, per Apple's grid
 RADIUS=185          # corner radius for the 824 body (~0.225, the Big Sur curve)
@@ -27,7 +27,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SRC_DIR="$ROOT/packaging/macos/icons/src"
 ICNS_DIR="$ROOT/packaging/macos"
 MASTER_DIR="$ROOT/crates/magritte/icons"
-mkdir -p "$MASTER_DIR"
+THUMB_DIR="$MASTER_DIR/thumb"
+mkdir -p "$MASTER_DIR" "$THUMB_DIR"
 
 style_master() {  # src -> styled 1024 master
   local src="$1" out="$2" tmp
@@ -66,6 +67,9 @@ pack_icns() {  # styled 1024 master -> .icns
 for src in "$SRC_DIR"/*.png; do
   id="$(basename "$src" .png)"
   style_master "$src" "$MASTER_DIR/$id.png"
+  # A plain 256px square thumbnail (no mask/margin/shadow) for the in-app icon
+  # radio, which rounds it at render so the selection stroke hugs it exactly.
+  magick "$src" -resize 256x256^ -gravity center -extent 256x256 "$THUMB_DIR/$id.png"
   echo "styled $id"
 done
 pack_icns "$MASTER_DIR/$DEFAULT.png" "$ICNS_DIR/Magritte.icns"
