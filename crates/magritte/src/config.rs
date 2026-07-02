@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::state::{atomic_write_text, atomic_write_toml};
+
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).
 pub const DEFAULT_LIGHT_THEME: &str = "Selenized Light";
@@ -607,35 +609,6 @@ pub fn load_usage() -> Usage {
         .unwrap_or_default()
 }
 
-/// Serialize `value` to TOML and write it to `path` atomically — temp file +
-/// rename, creating parent dirs — so an interrupted write can't corrupt the
-/// target. On a rename failure the temp file is removed rather than leaked.
-///
-/// The temp name is unique per process (pid + counter), so two Magritte
-/// instances writing the same target don't share — and clobber — one temp
-/// file; the atomic rename then makes the last writer win cleanly.
-fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = toml::to_string_pretty(value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    atomic_write_text(path, &text)
-}
-
-fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("toml.{}.{seq}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
-}
 
 /// Persist command usage (atomic). Best-effort.
 pub fn save_usage(usage: &Usage) {

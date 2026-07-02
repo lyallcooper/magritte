@@ -33,13 +33,13 @@ pub fn save_toml<T: Serialize>(path: &Path, value: &T) {
     let _ = atomic_write_toml(path, value);
 }
 
-fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub(crate) fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let text = toml::to_string_pretty(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     atomic_write_text(path, &text)
 }
 
-fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
