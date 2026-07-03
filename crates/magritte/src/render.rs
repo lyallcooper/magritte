@@ -3094,6 +3094,14 @@ impl Render for StatusView {
         let mut root = div()
             .track_focus(&self.focus)
             .key_context(STATUS_CONTEXT)
+            // A click that activates the window (macOS first-mouse) should only
+            // focus it, not fire the row/button under the cursor. Swallow that
+            // one click in the capture phase, before any element arms its click.
+            .capture_any_mouse_down(cx.listener(|_, ev: &gpui::MouseDownEvent, _window, cx| {
+                if ev.first_mouse {
+                    cx.stop_propagation();
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
                 // Tab is delivered as an action (gpui's Root binds it for
                 // focus-nav, which we override here), but its *effect* routes
