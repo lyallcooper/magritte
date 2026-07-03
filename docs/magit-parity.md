@@ -269,12 +269,12 @@ resolved merge goes through the regular `c` commit transient) — ≈.
 |-----|----------|--------|
 | `-n` | limit count | ✓ |
 | `-A` | `--author=` | ✓ |
-| `=s` / `=u` | `--since=` / `--until=` (level 7) | ✗ |
+| `=s` / `=u` | `--since=` / `--until=` (level 7) | ✓ ours `-s`/`-u` |
 | `-F` | `--grep=` | ✓ |
 | `-i` / `-I` | ignore-case / invert-grep (level 7) | ✗ |
 | `-G` / `-S` | search changes / occurrences | ✓ |
 | `-L` | trace line range | ✗ |
-| `=m` / `=p` | `--no-merges` / `--first-parent` (level 7) | ✗ |
+| `=m` / `=p` | `--no-merges` / `--first-parent` (level 7) | ✓ ours `-m`/`-p` |
 | `-D` | `--simplify-by-decoration` | ✗ |
 | `--` | limit to files | ✓ |
 | `-f` | `--follow` | ✗ |
@@ -530,7 +530,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `RET` | visit-thing | Enter opens file/commit/stash | ✓ (≈ semantics, see act-at-point) |
 | `C-RET` | visit in other window | — | N/A |
 | `SPC` / `DEL` | show-or-scroll (peek commit at point) | Space previews the commit/stash at point (Esc returns); DEL pages up | ≈ overlay preview, not other-window; no reverse-preview |
-| `+` / `-` / `0` | more / less / default diff context | — | ✗ no context adjustment anywhere |
+| `+` / `-` / `0` | more / less / default diff context | more / less / default diff context (status view) | ✓ status view; diff/commit views ✗ |
 | `M-TAB` | dired-jump | — | N/A |
 | `M-<tab>` | cycle diff sections | `1`–`4` levels | ≈ level-set, not cycle |
 | `h`/`?` | dispatch | `?` menu + `h` (vanilla) | ✓ |
@@ -678,7 +678,7 @@ Covered above per area; the residual key-level notes:
   buffer); `S` includes untracked; `k` discards but stash-drop stays on `x`;
   `1`–`4` semantics; `DEL` pages (no reverse-preview); `RET` worktree-
   file semantics.
-- ✗ keys with no binding at all: `x` (reset-quickly), `K`, `R`, `+`/`-`/`0`,
+- ✗ keys with no binding at all: `x` (reset-quickly), `K`, `R`,
   `M-w`, `C-c C-o` browse, and every missing-feature prefix (`B` `C` `D`
   `H` `I` `L` `o` `O` `T` `W` `y` `Y` `Z` `%` `>`; `w` works only as the
   in-progress am prefix).
@@ -711,9 +711,10 @@ Covered above per area; the residual key-level notes:
 ## Other buffers & screens
 
 - **Log**: browse + act ✓ (open, cherry-pick, revert, rebase-since, copy).
-  Missing: `=`/`+`/`-` limit controls (our cap is fixed at 256), `j`
-  move-to-revision, `L` refresh/margins, `SPC` preview. Log-select: same
-  capability, different chord (`Cmd-Enter` confirms; `Enter` inspects).
+  `+`/`-` double/halve the commit limit ✓ (magit's `=` set-to-value ✗). Still
+  missing: `j` move-to-revision, `L` refresh/margins. `SPC` preview ✓ (from the
+  status commit rows). Log-select: same capability, different chord
+  (`Cmd-Enter` confirms; `Enter` inspects).
 - **Revision/commit buffer**: ours shows message + flat diff + `a` details
   toggle; magit's adds notes and a diffstat section (`--stat` default),
   per-file visiting, `j` revision-jump, refine-hunk. ∂ thinner.
@@ -775,11 +776,13 @@ Grouped by kind, roughly ordered within each group.
   preview on `DEL`, and scroll-in-place rather than a full-screen swap.
 - `u` on committed changes (reverse-in-index), `v` reverse-at-point, `a`
   apply-at-point — the second half of magit's apply engine.
-- Diff context keys `+`/`-`/`0` on status hunks.
+- ~~Diff context keys `+`/`-`/`0`.~~ Done for the status view (diff/commit
+  views still fixed at 3).
 - Merge: in-progress `m` commit-merge; `e` editmsg; `p` preview; strategies.
 - Push `o`/`T`/`t` (other branch, tags).
-- Log: `--since`/`--until`/`--no-merges`/`--first-parent` args; `=`/`+`/`-`
-  limit keys in the log view.
+- ~~Log `--since`/`--until`/`--no-merges`/`--first-parent` args; limit keys.~~
+  Done: those four args added (`-s`/`-u`/`-m`/`-p`); `+`/`-` double/halve the
+  log limit (magit's `=` set-value still ✗).
 - Stash variants (`i`/`w`/`x`), file-limited stash push, `b` branch-from-
   stash.
 - Section-local `1`–`4` and `S-TAB` global cycling.
