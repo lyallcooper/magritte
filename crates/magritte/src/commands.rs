@@ -153,6 +153,25 @@ pub(crate) fn commands() -> &'static [Command] {
             }
         };
     }
+    // A fold operation reached through a key sequence (evil's `z` family) and
+    // the palette: keyless in the registry, kept out of the `?` menu like the
+    // motions, but palette-reachable (and remappable) since it has no top key.
+    macro_rules! fold_op {
+        ($id:literal, $title:literal, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                aliases: &[],
+                category: Category::Navigation,
+                key: None,
+                menu: false,
+                palette: true,
+                enabled: ALWAYS,
+                leaf: None,
+                run: $run,
+            }
+        };
+    }
     // A section jump (magit-status-jump): keyless in the registry — vanilla
     // reaches them through the `j` transient, evil through `g`-sequences — but
     // in the palette, offered only when the section is on screen.
@@ -740,6 +759,17 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_show_level(3, cx)),
         nav!("show-level-4", "Unfold everything", "4", |t, _w, cx| t
             .nav_show_level(4, cx)),
+        // Explicit show/hide and show/hide-children — evil-collection's `z`
+        // fold family (zo/zc/zO/zC). Keyless in the registry; bound to the `z`
+        // sequences in the evil preset. `za` reuses `fold` (toggle).
+        fold_op!("fold-show", "Show section", |t, _w, cx| t
+            .fold_at_point(true, cx)),
+        fold_op!("fold-hide", "Hide section", |t, _w, cx| t
+            .fold_at_point(false, cx)),
+        fold_op!("fold-show-children", "Show children", |t, _w, cx| t
+            .fold_children_at_point(true, cx)),
+        fold_op!("fold-hide-children", "Hide children", |t, _w, cx| t
+            .fold_children_at_point(false, cx)),
         // Section jumps (magit-status-jump): the `j` transient in vanilla,
         // direct `g`-sequences in evil (evil-collection's gz/gn/gu/gs/gf*/gp*).
         Command {
@@ -865,6 +895,18 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("alt-2", "show-level-2"),
     ("alt-3", "show-level-3"),
     ("alt-4", "show-level-4"),
+    // evil-collection's `z` fold family (its `use-z-for-folds` layout, which is
+    // also where our `Z`=stash comes from): `z` is a prefix for vim-style folds.
+    ("z a", "fold"),      // toggle
+    ("z o", "fold-show"), // show
+    ("z c", "fold-hide"), // hide
+    ("z O", "fold-show-children"),
+    ("z C", "fold-hide-children"),
+    ("z 1", "show-level-1"),
+    ("z 2", "show-level-2"),
+    ("z 3", "show-level-3"),
+    ("z 4", "show-level-4"),
+    ("z r", "show-level-4"), // reveal all
     // Section jumps: evil-collection's direct `g`-sequences (vanilla gets the
     // `j` transient instead).
     ("g z", "jump-to-stashes"),

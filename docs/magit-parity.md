@@ -53,8 +53,9 @@ snapshot variants.
   (`S-TAB`, `C-TAB`).
 - Magit shows *either* "Unmerged into upstream" *or* "Recent commits"; we
   always show both Unpushed and Recent.
-- Evil preset uses `Z` for stash; evil-collection's default keeps magit's
-  `z` (its `Z` layout is the non-default `use-z-for-folds` option).
+- Evil preset adopts evil-collection's non-default `use-z-for-folds` layout:
+  `Z` for stash and `z` as a vim-style fold prefix (`za`/`zo`/`zc`/`zO`/`zC`/
+  `z1`-`z4`/`zr`).
 - One suspected difference was disproven: on stash rows both magit and
   Magritte bind `a` = apply, `A` = pop (magit via section-map remaps).
 
@@ -697,8 +698,9 @@ Covered above per area; the residual key-level notes:
   `O` reset, `-`/`_` revert pair, `|` git-command, `j`/`k`/`gg`/`G`,
   `C-d`/`C-f`/`C-b`, `v`/`V` visual, `g`-jump family (`gz gn gu gs gfu gfp
   gpu gpp`; ours adds `g i`).
-- ≈: **`z` stash** — evil-collection's default keeps magit's `z`; our `Z` is
-  its non-default `use-z-for-folds` layout (without the z-fold family).
+- ✓: **`z` folds / `Z` stash** — evil adopts evil-collection's non-default
+  `use-z-for-folds` layout: `Z` stash, and `z` a fold prefix (`za` toggle,
+  `zo`/`zc` show/hide, `zO`/`zC` show/hide children, `z1`-`z4`/`zr` levels).
   `$` — evil-collection moves the process buffer to `` ` `` by default; we
   keep `$`. We also keep `C-w` as copy (evil-collection frees it for
   window-map) — deliberate; the `y` yank family is our main copy.

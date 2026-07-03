@@ -392,40 +392,113 @@ impl StatusView {
     }
 
     pub(crate) fn toggle_fold(&mut self, cx: &mut Context<Self>) {
-        // Folding changes row indices, which would invalidate a visual anchor.
+        let Some(key) = self.point_fold_key() else {
+            return;
+        };
+        let open = self.is_fold_open(&key);
+        self.apply_fold(&key, !open, cx);
+    }
+
+    /// Explicitly show (`zo`) or hide (`zc`) the fold at point, rather than
+    /// toggling — evil-collection's `magit-section-show`/`hide`.
+    pub(crate) fn fold_at_point(&mut self, show: bool, cx: &mut Context<Self>) {
+        let Some(key) = self.point_fold_key() else {
+            return;
+        };
+        self.apply_fold(&key, show, cx);
+    }
+
+    /// Show (`zO`) or hide (`zC`) the *children* of the node at point —
+    /// evil-collection's `magit-section-show`/`hide-children`. On a section that
+    /// means its files (showing first opens the section so they materialize);
+    /// on a file, its hunks. A hunk has no children, so this shows/hides itself.
+    pub(crate) fn fold_children_at_point(&mut self, show: bool, cx: &mut Context<Self>) {
         self.selection.visual = None;
+        self.collapse_new_hunks = false;
+        let Some(key) = self.point_fold_key() else {
+            return;
+        };
+        if matches!(key, FoldKey::Hunk(..)) {
+            return self.apply_fold(&key, show, cx);
+        }
+        let node_indent = self.rows.get(self.selected).map(|r| r.indent).unwrap_or(0);
+        // Showing children first opens the node itself so its child rows exist.
+        if show {
+            self.set_fold(&key, true, cx);
+            self.rebuild_preserving_selection();
+        }
+        // The descendant rows are those deeper than the node, up to its next
+        // sibling. `rebuild_preserving_selection` kept the cursor on the node.
+        let node_ix = self.selected;
+        let children: Vec<FoldKey> = self
+            .rows
+            .iter()
+            .skip(node_ix + 1)
+            .take_while(|r| r.indent > node_indent)
+            .filter_map(|r| r.fold.clone())
+            .collect();
+        for child in &children {
+            self.set_fold(child, show, cx);
+        }
+        if matches!(key, FoldKey::Section(_)) {
+            self.persist_fold_state();
+        }
+        self.rebuild_preserving_selection();
+        cx.notify();
+    }
+
+    /// The fold key the cursor acts on: the row's own key, or — for a diff line
+    /// — its enclosing hunk, so a fold command anywhere inside a hunk hits it
+    /// (like magit).
+    fn point_fold_key(&self) -> Option<FoldKey> {
         let row = self.rows.get(self.selected);
-        // Use the row's own fold key, or — for a diff line — the enclosing hunk,
-        // so `Tab` anywhere inside a hunk collapses/expands it (like magit).
-        let key = row
-            .and_then(|r| r.fold.clone())
+        row.and_then(|r| r.fold.clone())
             .or_else(|| match row.map(|r| &r.target) {
                 Some(Some(Target::Line { file, hunk, .. })) => section_source(file.section)
                     .map(|src| FoldKey::Hunk(src, file.path.clone(), *hunk)),
                 _ => None,
-            });
-        let Some(key) = key else {
-            return;
-        };
-        // A manual toggle ends fold level 3's claim on newly loaded diffs.
-        self.collapse_new_hunks = false;
-        let is_section = matches!(key, FoldKey::Section(_));
-        // Hunks default to expanded, so their state lives in `collapsed_hunks`
-        // (present = collapsed); sections/files use `expanded` (present = open).
+            })
+    }
+
+    /// Whether `key` is currently expanded. Hunks default to expanded (state in
+    /// `collapsed_hunks`, present = collapsed); sections/files use `expanded`.
+    fn is_fold_open(&self, key: &FoldKey) -> bool {
         if matches!(key, FoldKey::Hunk(..)) {
-            if !self.collapsed_hunks.remove(&key) {
-                self.collapsed_hunks.insert(key);
-            }
-        } else if self.expanded.contains(&key) {
-            self.expanded.remove(&key);
+            !self.collapsed_hunks.contains(key)
         } else {
+            self.expanded.contains(key)
+        }
+    }
+
+    /// Set `key`'s fold state without rebuilding — the shared primitive behind
+    /// toggle/show/hide. Expanding a file loads its diff.
+    fn set_fold(&mut self, key: &FoldKey, expand: bool, cx: &mut Context<Self>) {
+        if matches!(key, FoldKey::Hunk(..)) {
+            if expand {
+                self.collapsed_hunks.remove(key);
+            } else {
+                self.collapsed_hunks.insert(key.clone());
+            }
+        } else if expand {
             self.expanded.insert(key.clone());
-            if let FoldKey::File(source, path) = &key {
+            if let FoldKey::File(source, path) = key {
                 self.ensure_diff(*source, path.clone(), cx);
             }
+        } else {
+            self.expanded.remove(key);
         }
+    }
+
+    /// Set one fold and rebuild — the single-node path (toggle/show/hide),
+    /// clearing the visual anchor (row indices shift) and persisting sections.
+    fn apply_fold(&mut self, key: &FoldKey, expand: bool, cx: &mut Context<Self>) {
+        // Folding changes row indices, which would invalidate a visual anchor.
+        self.selection.visual = None;
+        // A manual fold ends fold level 3's claim on newly loaded diffs.
+        self.collapse_new_hunks = false;
+        self.set_fold(key, expand, cx);
         // Section fold state persists per repo (files/hunks stay ephemeral).
-        if is_section {
+        if matches!(key, FoldKey::Section(_)) {
             self.persist_fold_state();
         }
         // Restore the cursor to the same node: collapsing a hunk from one of its

@@ -198,6 +198,7 @@ keymap_preset = "evil"
   | `alt-j` / `alt-k` / `]` / `[` | next / previous *sibling* section (evil; magit's `M-n`/`M-p`) |
   | `n` / `p`, `alt-n` / `alt-p` | the same two motions (vanilla preset) |
   | `alt-1` … `alt-4` | fold level 1–4 (alias of `1`–`4`) |
+  | `z a` `z o` `z c` `z O` `z C` `z 1`…`z 4` `z r` | vim-style folds (evil): toggle / show / hide / show children / hide children / levels / reveal all |
   | `g z` `g n` `g i` `g u` `g s` `g f u` `g f p` `g p u` `g p p` | jump to a section (evil; vanilla uses the `j` menu) |
   | `y y` / `y s` `y b` `y r` | copy the value at point / copy value, copy revision, show refs (evil's `y` yank family) |
   | `ctrl-w` | copy the value at point (magit's `C-w`) |
