@@ -10,7 +10,12 @@ use crate::repo::Repo;
 /// The fields every log listing requests, unit-separated; records are
 /// NUL-terminated (`-z`) so subjects can't confuse the parse.
 const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%s%x1f%D%x1f%an%x1f%ar";
-const LEFT_RIGHT_LOG_FORMAT: &str = "--format=%m%x1f%H%x1f%h%x1f%s%x1f%D%x1f%an%x1f%ar";
+
+/// Cap on commits listed per divergence side (unpushed/unpulled) in the status
+/// buffer, so a pathological divergence can't fetch or render thousands. The
+/// exact ahead/behind counts still come from `git status --branch`, so the
+/// section titles stay accurate even when the listing is capped.
+pub const SECTION_COMMIT_CAP: usize = 256;
 
 /// One commit in a log listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +62,8 @@ impl Repo {
         self.log_with(&["HEAD..@{upstream}".to_string()])
     }
 
-    /// Commits unique to `HEAD` and to its upstream, in one symmetric-diff walk.
-    /// Left (`HEAD` only) is unpushed; right (`@{upstream}` only) is unpulled.
+    /// Commits unique to `HEAD` (unpushed) and to its upstream (unpulled), each
+    /// capped at [`SECTION_COMMIT_CAP`].
     pub fn upstream_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
         self.divergence("HEAD", "@{upstream}")
     }
@@ -76,22 +81,21 @@ impl Repo {
         self.log_with(&["HEAD..@{push}".to_string()])
     }
 
-    /// Commits unique to `HEAD` and to its push target, in one symmetric-diff
-    /// walk. Left (`HEAD` only) is unpushed-to-push; right (`@{push}` only) is
-    /// unpulled-from-push.
+    /// Commits unique to `HEAD` (unpushed-to-push) and to its push target
+    /// (unpulled-from-push), each capped at [`SECTION_COMMIT_CAP`].
     pub fn push_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
         self.divergence("HEAD", "@{push}")
     }
 
     fn divergence(&self, left: &str, right: &str) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
-        let out = self.run([
-            "log",
-            "--left-right",
-            LEFT_RIGHT_LOG_FORMAT,
-            "-z",
-            &format!("{left}...{right}"),
-        ])?;
-        Ok(parse_left_right_log(&out.stdout))
+        // Two capped range walks (left-only = ahead, right-only = behind)
+        // rather than one symmetric `--left-right` walk: a single capped walk
+        // would skew toward the larger side in a lopsided divergence, starving
+        // the smaller section.
+        let cap = format!("--max-count={SECTION_COMMIT_CAP}");
+        let ahead = self.log_with(&[cap.clone(), format!("{right}..{left}")])?;
+        let behind = self.log_with(&[cap, format!("{left}..{right}")])?;
+        Ok((ahead, behind))
     }
 
     /// `git log -g` (the reflog), newest first. The reflog selector
@@ -150,26 +154,4 @@ fn parse_log_record(record: &str) -> Option<LogEntry> {
         author: fields.next().unwrap_or("").to_string(),
         date: fields.next().unwrap_or("").to_string(),
     })
-}
-
-fn parse_left_right_log(stdout: &[u8]) -> (Vec<LogEntry>, Vec<LogEntry>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    for record in String::from_utf8_lossy(stdout)
-        .split('\0')
-        .filter(|r| !r.is_empty())
-    {
-        let Some((side, rest)) = record.split_once('\u{1f}') else {
-            continue;
-        };
-        let Some(entry) = parse_log_record(rest) else {
-            continue;
-        };
-        match side {
-            "<" => left.push(entry),
-            ">" => right.push(entry),
-            _ => {}
-        }
-    }
-    (left, right)
 }

@@ -180,15 +180,12 @@ impl Status {
 }
 
 impl Repo {
-    /// Run `git status` and parse the porcelain-v2 output.
+    /// Run `git status` and parse the porcelain-v2 output. `--untracked-files`
+    /// is left unset so git honors the repo's `status.showUntrackedFiles`
+    /// (default `normal`): a repo that sets `no` hides the Untracked section,
+    /// `all` recurses into untracked directories.
     pub fn status(&self) -> Result<Status> {
-        let out = self.run([
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "--untracked-files=normal",
-            "-z",
-        ])?;
+        let out = self.run(["status", "--porcelain=v2", "--branch", "-z"])?;
         parse_porcelain_v2(&out.stdout)
     }
 
