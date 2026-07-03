@@ -76,6 +76,12 @@ pub(crate) struct Command {
     pub(crate) id: &'static str,
     /// Human label shown in the `?` menu and `:` palette.
     pub(crate) title: &'static str,
+    /// Extra search terms for the `:` palette (search-only; never displayed), so
+    /// a query that isn't in the magit-flavored title still surfaces the command
+    /// — the git verb behind the action ("add" → Stage, "restore" → Discard) or
+    /// a plainer synonym. Kept to unambiguous terms: an alias that collides with
+    /// another command's identity ("checkout", "reset") is a footgun, not a help.
+    pub(crate) aliases: &'static [&'static str],
     /// Which `?`-menu group / palette category it belongs to.
     pub(crate) category: Category,
     /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "g r").
@@ -112,9 +118,13 @@ pub(crate) fn commands() -> &'static [Command] {
     // the palette.
     macro_rules! top {
         ($id:literal, $title:literal, $cat:expr, $key:literal, $run:expr) => {
+            top!($id, $title, $cat, $key, &[], $run)
+        };
+        ($id:literal, $title:literal, $cat:expr, $key:literal, $aliases:expr, $run:expr) => {
             Command {
                 id: $id,
                 title: $title,
+                aliases: $aliases,
                 category: $cat,
                 key: Some($key),
                 menu: true,
@@ -132,6 +142,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Command {
                 id: $id,
                 title: $title,
+                aliases: &[],
                 category: Category::Navigation,
                 key: Some($key),
                 menu: false,
@@ -150,6 +161,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Command {
                 id: $id,
                 title: $title,
+                aliases: &[],
                 category: Category::Navigation,
                 key: None,
                 menu: false,
@@ -169,9 +181,13 @@ pub(crate) fn commands() -> &'static [Command] {
     // runs the action directly with default arguments.
     macro_rules! leaf {
         ($id:literal, $title:literal, $cmd:expr) => {
+            leaf!($id, $title, &[], $cmd)
+        };
+        ($id:literal, $title:literal, $aliases:expr, $cmd:expr) => {
             Command {
                 id: $id,
                 title: $title,
+                aliases: $aliases,
                 category: Category::Commands,
                 key: None,
                 menu: false,
@@ -227,14 +243,21 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             )
         }),
-        top!("reset", "Reset", Category::Commands, "O", |t, _w, cx| {
-            t.open_transient(
-                "reset",
-                transient::reset_transient(),
-                RemoteTargets::default(),
-                cx,
-            )
-        }),
+        top!(
+            "reset",
+            "Reset",
+            Category::Commands,
+            "O",
+            &["roll back"],
+            |t, _w, cx| {
+                t.open_transient(
+                    "reset",
+                    transient::reset_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
         top!(
             "git-command",
             "Run command",
@@ -263,60 +286,89 @@ pub(crate) fn commands() -> &'static [Command] {
                 t.open_transient("rebase", transient::rebase_transient(&rt), rt, cx);
             }
         }),
-        top!("merge", "Merge", Category::Commands, "m", |t, _w, cx| {
-            // While a merge is in progress, `m` opens its abort action (you
-            // finish a merge by committing); don't start another.
-            if matches!(
-                t.sequence.as_ref().map(|s| s.kind),
-                Some(SequenceKind::Merge)
-            ) {
-                t.open_transient(
-                    "",
-                    transient::sequence_transient(
-                        SequenceKind::Merge,
-                        t.config.keymap_preset.transient_style(),
-                    ),
-                    RemoteTargets::default(),
-                    cx,
-                );
-            } else {
-                t.open_transient(
-                    "merge",
-                    transient::merge_transient(),
-                    RemoteTargets::default(),
-                    cx,
-                );
+        top!(
+            "merge",
+            "Merge",
+            Category::Commands,
+            "m",
+            &["combine"],
+            |t, _w, cx| {
+                // While a merge is in progress, `m` opens its abort action (you
+                // finish a merge by committing); don't start another.
+                if matches!(
+                    t.sequence.as_ref().map(|s| s.kind),
+                    Some(SequenceKind::Merge)
+                ) {
+                    t.open_transient(
+                        "",
+                        transient::sequence_transient(
+                            SequenceKind::Merge,
+                            t.config.keymap_preset.transient_style(),
+                        ),
+                        RemoteTargets::default(),
+                        cx,
+                    );
+                } else {
+                    t.open_transient(
+                        "merge",
+                        transient::merge_transient(),
+                        RemoteTargets::default(),
+                        cx,
+                    );
+                }
             }
-        }),
-        top!("ignore", "Ignore", Category::Commands, "i", |t, _w, cx| {
-            t.open_transient(
-                "ignore",
-                transient::ignore_transient(),
-                RemoteTargets::default(),
-                cx,
-            )
-        }),
-        top!("log", "Log", Category::Commands, "l", |t, _w, cx| {
-            t.open_transient(
-                "log",
-                transient::log_transient(),
-                RemoteTargets::default(),
-                cx,
-            )
-        }),
-        top!("diff", "Diff", Category::Commands, "d", |t, _w, cx| {
-            t.open_transient(
-                "diff",
-                transient::diff_transient(),
-                RemoteTargets::default(),
-                cx,
-            )
-        }),
-        // The refs browser (magit's show-refs). Vanilla binds `y` (magit);
-        // evil keeps `y` for yank, so evil reaches this through the palette.
+        ),
+        top!(
+            "ignore",
+            "Ignore",
+            Category::Commands,
+            "i",
+            &["gitignore", "exclude", "skip"],
+            |t, _w, cx| {
+                t.open_transient(
+                    "ignore",
+                    transient::ignore_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
+        top!(
+            "log",
+            "Log",
+            Category::Commands,
+            "l",
+            &["history", "commits"],
+            |t, _w, cx| {
+                t.open_transient(
+                    "log",
+                    transient::log_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
+        top!(
+            "diff",
+            "Diff",
+            Category::Commands,
+            "d",
+            &["changes", "compare"],
+            |t, _w, cx| {
+                t.open_transient(
+                    "diff",
+                    transient::diff_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
+        // The refs browser (magit's show-refs). Vanilla binds `y` (magit); evil
+        // binds `yr` via its `y` yank family.
         Command {
             id: "show-refs",
             title: "Show refs",
+            aliases: &["references", "refs browser"],
             category: Category::Commands,
             key: None,
             menu: true,
@@ -325,10 +377,17 @@ pub(crate) fn commands() -> &'static [Command] {
             leaf: None,
             run: |t, _w, cx| t.open_refs(cx),
         },
-        top!("push", "Push", Category::Commands, "p", |t, _w, cx| {
-            let rt = t.remote_targets();
-            t.open_transient("push", transient::push_transient(&rt), rt, cx)
-        }),
+        top!(
+            "push",
+            "Push",
+            Category::Commands,
+            "p",
+            &["publish", "upload"],
+            |t, _w, cx| {
+                let rt = t.remote_targets();
+                t.open_transient("push", transient::push_transient(&rt), rt, cx)
+            }
+        ),
         top!("pull", "Pull", Category::Commands, "F", |t, _w, cx| {
             let rt = t.remote_targets();
             t.open_transient("pull", transient::pull_transient(&rt), rt, cx)
@@ -340,8 +399,18 @@ pub(crate) fn commands() -> &'static [Command] {
         // Leaf subcommands (palette-only; reached in the `?` menu via their
         // prefix's transient).
         leaf!("commit-create", "Create commit", Leaf::CommitCreate),
-        leaf!("commit-amend", "Amend commit", Leaf::CommitAmend),
-        leaf!("commit-reword", "Reword commit", Leaf::CommitReword),
+        leaf!(
+            "commit-amend",
+            "Amend commit",
+            &["fixup last", "edit last commit"],
+            Leaf::CommitAmend
+        ),
+        leaf!(
+            "commit-reword",
+            "Reword commit",
+            &["rename commit", "edit message", "change message"],
+            Leaf::CommitReword
+        ),
         leaf!(
             "commit-extend",
             "Extend commit (keep message)",
@@ -376,22 +445,49 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!(
             "branch-checkout",
             "Checkout branch/revision",
+            &["switch"],
             Leaf::BranchCheckout
         ),
         leaf!(
             "branch-create-checkout",
             "Create and checkout branch",
+            &["checkout -b", "switch -c"],
             Leaf::BranchCreateCheckout
         ),
-        leaf!("branch-create", "Create branch", Leaf::BranchCreate),
-        leaf!("branch-rename", "Rename branch", Leaf::BranchRename),
-        leaf!("branch-delete", "Delete branch", Leaf::BranchDelete),
-        leaf!("tag-create", "Create tag", Leaf::TagCreate),
-        leaf!("tag-delete", "Delete tag", Leaf::TagDelete),
-        leaf!("remote-add", "Add remote", Leaf::RemoteAdd),
+        leaf!(
+            "branch-create",
+            "Create branch",
+            &["new branch"],
+            Leaf::BranchCreate
+        ),
+        leaf!(
+            "branch-rename",
+            "Rename branch",
+            &["move branch"],
+            Leaf::BranchRename
+        ),
+        leaf!(
+            "branch-delete",
+            "Delete branch",
+            &["remove branch"],
+            Leaf::BranchDelete
+        ),
+        leaf!("tag-create", "Create tag", &["new tag"], Leaf::TagCreate),
+        leaf!("tag-delete", "Delete tag", &["remove tag"], Leaf::TagDelete),
+        leaf!("remote-add", "Add remote", &["new remote"], Leaf::RemoteAdd),
         leaf!("remote-rename", "Rename remote", Leaf::RemoteRename),
-        leaf!("remote-remove", "Remove remote", Leaf::RemoteRemove),
-        leaf!("stash-push", "Stash worktree and index", Leaf::StashPush),
+        leaf!(
+            "remote-remove",
+            "Remove remote",
+            &["delete remote"],
+            Leaf::RemoteRemove
+        ),
+        leaf!(
+            "stash-push",
+            "Stash worktree and index",
+            &["save", "stash changes"],
+            Leaf::StashPush
+        ),
         leaf!(
             "stash-push-all",
             "Stash including untracked",
@@ -399,7 +495,12 @@ pub(crate) fn commands() -> &'static [Command] {
         ),
         leaf!("stash-apply", "Apply stash", Leaf::StashApply),
         leaf!("stash-pop", "Pop stash", Leaf::StashPop),
-        leaf!("stash-drop", "Drop stash", Leaf::StashDrop),
+        leaf!(
+            "stash-drop",
+            "Drop stash",
+            &["delete stash", "remove stash"],
+            Leaf::StashDrop
+        ),
         leaf!("log-current", "Log current", Leaf::LogCurrent),
         leaf!("log-all", "Log all branches", Leaf::LogAll),
         leaf!("log-other", "Log other ref", Leaf::LogOther),
@@ -407,25 +508,46 @@ pub(crate) fn commands() -> &'static [Command] {
         leaf!("diff-dwim", "Diff smart target", Leaf::DiffDwim),
         leaf!("diff-range", "Diff range", Leaf::DiffRange),
         leaf!("diff-unstaged", "Diff unstaged", Leaf::DiffUnstaged),
-        leaf!("diff-staged", "Diff staged", Leaf::DiffStaged),
+        leaf!(
+            "diff-staged",
+            "Diff staged",
+            &["diff cached"],
+            Leaf::DiffStaged
+        ),
         leaf!("diff-worktree", "Diff worktree", Leaf::DiffWorktree),
         leaf!("diff-commit", "Show commit", Leaf::DiffCommit),
-        leaf!("cherry-pick", "Cherry-pick commit", Leaf::CherryPick),
+        leaf!(
+            "cherry-pick",
+            "Cherry-pick commit",
+            &["pick"],
+            Leaf::CherryPick
+        ),
         leaf!(
             "cherry-pick-range",
             "Cherry-pick range",
             Leaf::CherryPickRange
         ),
         leaf!("cherry-apply", "Apply commit", Leaf::CherryApply),
-        leaf!("revert", "Revert commit", Leaf::RevertCommit),
+        leaf!(
+            "revert",
+            "Revert commit",
+            &["undo commit"],
+            Leaf::RevertCommit
+        ),
         leaf!("revert-range", "Revert range", Leaf::RevertRange),
-        leaf!("revert-no-commit", "Revert changes", Leaf::RevertNoCommit),
+        leaf!(
+            "revert-no-commit",
+            "Revert changes",
+            &["undo changes"],
+            Leaf::RevertNoCommit
+        ),
         // Application commands.
         top!(
             "settings",
             "Settings",
             Category::Application,
             ",",
+            &["preferences", "config", "options"],
             |t, w, cx| { t.open_settings(w, cx) }
         ),
         top!(
@@ -433,11 +555,13 @@ pub(crate) fn commands() -> &'static [Command] {
             "Command log",
             Category::Application,
             "$",
+            &["process", "git output", "console"],
             |t, _w, cx| { t.open_git_log(cx) }
         ),
         Command {
             id: "check-updates",
             title: "Check for updates",
+            aliases: &["upgrade", "new version"],
             category: Category::Application,
             key: None,
             menu: false,
@@ -451,6 +575,7 @@ pub(crate) fn commands() -> &'static [Command] {
         Command {
             id: "help",
             title: "Help",
+            aliases: &["dispatch", "keybindings", "shortcuts"],
             category: Category::Application,
             key: None,
             menu: false, // it *is* the menu
@@ -463,13 +588,20 @@ pub(crate) fn commands() -> &'static [Command] {
             },
         },
         // Applying changes.
-        top!("stage", "Stage", Category::Applying, "s", |t, _w, cx| t
-            .act(Op::Stage, cx)),
+        top!(
+            "stage",
+            "Stage",
+            Category::Applying,
+            "s",
+            &["add", "git add"],
+            |t, _w, cx| t.act(Op::Stage, cx)
+        ),
         top!(
             "unstage",
             "Unstage",
             Category::Applying,
             "u",
+            &["remove from index"],
             |t, _w, cx| t.act(Op::Unstage, cx)
         ),
         top!(
@@ -477,6 +609,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Stage all tracked",
             Category::Applying,
             "S",
+            &["add all", "git add all"],
             |t, _w, cx| { t.stage_all_command(cx) }
         ),
         top!(
@@ -491,6 +624,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Discard",
             Category::Applying,
             "x",
+            &["restore", "throw away"],
             |t, _w, cx| t.act(Op::Discard, cx)
         ),
         // Essentials.
@@ -499,6 +633,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Open file",
             Category::Essential,
             "enter",
+            &["edit", "visit"],
             |t, _w, cx| { t.open_at_point(cx) }
         ),
         top!(
@@ -506,6 +641,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Fold / unfold",
             Category::Essential,
             "tab",
+            &["collapse", "expand", "toggle"],
             |t, _w, cx| { t.toggle_fold(cx) }
         ),
         top!(
@@ -513,6 +649,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Refresh",
             Category::Essential,
             "g r",
+            &["reload", "update"],
             |t, _w, cx| {
                 t.refresh(cx);
                 cx.notify();
@@ -523,6 +660,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "Visual selection",
             Category::Essential,
             "v",
+            &["select", "mark", "region"],
             |t, _w, cx| {
                 t.selection.visual = if t.selection.visual.is_some() {
                     None
@@ -532,13 +670,20 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx.notify();
             }
         ),
-        top!("yank", "Copy", Category::Essential, "y", |t, _w, cx| t
-            .copy_at_point(cx)),
+        top!(
+            "yank",
+            "Copy",
+            Category::Essential,
+            "y",
+            &["yank", "clipboard", "copy value"],
+            |t, _w, cx| t.copy_at_point(cx)
+        ),
         // The buffer's revision (evil `y b`, magit-copy-buffer-revision):
         // palette-only, bound to `yb` in the evil preset.
         Command {
             id: "copy-buffer-revision",
             title: "Copy revision",
+            aliases: &["copy hash", "copy sha", "copy commit", "yank revision"],
             category: Category::Essential,
             key: None,
             menu: false,
@@ -592,6 +737,7 @@ pub(crate) fn commands() -> &'static [Command] {
         Command {
             id: "status-jump",
             title: "Jump to section",
+            aliases: &[],
             category: Category::Essential,
             key: None, // vanilla binds `j` (magit); evil uses the g-sequences
             menu: true,
@@ -661,6 +807,7 @@ pub(crate) fn commands() -> &'static [Command] {
         Command {
             id: "quit",
             title: "Quit",
+            aliases: &["exit", "close"],
             category: Category::Application,
             key: None,
             menu: false,
@@ -884,86 +1031,6 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
     s
 }
 
-/// Extra search terms for a command in the `:` palette, so a query that isn't in
-/// the (magit-flavored) title still surfaces it — the git verb behind the action
-/// ("add" → Stage, "restore" → Discard), plainer synonyms, and common aliases.
-/// Search-only: the palette still displays the title and resolves by it. Keyed
-/// by command id; anything absent (including user `[[command]]`s) has none.
-const COMMAND_ALIASES: &[(&str, &[&str])] = &[
-    // Transients — the git verb or a plainer word for the area.
-    ("ignore", &["gitignore", "exclude", "skip"]),
-    ("log", &["history", "commits"]),
-    ("diff", &["changes", "compare"]),
-    (
-        "show-refs",
-        &["references", "branches", "tags", "refs browser"],
-    ),
-    ("push", &["publish", "upload"]),
-    ("reset", &["undo", "roll back"]),
-    ("merge", &["combine"]),
-    // Applying — where the git command name differs from our label.
-    ("stage", &["add", "git add", "track"]),
-    ("unstage", &["git reset", "remove from index"]),
-    ("stage-all", &["add all", "git add all"]),
-    ("unstage-all", &["reset all"]),
-    (
-        "discard",
-        &[
-            "restore",
-            "checkout",
-            "revert file",
-            "throw away",
-            "undo changes",
-        ],
-    ),
-    ("open-file", &["edit", "visit"]),
-    ("fold", &["collapse", "expand", "toggle"]),
-    ("refresh", &["reload", "update"]),
-    // Essential.
-    ("visual", &["select", "mark", "region"]),
-    ("yank", &["yank", "clipboard", "copy value"]),
-    (
-        "copy-buffer-revision",
-        &["copy hash", "copy sha", "copy commit", "yank revision"],
-    ),
-    ("settings", &["preferences", "config", "options"]),
-    ("command-log", &["process", "git output", "console"]),
-    ("check-updates", &["upgrade", "new version"]),
-    ("help", &["dispatch", "keybindings", "shortcuts"]),
-    ("quit", &["exit", "close"]),
-    // Commit leaves.
-    ("commit-amend", &["fixup last", "edit last commit"]),
-    (
-        "commit-reword",
-        &["rename commit", "edit message", "change message"],
-    ),
-    // Branch / tag / remote leaves — the CRUD verb.
-    ("branch-create", &["new branch", "checkout -b", "switch -c"]),
-    ("branch-rename", &["move branch"]),
-    ("branch-delete", &["remove branch"]),
-    ("tag-create", &["new tag"]),
-    ("tag-delete", &["remove tag"]),
-    ("remote-add", &["new remote"]),
-    ("remote-remove", &["delete remote"]),
-    // Stash leaves.
-    ("stash-push", &["save", "stash changes"]),
-    ("stash-drop", &["delete stash", "remove stash"]),
-    // Diff leaves.
-    ("diff-staged", &["diff cached"]),
-    // Cherry-pick / revert.
-    ("cherry-pick", &["pick"]),
-    ("revert", &["undo commit"]),
-    ("revert-no-commit", &["undo changes"]),
-];
-
-pub(crate) fn command_aliases(id: &str) -> &'static [&'static str] {
-    COMMAND_ALIASES
-        .iter()
-        .find(|(cmd_id, _)| *cmd_id == id)
-        .map(|(_, aliases)| *aliases)
-        .unwrap_or(&[])
-}
-
 /// Lightweight metadata for any command — built-in or user `[[command]]`.
 /// The cross-cutting consumers (keymap/transient validation, the palette,
 /// suffix labels) read commands through [`all_commands`], so none of them can
@@ -973,6 +1040,8 @@ pub(crate) fn command_aliases(id: &str) -> &'static [&'static str] {
 pub(crate) struct CommandInfo<'a> {
     pub(crate) id: &'a str,
     pub(crate) title: &'a str,
+    /// Search-only synonyms for the `:` palette (empty for user `[[command]]`s).
+    pub(crate) aliases: &'a [&'a str],
     /// Whether it appears in the `:` palette.
     pub(crate) palette: bool,
     /// Whether it's applicable right now.
@@ -990,12 +1059,14 @@ pub(crate) fn all_commands(config: &config::Config) -> impl Iterator<Item = Comm
         .map(|c| CommandInfo {
             id: c.id,
             title: c.title,
+            aliases: c.aliases,
             palette: c.palette,
             enabled: c.enabled,
         })
         .chain(config.commands.iter().map(|c| CommandInfo {
             id: &c.id,
             title: &c.title,
+            aliases: &[],
             palette: true,
             enabled: ALWAYS,
         }))
@@ -1597,31 +1668,28 @@ pub(crate) fn build_log_args(
 
 #[cfg(test)]
 mod tests {
-    use super::{command_aliases, commands, COMMAND_ALIASES};
-
-    #[test]
-    fn aliases_reference_real_commands() {
-        for (id, _) in COMMAND_ALIASES {
-            assert!(
-                commands().iter().any(|c| c.id == *id),
-                "command_aliases entry `{id}` has no matching command"
-            );
-        }
-    }
+    use super::commands;
 
     #[test]
     fn aliased_commands_are_in_the_palette() {
         // Aliases only help in the `:` palette, so an alias on a palette-hidden
         // command is dead weight — catch it.
-        for (id, _) in COMMAND_ALIASES {
-            let cmd = commands().iter().find(|c| c.id == *id).unwrap();
-            assert!(cmd.palette, "aliased command `{id}` isn't in the palette");
+        for c in commands().iter().filter(|c| !c.aliases.is_empty()) {
+            assert!(c.palette, "aliased command `{}` isn't in the palette", c.id);
         }
     }
 
     #[test]
-    fn unaliased_command_has_no_terms() {
-        assert!(command_aliases("no-such-command").is_empty());
-        assert!(command_aliases("commit").is_empty());
+    fn aliases_are_nonempty_and_not_the_title() {
+        for c in commands() {
+            for a in c.aliases {
+                assert!(!a.trim().is_empty(), "`{}` has a blank alias", c.id);
+                assert!(
+                    !a.eq_ignore_ascii_case(c.title),
+                    "`{}` alias `{a}` just repeats its title",
+                    c.id
+                );
+            }
+        }
     }
 }

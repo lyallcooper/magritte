@@ -712,28 +712,27 @@ impl StatusView {
         // Order by frecency (most-used-recently first); a stable sort keeps the
         // registry order among never-used commands and ties. The picker's fuzzy
         // ranking takes over once the user types, with this order breaking ties.
-        let mut entries: Vec<(String, String)> = all_commands(&self.config)
+        // Each entry carries its search corpus (title + hidden aliases, so
+        // "yank" finds "Copy" and "add" finds "Stage") alongside the id (for
+        // frecency ordering) and the displayed title.
+        let mut entries: Vec<(String, String, String)> = all_commands(&self.config)
             .filter(|c| c.palette && (c.enabled)(self))
-            .map(|c| (c.id.to_string(), c.title.to_string()))
+            .map(|c| {
+                let search = if c.aliases.is_empty() {
+                    c.title.to_lowercase()
+                } else {
+                    format!("{} {}", c.title, c.aliases.join(" ")).to_lowercase()
+                };
+                (c.id.to_string(), c.title.to_string(), search)
+            })
             .collect();
         entries.sort_by(|a, b| {
             let (sa, sb) = (self.usage.score(&a.0), self.usage.score(&b.0));
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        // Match each command against its title plus any hidden aliases (so
-        // "yank" finds "Copy", "add" finds "Stage", …), while still displaying
-        // just the title.
         let (choices, search): (Vec<String>, Vec<String>) = entries
             .into_iter()
-            .map(|(id, title)| {
-                let aliases = command_aliases(&id);
-                let search = if aliases.is_empty() {
-                    title.to_lowercase()
-                } else {
-                    format!("{} {}", title, aliases.join(" ")).to_lowercase()
-                };
-                (title, search)
-            })
+            .map(|(_, title, search)| (title, search))
             .unzip();
         self.open_picker_searchable(
             PickerAction::RunCommand,
