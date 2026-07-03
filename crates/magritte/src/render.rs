@@ -2805,8 +2805,25 @@ impl StatusView {
     /// showing just the pressed key, until the which-key delay elapses — then it
     /// expands into the continuations (each `<prefix> <key>` and its command's
     /// label), like emacs' which-key.
-    pub(crate) fn prefix_indicator(&self) -> Option<gpui::Div> {
+    pub(crate) fn prefix_indicator(&self, window: &Window) -> Option<gpui::Div> {
         let pending = self.pending_prefix.as_ref()?;
+        // The keys typed so far in a single keycap, with a trailing dash to show
+        // the sequence is awaiting the next key (emacs' echo-area `g-` feedback).
+        let typed = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(kbd::key_chip(
+                &pending.seq,
+                self.palette.dim,
+                &self.font,
+                &self.ui_font,
+            ))
+            .child(
+                div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("-")),
+            );
         let mut bar = div()
             .w_full()
             .px_2()
@@ -2816,25 +2833,10 @@ impl StatusView {
             .text_color(self.palette.dim)
             .text_xs()
             .flex()
-            .items_center()
-            // Wrap onto further rows when a prefix has more continuations than
-            // fit one line, instead of overflowing off the right edge.
-            .flex_wrap()
-            .gap_3();
-        // The keys typed so far in a single keycap, with a trailing dash to show
-        // the sequence is awaiting the next key (emacs' echo-area `g-` feedback).
-        bar = bar.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_1()
-                .child(kbd::key_chip(&pending.seq, self.palette.dim, &self.font))
-                .child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from("-")),
-                ),
-        );
+            .flex_row()
+            .items_start()
+            .gap_6()
+            .child(typed);
         if pending.which_key {
             // Group bindings by their immediate next key after the typed prefix.
             // A next key that completes a binding shows its command's label; one
@@ -2864,19 +2866,35 @@ impl StatusView {
                     *entry = title;
                 }
             }
-            for (token, title) in conts {
-                bar =
-                    bar.child(
+            let entries: Vec<(String, Option<String>)> = conts.into_iter().collect();
+            // Column-major like emacs' which-key: fill a column top-to-bottom,
+            // then wrap into the next column once it would grow past ~a third of
+            // the window height, so the strip grows vertically before widening.
+            let vh = window.viewport_size().height.as_f32();
+            let rows_per_col = (((vh / 3.0) / ROW_HEIGHT) as usize).clamp(1, entries.len().max(1));
+            let mut grid = div().flex().flex_row().items_start().gap_x_6();
+            for chunk in entries.chunks(rows_per_col) {
+                let mut col = div().flex().flex_col().items_start().gap_1();
+                for (token, title) in chunk {
+                    col = col.child(
                         div()
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(kbd::key_chip(&token, self.palette.dim, &self.font))
+                            .child(kbd::key_chip(
+                                token,
+                                self.palette.dim,
+                                &self.font,
+                                &self.ui_font,
+                            ))
                             .child(div().text_color(self.palette.dim).child(SharedString::from(
-                                title.unwrap_or_else(|| "…".to_string()),
+                                title.clone().unwrap_or_else(|| "…".to_string()),
                             ))),
                     );
+                }
+                grid = grid.child(col);
             }
+            bar = bar.child(grid);
         }
         Some(bar)
     }
@@ -2974,6 +2992,7 @@ impl StatusView {
         &self,
         mut root: gpui::Div,
         view: &Entity<Self>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         if let Some(popup) = &self.popup {
@@ -3070,7 +3089,7 @@ impl StatusView {
             );
         }
 
-        root.children(self.prefix_indicator())
+        root.children(self.prefix_indicator(window))
     }
 }
 
@@ -3168,15 +3187,26 @@ impl Render for StatusView {
         // the status list below.
         match &self.screen {
             Screen::Settings(s) => {
-                return self.render_overlays(root.child(self.render_settings(s, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_settings(s, &view)),
+                    &view,
+                    window,
+                    cx,
+                );
             }
             Screen::Editor(ed) => {
-                return self.render_overlays(root.child(self.render_editor(ed, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_editor(ed, &view)),
+                    &view,
+                    window,
+                    cx,
+                );
             }
             Screen::GitLog { view: scroll, .. } => {
                 return self.render_overlays(
                     root.child(self.render_git_log(scroll, &view)),
                     &view,
+                    window,
                     cx,
                 );
             }
@@ -3184,6 +3214,7 @@ impl Render for StatusView {
                 return self.render_overlays(
                     root.child(self.render_rebase_todo(rt, &view)),
                     &view,
+                    window,
                     cx,
                 );
             }
@@ -3191,6 +3222,7 @@ impl Render for StatusView {
                 return self.render_overlays(
                     root.child(self.render_commit_view(cv, &view)),
                     &view,
+                    window,
                     cx,
                 );
             }
@@ -3198,19 +3230,34 @@ impl Render for StatusView {
                 return self.render_overlays(
                     root.child(self.render_diff_view(dv, &view)),
                     &view,
+                    window,
                     cx,
                 );
             }
             Screen::Log(log) => {
-                return self.render_overlays(root.child(self.render_log(log, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_log(log, &view)),
+                    &view,
+                    window,
+                    cx,
+                );
             }
             Screen::Refs(refs) => {
-                return self.render_overlays(root.child(self.render_refs(refs, &view)), &view, cx);
+                return self.render_overlays(
+                    root.child(self.render_refs(refs, &view)),
+                    &view,
+                    window,
+                    cx,
+                );
             }
             Screen::Worktree(wt) => {
                 return self.render_overlays(
                     root.child(self.render_worktrees(wt, &view)),
                     &view,
+                    window,
+                    cx,
+                );
+            }
                     cx,
                 );
             }
@@ -3263,6 +3310,6 @@ impl Render for StatusView {
                 .vertical_scrollbar(&self.scroll),
         );
 
-        self.render_overlays(root, &view, cx)
+        self.render_overlays(root, &view, window, cx)
     }
 }
