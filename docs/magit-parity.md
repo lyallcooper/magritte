@@ -40,7 +40,9 @@ snapshot variants.
 
 **Notable behavior differences in shared features:**
 
-- Our revert defaults to `--no-edit`; magit defaults to `--edit`.
+- Revert always uses git's default message (`--no-edit`); magit defaults to
+  `--edit`. Deliberate: an interactive `--edit` can't work in our background-git
+  model, so we drop the `--edit` switch rather than hang on a missing editor.
 - `SPC` on a commit/stash row now *previews* it (opening the commit view,
   which `Esc` closes back to the same row) — our single-buffer take on magit's
   show-or-scroll; `SPC` elsewhere still pages. Remaining nuance: it's a
@@ -51,10 +53,6 @@ snapshot variants.
   (`S-TAB`, `C-TAB`).
 - Magit shows *either* "Unmerged into upstream" *or* "Recent commits"; we
   always show both Unpushed and Recent.
-- Our unpushed/unpulled/recent listings are fetched without a limit (no
-  magit-style `(N+)` cap); a pathological divergence lists every commit.
-- Core hardcodes `--untracked-files=normal`, overriding a repo's
-  `status.showUntrackedFiles` config.
 - Evil preset uses `Z` for stash; evil-collection's default keeps magit's
   `z` (its `Z` layout is the non-default `use-z-for-folds` option).
 - One suspected difference was disproven: on stash rows both magit and
@@ -328,11 +326,12 @@ selection instead).
 
 ### Revert (magit `V` / ours `_` evil, `V` vanilla)
 
-**Arguments**: `-m --mainline=` ✓; `-e --edit` ≈ **default inverted** —
-magit defaults `--edit` on; ours is off and injects `--no-edit` when no args
-are toggled (and drops that fallback once any other arg is toggled);
-`-E --no-edit` ✓; `=s --strategy=` ✗; `-S --gpg-sign=` ✗; `+s` (level 6) ≈
-ours `-s` visible.
+**Arguments**: `-m --mainline=` ✓; `-e --edit` / `-E --no-edit` ✗ **by
+design** — revert always uses git's default message (`--no-edit` is forced at
+run time regardless of the other args), because an interactive `--edit` would
+hang our background-git model; the switches are dropped rather than left as a
+footgun. `=s --strategy=` ✗; `-S --gpg-sign=` ✗; `+s` (level 6) ≈ ours `-s`
+visible.
 
 **Actions**: revert-commit / revert-no-commit ✓ (evil `_`/`-`, vanilla
 `V`/`v`, matching evil-collection); in-progress continue/skip/abort ✓. Ours
@@ -569,13 +568,13 @@ Magritte adds a dirty-worktree dot and busy spinner (no magit analog).
 | rebase-sequence (todo as navigable commit sections) | banner: heading + steps (cap 8) + action keycaps; steps aren't actionable rows | ∂ |
 | am-sequence / sequencer-sequence | banner (click-only actions) | ∂ |
 | bisect-output / -rest / -log | — | ✗ |
-| untracked files | `Untracked` — but expanded (magit collapses the heading), uncapped (magit caps at 100 with "N not listed"), and core hardcodes `--untracked-files=normal`, overriding `status.showUntrackedFiles` | ≈ |
+| untracked files | `Untracked` — but expanded (magit collapses the heading) and uncapped (magit caps at 100 with "N not listed"). Now honors `status.showUntrackedFiles` (no hardcoded `--untracked-files`) | ≈ |
 | unstaged / staged changes | same model (files collapsed, lazy diffs) | ✓ |
 | stashes | present but **expanded** (magit hides by default) | ∂ |
 | unpushed-to-pushremote | same suppression rule (only when distinct from upstream) | ✓ |
 | unpushed-to-upstream **or** recent | magit shows exactly one: "Recent commits" when not ahead of upstream, else "Unmerged into upstream"; we always show both `Unpushed` and `Recent` | ∂ also heading wording differs |
 | unpulled pair | ✓ | ✓ |
-| child counts | `(N)` ✓; but our unpushed/unpulled fetches are unlimited — no `N+` cap marker, and a pathological divergence lists every commit | ≈ |
+| child counts | `(N)` ✓; unpushed/unpulled listings are capped at 256/side so a pathological divergence can't fetch every commit. No `(N+)` marker on the count, but the title bar shows the true ahead/behind | ≈ |
 | file-list caps | none | ✗ |
 | optional sections (tracked, skip-worktree, assume-unchanged, cherries, worktrees, modules, ignored) | only `ignored` exists (opt-in) | ∂ 1 of ~8 |
 
@@ -757,10 +756,13 @@ Grouped by kind, roughly ordered within each group.
 
 **Behavior fixes in shared features (small, high value)**
 
-2. Match magit's revert default (`--edit` on) or make the divergence a
-   documented choice.
-6. Honor `status.showUntrackedFiles` instead of hardcoding.
-7. Cap unpushed/unpulled listings and show `(N+)`.
+2. ~~Match magit's revert default.~~ Done: documented deviation — revert
+   always uses `--no-edit` (interactive edit can't work in background-git), and
+   the `--edit`/`--no-edit` switches were dropped.
+6. ~~Honor `status.showUntrackedFiles`.~~ Done: dropped the hardcoded
+   `--untracked-files=normal`.
+7. ~~Cap unpushed/unpulled listings.~~ Done: capped at 256/side (no `(N+)`
+   marker; the title bar carries the true ahead/behind).
 8. Reconsider evil `z` = stash (evil-collection's default) with `Z` for
    "include untracked", or document the deviation.
 9. Rebase-todo `x`: reserve for exec (or drop the alias) before it
@@ -810,6 +812,8 @@ Grouped by kind, roughly ordered within each group.
 - Collapsing push/pull/fetch `p` and `u` into one entry when the push-remote
   and upstream resolve to the same ref (magit always lists both) — removes a
   redundant duplicate line in the common non-triangular case.
+- Revert always takes git's default message (`--no-edit`); no `--edit` switch,
+  since an interactive editor can't be serviced in the background-git model.
 - The permissive visual-selection batching (with its stricter
   conflicted-file refusal).
 - No shell in `!` (with `[[command]]` as the escape hatch).

@@ -584,11 +584,14 @@ impl StatusView {
                 PickOp::CherryPick => repo.cherry_pick_with_args(&rev, &args),
                 PickOp::CherryApply => repo.cherry_apply_with_args(&rev, &args),
                 PickOp::Revert => {
-                    let args = if args.is_empty() {
-                        vec!["--no-edit".to_string()]
-                    } else {
-                        args
-                    };
+                    // Always take git's default message: `git revert` would open
+                    // an editor otherwise, which our background-git model can't
+                    // service (it would hang). Any transient args (--signoff,
+                    // --mainline) ride alongside.
+                    let mut args = args;
+                    if !args.iter().any(|a| a == "--no-edit") {
+                        args.push("--no-edit".to_string());
+                    }
                     repo.revert_with_args(&rev, &args)
                 }
                 PickOp::RevertNoCommit => repo.revert_no_commit_with_args(&rev, &args),

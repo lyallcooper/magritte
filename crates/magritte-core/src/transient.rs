@@ -1175,9 +1175,11 @@ pub fn revert_transient(style: KeymapStyle) -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
+                // No `--edit`/`--no-edit`: revert always takes git's default
+                // message (`--no-edit`, forced at run time). An interactive
+                // `--edit` can't work in our background-git model — it would
+                // block on an editor that isn't there. Documented deviation.
                 suffixes: vec![
-                    Suffix::Switch(Switch::new("-e", "--edit", "Edit commit message")),
-                    Suffix::Switch(Switch::new("-E", "--no-edit", "Don't edit commit message")),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
                     Suffix::Option(Opt {
                         key: "-m",
