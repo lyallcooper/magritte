@@ -127,6 +127,9 @@ impl GitCommand {
             // A bare `git remote` is the remote-name listing the pickers issue;
             // the mutating verbs (add/rename/remove/prune) stay visible.
             Some("remote") => self.args.len() == 1,
+            // `git worktree list` is the worktree browser's listing; the
+            // mutating verbs (add/remove/move/prune) stay visible.
+            Some("worktree") => self.args.get(1).map(String::as_str) == Some("list"),
             _ => false,
         }
     }

@@ -34,6 +34,7 @@ pub mod stash;
 pub mod status;
 pub mod tag;
 pub mod transient;
+pub mod worktree;
 
 pub use commit::{CommitMetadata, CommitMode};
 pub use conflict::ConflictSide;
@@ -50,3 +51,4 @@ pub use stage::ApplyTarget;
 pub use stash::Stash;
 pub use status::{Change, EntryKind, FileEntry, HeadInfo, RefreshNeeds, RefreshSnapshot, Status};
 pub use transient::{Command, Transient};
+pub use worktree::Worktree;

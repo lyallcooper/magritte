@@ -1922,6 +1922,164 @@ impl StatusView {
             .into_any_element()
     }
 
+    /// The worktree browser (`%`): the repo's linked worktrees in a scrollable
+    /// list with a cursor. Enter/`g` visits the worktree at point (opens its
+    /// window); the delete key removes it.
+    pub(crate) fn render_worktrees(&self, wt: &WorktreeView, view: &Entity<Self>) -> gpui::Div {
+        let count = wt.worktrees.len();
+        let note = |text: String, color: Hsla| {
+            div()
+                .text_color(color)
+                .child(SharedString::from(text))
+                .into_any_element()
+        };
+        let body = match &wt.load {
+            WorktreeLoad::Loading => note("Loading…".to_string(), self.palette.dim),
+            WorktreeLoad::Failed(e) => note(format!("worktrees failed: {e}"), self.palette.dim),
+            WorktreeLoad::Loaded if count == 0 => {
+                note("No worktrees".to_string(), self.palette.dim)
+            }
+            WorktreeLoad::Loaded => uniform_list("worktree-rows", count, {
+                let view = view.clone();
+                move |range, _window, cx| {
+                    let this = view.read(cx);
+                    match this.worktree_view() {
+                        Some(wt) => range
+                            .filter_map(|ix| wt.worktrees.get(ix).map(|w| (ix, w)))
+                            .map(|(ix, w)| {
+                                this.render_worktree_row(ix, w, ix == wt.selected, &view)
+                            })
+                            .collect::<Vec<_>>(),
+                        None => Vec::new(),
+                    }
+                }
+            })
+            .track_scroll(&wt.scroll)
+            .flex_grow(1.0)
+            .into_any_element(),
+        };
+
+        let mut header = div().flex().items_center().gap_3().child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.palette.section)
+                .child(SharedString::from("Worktrees")),
+        );
+        header = header.child(self.key_action(
+            "worktree-visit",
+            "return",
+            "visit",
+            view,
+            Self::visit_worktree_from_button,
+        ));
+        header = header.child(self.key_action(
+            "worktree-remove",
+            if self.is_evil() { "x" } else { "k" },
+            "remove",
+            view,
+            Self::remove_worktree_from_button,
+        ));
+        header = header.child(self.key_action(
+            "worktree-close",
+            "esc",
+            "close",
+            view,
+            Self::close_worktrees,
+        ));
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .font_family(self.font.clone())
+            .p_4()
+            .gap_3()
+            .child(header)
+            .child(body)
+    }
+
+    /// One worktree row: a ● current marker, the branch (or detached hash) as a
+    /// ref chip, and the path dimmed after it; highlighted and clickable to
+    /// visit when it's not the current worktree.
+    fn render_worktree_row(
+        &self,
+        ix: usize,
+        wt: &magritte_core::Worktree,
+        selected: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let view = view.clone();
+        let mut row = div()
+            .id(SharedString::from(format!("worktree-row-{ix}")))
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_2()
+            .cursor_pointer()
+            .on_click(move |_, _window, cx: &mut App| {
+                view.update(cx, |this, vcx| {
+                    if let Some(v) = this.worktree_view_mut() {
+                        v.selected = ix;
+                    }
+                    this.visit_worktree_at_point(vcx);
+                });
+            });
+        if selected {
+            row = row.bg(self.palette.selection);
+        } else {
+            row = row.hover(|s| s.bg(self.palette.hover));
+        }
+        // Current-worktree marker in the gutter (like the refs browser).
+        row = row.child(
+            div()
+                .w(px(12.0))
+                .flex_shrink_0()
+                .text_color(self.palette.branch_local)
+                .child(SharedString::from(if wt.is_current { "●" } else { "" })),
+        );
+        // The branch as a ref chip, or a detached short hash, or "(bare)".
+        if let Some(branch) = &wt.branch {
+            let kind = if wt.is_current {
+                RefKind::Head
+            } else {
+                RefKind::Local
+            };
+            row = row.child(self.ref_chip(branch, kind));
+        } else if wt.bare {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("(bare)")),
+            );
+        } else if let Some(head) = &wt.head {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.modified)
+                    .child(SharedString::from(head.clone())),
+            );
+        }
+        // The main-worktree tag, then the path.
+        if wt.is_main {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("main")),
+            );
+        }
+        row.child(
+            div()
+                .text_color(self.palette.dim)
+                .child(SharedString::from(wt.path.clone())),
+        )
+        .into_any_element()
+    }
+
     /// One ref decoration, colored by kind per the app-wide rule: local branch
     /// blue, remote-tracking ref green, tag yellow, current branch bold. A
     /// synced entry (current branch folded with its upstream) shows the
@@ -3057,6 +3215,13 @@ impl Render for StatusView {
             }
             Screen::Refs(refs) => {
                 return self.render_overlays(root.child(self.render_refs(refs, &view)), &view, cx);
+            }
+            Screen::Worktree(wt) => {
+                return self.render_overlays(
+                    root.child(self.render_worktrees(wt, &view)),
+                    &view,
+                    cx,
+                );
             }
             Screen::Status => {}
         }

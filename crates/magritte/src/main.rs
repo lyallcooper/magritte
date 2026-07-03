@@ -59,6 +59,7 @@ mod theme;
 mod transient_state;
 mod watchers;
 mod window;
+mod worktree_view;
 pub(crate) use commands::*;
 pub(crate) use commit_diff_view::*;
 pub(crate) use commit_editor::*;
@@ -71,6 +72,7 @@ pub(crate) use row_build::*;
 pub(crate) use staging::*;
 pub(crate) use transient_state::*;
 pub(crate) use window::*;
+pub(crate) use worktree_view::*;
 
 /// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
 type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
@@ -346,6 +348,9 @@ enum Screen {
     /// The refs browser (`y`, magit's show-refs): branches, remotes, and tags
     /// with act-at-point verbs.
     Refs(refs_view::RefsView),
+    /// The worktree browser (`%`, magit's worktree): linked worktrees with
+    /// visit/remove at point.
+    Worktree(worktree_view::WorktreeView),
 }
 
 struct StatusView {
@@ -940,6 +945,12 @@ fn track_target(_id: impl Into<SharedString>) -> impl IntoElement {
 
 type RepoWindows = Rc<RefCell<HashMap<PathBuf, AnyWindowHandle>>>;
 
+/// The open-repo-window registry, exposed as a GPUI global so a view (e.g. the
+/// worktree browser visiting another worktree) can open-or-focus a window for a
+/// path without threading the registry through every constructor.
+pub(crate) struct GlobalRepoWindows(pub(crate) RepoWindows);
+impl gpui::Global for GlobalRepoWindows {}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -1023,6 +1034,9 @@ fn main() {
         .detach();
 
         let windows: RepoWindows = Rc::new(RefCell::new(HashMap::new()));
+        // Expose the registry as a global so views can open-or-focus repo
+        // windows (worktree "visit") without threading it through constructors.
+        cx.set_global(GlobalRepoWindows(windows.clone()));
         if single_instance {
             let (tx, rx) = async_channel::unbounded();
             if ipc::start_server(tx) {
@@ -1605,8 +1619,8 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",",
-            "$", // commands
+            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$",
+            "%", // commands
             "s", "u", "S", "U", "x", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions

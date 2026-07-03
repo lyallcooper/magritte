@@ -30,7 +30,7 @@ vanilla presets differ, both are given.
 
 ## Executive summary
 
-**Whole areas missing:** bisect, blame, worktree commands, submodules,
+**Whole areas missing:** bisect, blame, submodules,
 patch create/apply (and starting a `git am` —
 we can only drive one already in progress), clone/init, notes, subtree,
 sparse-checkout, bundle, cherry, wip. Within existing transients, the largest
@@ -106,7 +106,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `X` | reset | ✓ ours `O` (vanilla `X`) |
 | `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil `yr`); `Y` cherry ✗ |
 | `z` | stash | ✓ ours `Z` (vanilla `z`) |
-| `Z` | worktree | ✗ |
+| `Z` | worktree | ∂ ours `%` (our `Z` is stash); browse/visit/remove, create ✗ |
 | `!` | run | ✓ |
 | `a` | apply change at point | ✗ (cherry-apply exists for commit rows; no diff-section apply) |
 | `v` | reverse change at point | ≈ revert-no-commit on commit rows only; no diff-region reverse |
@@ -465,9 +465,12 @@ refs, and tags in one scrollable list, colored by kind, with checkout
 counts vs a comparison point, rename at point, and the comparison args
 (`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`).
 
-**Worktree (`Z`/`%`)** ✗ — checkout/branch into a new worktree, move,
-delete, visit. Magritte is already worktree-aware internally (per-worktree
-UI state); "visit" means opening the other checkout's window.
+**Worktree (`%`)** ∂ — the worktree browser is in: it lists the linked
+worktrees (branch/detached, main + current markers, path), visits one at point
+(Return/`g` opens or focuses its Magritte window), and removes one (`k`/`x`,
+confirmed, non-force so git refuses a dirty worktree). Bound to `%` (our `Z` is
+stash, unlike magit). Remaining: creating worktrees (checkout an existing ref /
+new branch into a new directory) and moving one — deferred to a follow-up.
 
 **Patch (`W`)** ✗ — format-patch (sub-transient with mail args, reroll,
 cover letters), apply plain patch (`--index`/`--cached`/`--3way`), save diff
@@ -805,7 +808,7 @@ Grouped by kind, roughly ordered within each group.
 **Whole missing features, ranked for a standalone client**
 
 1. Blame view.
-2. Worktree commands (we're already worktree-aware internally).
+2. Worktree create/move (the browser — list/visit/remove — is done).
 3. Bisect (banner-driven, like our sequence UI).
 4. Patch create/apply + starting `git am`.
 5. Clone/init (needs the no-repo app state).

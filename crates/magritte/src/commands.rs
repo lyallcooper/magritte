@@ -378,6 +378,14 @@ pub(crate) fn commands() -> &'static [Command] {
             run: |t, _w, cx| t.open_refs(cx),
         },
         top!(
+            "worktree",
+            "Worktree",
+            Category::Commands,
+            "%",
+            &["worktrees", "linked checkout"],
+            |t, _w, cx| t.open_worktrees(cx)
+        ),
+        top!(
             "push",
             "Push",
             Category::Commands,
@@ -997,6 +1005,7 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
         match key {
             "1" => "!".to_string(),
             "4" => "$".to_string(),
+            "5" => "%".to_string(),
             "6" => "^".to_string(),
             "-" => "_".to_string(),
             "=" => "+".to_string(),

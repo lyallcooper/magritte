@@ -194,6 +194,9 @@ pub(crate) enum Confirm {
     CustomShell { command: String, refresh: bool },
     /// Drop the stash at point (`x` on a stash row): on `y`, drop the reference.
     DropStash(String),
+    /// Remove the worktree at point in the browser: on `y`, `git worktree
+    /// remove` its path (non-force, so git refuses a dirty worktree).
+    RemoveWorktree(String),
     /// `S` with changes already staged (magit confirms: it blurs the
     /// staged/unstaged split): on `y`, stage all tracked changes.
     StageAll,
@@ -808,6 +811,7 @@ impl StatusView {
             Some((_, Confirm::DropStash(reference))) => {
                 self.run_stash_action(StashAction::Drop, reference, cx)
             }
+            Some((_, Confirm::RemoveWorktree(path))) => self.remove_worktree(path, cx),
             Some((_, Confirm::StageAll)) => self.run_action(Action::StageAll, cx),
             Some((_, Confirm::UnstageAll)) => self.run_action(Action::UnstageAll, cx),
             None => {}
