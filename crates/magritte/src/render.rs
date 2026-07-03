@@ -20,6 +20,28 @@ use magritte_core::{RebaseAction, Sequence};
 
 use crate::*;
 
+/// How a picker's candidates are colored, derived from what it's choosing.
+#[derive(Clone, Copy)]
+pub(crate) enum PickerRefStyle {
+    /// Branch names: remote-tracking (`origin/main`) green, local blue.
+    Branchy,
+    /// Tag names: yellow.
+    Tag,
+    /// Remote names: green.
+    Remote,
+}
+
+/// The ref styling for a picker, or `None` for pickers whose candidates aren't
+/// refs (commands, commit messages, ignore patterns, …).
+fn picker_ref_style(action: &PickerAction) -> Option<PickerRefStyle> {
+    match action {
+        PickerAction::Branch(_) => Some(PickerRefStyle::Branchy),
+        PickerAction::Tag(_) => Some(PickerRefStyle::Tag),
+        PickerAction::Remote(_) => Some(PickerRefStyle::Remote),
+        _ => None,
+    }
+}
+
 fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
     let millis = elapsed.as_millis();
     if millis < 1000 {
@@ -148,6 +170,7 @@ impl StatusView {
                         // In the command palette, show each command's keybinding
                         // (when it has one) on the right, so it doubles as help.
                         let palette = matches!(p.action, PickerAction::RunCommand);
+                        let ref_style = picker_ref_style(&p.action);
                         range
                             .map(|ix| match p.list.row(ix) {
                                 Some(r) => {
@@ -164,6 +187,7 @@ impl StatusView {
                                         r.is_create,
                                         ix == p.list.selected(),
                                         hint,
+                                        ref_style,
                                         &view,
                                     )
                                 }
@@ -232,8 +256,23 @@ impl StatusView {
             )
     }
 
+    /// The color a picker candidate's label takes, given the picker's ref style
+    /// (from its action): branch pickers color remote-tracking entries green and
+    /// local ones blue, tag pickers yellow, remote pickers green; other pickers
+    /// (commands, messages, paths) use the plain foreground.
+    fn picker_label_color(&self, label: &str, style: Option<PickerRefStyle>) -> Hsla {
+        match style {
+            Some(PickerRefStyle::Tag) => self.palette.tag,
+            Some(PickerRefStyle::Remote) => self.palette.branch_remote,
+            Some(PickerRefStyle::Branchy) if label.contains('/') => self.palette.branch_remote,
+            Some(PickerRefStyle::Branchy) => self.palette.branch_local,
+            None => self.palette.fg,
+        }
+    }
+
     /// One candidate row: a full-width highlight when current (vertico-style, no
     /// boxy border), a subtle hover for the mouse, and click-to-confirm.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_picker_row(
         &self,
         ix: usize,
@@ -241,6 +280,7 @@ impl StatusView {
         is_create: bool,
         selected: bool,
         hint: Option<SharedString>,
+        ref_style: Option<PickerRefStyle>,
         view: &Entity<Self>,
     ) -> AnyElement {
         let view = view.clone();
@@ -283,7 +323,9 @@ impl StatusView {
                         .child(SharedString::from("(new)")),
                 )
         } else {
-            div().text_color(self.palette.fg).child(label)
+            div()
+                .text_color(self.picker_label_color(&label, ref_style))
+                .child(label)
         };
         el = el.child(label_el);
         // The command's binding (palette only) as subtle text right after the
@@ -1355,6 +1397,24 @@ impl StatusView {
             .items_center()
             .when(highlighted, |el| el.bg(self.palette.selection));
         match row {
+            // The metadata "Refs:" line renders its decorations as colored ref
+            // chips (like the commit/log rows); other detail lines stay dim.
+            CommitDiffRow::Detail(text) if text.starts_with("Refs:") => {
+                let decoration = text["Refs:".len()..].trim();
+                let upstream = self
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.head.upstream.as_deref());
+                let mut row = base.gap_2().child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("Refs:")),
+                );
+                for (label, kind) in parse_refs(decoration, upstream) {
+                    row = row.child(self.ref_chip(&label, kind));
+                }
+                row.into_any_element()
+            }
             CommitDiffRow::Detail(text) => base
                 .text_color(self.palette.dim)
                 .child(SharedString::from(text.clone()))
