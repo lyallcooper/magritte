@@ -489,6 +489,6 @@ impl StatusView {
         for (source, path) in keys {
             self.load_diff(source, path, true, cx);
         }
-        self.set_status(format!("Diff context: {new}"), false, cx);
+        self.set_status(format!("Diff context: {new}"), true, cx);
     }
 }
