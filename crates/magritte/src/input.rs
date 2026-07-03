@@ -3,8 +3,6 @@
 //! `invoke_command`), custom-command/shell execution, and the `:` palette.
 //! Split out of `main.rs` as a `pub(crate)` `impl StatusView` block.
 
-use std::collections::HashMap;
-
 use gpui::{Context, KeyDownEvent, SharedString, Window};
 use magritte_core::{
     transient::{self, Suffix, Transient},
@@ -164,14 +162,21 @@ impl StatusView {
         // The git command-log view takes over the window; esc/q/$ close it, and
         // it scrolls with the usual vi/less keys.
         if self.git_log().is_some() {
-            if key == "escape" || key == "q" || key == "$" || (key == "4" && shift) {
-                self.close_git_log(window, cx);
-                return;
+            let chorded = chord(&key, shift, ctrl, alt, cmd);
+            // The pager's registry verbs: close (`Esc`/`q`) and toggle-queries.
+            match self
+                .screen_bindings()
+                .get(&chorded)
+                .and_then(|v| v.first())
+                .map(String::as_str)
+            {
+                Some("close") => return self.close_screen(window, cx),
+                Some("git-log-toggle-queries") => return self.toggle_git_log_all(window, cx),
+                _ => {}
             }
-            // `a` toggles showing the UI's own read-only queries.
-            if key == "a" {
-                self.toggle_git_log_all(window, cx);
-                return;
+            // `$` (also shift-4) closes, mirroring the key that opened the pager.
+            if key == "$" || (key == "4" && shift) {
+                return self.close_screen(window, cx);
             }
             let page = page_rows(window);
             let len = self.git_log_rows().len();
@@ -179,7 +184,12 @@ impl StatusView {
             // than the shared `nav_*`; translate a remapped motion to the key
             // apply_scroll_key understands, so [keymap] still drives it.
             let cased = chord(&key, shift, false, false, false);
-            let (skey, sshift) = match self.keymap.get(&cased).map(String::as_str) {
+            let (skey, sshift) = match self
+                .screen_bindings()
+                .get(&cased)
+                .and_then(|v| v.first())
+                .map(String::as_str)
+            {
                 Some("move-down") => ("j", false),
                 Some("move-up") => ("k", false),
                 Some("goto-bottom") => ("g", true),
@@ -206,165 +216,38 @@ impl StatusView {
                 }
                 return;
             }
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            match key.as_str() {
-                "escape" | "q" => self.close_rebase_todo(window, cx),
-                "enter" => self.run_rebase_todo(window, cx),
-                // Move the selected commit up/down (shift+k / shift+j).
-                "k" if shift => self.rebase_todo_reorder(-1, cx),
-                "j" if shift => self.rebase_todo_reorder(1, cx),
-                // Set the action of the commit at point.
-                "p" => self.rebase_todo_set_action(RebaseAction::Pick, cx),
-                "r" | "w" => self.rebase_todo_set_action(RebaseAction::Reword, cx),
-                "e" => self.rebase_todo_set_action(RebaseAction::Edit, cx),
-                "s" => self.rebase_todo_set_action(RebaseAction::Squash, cx),
-                "f" => self.rebase_todo_set_action(RebaseAction::Fixup, cx),
-                "d" | "x" => self.rebase_todo_set_action(RebaseAction::Drop, cx),
-                _ => {}
-            }
+            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
-        if self.commit_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            match key.as_str() {
-                // Cancel a visual selection first; otherwise leave the view.
-                "escape" | "q" => {
-                    if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
-                        if let Some(fd) = self.flat_diff_mut() {
-                            fd.visual = None;
-                        }
-                        cx.notify();
-                    } else {
-                        self.close_commit_view(window, cx);
-                    }
-                }
-                // Apply engine on the committed change at point (magit's
-                // section-map `a`/`v`/`u`): apply to worktree, reverse in
-                // worktree, reverse into index. `=` takes over the metadata
-                // details toggle (freeing `a` for apply). Reverse follows the
-                // preset — evil-collection moves it to `-` (keeping `v` for
-                // visual), vanilla magit keeps it on `v`.
-                "a" => self.apply_at_point_to_worktree(cx),
-                "u" => self.reverse_at_point_in_index(cx),
-                "=" => self.toggle_commit_details(cx),
-                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
-                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                // Copy: magit-mode-map's `C-w` and `Cmd-C`. Evil's `y` is a yank
-                // prefix (yy/ys/yb/yr), resolved through the sequence machinery.
-                "w" if ctrl => self.copy_flat_diff_selection(cx),
-                "c" if cmd => self.copy_flat_diff_selection(cx),
-                _ => {}
-            }
+        // The commit- and diff-view flat diffs share the same apply-engine verbs
+        // (apply/reverse/reverse-index, visual toggle, details) — all in the
+        // registry, keyed per-context. `Esc`/`q` (the `close` verb) cancels a
+        // visual selection first, then leaves the view.
+        if self.commit_view().is_some() || self.diff_view().is_some() {
+            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
-        if self.diff_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            match key.as_str() {
-                "escape" | "q" => {
-                    if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
-                        if let Some(fd) = self.flat_diff_mut() {
-                            fd.visual = None;
-                        }
-                        cx.notify();
-                    } else {
-                        self.close_diff_view(window, cx);
-                    }
-                }
-                // Apply engine (same as the commit view): apply/reverse the
-                // file/hunk at point to the worktree, or reverse into the index.
-                "a" => self.apply_at_point_to_worktree(cx),
-                "u" => self.reverse_at_point_in_index(cx),
-                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
-                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "w" if ctrl => self.copy_flat_diff_selection(cx),
-                "c" if cmd => self.copy_flat_diff_selection(cx),
-                _ => {}
-            }
-            return;
-        }
-
-        // The commit-log view: Enter opens the commit; esc/q close; motions move
-        // the selection (shared with every cursor view via `try_nav`).
+        // The commit-log view: every verb (open/select/cherry-pick/revert/
+        // reset/rebase-since/relimit) is a registry command scoped to the Log
+        // context; motions and copy resolve through the shared dispatch too.
         if self.log().is_some() {
-            // In a select mode, Return confirms the commit for the pending
-            // action; while browsing it opens the commit's diff.
-            let selecting = matches!(
-                self.log().map(|l| &l.purpose),
-                Some(
-                    LogPurpose::SelectRebaseBase { .. }
-                        | LogPurpose::SelectRebaseReword { .. }
-                        | LogPurpose::SelectSquash { .. }
-                )
-            );
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            let chorded = chord(&key, shift, ctrl, alt, cmd);
-            match chorded.as_str() {
-                "escape" | "q" => return self.close_log(window, cx),
-                // Cmd+Return confirms the pending select (rebase since); plain
-                // Return opens the commit's diff — in select mode too, so you can
-                // inspect commits before choosing (magit lets you visit from the
-                // log-select).
-                "cmd-enter" if selecting => return self.confirm_log_select(window, cx),
-                // `r`: rebase interactively since the commit at point (magit's
-                // commit-at-point path) — only while browsing, with default args.
-                "r" if !selecting => return self.rebase_since_selected(Vec::new(), cx),
-                // Vanilla copy: `C-w` isn't in the log's keymap dispatch, so
-                // handle it here alongside the shared verbs.
-                "ctrl-w" => return self.copy_log_commit(cx),
-                _ => {}
-            }
-            self.log_commit_key(&chorded, window, cx);
+            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
         // The refs browser: motions move the cursor (skipping headers); Enter
         // checks out the ref at point, the preset delete key removes it.
         if self.refs_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            match chord(&key, shift, ctrl, alt, cmd).as_str() {
-                "escape" | "q" => self.close_refs(window, cx),
-                "enter" | "b" => self.refs_checkout_at_point(window, cx),
-                "x" if self.is_evil() => self.refs_delete_at_point(window, cx),
-                "k" if self.is_vanilla() => self.refs_delete_at_point(window, cx),
-                "R" => self.refs_rename_at_point(window, cx),
-                "ctrl-w" | "cmd-c" => self.copy_at_point(cx),
-                _ => {}
-            }
+            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
-        // The worktree browser: motions move the cursor; Enter/`g` visits the
-        // worktree at point, the preset delete key removes it.
+        // The worktree browser: motions move the cursor; the registry owns visit,
+        // remove, and the add/branch/move creators.
         if self.worktree_view().is_some() {
-            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
-                return;
-            }
-            match chord(&key, shift, ctrl, alt, cmd).as_str() {
-                "escape" | "q" => self.close_worktrees(window, cx),
-                "enter" | "g" => self.visit_worktree_at_point(cx),
-                "x" if self.is_evil() => self.remove_worktree_at_point(cx),
-                "k" if self.is_vanilla() => self.remove_worktree_at_point(cx),
-                // Create/move (magit's worktree transient): `b` worktree for an
-                // existing ref, `c` new branch + worktree, `m` move.
-                "b" => self.start_add_worktree(window, cx),
-                "c" => self.start_create_branch_worktree(window, cx),
-                "m" => self.start_move_worktree(window, cx),
-                _ => {}
-            }
+            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
             return;
         }
 
@@ -386,15 +269,16 @@ impl StatusView {
         if self.try_nav(&key, shift, ctrl, alt, window, cx) {
             return;
         }
-        // Act on the commit/stash at point in a status section (after motions,
-        // so j/k/g still work; only the shared point verbs are intercepted —
-        // anything else falls through to the keymap).
+        // Act on the commit/stash at point in a status section (after motions, so
+        // j/k/g still work): an at-point verb — resolved from the keymap, gated on
+        // the target — claims the key before the general keymap / diff-context
+        // keys below, so `a` = cherry-apply on a commit but Stage on a file.
         let chorded = chord(&key, shift, ctrl, alt, cmd);
-        if self.point_commit_key(&chorded, window, cx) {
-            return;
-        }
-        if self.point_stash_key(&chorded, window, cx) {
-            return;
+        if let Some(id) = self.resolve_binding(&chorded) {
+            if commands().iter().any(|c| c.id == id && c.at_point) {
+                self.invoke_command(&id, window, cx);
+                return;
+            }
         }
         match key.as_str() {
             // Tab toggles a fold (also delivered via the ToggleFold action, since
@@ -419,7 +303,7 @@ impl StatusView {
             "c" if cmd => return self.invoke_command("yank", window, cx),
             "x" if alt => return self.open_command_palette(window, cx),
             ":" | ";" if key == ":" || shift => {
-                if Self::is_dispatch_key(&self.keymap, &cased) {
+                if Self::is_dispatch_key(self.screen_bindings(), &cased) {
                     return self.run_dispatch(&cased, window, cx);
                 }
                 return self.open_command_palette(window, cx);
@@ -438,7 +322,7 @@ impl StatusView {
                 // `[keymap] "ctrl-d" = "commit"`) dispatches; for a plain/shifted
                 // key the chord is just its cased form, so nothing else changes.
                 let chord = chord(&key, shift, ctrl, alt, cmd);
-                if Self::is_dispatch_key(&self.keymap, &chord) {
+                if Self::is_dispatch_key(self.screen_bindings(), &chord) {
                     return self.run_dispatch(&chord, window, cx);
                 }
                 // An unbound key: tell the user (emacs' "… is undefined"). Only
@@ -501,13 +385,78 @@ impl StatusView {
 
     /// Invoke a `?`-dispatch command (by key press or row click): close the
     /// dispatch menu and run the command, like magit's dispatch transient.
+    /// The single context-scoped dispatcher: resolve `chord` in the active
+    /// screen's keymap and run its command (if applicable now), or enter a
+    /// prefix. Returns whether it consumed the key. Replaces the per-screen
+    /// `on_key` branches and `run_info_key` — every screen dispatches through
+    /// this one path, so a key means whatever the registry says for that screen.
+    pub(crate) fn dispatch_key(
+        &mut self,
+        chord: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.is_prefix(chord) {
+            self.enter_prefix(chord.to_string(), window, cx);
+            return true;
+        }
+        let Some(id) = self.resolve_binding(chord) else {
+            return false;
+        };
+        self.invoke_command(&id, window, cx);
+        true
+    }
+
+    /// The command a keystroke resolves to on the current screen: the first of
+    /// its candidates (ordered most-specific-first by [`build_keymap`]) whose
+    /// `enabled` holds. A candidate scoped out by its target — e.g. cherry-apply
+    /// with no commit at point — is skipped so the key falls through to the next
+    /// (Stage on a file row). `None` if the key is unbound or all candidates
+    /// decline.
+    pub(crate) fn resolve_binding(&self, chord: &str) -> Option<String> {
+        self.screen_bindings()
+            .get(chord)?
+            .iter()
+            .find(|id| {
+                commands()
+                    .iter()
+                    .find(|c| c.id == id.as_str())
+                    .is_none_or(|c| (c.enabled)(self))
+            })
+            .cloned()
+    }
+
+    /// Close the active secondary screen (the `close` command, `Esc`/`q`). In a
+    /// flat-diff view, `Esc` first cancels an active visual selection (magit's
+    /// two-step). A no-op on the status screen.
+    pub(crate) fn close_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
+            if let Some(fd) = self.flat_diff_mut() {
+                fd.visual = None;
+            }
+            cx.notify();
+            return;
+        }
+        match self.screen_kind() {
+            ScreenKind::Log => self.close_log(window, cx),
+            ScreenKind::GitLog => self.close_git_log(window, cx),
+            ScreenKind::Commit => self.close_commit_view(window, cx),
+            ScreenKind::Diff => self.close_diff_view(window, cx),
+            ScreenKind::RebaseTodo => self.close_rebase_todo(window, cx),
+            ScreenKind::Refs => self.close_refs(window, cx),
+            ScreenKind::Worktree => self.close_worktrees(window, cx),
+            ScreenKind::Settings => self.close_settings(window, cx),
+            ScreenKind::Status | ScreenKind::Editor => {}
+        }
+    }
+
     pub(crate) fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
         // A keymap-bound command (default or user-remapped), the `:` palette, or
         // a motion. Resolving through the effective keymap is what makes
         // remap/unbind take effect — and binding *any* command id (even a leaf
         // like `branch.delete`) to a key Just Works via `invoke_command`.
-        if let Some(id) = self.keymap.get(key).cloned() {
+        if let Some(id) = self.resolve_binding(key) {
             // Motions resolve here too (registry Navigation commands), applied
             // screen-aware by their `run`.
             self.invoke_command(&id, window, cx);
@@ -619,11 +568,15 @@ impl StatusView {
     /// Classify a keystroke sequence against the effective keymap: a complete
     /// binding, a prefix of one or more longer bindings, or neither.
     pub(crate) fn classify_seq(&self, seq: &str) -> KeyMatch {
-        if let Some(id) = self.keymap.get(seq) {
-            return KeyMatch::Command(id.clone());
+        // A bound sequence resolves to its first applicable candidate (an
+        // at-point verb gated on the target, else the general command).
+        if self.screen_bindings().contains_key(seq) {
+            if let Some(id) = self.resolve_binding(seq) {
+                return KeyMatch::Command(id);
+            }
         }
         let lead = format!("{seq} ");
-        if self.keymap.keys().any(|k| k.starts_with(&lead)) {
+        if self.screen_bindings().keys().any(|k| k.starts_with(&lead)) {
             return KeyMatch::Prefix;
         }
         KeyMatch::Unbound
@@ -772,7 +725,7 @@ impl StatusView {
     /// palette. Multi-stroke entries are handled elsewhere — Tab via the
     /// ToggleFold action, `g r`/`g g`/`g j`/`g k` via the g-prefix — so they're
     /// excluded even if a key like `g r` is bound.
-    pub(crate) fn is_dispatch_key(keymap: &HashMap<String, String>, key: &str) -> bool {
+    pub(crate) fn is_dispatch_key(keymap: &commands::KeyBindings, key: &str) -> bool {
         // Only single-keystroke chords reach here (multi-key sequences resolve
         // through the prefix machinery); motions are registry commands too.
         keymap.contains_key(key) || key == ":"
@@ -792,88 +745,6 @@ impl StatusView {
             return true;
         }
         false
-    }
-
-    /// Act-at-point verbs for a status commit row. `key` is in encoded chord
-    /// form (`A`, `cmd-c`) — [`Self::on_key`] encodes its modifiers first, and
-    /// help-menu clicks arrive already encoded. Returns whether it handled the
-    /// key. Commit rows mirror evil-collection-magit: `A`/`_` open the
-    /// cherry-pick/revert transients with the commit at point as the default,
-    /// while `a`/`-` apply/revert changes without committing (vanilla uses
-    /// `V`/`v` for the revert pair).
-    fn point_commit_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some((hash, short, subject)) = self.point_commit() else {
-            return false;
-        };
-        match key {
-            "enter" => self.open_commit(hash, short, subject, cx),
-            "A" => self.open_cherry_pick_transient(cx),
-            "a" => self.pick_selected(PickOp::CherryApply, window, cx),
-            "_" if self.is_evil() => self.open_revert_transient(cx),
-            "-" if self.is_evil() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
-            "V" if self.is_vanilla() => self.open_revert_transient(cx),
-            "v" if self.is_vanilla() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
-            "r" => self.invoke_command("rebase", window, cx),
-            // reset-quickly to this commit: evil-collection's `o`, vanilla
-            // magit's `x` (evil `x` is discard, which no-ops on a commit row).
-            "o" if self.is_evil() => self.reset_quickly_selected(window, cx),
-            "x" if self.is_vanilla() => self.reset_quickly_selected(window, cx),
-            // Copy the full hash. `C-w`/`Cmd-C` here; evil's `y`/`ys` yank
-            // resolves through the keymap (also to the full hash).
-            "cmd-c" => self.copy_to_clipboard(hash, cx),
-            _ => return false,
-        }
-        true
-    }
-
-    /// Act-at-point verbs for a stash row (chord-form `key`, like
-    /// [`Self::point_commit_key`]): `Enter` shows it, `a` applies, `A` pops,
-    /// `x` drops (confirmed), `y`/Cmd-C yanks the reference.
-    fn point_stash_key(&mut self, key: &str, _window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some((reference, message)) = self.point_stash() else {
-            return false;
-        };
-        match key {
-            "enter" => self.open_commit(reference.clone(), reference, message, cx),
-            "A" => self.run_stash_action(StashAction::Pop, reference, cx),
-            "a" => self.run_stash_action(StashAction::Apply, reference, cx),
-            // The delete key follows the preset: evil-collection's x, magit
-            // vanilla's k.
-            "x" if self.is_evil() => {
-                self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
-                cx.notify();
-            }
-            "k" if self.is_vanilla() => {
-                self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
-                cx.notify();
-            }
-            "cmd-c" => self.copy_to_clipboard(reference, cx),
-            _ => return false,
-        }
-        true
-    }
-
-    /// Commit-at-point verbs for the log view (chord-form `key`): open the
-    /// commit, cherry-pick it (Magit's `A`), revert it (evil `_` / vanilla
-    /// `V`), or yank its hash. `r` (rebase since) stays with the callers — the
-    /// key handler guards it to browse mode.
-    fn log_commit_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        match key {
-            "enter" => self.open_commit_view(cx),
-            "A" => self.pick_selected(PickOp::CherryPick, window, cx),
-            "_" if self.is_evil() => self.pick_selected(PickOp::Revert, window, cx),
-            "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
-            // reset-quickly, on the commit at point: evil-collection's `o`,
-            // vanilla magit's `x` (evil `x` is discard).
-            "o" if self.is_evil() => self.reset_quickly_selected(window, cx),
-            "x" if self.is_vanilla() => self.reset_quickly_selected(window, cx),
-            "cmd-c" => self.copy_log_commit(cx),
-            // magit's log limit keys: show twice / half as many commits.
-            "+" => self.relimit_log(true, cx),
-            "-" => self.relimit_log(false, cx),
-            _ => return false,
-        }
-        true
     }
 
     /// Close the open picker. If it was prompting for a transient option value,
@@ -917,99 +788,20 @@ impl StatusView {
 
     pub(crate) fn run_info_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
-        if self.commit_view().is_some() {
-            match key {
-                "a" => self.apply_at_point_to_worktree(cx),
-                "u" => self.reverse_at_point_in_index(cx),
-                "=" => self.toggle_commit_details(cx),
-                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
-                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "ctrl-w" => self.copy_flat_diff_selection(cx),
-                "q" => self.close_commit_view(window, cx),
-                _ => self.run_dispatch(key, window, cx),
-            }
+        // On a secondary screen the `?` popup re-dispatches the chosen key
+        // through the same per-context table that drives live input, so the menu
+        // and the keyboard always agree.
+        if !matches!(self.screen, Screen::Status) {
+            self.dispatch_key(key, window, cx);
             return;
         }
-        if self.diff_view().is_some() {
-            match key {
-                "a" => self.apply_at_point_to_worktree(cx),
-                "u" => self.reverse_at_point_in_index(cx),
-                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
-                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "ctrl-w" => self.copy_flat_diff_selection(cx),
-                "q" => self.close_diff_view(window, cx),
-                _ => self.run_dispatch(key, window, cx),
+        // Status: an at-point verb (gated on the commit/stash at point) claims the
+        // key first, then the general keymap / `:` palette — mirroring `on_key`,
+        // so the `?` menu and the keyboard dispatch identically.
+        if let Some(id) = self.resolve_binding(key) {
+            if commands().iter().any(|c| c.id == id && c.at_point) {
+                return self.invoke_command(&id, window, cx);
             }
-            return;
-        }
-        if self.log().is_some() {
-            match key {
-                "r" => self.rebase_since_selected(Vec::new(), cx),
-                "ctrl-w" => self.copy_log_commit(cx),
-                "q" => self.close_log(window, cx),
-                _ => {
-                    if !self.log_commit_key(key, window, cx) {
-                        self.run_dispatch(key, window, cx);
-                    }
-                }
-            }
-            return;
-        }
-        if self.git_log().is_some() {
-            match key {
-                "a" => self.toggle_git_log_all(window, cx),
-                "q" => self.close_git_log(window, cx),
-                _ => self.run_dispatch(key, window, cx),
-            }
-            return;
-        }
-        if self.rebase_todo().is_some() {
-            match key {
-                "q" => self.close_rebase_todo(window, cx),
-                _ => self.run_dispatch(key, window, cx),
-            }
-            return;
-        }
-        if self.refs_view().is_some() {
-            match key {
-                "enter" | "b" => self.refs_checkout_at_point(window, cx),
-                "x" | "k" => self.refs_delete_at_point(window, cx),
-                "R" => self.refs_rename_at_point(window, cx),
-                "q" => self.close_refs(window, cx),
-                _ => self.run_dispatch(key, window, cx),
-            }
-            return;
-        }
-        if self.worktree_view().is_some() {
-            match key {
-                "enter" | "g" => self.visit_worktree_at_point(cx),
-                "x" | "k" => self.remove_worktree_at_point(cx),
-                "b" => self.start_add_worktree(window, cx),
-                "c" => self.start_create_branch_worktree(window, cx),
-                "m" => self.start_move_worktree(window, cx),
-                "q" => self.close_worktrees(window, cx),
-                _ => self.run_dispatch(key, window, cx),
-            }
-            return;
-        }
-        // Menu clicks deliver `ctrl-w` directly (the key path resolves it
-        // through the keymap to yank instead), so map it to the point copy
-        // before the shared verbs.
-        if key == "ctrl-w" {
-            if let Some((hash, ..)) = self.point_commit() {
-                return self.copy_to_clipboard(hash, cx);
-            }
-            if let Some((reference, _)) = self.point_stash() {
-                return self.copy_to_clipboard(reference, cx);
-            }
-        }
-        if self.point_commit_key(key, window, cx) {
-            return;
-        }
-        if self.point_stash_key(key, window, cx) {
-            return;
         }
         self.run_dispatch(key, window, cx);
     }

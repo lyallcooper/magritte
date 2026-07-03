@@ -111,6 +111,20 @@ impl StatusView {
     /// huge repo stays cheap; the bar notes when it's capped.
     pub(crate) const LOG_LIMIT: usize = 256;
 
+    /// Whether the log is open in a select mode (picking a commit for a pending
+    /// rebase/reword/squash) rather than plain browsing — gates the commit-log
+    /// verbs that only make sense in one mode.
+    pub(crate) fn log_selecting(&self) -> bool {
+        matches!(
+            self.log().map(|l| &l.purpose),
+            Some(
+                LogPurpose::SelectRebaseBase { .. }
+                    | LogPurpose::SelectRebaseReword { .. }
+                    | LogPurpose::SelectSquash { .. }
+            )
+        )
+    }
+
     /// Open the git command-log view (magit's `$` process buffer), scrolled to
     /// the most recent command.
     pub(crate) fn open_git_log(&mut self, cx: &mut Context<Self>) {
@@ -489,12 +503,6 @@ impl StatusView {
 
     pub(crate) fn keymap_style(&self) -> transient::KeymapStyle {
         self.config.keymap_preset.transient_style()
-    }
-
-    /// Open the selected commit's diff (the clickable "view" button; Return does
-    /// the same from the key handler).
-    pub(crate) fn view_log_commit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.open_commit_view(cx);
     }
 
     /// Confirm the selected commit in a log-select mode (the clickable "select"

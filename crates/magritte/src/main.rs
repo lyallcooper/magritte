@@ -353,6 +353,65 @@ enum Screen {
     Worktree(worktree_view::WorktreeView),
 }
 
+/// A data-free tag for each [`Screen`] — its *keymap context*. Every command
+/// declares the set of contexts it dispatches in ([`Command::contexts`]), so a
+/// key can mean different things per screen (`a` = apply in a commit view,
+/// cherry-apply on a status commit, toggle-queries in the command log) without
+/// collision. Ordered so `as usize` indexes the [`ScreenSet`] bitset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub(crate) enum ScreenKind {
+    Status,
+    Editor,
+    Settings,
+    GitLog,
+    Log,
+    Commit,
+    Diff,
+    RebaseTodo,
+    Refs,
+    Worktree,
+}
+
+impl ScreenKind {
+    /// Every screen kind (keymap-build iteration).
+    pub(crate) const ALL_KINDS: &'static [ScreenKind] = &[
+        ScreenKind::Status,
+        ScreenKind::Editor,
+        ScreenKind::Settings,
+        ScreenKind::GitLog,
+        ScreenKind::Log,
+        ScreenKind::Commit,
+        ScreenKind::Diff,
+        ScreenKind::RebaseTodo,
+        ScreenKind::Refs,
+        ScreenKind::Worktree,
+    ];
+}
+
+/// A set of [`ScreenKind`]s — a command's dispatch contexts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScreenSet(u16);
+
+impl ScreenSet {
+    /// Every screen (the default for global commands: motions, prefixes, quit…).
+    pub(crate) const ALL: ScreenSet = ScreenSet(u16::MAX);
+
+    /// The set containing exactly `kinds`.
+    pub(crate) const fn of(kinds: &[ScreenKind]) -> ScreenSet {
+        let mut bits = 0u16;
+        let mut i = 0;
+        while i < kinds.len() {
+            bits |= 1 << (kinds[i] as u16);
+            i += 1;
+        }
+        ScreenSet(bits)
+    }
+
+    pub(crate) fn contains(self, kind: ScreenKind) -> bool {
+        self.0 & (1 << (kind as u16)) != 0
+    }
+}
+
 struct StatusView {
     /// The directory we tried to open (for error messages).
     root: PathBuf,
@@ -484,9 +543,10 @@ struct StatusView {
     /// into the global file. Kept in sync with the global file by `new`,
     /// `apply_config`, and the settings handlers.
     config_global: config::Config,
-    /// The effective keystroke → command-id map (registry defaults overlaid with
-    /// the user's `[keymap]`), resolved by `on_key`/`run_dispatch`.
-    keymap: HashMap<String, String>,
+    /// The effective keystroke → command-id map, per screen (registry defaults
+    /// overlaid with the user's `[keymap]`, then split by each command's
+    /// `contexts`), resolved by `on_key`/`run_dispatch` via `screen_bindings()`.
+    keymap: ScreenKeymaps,
     /// Kept alive so the native config-file watcher keeps delivering events
     /// (dropping it stops watching). `None` if there's no config dir to watch.
     _config_watcher: Option<notify::RecommendedWatcher>,
@@ -691,6 +751,31 @@ impl StatusView {
     // Read accessors for the active [`Screen`]'s state — `None` unless that
     // screen is the active one. Mutating sites match `&mut self.screen` inline
     // (so the borrow stays scoped to `screen`, like the old per-field access).
+    /// The active screen's keymap context — how the dispatcher routes a key and
+    /// which commands the `?` menu / headers show.
+    pub(crate) fn screen_kind(&self) -> ScreenKind {
+        match &self.screen {
+            Screen::Status => ScreenKind::Status,
+            Screen::Editor(_) => ScreenKind::Editor,
+            Screen::Settings(_) => ScreenKind::Settings,
+            Screen::GitLog { .. } => ScreenKind::GitLog,
+            Screen::Log(_) => ScreenKind::Log,
+            Screen::Commit { .. } => ScreenKind::Commit,
+            Screen::Diff { .. } => ScreenKind::Diff,
+            Screen::RebaseTodo(_) => ScreenKind::RebaseTodo,
+            Screen::Refs(_) => ScreenKind::Refs,
+            Screen::Worktree(_) => ScreenKind::Worktree,
+        }
+    }
+
+    /// The active screen's keystroke → candidate-ids submap. Every screen has an
+    /// entry (text-entry screens' is empty), so this can't miss.
+    pub(crate) fn screen_bindings(&self) -> &commands::KeyBindings {
+        static EMPTY: std::sync::OnceLock<commands::KeyBindings> = std::sync::OnceLock::new();
+        self.keymap
+            .get(&self.screen_kind())
+            .unwrap_or_else(|| EMPTY.get_or_init(HashMap::new))
+    }
     fn editor(&self) -> Option<&CommitEditor> {
         match &self.screen {
             Screen::Editor(e) => Some(e),
@@ -809,10 +894,6 @@ impl StatusView {
             self.config.keymap_preset,
             config::KeymapPreset::EvilCollection
         )
-    }
-
-    pub(crate) fn is_vanilla(&self) -> bool {
-        matches!(self.config.keymap_preset, config::KeymapPreset::Vanilla)
     }
 
     /// The repo cloned for a background *read* (status/diff/prefetch), tagged
@@ -1072,22 +1153,40 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// The status screen's keystroke → id submap (what the keymap tests assert
+    /// against), plus the build warnings.
+    fn status_km_w(config: &config::Config) -> (commands::KeyBindings, Vec<String>) {
+        let (mut kms, warnings) = build_keymap(config);
+        (kms.remove(&ScreenKind::Status).unwrap(), warnings)
+    }
+
+    fn status_km(config: &config::Config) -> commands::KeyBindings {
+        status_km_w(config).0
+    }
+
+    /// The top-precedence command a key resolves to in a submap (its first
+    /// candidate) — what these tests, which don't model the at-point target,
+    /// assert against.
+    fn km_id<'a>(km: &'a commands::KeyBindings, key: &str) -> Option<&'a str> {
+        km.get(key).and_then(|v| v.first()).map(String::as_str)
+    }
+
     #[test]
     fn command_registry_is_consistent() {
         use std::collections::HashSet;
-        let (mut ids, mut keys, mut titles) = (HashSet::new(), HashSet::new(), HashSet::new());
+        let (mut ids, mut titles) = (HashSet::new(), HashSet::new());
         for c in commands() {
             assert!(ids.insert(c.id), "duplicate command id: {}", c.id);
-            // Titles must be unique — the `:` palette resolves the chosen title
-            // back to its command.
-            assert!(
-                titles.insert(c.title),
-                "duplicate command title: {}",
-                c.title
-            );
-            // Keys (when bound) must be unique; leaves carry no top-level key.
-            if let Some(key) = c.key {
-                assert!(keys.insert(key), "duplicate command key: {key}");
+            // Palette titles must be unique — the `:` palette resolves the chosen
+            // title back to its command. Non-palette verbs (per-screen and
+            // act-at-point) may share a title with their twin on another screen
+            // (a status commit's "Cherry-pick" vs the log's).
+            if c.palette {
+                assert!(
+                    titles.insert(c.title),
+                    "duplicate palette command title: {}",
+                    c.title
+                );
             }
             // Surface invariants: a `?`-menu command needs a key in at least one
             // preset (the menu drops keyless entries per preset); a command with
@@ -1109,6 +1208,36 @@ mod tests {
                 );
             }
         }
+        // A command's key must be unique within each (preset, context) it binds:
+        // two commands may share a key only if their contexts are disjoint —
+        // that's what lets `a`/`enter` mean different things per screen without
+        // the per-context keymap silently dropping one.
+        for preset in [
+            config::KeymapPreset::EvilCollection,
+            config::KeymapPreset::Vanilla,
+        ] {
+            let mut claimed: HashSet<(ScreenKind, String)> = HashSet::new();
+            for c in commands() {
+                // Act-at-point verbs deliberately share a key with a general
+                // command in the same context (dispatch tries them first, gated
+                // by the target at point); only the general layer must be unique.
+                if c.at_point {
+                    continue;
+                }
+                let Some(key) = default_key_for_command(preset, c) else {
+                    continue;
+                };
+                for &sk in ScreenKind::ALL_KINDS {
+                    if c.contexts.contains(sk) {
+                        assert!(
+                            claimed.insert((sk, key.to_string())),
+                            "duplicate key {key:?} in {sk:?} ({preset:?}): {}",
+                            c.id
+                        );
+                    }
+                }
+            }
+        }
         // Every menu command is reachable from the `?` dispatch menu, in each
         // preset where it has a default key.
         for preset in [
@@ -1119,7 +1248,7 @@ mod tests {
                 keymap_preset: preset,
                 ..config::Config::default()
             };
-            let km = build_keymap(&config).0;
+            let km = status_km(&config);
             let menu: HashSet<String> = dispatch_menu(&km, &config)
                 .groups
                 .iter()
@@ -1129,7 +1258,13 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            for c in commands().iter().filter(|c| c.menu) {
+            // Only status-context menu commands appear in this (status) menu;
+            // screen-scoped verbs are covered by the per-screen invariant, and
+            // act-at-point verbs are grafted into their own group by target.
+            for c in commands()
+                .iter()
+                .filter(|c| c.menu && !c.at_point && c.contexts.contains(ScreenKind::Status))
+            {
                 let Some(key) = default_key_for_command(preset, c) else {
                     continue;
                 };
@@ -1149,7 +1284,7 @@ mod tests {
         // keys don't. Only single-keystroke chords reach the helper — multi-key
         // sequences resolve through the prefix machinery, and `tab` is handled
         // before dispatch.
-        let (km, warnings) = build_keymap(&config::Config::default());
+        let (km, warnings) = status_km_w(&config::Config::default());
         assert!(warnings.is_empty(), "default config has no keymap warnings");
         assert!(StatusView::is_dispatch_key(&km, "c"));
         assert!(StatusView::is_dispatch_key(&km, "s"));
@@ -1332,25 +1467,25 @@ mod tests {
         config.keymap.insert("K".into(), "branch-delete".into()); // remap
         config.keymap.insert("x".into(), "unbound".into()); // unbind
         config.keymap.insert("Q".into(), "no-such-command".into()); // unknown
-        let (km, warnings) = build_keymap(&config);
-        assert_eq!(km.get("K").map(String::as_str), Some("branch-delete"));
+        let (km, warnings) = status_km_w(&config);
+        assert_eq!(km_id(&km, "K"), Some("branch-delete"));
         assert!(!km.contains_key("x"), "x was unbound");
         assert!(!km.contains_key("Q"), "unknown id isn't bound");
         assert_eq!(warnings.len(), 1, "the unknown id warns: {warnings:?}");
         // Defaults the user didn't touch survive.
-        assert_eq!(km.get("c").map(String::as_str), Some("commit"));
+        assert_eq!(km_id(&km, "c"), Some("commit"));
     }
 
     #[test]
     fn keymap_preset_switches_defaults_and_transient_suffixes() {
         let config = config::Config::default();
-        let (km, warnings) = build_keymap(&config);
+        let (km, warnings) = status_km_w(&config);
         assert!(warnings.is_empty(), "default keymap is clean: {warnings:?}");
-        assert_eq!(km.get("p").map(String::as_str), Some("push"));
-        assert_eq!(km.get("O").map(String::as_str), Some("reset"));
-        assert_eq!(km.get("Z").map(String::as_str), Some("stash"));
-        assert_eq!(km.get("|").map(String::as_str), Some("git-command"));
-        assert_eq!(km.get("V").map(String::as_str), Some("visual"));
+        assert_eq!(km_id(&km, "p"), Some("push"));
+        assert_eq!(km_id(&km, "O"), Some("reset"));
+        assert_eq!(km_id(&km, "Z"), Some("stash"));
+        assert_eq!(km_id(&km, "|"), Some("git-command"));
+        assert_eq!(km_id(&km, "V"), Some("visual"));
         assert_eq!(
             command_keys(&km, &config, "Delete branch").as_deref(),
             Some("b x")
@@ -1366,20 +1501,20 @@ mod tests {
 
         let mut config = config::Config::default();
         config.keymap_preset = config::KeymapPreset::Vanilla;
-        let (km, warnings) = build_keymap(&config);
+        let (km, warnings) = status_km_w(&config);
         assert!(warnings.is_empty(), "vanilla keymap is clean: {warnings:?}");
-        assert_eq!(km.get("P").map(String::as_str), Some("push"));
-        assert_eq!(km.get("X").map(String::as_str), Some("reset"));
-        assert_eq!(km.get("z").map(String::as_str), Some("stash"));
-        assert_eq!(km.get("k").map(String::as_str), Some("discard"));
-        assert_eq!(km.get("n").map(String::as_str), Some("next-section"));
-        assert_eq!(km.get("p").map(String::as_str), Some("prev-section"));
-        assert_eq!(km.get(":").map(String::as_str), Some("git-command"));
-        assert_eq!(km.get("!").map(String::as_str), Some("git-command"));
-        assert!(
-            !km.contains_key("V"),
-            "vanilla leaves V for commit-at-point revert"
-        );
+        assert_eq!(km_id(&km, "P"), Some("push"));
+        assert_eq!(km_id(&km, "X"), Some("reset"));
+        assert_eq!(km_id(&km, "z"), Some("stash"));
+        // `k` drops a stash at point first (act-at-point), else discards a file —
+        // both are candidates, with discard the general fallback.
+        assert!(km.get("k").unwrap().iter().any(|id| id == "discard"));
+        assert_eq!(km_id(&km, "n"), Some("next-section"));
+        assert_eq!(km_id(&km, "p"), Some("prev-section"));
+        assert_eq!(km_id(&km, ":"), Some("git-command"));
+        assert_eq!(km_id(&km, "!"), Some("git-command"));
+        // Vanilla's commit-at-point revert is on `V` (evil uses `_`).
+        assert_eq!(km_id(&km, "V"), Some("revert-here"));
         assert_eq!(command_keys(&km, &config, "Push").as_deref(), Some("P"));
         assert_eq!(command_keys(&km, &config, "Reset").as_deref(), Some("X"));
         assert_eq!(command_keys(&km, &config, "Stash").as_deref(), Some("z"));
@@ -1404,10 +1539,10 @@ mod tests {
         config.keymap.insert("g x".into(), "stage".into()); // 2-key sequence
         config.keymap.insert(". c".into(), "commit".into()); // a `.` prefix
         config.keymap.insert("a b c".into(), "stage".into()); // 3-key chain
-        let (km, warnings) = build_keymap(&config);
-        assert_eq!(km.get("g x").map(String::as_str), Some("stage"));
-        assert_eq!(km.get(". c").map(String::as_str), Some("commit"));
-        assert_eq!(km.get("a b c").map(String::as_str), Some("stage"));
+        let (km, warnings) = status_km_w(&config);
+        assert_eq!(km_id(&km, "g x"), Some("stage"));
+        assert_eq!(km_id(&km, ". c"), Some("commit"));
+        assert_eq!(km_id(&km, "a b c"), Some("stage"));
         assert!(
             warnings.is_empty(),
             "any-depth sequence is fine: {warnings:?}"
@@ -1432,8 +1567,8 @@ mod tests {
             .entry("commit".into())
             .or_default()
             .insert("W".into(), config::TransientSuffix::Bare("user.wip".into()));
-        let (km, warnings) = build_keymap(&config);
-        assert_eq!(km.get("X").map(String::as_str), Some("user.wip"));
+        let (km, warnings) = status_km_w(&config);
+        assert_eq!(km_id(&km, "X"), Some("user.wip"));
         assert!(!km.contains_key("Y"), "unknown id isn't bound");
         assert_eq!(warnings.len(), 1, "only the unknown id warns: {warnings:?}");
     }
@@ -1489,7 +1624,7 @@ mod tests {
             .entry("commit".into())
             .or_default()
             .insert("W".into(), config::TransientSuffix::Bare("user.wip".into()));
-        let (km, _) = build_keymap(&config);
+        let (km, _) = status_km_w(&config);
         assert_eq!(
             command_keys(&km, &config, "WIP commit").as_deref(),
             Some("c W")
@@ -1497,7 +1632,7 @@ mod tests {
 
         // A direct keymap binding is shown directly.
         config.keymap.insert("g w".into(), "user.wip".into());
-        let (km, _) = build_keymap(&config);
+        let (km, _) = status_km_w(&config);
         assert_eq!(
             command_keys(&km, &config, "WIP commit").as_deref(),
             Some("g w")
@@ -1521,7 +1656,7 @@ mod tests {
             .entry("commit".into())
             .or_default()
             .insert("w".into(), config::TransientSuffix::Bare("user.wip".into()));
-        let (km, _) = build_keymap(&config);
+        let (km, _) = status_km_w(&config);
         assert_eq!(command_keys(&km, &config, "WIP commit"), None);
     }
 
@@ -1637,7 +1772,7 @@ mod tests {
         ];
 
         let config = config::Config::default();
-        let km = build_keymap(&config).0;
+        let km = status_km(&config);
         let menu: HashSet<String> = dispatch_menu(&km, &config)
             .groups
             .iter()
@@ -1669,6 +1804,58 @@ mod tests {
             "`?` menu rows with no run_dispatch handler (add them to DISPATCH_KEYS \
              or OVERRIDES): {missing_handler:?}"
         );
+    }
+
+    /// The secondary screens derive their `?` menu and header hints from the same
+    /// per-context keymap the keyboard dispatches through, so menu == dispatch by
+    /// construction. This pins that: for every secondary screen and both presets,
+    /// each screen-scoped verb resolves to a key in that screen's submap, and that
+    /// key dispatches back to the same command (never a stale or colliding one).
+    #[test]
+    fn every_scoped_verb_dispatches_to_itself() {
+        use commands::{current_key, default_key_for_command};
+        for preset in [
+            config::KeymapPreset::EvilCollection,
+            config::KeymapPreset::Vanilla,
+        ] {
+            let config = config::Config {
+                keymap_preset: preset,
+                ..config::Config::default()
+            };
+            let keymap = build_keymap(&config).0;
+            for &kind in ScreenKind::ALL_KINDS {
+                let submap = keymap.get(&kind).cloned().unwrap_or_default();
+                for cmd in commands::commands() {
+                    // Only the screen-scoped verbs (not the global `ALL` commands,
+                    // which are keyed for the status screen).
+                    if cmd.contexts == ScreenSet::ALL || !cmd.contexts.contains(kind) {
+                        continue;
+                    }
+                    // A verb the preset intentionally leaves unbound (e.g. the
+                    // evil-only visual toggle in vanilla) declares no key.
+                    if default_key_for_command(preset, cmd).is_none() {
+                        continue;
+                    }
+                    let key = current_key(&submap, cmd.id, cmd.key).unwrap_or_else(|| {
+                        panic!(
+                            "{preset:?}: verb `{}` scoped to {kind:?} declares a key but none \
+                             is bound in that screen's keymap",
+                            cmd.id
+                        )
+                    });
+                    // The verb is reachable at that key: it's among the key's
+                    // candidates (an at-point verb sharing the key sits ahead of
+                    // it, resolved by target at dispatch time).
+                    assert!(
+                        submap
+                            .get(&key)
+                            .is_some_and(|cands| cands.iter().any(|id| id == cmd.id)),
+                        "{preset:?}/{kind:?}: key `{key}` (shown for `{}`) dispatches elsewhere",
+                        cmd.id
+                    );
+                }
+            }
+        }
     }
 
     #[test]

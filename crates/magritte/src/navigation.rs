@@ -375,15 +375,20 @@ impl StatusView {
             self.enter_prefix(chord, window, cx);
             return true;
         }
-        // Run only if it's a motion, so a command key (e.g. `s`) isn't fired in
-        // a non-status view.
-        let Some(id) = self.keymap.get(&chord).cloned() else {
-            return false;
-        };
-        if commands()
-            .iter()
-            .any(|c| c.id == id && c.category == Category::Navigation)
-        {
+        // Run only if a candidate is a motion, so a command key (e.g. `s`) isn't
+        // fired in a non-status view. Motions don't share keys with other
+        // commands, so at most one candidate qualifies.
+        let motion = self.screen_bindings().get(&chord).and_then(|cands| {
+            cands
+                .iter()
+                .find(|id| {
+                    commands()
+                        .iter()
+                        .any(|c| c.id == id.as_str() && c.category == Category::Navigation)
+                })
+                .cloned()
+        });
+        if let Some(id) = motion {
             self.invoke_command(&id, window, cx);
             true
         } else {

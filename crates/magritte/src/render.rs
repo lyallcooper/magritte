@@ -177,7 +177,7 @@ impl StatusView {
                                     let hint = palette
                                         .then(|| {
                                             let v = view.read(cx);
-                                            command_keys(&v.keymap, &v.config, &r.label)
+                                            command_keys(v.screen_bindings(), &v.config, &r.label)
                                         })
                                         .flatten()
                                         .map(SharedString::from);
@@ -1232,6 +1232,38 @@ impl StatusView {
             })
     }
 
+    /// A header hint for a registry command: the key is resolved from the live
+    /// per-context keymap (so it always matches what the keyboard dispatches, and
+    /// reflects the preset/remaps) and the click invokes the command by id. Only
+    /// the terse `label` is supplied here; everything else derives from the
+    /// registry, so header and dispatch can't drift apart.
+    pub(crate) fn header_action(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        view: &Entity<Self>,
+    ) -> impl IntoElement {
+        let default = commands().iter().find(|c| c.id == id).and_then(|c| c.key);
+        let key = current_key(self.screen_bindings(), id, default).unwrap_or_default();
+        let view = view.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .group(KBD_ROW_GROUP)
+            .child(track_target(id))
+            .child(kbd::key_chip(&key, self.palette.dim, &self.font))
+            .child(self.hover_label(label, self.palette.dim))
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| v.invoke_command(id, window, vcx));
+            })
+    }
+
     /// Render the commit message editor: a header, the editable text with a
     /// caret, all filling the window.
     pub(crate) fn render_editor(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
@@ -1501,24 +1533,16 @@ impl StatusView {
                             .flex()
                             .items_center()
                             .gap_3()
-                            .child(self.key_action(
-                                "command-log-all",
-                                "a",
+                            .child(self.header_action(
+                                "git-log-toggle-queries",
                                 if self.git_log_show_all() {
                                     "hide queries"
                                 } else {
                                     "show all"
                                 },
                                 view,
-                                Self::toggle_git_log_all,
                             ))
-                            .child(self.key_action(
-                                "command-log-close",
-                                "esc",
-                                "close",
-                                view,
-                                Self::close_git_log,
-                            )),
+                            .child(self.header_action("close", "close", view)),
                     ),
             )
             .child(body)
@@ -1737,33 +1761,11 @@ impl StatusView {
         }
         if selecting {
             // Return inspects the commit; Cmd+Return picks it as the base.
-            header = header.child(self.key_action(
-                "log-select-view",
-                "return",
-                "view",
-                view,
-                Self::view_log_commit,
-            ));
-            header = header.child(self.key_action(
-                "log-select-confirm",
-                "cmd-enter",
-                "select",
-                view,
-                Self::confirm_log_select,
-            ));
+            header = header.child(self.header_action("log-open", "view", view));
+            header = header.child(self.header_action("log-confirm-select", "select", view));
         }
-        let (close_key, close_label) = if selecting {
-            ("esc", "cancel")
-        } else {
-            ("esc", "close")
-        };
-        header = header.child(self.key_action(
-            "log-close",
-            close_key,
-            close_label,
-            view,
-            Self::close_log,
-        ));
+        let close_label = if selecting { "cancel" } else { "close" };
+        header = header.child(self.header_action("close", close_label, view));
 
         div()
             .flex()
@@ -1820,29 +1822,10 @@ impl StatusView {
                 .text_color(self.palette.section)
                 .child(SharedString::from("Refs")),
         );
-        header = header.child(self.key_action(
-            "refs-checkout",
-            "return",
-            "checkout",
-            view,
-            Self::refs_checkout_at_point,
-        ));
-        header = header.child(self.key_action(
-            "refs-delete",
-            if self.is_evil() { "x" } else { "k" },
-            "delete",
-            view,
-            Self::refs_delete_at_point,
-        ));
-        header = header.child(self.key_action(
-            "refs-rename",
-            "R",
-            "rename",
-            view,
-            Self::refs_rename_at_point,
-        ));
-        header =
-            header.child(self.key_action("refs-close", "esc", "close", view, Self::close_refs));
+        header = header.child(self.header_action("refs-checkout", "checkout", view));
+        header = header.child(self.header_action("refs-delete", "delete", view));
+        header = header.child(self.header_action("refs-rename", "rename", view));
+        header = header.child(self.header_action("close", "close", view));
 
         div()
             .flex()
@@ -1995,48 +1978,12 @@ impl StatusView {
                 .text_color(self.palette.section)
                 .child(SharedString::from("Worktrees")),
         );
-        header = header.child(self.key_action(
-            "worktree-visit",
-            "return",
-            "visit",
-            view,
-            Self::visit_worktree_from_button,
-        ));
-        header = header.child(self.key_action(
-            "worktree-remove",
-            if self.is_evil() { "x" } else { "k" },
-            "remove",
-            view,
-            Self::remove_worktree_from_button,
-        ));
-        header = header.child(self.key_action(
-            "worktree-add",
-            "b",
-            "add",
-            view,
-            Self::start_add_worktree,
-        ));
-        header = header.child(self.key_action(
-            "worktree-branch",
-            "c",
-            "branch",
-            view,
-            Self::start_create_branch_worktree,
-        ));
-        header = header.child(self.key_action(
-            "worktree-move",
-            "m",
-            "move",
-            view,
-            Self::start_move_worktree,
-        ));
-        header = header.child(self.key_action(
-            "worktree-close",
-            "esc",
-            "close",
-            view,
-            Self::close_worktrees,
-        ));
+        header = header.child(self.header_action("worktree-visit", "visit", view));
+        header = header.child(self.header_action("worktree-remove", "remove", view));
+        header = header.child(self.header_action("worktree-add", "add", view));
+        header = header.child(self.header_action("worktree-create-branch", "branch", view));
+        header = header.child(self.header_action("worktree-move", "move", view));
+        header = header.child(self.header_action("close", "close", view));
 
         div()
             .flex()
@@ -2315,51 +2262,19 @@ impl StatusView {
                             .text_color(self.palette.fg)
                             .child(cv.subject.clone()),
                     )
-                    .child(self.key_action(
-                        "commit-view-apply",
-                        "a",
-                        "apply",
-                        view,
-                        |this, _window, cx| this.apply_at_point_to_worktree(cx),
-                    ))
-                    .child(self.key_action(
-                        "commit-view-reverse",
-                        // Reverse key follows the preset (evil-collection `-`,
-                        // vanilla magit `v`), matching the revert keys.
-                        if self.config.keymap_preset == config::KeymapPreset::Vanilla {
-                            "v"
-                        } else {
-                            "-"
-                        },
-                        "reverse",
-                        view,
-                        |this, _window, cx| this.reverse_at_point_in_worktree(cx),
-                    ))
-                    .child(self.key_action(
-                        "commit-view-reverse-index",
-                        "u",
-                        "reverse in index",
-                        view,
-                        |this, _window, cx| this.reverse_at_point_in_index(cx),
-                    ))
-                    .child(self.key_action(
-                        "commit-view-details",
-                        "=",
+                    .child(self.header_action("flat-apply", "apply", view))
+                    .child(self.header_action("flat-reverse-worktree", "reverse", view))
+                    .child(self.header_action("flat-reverse-index", "reverse in index", view))
+                    .child(self.header_action(
+                        "commit-details",
                         if cv.show_details {
                             "hide details"
                         } else {
                             "details"
                         },
                         view,
-                        |this, _window, cx| this.toggle_commit_details(cx),
                     ))
-                    .child(self.key_action(
-                        "commit-view-close",
-                        "esc",
-                        "back",
-                        view,
-                        Self::close_commit_view,
-                    )),
+                    .child(self.header_action("close", "back", view)),
             )
             .child(body)
     }
@@ -2387,38 +2302,10 @@ impl StatusView {
                             .text_color(self.palette.fg)
                             .child(dv.title.clone()),
                     )
-                    .child(self.key_action(
-                        "diff-view-apply",
-                        "a",
-                        "apply",
-                        view,
-                        |this, _window, cx| this.apply_at_point_to_worktree(cx),
-                    ))
-                    .child(self.key_action(
-                        "diff-view-reverse",
-                        if self.config.keymap_preset == config::KeymapPreset::Vanilla {
-                            "v"
-                        } else {
-                            "-"
-                        },
-                        "reverse",
-                        view,
-                        |this, _window, cx| this.reverse_at_point_in_worktree(cx),
-                    ))
-                    .child(self.key_action(
-                        "diff-view-reverse-index",
-                        "u",
-                        "reverse in index",
-                        view,
-                        |this, _window, cx| this.reverse_at_point_in_index(cx),
-                    ))
-                    .child(self.key_action(
-                        "diff-view-close",
-                        "esc",
-                        "back",
-                        view,
-                        Self::close_diff_view,
-                    )),
+                    .child(self.header_action("flat-apply", "apply", view))
+                    .child(self.header_action("flat-reverse-worktree", "reverse", view))
+                    .child(self.header_action("flat-reverse-index", "reverse in index", view))
+                    .child(self.header_action("close", "back", view)),
             )
             .child(body)
     }
@@ -2503,23 +2390,15 @@ impl StatusView {
                                 RebaseTodoMode::Edit => "Edit rebase todo".to_string(),
                             })),
                     )
-                    .child(self.key_action(
-                        "rebase-todo-start",
-                        "return",
+                    .child(self.header_action(
+                        "rebase-todo-run",
                         match rt.mode {
                             RebaseTodoMode::Start => "start",
                             RebaseTodoMode::Edit => "save",
                         },
                         view,
-                        Self::run_rebase_todo,
                     ))
-                    .child(self.key_action(
-                        "rebase-todo-cancel",
-                        "esc",
-                        "cancel",
-                        view,
-                        Self::close_rebase_todo,
-                    ))
+                    .child(self.header_action("close", "cancel", view))
             })
             .child(body)
             .child(
@@ -2920,10 +2799,11 @@ impl StatusView {
             let lead = format!("{} ", pending.seq);
             let mut conts: std::collections::BTreeMap<String, Option<String>> =
                 std::collections::BTreeMap::new();
-            for (k, id) in &self.keymap {
+            for (k, ids) in self.screen_bindings() {
                 let Some(rest) = k.strip_prefix(&lead) else {
                     continue;
                 };
+                let Some(id) = ids.first() else { continue };
                 let token = rest.split(' ').next().unwrap_or(rest).to_string();
                 let completes = format!("{lead}{token}") == *k;
                 // The command's label (built-in or user `[[command]]`); a token
@@ -2931,7 +2811,7 @@ impl StatusView {
                 let title = completes
                     .then(|| {
                         all_commands(&self.config)
-                            .find(|c| c.id == id)
+                            .find(|c| c.id == id.as_str())
                             .map(|c| c.title.to_string())
                     })
                     .flatten();

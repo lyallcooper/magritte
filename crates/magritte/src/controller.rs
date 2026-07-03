@@ -2023,7 +2023,7 @@ impl StatusView {
                     Ok(run) => {
                         // Cap the toast, pointing to the `$` log (with its
                         // current key) for the rest when the output is long.
-                        let log_key = current_key(&this.keymap, "command-log", Some("$"));
+                        let log_key = current_key(this.screen_bindings(), "command-log", Some("$"));
                         let toast = command_toast(&run, log_key.as_deref());
                         this.set_status(toast, run.ok, cx);
                     }
@@ -2081,6 +2081,11 @@ impl StatusView {
             .map(str::to_string)
         {
             self.copy_to_clipboard(name, cx);
+        } else if let Some((hash, ..)) = self.point_commit() {
+            // The full hash of a status commit row (magit's `C-w`/`y y`).
+            self.copy_to_clipboard(hash, cx);
+        } else if let Some((reference, _)) = self.point_stash() {
+            self.copy_to_clipboard(reference, cx);
         } else {
             self.copy_selection(cx);
         }

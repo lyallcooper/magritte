@@ -82,6 +82,11 @@ pub(crate) struct Command {
     /// a plainer synonym. Kept to unambiguous terms: an alias that collides with
     /// another command's identity ("checkout", "reset") is a footgun, not a help.
     pub(crate) aliases: &'static [&'static str],
+    /// The screens (keymap contexts) this command dispatches in. Global commands
+    /// (motions, prefixes, refresh, palette, quit) are `ScreenSet::ALL`; a verb
+    /// scoped to one screen (e.g. refs checkout) names only that context. Lets
+    /// the same key mean different things per screen without collision.
+    pub(crate) contexts: ScreenSet,
     /// Which `?`-menu group / palette category it belongs to.
     pub(crate) category: Category,
     /// Default keybinding, as the dispatch menu renders it (e.g. "Z", "g r").
@@ -94,9 +99,15 @@ pub(crate) struct Command {
     /// Offer in the `:` command palette. Mirrors magit's `M-x`: prefixes *and*
     /// the leaf subcommands (e.g. "Push current to upstream").
     pub(crate) palette: bool,
-    /// Whether it makes sense to offer right now — the palette filters on this.
-    /// (Permissive today; argument-gathering happens in `run`.)
+    /// Whether it makes sense to offer right now — the palette filters on this,
+    /// and per-context dispatch skips a command whose `enabled` is false so a
+    /// shared key falls through to the next candidate.
     pub(crate) enabled: fn(&StatusView) -> bool,
+    /// An act-at-point verb: it operates on whatever row the cursor is on, and
+    /// its `enabled` gates on that target (a commit/stash row). When several
+    /// commands share a key in one context, the `at_point` ones are tried first,
+    /// so `a` = cherry-apply on a commit but the general Stage elsewhere.
+    pub(crate) at_point: bool,
     /// For a leaf, the transient suffix it fires — used to show its full key
     /// sequence (prefix + suffix, e.g. `c c`) in the palette. `None` for
     /// top-level prefixes/actions, which advertise their own `key`.
@@ -113,23 +124,31 @@ pub(crate) struct Command {
 pub(crate) fn commands() -> &'static [Command] {
     use transient::Command as Leaf;
     const ALWAYS: fn(&StatusView) -> bool = |_| true;
+    // Most git/status commands only dispatch on the status screen (the secondary
+    // screens own their own verbs); `STATUS` is the shorthand for that context.
+    const STATUS: ScreenSet = ScreenSet::of(&[ScreenKind::Status]);
 
     // A top-level prefix or direct action: bound to a key, in the `?` menu and
     // the palette.
     macro_rules! top {
         ($id:literal, $title:literal, $cat:expr, $key:literal, $run:expr) => {
-            top!($id, $title, $cat, $key, &[], $run)
+            top!($id, $title, $cat, $key, &[], STATUS, $run)
         };
         ($id:literal, $title:literal, $cat:expr, $key:literal, $aliases:expr, $run:expr) => {
+            top!($id, $title, $cat, $key, $aliases, STATUS, $run)
+        };
+        ($id:literal, $title:literal, $cat:expr, $key:literal, $aliases:expr, $contexts:expr, $run:expr) => {
             Command {
                 id: $id,
                 title: $title,
                 aliases: $aliases,
+                contexts: $contexts,
                 category: $cat,
                 key: Some($key),
                 menu: true,
                 palette: true,
                 enabled: ALWAYS,
+                at_point: false,
                 leaf: None,
                 run: $run,
             }
@@ -143,11 +162,13 @@ pub(crate) fn commands() -> &'static [Command] {
                 id: $id,
                 title: $title,
                 aliases: &[],
+                contexts: ScreenSet::ALL,
                 category: Category::Navigation,
                 key: Some($key),
                 menu: false,
                 palette: false,
                 enabled: ALWAYS,
+                at_point: false,
                 leaf: None,
                 run: $run,
             }
@@ -162,11 +183,13 @@ pub(crate) fn commands() -> &'static [Command] {
                 id: $id,
                 title: $title,
                 aliases: &[],
+                contexts: ScreenSet::ALL,
                 category: Category::Navigation,
                 key: None,
                 menu: false,
                 palette: true,
                 enabled: ALWAYS,
+                at_point: false,
                 leaf: None,
                 run: $run,
             }
@@ -181,6 +204,7 @@ pub(crate) fn commands() -> &'static [Command] {
                 id: $id,
                 title: $title,
                 aliases: &[],
+                contexts: ScreenSet::ALL,
                 category: Category::Navigation,
                 key: None,
                 menu: false,
@@ -190,6 +214,7 @@ pub(crate) fn commands() -> &'static [Command] {
                         .iter()
                         .any(|r| matches!(&r.fold, Some(FoldKey::Section(s)) if *s == $section))
                 },
+                at_point: false,
                 leaf: None,
                 run: |t, _w, cx| t.jump_to_section($section, cx),
             }
@@ -207,13 +232,61 @@ pub(crate) fn commands() -> &'static [Command] {
                 id: $id,
                 title: $title,
                 aliases: $aliases,
+                contexts: ScreenSet::ALL,
                 category: Category::Commands,
                 key: None,
                 menu: false,
                 palette: true,
                 enabled: ALWAYS,
+                at_point: false,
                 leaf: Some($cmd),
                 run: |t, w, cx| t.fire_command_default($cmd, w, cx),
+            }
+        };
+    }
+    // A screen-scoped act-at-point verb (e.g. refs checkout): bound to a key
+    // only in `$contexts`, so it shares that key with other screens' verbs
+    // without collision. Shown in that screen's `?` menu (menu: true) but not
+    // the palette. Its `run` reuses the existing per-screen action method.
+    macro_rules! verb {
+        ($id:literal, $title:literal, $contexts:expr, $key:literal, $run:expr) => {
+            verb!($id, $title, $contexts, $key, ALWAYS, $run)
+        };
+        ($id:literal, $title:literal, $contexts:expr, $key:literal, $enabled:expr, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                aliases: &[],
+                contexts: $contexts,
+                category: Category::Commands,
+                key: Some($key),
+                menu: true,
+                palette: false,
+                enabled: $enabled,
+                at_point: false,
+                leaf: None,
+                run: $run,
+            }
+        };
+    }
+    // A status act-at-point verb (commit/stash row): keyed on the status screen,
+    // gated by `$enabled` (the target at point), and tried before general
+    // commands sharing the key. Shown in the `?` menu's at-point group.
+    macro_rules! at_point {
+        ($id:literal, $title:literal, $cat:expr, $key:literal, $enabled:expr, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                aliases: &[],
+                contexts: STATUS,
+                category: $cat,
+                key: Some($key),
+                menu: true,
+                palette: false,
+                enabled: $enabled,
+                at_point: true,
+                leaf: None,
+                run: $run,
             }
         };
     }
@@ -228,16 +301,24 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             )
         }),
-        top!("branch", "Branch", Category::Commands, "b", |t, _w, cx| {
-            // The branch transient (checkout/create/rename/delete) doesn't use
-            // remote targets, so don't resolve them just to open it.
-            t.open_transient(
-                "branch",
-                transient::branch_transient(t.config.keymap_preset.transient_style()),
-                RemoteTargets::default(),
-                cx,
-            )
-        }),
+        top!(
+            "branch",
+            "Branch",
+            Category::Commands,
+            "b",
+            &[],
+            STATUS,
+            |t, _w, cx| {
+                // The branch transient (checkout/create/rename/delete) doesn't use
+                // remote targets, so don't resolve them just to open it.
+                t.open_transient(
+                    "branch",
+                    transient::branch_transient(t.config.keymap_preset.transient_style()),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
         top!("tag", "Tag", Category::Commands, "t", |t, _w, cx| {
             t.open_transient(
                 "tag",
@@ -386,6 +467,7 @@ pub(crate) fn commands() -> &'static [Command] {
         // binds `yr` via its `y` yank family.
         Command {
             id: "show-refs",
+            contexts: ScreenSet::ALL,
             title: "Show refs",
             aliases: &["references", "refs browser"],
             category: Category::Commands,
@@ -393,9 +475,270 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: true,
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |t, _w, cx| t.open_refs(cx),
         },
+        // Close/back out of a secondary screen (`Esc`/`q`). Scoped to those
+        // screens so `Esc` on the status view still cancels a job / selection.
+        Command {
+            id: "close",
+            contexts: ScreenSet::of(&[
+                ScreenKind::Log,
+                ScreenKind::GitLog,
+                ScreenKind::Commit,
+                ScreenKind::Diff,
+                ScreenKind::RebaseTodo,
+                ScreenKind::Refs,
+                ScreenKind::Worktree,
+            ]),
+            title: "Back",
+            aliases: &[],
+            category: Category::Essential,
+            key: Some("escape"),
+            menu: true,
+            palette: false,
+            enabled: ALWAYS,
+            at_point: false,
+            leaf: None,
+            run: |t, w, cx| t.close_screen(w, cx),
+        },
+        // Refs browser act-at-point verbs (checkout Return/`b`, delete `x`/`k`,
+        // rename `R`), dispatched only in the Refs context.
+        verb!(
+            "refs-checkout",
+            "Checkout",
+            ScreenSet::of(&[ScreenKind::Refs]),
+            "enter",
+            |t, w, cx| t.refs_checkout_at_point(w, cx)
+        ),
+        verb!(
+            "refs-delete",
+            "Delete ref",
+            ScreenSet::of(&[ScreenKind::Refs]),
+            "x",
+            |t, w, cx| t.refs_delete_at_point(w, cx)
+        ),
+        verb!(
+            "refs-rename",
+            "Rename",
+            ScreenSet::of(&[ScreenKind::Refs]),
+            "R",
+            |t, w, cx| t.refs_rename_at_point(w, cx)
+        ),
+        // Worktree browser verbs (visit Return, remove `x`/`k`, and the
+        // add/branch/move creators from magit's worktree transient).
+        verb!(
+            "worktree-visit",
+            "Visit",
+            ScreenSet::of(&[ScreenKind::Worktree]),
+            "enter",
+            |t, _w, cx| t.visit_worktree_at_point(cx)
+        ),
+        verb!(
+            "worktree-remove",
+            "Remove",
+            ScreenSet::of(&[ScreenKind::Worktree]),
+            "x",
+            |t, _w, cx| t.remove_worktree_at_point(cx)
+        ),
+        verb!(
+            "worktree-add",
+            "Worktree for ref",
+            ScreenSet::of(&[ScreenKind::Worktree]),
+            "b",
+            |t, w, cx| t.start_add_worktree(w, cx)
+        ),
+        verb!(
+            "worktree-create-branch",
+            "New branch + worktree",
+            ScreenSet::of(&[ScreenKind::Worktree]),
+            "c",
+            |t, w, cx| t.start_create_branch_worktree(w, cx)
+        ),
+        verb!(
+            "worktree-move",
+            "Move",
+            ScreenSet::of(&[ScreenKind::Worktree]),
+            "m",
+            |t, w, cx| t.start_move_worktree(w, cx)
+        ),
+        // Commit- and diff-view apply-engine verbs (magit's section map): apply
+        // to the worktree `a`, reverse into the index `u`, reverse in the worktree
+        // (evil `-` / vanilla `v`), and evil's visual toggle on `v`. `=` toggles
+        // the commit metadata (commit view only). Copy is the global `yank`.
+        verb!(
+            "flat-apply",
+            "Apply",
+            ScreenSet::of(&[ScreenKind::Commit, ScreenKind::Diff]),
+            "a",
+            |t, _w, cx| t.apply_at_point_to_worktree(cx)
+        ),
+        verb!(
+            "flat-reverse-index",
+            "Reverse in index",
+            ScreenSet::of(&[ScreenKind::Commit, ScreenKind::Diff]),
+            "u",
+            |t, _w, cx| t.reverse_at_point_in_index(cx)
+        ),
+        verb!(
+            "flat-reverse-worktree",
+            "Reverse",
+            ScreenSet::of(&[ScreenKind::Commit, ScreenKind::Diff]),
+            "-",
+            |t, _w, cx| t.reverse_at_point_in_worktree(cx)
+        ),
+        verb!(
+            "flat-toggle-visual",
+            "Toggle visual selection",
+            ScreenSet::of(&[ScreenKind::Commit, ScreenKind::Diff]),
+            "v",
+            |t, _w, cx| t.flat_diff_toggle_visual(cx)
+        ),
+        verb!(
+            "commit-details",
+            "Toggle details",
+            ScreenSet::of(&[ScreenKind::Commit]),
+            "=",
+            |t, _w, cx| t.toggle_commit_details(cx)
+        ),
+        // Commit-log verbs: open a commit's diff (Return), confirm a pending
+        // select (Cmd-Return), cherry-pick `A`, revert (evil `_` / vanilla `V`),
+        // reset-quickly (evil `o` / vanilla `x`), rebase-since `r`, and the log
+        // limit keys `+`/`-`. Copy is the global `yank`.
+        verb!(
+            "log-open",
+            "Open commit",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "enter",
+            |t, _w, cx| t.open_commit_view(cx)
+        ),
+        verb!(
+            "log-confirm-select",
+            "Confirm selection",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "cmd-enter",
+            |t: &StatusView| t.log_selecting(),
+            |t, w, cx| t.confirm_log_select(w, cx)
+        ),
+        verb!(
+            "log-cherry-pick",
+            "Cherry-pick",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "A",
+            |t, w, cx| t.pick_selected(PickOp::CherryPick, w, cx)
+        ),
+        verb!(
+            "log-revert",
+            "Revert",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "_",
+            |t, w, cx| t.pick_selected(PickOp::Revert, w, cx)
+        ),
+        verb!(
+            "log-reset-quickly",
+            "Reset here",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "o",
+            |t, w, cx| t.reset_quickly_selected(w, cx)
+        ),
+        verb!(
+            "log-rebase-since",
+            "Rebase since",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "r",
+            |t: &StatusView| !t.log_selecting(),
+            |t, _w, cx| t.rebase_since_selected(Vec::new(), cx)
+        ),
+        verb!(
+            "log-relimit-more",
+            "Show more commits",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "+",
+            |t, _w, cx| t.relimit_log(true, cx)
+        ),
+        verb!(
+            "log-relimit-less",
+            "Show fewer commits",
+            ScreenSet::of(&[ScreenKind::Log]),
+            "-",
+            |t, _w, cx| t.relimit_log(false, cx)
+        ),
+        // Interactive-rebase todo verbs: run the edited sequence (Return), reorder
+        // the commit at point (`J`/`K`), and set its action (pick/reword/edit/
+        // squash/fixup/drop). `w`→reword and `x`→drop are preset aliases.
+        verb!(
+            "rebase-todo-run",
+            "Start rebase",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "enter",
+            |t, w, cx| t.run_rebase_todo(w, cx)
+        ),
+        verb!(
+            "rebase-todo-reorder-up",
+            "Move commit up",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "K",
+            |t, _w, cx| t.rebase_todo_reorder(-1, cx)
+        ),
+        verb!(
+            "rebase-todo-reorder-down",
+            "Move commit down",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "J",
+            |t, _w, cx| t.rebase_todo_reorder(1, cx)
+        ),
+        verb!(
+            "rebase-todo-pick",
+            "Pick",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "p",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Pick, cx)
+        ),
+        verb!(
+            "rebase-todo-reword",
+            "Reword",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "r",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Reword, cx)
+        ),
+        verb!(
+            "rebase-todo-edit",
+            "Edit",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "e",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Edit, cx)
+        ),
+        verb!(
+            "rebase-todo-squash",
+            "Squash",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "s",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Squash, cx)
+        ),
+        verb!(
+            "rebase-todo-fixup",
+            "Fixup",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "f",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Fixup, cx)
+        ),
+        verb!(
+            "rebase-todo-drop",
+            "Drop",
+            ScreenSet::of(&[ScreenKind::RebaseTodo]),
+            "d",
+            |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Drop, cx)
+        ),
+        // The git command-log pager: toggle showing the UI's own read-only
+        // queries. Scrolling stays bespoke (no cursor); close is the shared verb.
+        verb!(
+            "git-log-toggle-queries",
+            "Toggle queries",
+            ScreenSet::of(&[ScreenKind::GitLog]),
+            "a",
+            |t, w, cx| t.toggle_git_log_all(w, cx)
+        ),
         top!(
             "worktree",
             "Worktree",
@@ -587,6 +930,7 @@ pub(crate) fn commands() -> &'static [Command] {
         ),
         Command {
             id: "check-updates",
+            contexts: ScreenSet::ALL,
             title: "Check for updates",
             aliases: &["upgrade", "new version"],
             category: Category::Application,
@@ -594,6 +938,7 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: false,
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |t, _w, cx| t.check_for_updates(cx),
         },
@@ -601,6 +946,7 @@ pub(crate) fn commands() -> &'static [Command] {
         // (magit binds both `h` and `?` to the dispatch) and the palette reach it.
         Command {
             id: "help",
+            contexts: ScreenSet::ALL,
             title: "Help",
             aliases: &["dispatch", "keybindings", "shortcuts"],
             category: Category::Application,
@@ -608,6 +954,7 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: false, // it *is* the menu
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |t, _w, cx| {
                 t.popup = Some(Popup::Dispatch(dispatch_menu_for(t)));
@@ -652,6 +999,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Applying,
             "x",
             &["restore", "throw away"],
+            STATUS,
             |t, _w, cx| t.act(Op::Discard, cx)
         ),
         top!(
@@ -669,6 +1017,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Essential,
             "enter",
             &["edit", "visit"],
+            STATUS,
             |t, _w, cx| { t.open_at_point(cx) }
         ),
         top!(
@@ -685,6 +1034,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Essential,
             "g r",
             &["reload", "update"],
+            ScreenSet::ALL,
             |t, _w, cx| {
                 t.refresh(cx);
                 cx.notify();
@@ -711,12 +1061,120 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Essential,
             "y",
             &["yank", "clipboard", "copy value"],
+            ScreenSet::ALL,
             |t, _w, cx| t.copy_at_point(cx)
+        ),
+        // Status act-at-point verbs on a commit row (magit's log/commit section
+        // map): open the commit, cherry-pick/apply it, revert it, reset to it.
+        // Each is gated on a commit at point and tried before the general command
+        // sharing its key, so `a` = cherry-apply here but Stage on a file row.
+        at_point!(
+            "open-commit",
+            "Show commit",
+            Category::Essential,
+            "enter",
+            |t| t.point_commit().is_some(),
+            |t, _w, cx| {
+                if let Some((hash, short, subject)) = t.point_commit() {
+                    t.open_commit(hash, short, subject, cx);
+                }
+            }
+        ),
+        at_point!(
+            "commit-apply",
+            "Apply changes",
+            Category::Applying,
+            "a",
+            |t| t.point_commit().is_some(),
+            |t, w, cx| t.pick_selected(PickOp::CherryApply, w, cx)
+        ),
+        at_point!(
+            "commit-cherry-pick",
+            "Cherry-pick",
+            Category::Commands,
+            "A",
+            |t| t.point_commit().is_some(),
+            |t, _w, cx| t.open_cherry_pick_transient(cx)
+        ),
+        at_point!(
+            "revert-here",
+            "Revert",
+            Category::Commands,
+            "_",
+            |t| t.point_commit().is_some(),
+            |t, _w, cx| t.open_revert_transient(cx)
+        ),
+        at_point!(
+            "revert-changes",
+            "Revert changes",
+            Category::Applying,
+            "-",
+            |t| t.point_commit().is_some(),
+            |t, w, cx| t.pick_selected(PickOp::RevertNoCommit, w, cx)
+        ),
+        at_point!(
+            "reset-here",
+            "Reset here",
+            Category::Commands,
+            "o",
+            |t| t.point_commit().is_some(),
+            |t, w, cx| t.reset_quickly_selected(w, cx)
+        ),
+        // Status act-at-point verbs on a stash row.
+        at_point!(
+            "stash-show",
+            "Show stash",
+            Category::Essential,
+            "enter",
+            |t| t.point_stash().is_some(),
+            |t, _w, cx| {
+                if let Some((reference, message)) = t.point_stash() {
+                    t.open_commit(reference.clone(), reference, message, cx);
+                }
+            }
+        ),
+        at_point!(
+            "stash-row-apply",
+            "Apply",
+            Category::Applying,
+            "a",
+            |t| t.point_stash().is_some(),
+            |t, _w, cx| {
+                if let Some((reference, _)) = t.point_stash() {
+                    t.run_stash_action(StashAction::Apply, reference, cx);
+                }
+            }
+        ),
+        at_point!(
+            "stash-row-pop",
+            "Pop",
+            Category::Applying,
+            "A",
+            |t| t.point_stash().is_some(),
+            |t, _w, cx| {
+                if let Some((reference, _)) = t.point_stash() {
+                    t.run_stash_action(StashAction::Pop, reference, cx);
+                }
+            }
+        ),
+        at_point!(
+            "stash-row-drop",
+            "Drop",
+            Category::Applying,
+            "x",
+            |t| t.point_stash().is_some(),
+            |t, _w, cx| {
+                if let Some((reference, _)) = t.point_stash() {
+                    t.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
+                    cx.notify();
+                }
+            }
         ),
         // The buffer's revision (evil `y b`, magit-copy-buffer-revision):
         // palette-only, bound to `yb` in the evil preset.
         Command {
             id: "copy-buffer-revision",
+            contexts: ScreenSet::ALL,
             title: "Copy revision",
             aliases: &["copy hash", "copy sha", "copy commit", "yank revision"],
             category: Category::Essential,
@@ -724,6 +1182,7 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: false,
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |t, _w, cx| t.copy_buffer_revision(cx),
         },
@@ -782,6 +1241,7 @@ pub(crate) fn commands() -> &'static [Command] {
         // direct `g`-sequences in evil (evil-collection's gz/gn/gu/gs/gf*/gp*).
         Command {
             id: "status-jump",
+            contexts: ScreenSet::ALL,
             title: "Jump to section",
             aliases: &[],
             category: Category::Essential,
@@ -789,6 +1249,7 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: true,
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |t, _w, cx| {
                 t.open_transient(
@@ -852,6 +1313,7 @@ pub(crate) fn commands() -> &'static [Command] {
         // literal rather than `top!`. Reachable via the palette too.
         Command {
             id: "quit",
+            contexts: ScreenSet::ALL,
             title: "Quit",
             aliases: &["exit", "close"],
             category: Category::Application,
@@ -859,6 +1321,7 @@ pub(crate) fn commands() -> &'static [Command] {
             menu: false,
             palette: true,
             enabled: ALWAYS,
+            at_point: false,
             leaf: None,
             run: |_t, _w, cx| cx.quit(),
         },
@@ -931,6 +1394,14 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("|", "git-command"),
     // Emacs quit.
     ("ctrl-x ctrl-c", "quit"),
+    // Secondary-screen close (`q` alongside `Esc`) and refs checkout (`b`
+    // alongside Return) — each lands only in its command's contexts.
+    ("q", "close"),
+    ("b", "refs-checkout"),
+    // Rebase-todo action aliases (magit's `w`=reword, `x`=drop), landing only in
+    // the rebase-todo context.
+    ("w", "rebase-todo-reword"),
+    ("x", "rebase-todo-drop"),
 ];
 
 pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
@@ -967,6 +1438,13 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("alt-2", "show-level-2"),
     ("alt-3", "show-level-3"),
     ("alt-4", "show-level-4"),
+    // Secondary-screen close (`q`) and refs checkout (`b`); each lands only in
+    // its command's contexts.
+    ("q", "close"),
+    ("b", "refs-checkout"),
+    // Rebase-todo action aliases (`w`=reword, `x`=drop), rebase-todo context only.
+    ("w", "rebase-todo-reword"),
+    ("x", "rebase-todo-drop"),
     // Magit's `G` is refresh-all; we have one buffer, so alias plain refresh.
     ("G", "refresh"),
     (":", "git-command"),
@@ -1033,6 +1511,17 @@ pub(crate) fn default_key_for_command(
             "reset" => Some("X"),
             "stash" => Some("z"),
             "discard" => Some("k"),
+            // Delete-at-point in the browsers follows the preset like discard:
+            // evil `x`, vanilla `k` (in their own context, so no clash).
+            "refs-delete" | "worktree-remove" => Some("k"),
+            // Vanilla magit keeps reverse on `v` (so evil's visual toggle has no
+            // vanilla key) and revert on `V`; reset-quickly-at-point on `x`. The
+            // status commit-row verbs follow the same split as their log twins.
+            "flat-reverse-worktree" | "revert-changes" => Some("v"),
+            "flat-toggle-visual" => None,
+            "log-revert" | "revert-here" => Some("V"),
+            "log-reset-quickly" | "reset-here" => Some("x"),
+            "stash-row-drop" => Some("k"),
             "refresh" => Some("g"),
             "status-jump" => Some("j"),
             "show-refs" => Some("y"),
@@ -1142,37 +1631,101 @@ pub(crate) fn all_commands(config: &config::Config) -> impl Iterator<Item = Comm
         }))
 }
 
-/// The effective keystroke → command-id map: the built-in defaults (every
-/// registry command that has a key) overlaid with the user's `[keymap]`. A value
-/// of `"unbound"` removes a default binding; an unknown id is skipped with a
-/// warning rather than dropped silently. Navigation, command prefixes, and
-/// aliases all live in this same map, so preset changes and user overrides flow
-/// through one dispatch path.
-pub(crate) fn build_keymap(config: &config::Config) -> (HashMap<String, String>, Vec<String>) {
-    let mut map: HashMap<String, String> = commands()
+/// A command's dispatch contexts, by id — a built-in's declared `contexts`, or
+/// `ScreenSet::ALL` for a user `[[command]]` / secondary alias target.
+fn command_contexts(id: &str) -> ScreenSet {
+    commands()
         .iter()
-        .filter_map(|c| {
-            default_key_for_command(config.keymap_preset, c)
-                .map(|key| (key.to_string(), c.id.to_string()))
-        })
+        .find(|c| c.id == id)
+        .map(|c| c.contexts)
+        .unwrap_or(ScreenSet::ALL)
+}
+
+/// A single screen's keymap: a keystroke maps to the ordered candidate command
+/// ids that share it, most-specific first (see [`command_priority`]). Dispatch
+/// invokes the first candidate whose `enabled` holds, so `a` = cherry-apply on a
+/// commit row but Stage on a file row, both in the status context.
+pub(crate) type KeyBindings = HashMap<String, Vec<String>>;
+
+/// The per-context effective keymap: each screen's submap holds the bindings
+/// whose command declares that context. A key can thus mean different things
+/// per screen (`a` = apply in a commit view, cherry-apply on a status commit).
+/// Every `ScreenKind` gets an entry (text-entry screens get an empty one).
+pub(crate) type ScreenKeymaps = HashMap<ScreenKind, KeyBindings>;
+
+/// Dispatch precedence for a key's candidate commands (lower = tried first): an
+/// act-at-point verb beats a screen-scoped command, which beats a global one, so
+/// a shared key resolves to the most specific applicable command.
+fn command_priority(id: &str) -> u8 {
+    match commands().iter().find(|c| c.id == id) {
+        Some(c) if c.at_point => 0,
+        Some(c) if c.contexts != ScreenSet::ALL => 1,
+        _ => 2,
+    }
+}
+
+/// The effective per-context keymap: built-in defaults (each command's
+/// preset-resolved key placed in its `contexts`), then the secondary aliases,
+/// then the user's `[keymap]` (`"unbound"` removes; an unknown id warns). Every
+/// consumer — `on_key`/`run_dispatch`/the menus — reads it via
+/// `screen_bindings()`, so preset changes and user overrides flow through one path.
+pub(crate) fn build_keymap(config: &config::Config) -> (ScreenKeymaps, Vec<String>) {
+    let mut map: ScreenKeymaps = ScreenKind::ALL_KINDS
+        .iter()
+        .map(|&k| (k, HashMap::new()))
         .collect();
-    // Secondary aliases (arrows, Emacs motions, Space, `C-x C-c`) — layered
-    // before the user's table so they remap/unbind like any default.
+    // Add `id` to the candidate list for `key` in every context it declares.
+    let place = |map: &mut ScreenKeymaps, key: &str, id: &str| {
+        let contexts = command_contexts(id);
+        for (&screen, sub) in map.iter_mut() {
+            if contexts.contains(screen) {
+                let cands = sub.entry(key.to_string()).or_default();
+                if !cands.iter().any(|c| c == id) {
+                    cands.push(id.to_string());
+                }
+            }
+        }
+    };
+    // Every command's preset key, then the secondary aliases (arrows, Emacs
+    // motions, Space, `C-x C-c`, the `y`/`z` families) — order of placement
+    // doesn't matter; each key's candidates are sorted by precedence below.
+    for c in commands() {
+        if let Some(key) = default_key_for_command(config.keymap_preset, c) {
+            place(&mut map, key, c.id);
+        }
+    }
     for (key, id) in preset_bindings(config.keymap_preset) {
-        map.insert(key.to_string(), id.to_string());
+        place(&mut map, key, id);
+    }
+    // Order each key's candidates most-specific-first, so dispatch's
+    // first-enabled scan resolves a shared key to the right command (an act-at-
+    // point verb over a general command, a screen-scoped verb over a global one).
+    for sub in map.values_mut() {
+        for cands in sub.values_mut() {
+            cands.sort_by_key(|id| command_priority(id));
+        }
     }
     let mut warnings = Vec::new();
     // A binding target is valid if it names any command — built-in or user.
     let known = |id: &str| all_commands(config).any(|c| c.id == id);
     for (keystroke, id) in &config.keymap {
         if id == "unbound" {
-            map.remove(keystroke);
+            for sub in map.values_mut() {
+                sub.remove(keystroke);
+            }
         } else if !known(id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
         } else {
+            // A user binding replaces the key's candidates in the command's
+            // contexts (an explicit rebind wins over the built-in resolution).
             // Any keystroke sequence is allowed, to any depth — `dispatch`
             // accumulates keys until one resolves to a binding (or to nothing).
-            map.insert(keystroke.clone(), id.clone());
+            let contexts = command_contexts(id);
+            for (&screen, sub) in map.iter_mut() {
+                if contexts.contains(screen) {
+                    sub.insert(keystroke.clone(), vec![id.clone()]);
+                }
+            }
         }
     }
     // Validate the user `[[command]]` definitions.
@@ -1215,26 +1768,44 @@ pub(crate) fn build_keymap(config: &config::Config) -> (HashMap<String, String>,
             }
         }
     }
-    // A sequence is unreachable if a shorter prefix of it is bound to a command:
-    // pressing that prefix fires its command, so the rest of the sequence never
-    // arrives (exact match wins over waiting). Adding a key *under* such a
-    // command — e.g. inside the commit transient — is what `[transient.<id>]` is
-    // for, so point there when the shadower is a transient.
-    let sequences: Vec<String> = map.keys().filter(|k| k.contains(' ')).cloned().collect();
-    for k in sequences {
-        let tokens: Vec<&str> = k.split(' ').collect();
-        for i in 1..tokens.len() {
-            let prefix = tokens[..i].join(" ");
-            if let Some(shadower) = map.get(&prefix) {
-                let hint = if TRANSIENT_IDS.contains(&shadower.as_str()) {
-                    format!("; add it inside that menu with [transient.{shadower}]")
-                } else {
-                    String::new()
-                };
-                warnings.push(format!(
-                    "keymap: \"{k}\" is unreachable — \"{prefix}\" runs \"{shadower}\"{hint}"
-                ));
-                break;
+    // A sequence is unreachable if a shorter prefix of it is bound to a command
+    // in the same context: pressing that prefix fires its command, so the rest
+    // never arrives. Adding a key *under* such a command — e.g. inside the
+    // commit transient — is what `[transient.<id>]` is for, so point there when
+    // the shadower is a transient. Checked per context, and de-duplicated so a
+    // binding present in many contexts warns once.
+    let mut warned: HashSet<String> = HashSet::new();
+    for sub in map.values() {
+        let sequences: Vec<String> = sub.keys().filter(|k| k.contains(' ')).cloned().collect();
+        for k in sequences {
+            let tokens: Vec<&str> = k.split(' ').collect();
+            for i in 1..tokens.len() {
+                let prefix = tokens[..i].join(" ");
+                // Only a general command unconditionally shadows the rest of the
+                // sequence; an act-at-point verb is target-gated, so off-target the
+                // longer sequence still resolves.
+                if let Some(shadower) = sub.get(&prefix).and_then(|c| {
+                    c.iter().find(|id| {
+                        !commands()
+                            .iter()
+                            .any(|cm| cm.id == id.as_str() && cm.at_point)
+                    })
+                }) {
+                    let msg = {
+                        let hint = if TRANSIENT_IDS.contains(&shadower.as_str()) {
+                            format!("; add it inside that menu with [transient.{shadower}]")
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "keymap: \"{k}\" is unreachable — \"{prefix}\" runs \"{shadower}\"{hint}"
+                        )
+                    };
+                    if warned.insert(msg.clone()) {
+                        warnings.push(msg);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -1300,7 +1871,7 @@ pub(crate) const TRANSIENT_IDS: &[&str] = &[
 /// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
 /// has no binding. Lets the `:` palette double as a keymap reference.
 pub(crate) fn command_keys(
-    keymap: &HashMap<String, String>,
+    keymap: &KeyBindings,
     config: &config::Config,
     title: &str,
 ) -> Option<String> {
@@ -1350,7 +1921,7 @@ pub(crate) fn command_keys(
 /// An injection whose key is shadowed by a built-in suffix is skipped, since
 /// `open_transient` drops it (the built-in wins), so it wouldn't actually fire.
 pub(crate) fn user_command_keys(
-    keymap: &HashMap<String, String>,
+    keymap: &KeyBindings,
     config: &config::Config,
     title: &str,
 ) -> Option<String> {
@@ -1423,19 +1994,15 @@ pub(crate) fn transient_for(id: &str, style: transient::KeymapStyle) -> Option<T
 /// The keystroke currently bound to command `id` in the effective `keymap`,
 /// preferring its built-in `default` key when that's still bound to it — so the
 /// `?` menu shows remapped keys and hides anything the user unbound.
-pub(crate) fn current_key(
-    keymap: &HashMap<String, String>,
-    id: &str,
-    default: Option<&str>,
-) -> Option<String> {
+pub(crate) fn current_key(keymap: &KeyBindings, id: &str, default: Option<&str>) -> Option<String> {
     if let Some(def) = default {
-        if keymap.get(def).map(String::as_str) == Some(id) {
+        if keymap.get(def).is_some_and(|v| v.iter().any(|x| x == id)) {
             return Some(def.to_string());
         }
     }
     keymap
         .iter()
-        .filter(|(_, v)| v.as_str() == id)
+        .filter(|(_, v)| v.iter().any(|x| x == id))
         .map(|(k, _)| k.clone())
         .min()
 }
@@ -1449,15 +2016,14 @@ pub(crate) fn current_key(
 /// `dispatch_menu_covers_every_command` test cross-checks it against the keys
 /// `run_dispatch` actually handles, so a command can't be shown-but-dead or
 /// invocable-but-hidden.
-pub(crate) fn dispatch_menu(
-    keymap: &HashMap<String, String>,
-    config: &config::Config,
-) -> Transient {
+pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Transient {
     let group = |cat: Category| Group {
         title: transient::plain_title(cat.title()),
         suffixes: commands()
             .iter()
-            .filter(|c| c.category == cat && c.menu)
+            // Act-at-point verbs are grafted into their own group by
+            // `dispatch_menu_for` (gated on the cursor's target), not here.
+            .filter(|c| c.category == cat && c.menu && !c.at_point)
             .filter_map(|c| {
                 // Prefer the preset's default key (e.g. vanilla `g` for
                 // refresh), not the registry's evil-collection one.
@@ -1541,168 +2107,139 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
     // `C-w` (vanilla magit's `y` is show-refs, so `y`-to-copy would surprise).
     let copy_key = if view.is_evil() { "y y" } else { "ctrl-w" };
 
-    match &view.screen {
-        Screen::Commit { view: cv, .. } => Transient {
-            title: transient::plain_title("Help"),
-            groups: vec![group(
-                "Commit detail",
-                vec![
-                    info(
-                        "a",
-                        if cv.show_details {
-                            "Hide details"
-                        } else {
-                            "Show details"
-                        },
-                    ),
-                    info("v", "Visual selection"),
-                    info(copy_key, "Copy"),
-                    info("q", "Back"),
-                ],
-            )],
-        },
-        Screen::Diff { .. } => Transient {
-            title: transient::plain_title("Help"),
-            groups: vec![group(
-                "Diff",
-                vec![
-                    info("v", "Visual selection"),
-                    info(copy_key, "Copy"),
-                    info("q", "Back"),
-                ],
-            )],
-        },
-        Screen::Log(log) => {
-            let mut suffixes = vec![info("enter", "Show commit"), info(copy_key, "Copy hash")];
-            if matches!(log.purpose, LogPurpose::Browse) {
-                let (revert, _reverse) = match view.config.keymap_preset {
-                    config::KeymapPreset::EvilCollection => ("_", "-"),
-                    config::KeymapPreset::Vanilla => ("V", "v"),
-                };
-                let reset = if view.is_evil() { "o" } else { "x" };
-                suffixes.extend([
-                    info("A", "Cherry-pick"),
-                    info(revert, "Revert"),
-                    info("r", "Rebase since"),
-                    info(reset, "Reset here"),
-                ]);
-            }
-            suffixes.push(info("q", "Back"));
-            Transient {
-                title: transient::plain_title("Help"),
-                groups: vec![group("Commit at point", suffixes)],
-            }
+    // Secondary screens: derive the menu from this screen's scoped verbs (the
+    // registry commands naming it in `contexts`, plus the shared `close`) so the
+    // `?` menu is exactly what the keyboard dispatches. The global commands
+    // (refresh, palette, …) stay reachable but out of the focused menu.
+    let kind = view.screen_kind();
+    if SECONDARY_MENU_SCREENS.contains(&kind) {
+        return derived_screen_menu(view, kind, copy_key);
+    }
+
+    // Status (and any non-secondary screen): the registry-derived dispatch menu,
+    // with the act-at-point commit/stash groups grafted on when the cursor is on
+    // one of those rows.
+    let mut menu = dispatch_menu(view.screen_bindings(), &view.config);
+    if view
+        .rows
+        .get(view.selected)
+        .and_then(|r| r.target.as_ref())
+        .is_none()
+    {
+        menu.groups
+            .retain(|g| group_text(g) != Category::Applying.title());
+    }
+    // The act-at-point group: the enabled at-point verbs (which are exactly the
+    // commit-row or stash-row verbs, since only one target is ever at point),
+    // keyed from the live keymap, plus the target-appropriate copy. Derived from
+    // the registry, so it matches what the keyboard dispatches.
+    let on_commit = view.point_commit().is_some();
+    let on_stash = view.point_stash().is_some();
+    if on_commit || on_stash {
+        let bindings = view.screen_bindings();
+        let mut suffixes: Vec<Suffix> = commands()
+            .iter()
+            .filter(|c| c.at_point && (c.enabled)(view))
+            .filter_map(|c| {
+                current_key(
+                    bindings,
+                    c.id,
+                    default_key_for_command(view.config.keymap_preset, c),
+                )
+                .map(|keys| {
+                    Suffix::Info(transient::Info {
+                        keys,
+                        description: c.title.to_string(),
+                    })
+                })
+            })
+            .collect();
+        suffixes.push(info(
+            copy_key,
+            if on_commit {
+                "Copy hash"
+            } else {
+                "Copy reference"
+            },
+        ));
+        let title = if on_commit {
+            "Commit at point"
+        } else {
+            "Stash at point"
+        };
+        menu.groups.insert(0, group(title, suffixes));
+        menu.groups
+            .retain(|g| group_text(g) != Category::Applying.title());
+    }
+    menu.groups.retain(|g| !g.suffixes.is_empty());
+    menu
+}
+
+/// The screens whose `?` menu is derived from their scoped registry verbs.
+const SECONDARY_MENU_SCREENS: &[ScreenKind] = &[
+    ScreenKind::Log,
+    ScreenKind::GitLog,
+    ScreenKind::Commit,
+    ScreenKind::Diff,
+    ScreenKind::RebaseTodo,
+    ScreenKind::Refs,
+    ScreenKind::Worktree,
+];
+
+/// Build a secondary screen's `?` menu from the registry: its scoped verbs (the
+/// commands naming `kind` in `contexts`, excluding the global `ALL` commands),
+/// keyed from the live per-context keymap and filtered by `enabled`, grouped by
+/// category. This is the same set the keyboard dispatches, so the two agree by
+/// construction. Copy is added explicitly (the global `yank` isn't a scoped verb
+/// but is the expected affordance on these screens).
+fn derived_screen_menu(view: &StatusView, kind: ScreenKind, copy_key: &str) -> Transient {
+    let bindings = view.screen_bindings();
+    let mut commands_group = Vec::new();
+    let mut essential_group = Vec::new();
+    for c in commands() {
+        if !c.menu
+            || c.contexts == ScreenSet::ALL
+            || !c.contexts.contains(kind)
+            || !(c.enabled)(view)
+        {
+            continue;
         }
-        Screen::GitLog { .. } => Transient {
-            title: transient::plain_title("Help"),
-            groups: vec![group(
-                "Command log",
-                vec![info("a", "Toggle queries"), info("q", "Back")],
-            )],
-        },
-        Screen::RebaseTodo(_) => Transient {
-            title: transient::plain_title("Help"),
-            groups: vec![group(
-                "Rebase todo",
-                vec![
-                    info("enter", "Start rebase"),
-                    info("p", "Pick"),
-                    info("r", "Reword"),
-                    info("e", "Edit"),
-                    info("s", "Squash"),
-                    info("f", "Fixup"),
-                    info("x", "Drop"),
-                    info("q", "Cancel"),
-                ],
-            )],
-        },
-        Screen::Refs(_) => {
-            let del = if view.is_evil() { "x" } else { "k" };
-            Transient {
-                title: transient::plain_title("Help"),
-                groups: vec![group(
-                    "Refs",
-                    vec![
-                        info("enter", "Checkout"),
-                        info(del, "Delete"),
-                        info("R", "Rename"),
-                        info("q", "Back"),
-                    ],
-                )],
-            }
+        let Some(keys) = current_key(bindings, c.id, c.key) else {
+            continue;
+        };
+        let suffix = Suffix::Info(transient::Info {
+            keys,
+            description: c.title.to_string(),
+        });
+        match c.category {
+            Category::Essential => essential_group.push(suffix),
+            _ => commands_group.push(suffix),
         }
-        Screen::Worktree(_) => {
-            let del = if view.is_evil() { "x" } else { "k" };
-            Transient {
-                title: transient::plain_title("Help"),
-                groups: vec![group(
-                    "Worktree",
-                    vec![
-                        info("enter", "Visit"),
-                        info(del, "Remove"),
-                        info("b", "Add"),
-                        info("c", "Branch"),
-                        info("m", "Move"),
-                        info("q", "Back"),
-                    ],
-                )],
-            }
-        }
-        _ => {
-            let mut menu = dispatch_menu(&view.keymap, &view.config);
-            if view
-                .rows
-                .get(view.selected)
-                .and_then(|r| r.target.as_ref())
-                .is_none()
-            {
-                menu.groups
-                    .retain(|g| group_text(g) != Category::Applying.title());
-            }
-            if let Some((_hash, _short, _subject)) = view.point_commit() {
-                let (revert, reverse) = match view.config.keymap_preset {
-                    config::KeymapPreset::EvilCollection => ("_", "-"),
-                    config::KeymapPreset::Vanilla => ("V", "v"),
-                };
-                let reset = if view.is_evil() { "o" } else { "x" };
-                menu.groups.insert(
-                    0,
-                    group(
-                        "Commit at point",
-                        vec![
-                            info("enter", "Show commit"),
-                            info(copy_key, "Copy hash"),
-                            info("A", "Cherry-pick"),
-                            info("a", "Apply changes"),
-                            info(revert, "Revert"),
-                            info(reverse, "Revert changes"),
-                            info("r", "Rebase since"),
-                            info(reset, "Reset here"),
-                        ],
-                    ),
-                );
-                menu.groups
-                    .retain(|g| group_text(g) != Category::Applying.title());
-            } else if let Some((_reference, _message)) = view.point_stash() {
-                menu.groups.insert(
-                    0,
-                    group(
-                        "Stash at point",
-                        vec![
-                            info("enter", "Show stash"),
-                            info(copy_key, "Copy reference"),
-                            info("a", "Apply"),
-                            info("A", "Pop"),
-                            info(if view.is_evil() { "x" } else { "k" }, "Drop"),
-                        ],
-                    ),
-                );
-                menu.groups
-                    .retain(|g| group_text(g) != Category::Applying.title());
-            }
-            menu.groups.retain(|g| !g.suffixes.is_empty());
-            menu
-        }
+    }
+    // Copy: the global yank, shown under its preset key on the screens where it
+    // copies something meaningful (the pager and the todo editor have nothing).
+    if !matches!(kind, ScreenKind::GitLog | ScreenKind::RebaseTodo) {
+        commands_group.push(Suffix::Info(transient::Info {
+            keys: copy_key.to_string(),
+            description: "Copy".to_string(),
+        }));
+    }
+    let mut groups = Vec::new();
+    if !commands_group.is_empty() {
+        groups.push(Group {
+            title: transient::plain_title(Category::Commands.title()),
+            suffixes: commands_group,
+        });
+    }
+    if !essential_group.is_empty() {
+        groups.push(Group {
+            title: transient::plain_title(Category::Essential.title()),
+            suffixes: essential_group,
+        });
+    }
+    Transient {
+        title: transient::plain_title("Help"),
+        groups,
     }
 }
 

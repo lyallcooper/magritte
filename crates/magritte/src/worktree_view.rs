@@ -170,24 +170,6 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Header-button wrappers (the clickable `visit`/`remove` hints), matching
-    /// [`Self::key_action`]'s `(window, cx)` callback shape.
-    pub(crate) fn visit_worktree_from_button(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.visit_worktree_at_point(cx);
-    }
-
-    pub(crate) fn remove_worktree_from_button(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.remove_worktree_at_point(cx);
-    }
-
     /// Carry out a confirmed worktree removal. Runs non-force, so git refuses a
     /// worktree with uncommitted changes (the error surfaces rather than
     /// silently discarding work).
