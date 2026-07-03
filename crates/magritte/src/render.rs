@@ -3029,10 +3029,10 @@ impl StatusView {
             }
             let entries: Vec<(String, Option<String>)> = conts.into_iter().collect();
             // Column-major like emacs' which-key: fill a column top-to-bottom,
-            // then wrap into the next column once it would grow past ~a third of
-            // the window height, so the strip grows vertically before widening.
+            // then wrap into the next column once it would grow past ~a quarter
+            // of the window height, so the strip grows vertically before widening.
             let vh = window.viewport_size().height.as_f32();
-            let rows_per_col = (((vh / 3.0) / ROW_HEIGHT) as usize).clamp(1, entries.len().max(1));
+            let rows_per_col = (((vh / 4.0) / ROW_HEIGHT) as usize).clamp(1, entries.len().max(1));
             let mut grid = div().flex().flex_row().items_start().gap_x_6();
             for chunk in entries.chunks(rows_per_col) {
                 let mut col = div().flex().flex_col().items_start().gap_1();
