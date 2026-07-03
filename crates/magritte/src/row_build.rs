@@ -229,15 +229,13 @@ pub(crate) fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[S
     {
         return;
     }
-    while matches!(rows.first(), Some(CommitDiffRow::Note(n)) if n.is_empty()) {
-        rows.remove(0);
-    }
-    let mut prefix = details
-        .iter()
-        .cloned()
-        .map(CommitDiffRow::Detail)
-        .collect::<Vec<_>>();
-    prefix.push(CommitDiffRow::Note(String::new()));
+    // Just prepend the detail lines — no separator of our own, and don't strip
+    // the base's leading blank. That makes hiding (a plain drop of the Detail
+    // rows) an exact inverse, so toggling can't leave a stray blank line above
+    // the first file. A commit with a message body still reads with a blank gap
+    // (the body's own leading blank); a bodyless commit sits flush, which is
+    // fine.
+    let prefix: Vec<CommitDiffRow> = details.iter().cloned().map(CommitDiffRow::Detail).collect();
     rows.splice(0..0, prefix);
 }
 

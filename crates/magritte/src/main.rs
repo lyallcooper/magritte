@@ -1725,6 +1725,16 @@ mod tests {
         assert!(matches!(rows.first(), Some(CommitDiffRow::Detail(_))));
         assert!(matches!(rows.get(1), Some(CommitDiffRow::Note(n)) if n.is_empty()));
         assert!(matches!(rows.get(2), Some(CommitDiffRow::File(_))));
+
+        // A bodyless commit (no leading blank): showing then hiding details must
+        // restore exactly `[File]`, not leave a stray blank line at the top.
+        let mut bodyless = vec![CommitDiffRow::File("a.txt".to_string())];
+        prepend_commit_details(&mut bodyless, &details);
+        bodyless.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
+        assert!(
+            matches!(bodyless.as_slice(), [CommitDiffRow::File(_)]),
+            "hiding details on a bodyless commit should leave just the file"
+        );
     }
 
     #[test]
