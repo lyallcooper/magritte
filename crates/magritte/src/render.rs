@@ -1970,8 +1970,35 @@ impl StatusView {
                         Self::close_commit_view,
                     ))
                     .child(self.key_action(
-                        "commit-view-details",
+                        "commit-view-apply",
                         "a",
+                        "apply",
+                        view,
+                        |this, _window, cx| this.commit_apply_worktree(cx),
+                    ))
+                    .child(self.key_action(
+                        "commit-view-reverse",
+                        // Reverse key follows the preset (evil-collection `-`,
+                        // vanilla magit `v`), matching the revert keys.
+                        if self.config.keymap_preset == config::KeymapPreset::Vanilla {
+                            "v"
+                        } else {
+                            "-"
+                        },
+                        "reverse",
+                        view,
+                        |this, _window, cx| this.commit_reverse_worktree(cx),
+                    ))
+                    .child(self.key_action(
+                        "commit-view-reverse-index",
+                        "u",
+                        "reverse in index",
+                        view,
+                        |this, _window, cx| this.commit_reverse_in_index(cx),
+                    ))
+                    .child(self.key_action(
+                        "commit-view-details",
+                        "=",
                         if cv.show_details {
                             "hide details"
                         } else {

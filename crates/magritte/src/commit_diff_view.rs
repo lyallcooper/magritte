@@ -6,7 +6,7 @@
 //! embeds. `impl StatusView` like the other view slices.
 
 use gpui::{Context, SharedString, UniformListScrollHandle, Window};
-use magritte_core::{CommitMetadata, FileDiff};
+use magritte_core::{ApplyTarget, CommitMetadata, FileDiff};
 
 use crate::*;
 
@@ -81,6 +81,10 @@ pub(crate) struct CommitView {
     pub(crate) details: Vec<String>,
     pub(crate) show_details: bool,
     pub(crate) body: FlatDiff,
+    /// The commit's structured per-file diffs (same order as the rendered file
+    /// sections), so the apply engine (`a`/`v`/`u`) can rebuild a patch for the
+    /// file/hunk at point. Empty until the diff loads.
+    pub(crate) files: Vec<FileDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -203,6 +207,7 @@ impl StatusView {
                 details: Vec::new(),
                 show_details: false,
                 body: FlatDiff::loading(),
+                files: Vec::new(),
             },
             back,
         };
@@ -286,9 +291,11 @@ impl StatusView {
         if show_details {
             prepend_commit_details(&mut rows, &details);
         }
+        let files: Vec<FileDiff> = entry.files.iter().map(|(f, _)| f.clone()).collect();
         if let Some(cv) = self.commit_view_mut() {
             cv.details = details;
             cv.body.rows = rows;
+            cv.files = files;
         }
     }
 
@@ -379,6 +386,101 @@ impl StatusView {
         }
         rows.extend(self.diff_rows(files, cx));
         rows
+    }
+
+    /// The (file, hunk) the commit-view cursor is on, for the apply engine.
+    /// `hunk` is `None` when the cursor sits on a file header (act on the whole
+    /// file) or above the diff (no target → `None`). Indices match `cv.files`
+    /// and each file's `hunks`, since the rows are built in that order.
+    fn commit_apply_target(&self) -> Option<(usize, Option<usize>)> {
+        let cv = self.commit_view()?;
+        let cursor = cv.body.selected;
+        let mut file_ix: Option<usize> = None;
+        let mut hunk_ix: Option<usize> = None;
+        for (ix, row) in cv.body.rows.iter().enumerate() {
+            match row {
+                CommitDiffRow::File(_) => {
+                    file_ix = Some(file_ix.map_or(0, |f| f + 1));
+                    hunk_ix = None;
+                }
+                CommitDiffRow::Hunk(_) => {
+                    hunk_ix = Some(hunk_ix.map_or(0, |h| h + 1));
+                }
+                _ => {}
+            }
+            if ix == cursor {
+                break;
+            }
+        }
+        file_ix.map(|f| (f, hunk_ix))
+    }
+
+    /// Apply (`a`), reverse in the worktree (`v`/`-`), or reverse into the index
+    /// (`u`) the committed change at point, using the commit's own diff as the
+    /// patch — magit's apply engine on a revision buffer. Whole file when the
+    /// cursor is on a file header, else the hunk at point.
+    fn commit_apply_at_point(
+        &mut self,
+        target: ApplyTarget,
+        reverse: bool,
+        progress: &str,
+        done: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((file_ix, hunk_ix)) = self.commit_apply_target() else {
+            self.set_status("No change at point".to_string(), false, cx);
+            return;
+        };
+        let Some(file) = self
+            .commit_view()
+            .and_then(|cv| cv.files.get(file_ix).cloned())
+        else {
+            self.set_status("No change at point".to_string(), false, cx);
+            return;
+        };
+        let hunk = hunk_ix.and_then(|h| file.hunks.get(h).cloned());
+        self.run_job(
+            progress,
+            done,
+            move |repo| {
+                match &hunk {
+                    Some(h) => repo.apply_hunk_to(&file, h, target, reverse),
+                    None => repo.apply_file_to(&file, target, reverse),
+                }
+                .map(|()| String::new())
+            },
+            cx,
+        );
+    }
+
+    pub(crate) fn commit_apply_worktree(&mut self, cx: &mut Context<Self>) {
+        self.commit_apply_at_point(
+            ApplyTarget::Worktree,
+            false,
+            "Applying…",
+            "Applied to worktree",
+            cx,
+        );
+    }
+
+    pub(crate) fn commit_reverse_worktree(&mut self, cx: &mut Context<Self>) {
+        self.commit_apply_at_point(
+            ApplyTarget::Worktree,
+            true,
+            "Reversing…",
+            "Reversed in worktree",
+            cx,
+        );
+    }
+
+    pub(crate) fn commit_reverse_in_index(&mut self, cx: &mut Context<Self>) {
+        self.commit_apply_at_point(
+            ApplyTarget::Index,
+            true,
+            "Reverse-staging…",
+            "Reverse-staged into index",
+            cx,
+        );
     }
 
     pub(crate) fn close_commit_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -227,8 +227,18 @@ impl StatusView {
                         self.close_commit_view(window, cx);
                     }
                 }
-                "v" => self.flat_diff_toggle_visual(cx),
-                "a" => self.toggle_commit_details(cx),
+                // Apply engine on the committed change at point (magit's
+                // section-map `a`/`v`/`u`): apply to worktree, reverse in
+                // worktree, reverse into index. `=` takes over the metadata
+                // details toggle (freeing `a` for apply). Reverse follows the
+                // preset — evil-collection moves it to `-` (keeping `v` for
+                // visual), vanilla magit keeps it on `v`.
+                "a" => self.commit_apply_worktree(cx),
+                "u" => self.commit_reverse_in_index(cx),
+                "=" => self.toggle_commit_details(cx),
+                "-" if self.is_evil() => self.commit_reverse_worktree(cx),
+                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
+                "v" if self.is_vanilla() => self.commit_reverse_worktree(cx),
                 // Copy: evil's `y`; magit-mode-map's `C-w` (the vanilla key).
                 "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
                 "w" if ctrl => self.copy_flat_diff_selection(cx),
@@ -820,8 +830,12 @@ impl StatusView {
         self.popup = None;
         if self.commit_view().is_some() {
             match key {
-                "a" => self.toggle_commit_details(cx),
-                "v" => self.flat_diff_toggle_visual(cx),
+                "a" => self.commit_apply_worktree(cx),
+                "u" => self.commit_reverse_in_index(cx),
+                "=" => self.toggle_commit_details(cx),
+                "-" if self.is_evil() => self.commit_reverse_worktree(cx),
+                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
+                "v" if self.is_vanilla() => self.commit_reverse_worktree(cx),
                 "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_commit_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),

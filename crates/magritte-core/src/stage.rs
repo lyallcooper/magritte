@@ -121,6 +121,34 @@ impl Repo {
         self.discard_lines(file, hunk, &all_change_indices(hunk))
     }
 
+    // --- Apply engine (magit `a`/`v`/`u` on committed changes) ------------
+    //
+    // Apply an arbitrary diff's change forward or reversed to the worktree or
+    // index — how a hunk/file from a commit's diff is applied to (`a`), reversed
+    // out of (`v`), or reverse-staged into (`u`) the current tree. `git apply`
+    // validates the whole patch before touching anything, so each is atomic.
+
+    /// Apply one hunk of `file` to `target`, reversed when `reverse`.
+    pub fn apply_hunk_to(
+        &self,
+        file: &FileDiff,
+        hunk: &Hunk,
+        target: ApplyTarget,
+        reverse: bool,
+    ) -> Result<()> {
+        let patch = build_patch(file, hunk, &all_change_indices(hunk), reverse);
+        self.apply_patch(&patch, target, reverse)
+    }
+
+    /// Apply every hunk of `file` to `target`, reversed when `reverse`.
+    pub fn apply_file_to(&self, file: &FileDiff, target: ApplyTarget, reverse: bool) -> Result<()> {
+        let mut patch = file_header(file);
+        for hunk in &file.hunks {
+            patch.push_str(&hunk_block(hunk, &all_change_indices(hunk), reverse));
+        }
+        self.apply_patch(&patch, target, reverse)
+    }
+
     // --- Line-level -------------------------------------------------------
     //
     // `selected` holds indices into `hunk.lines` (Added/Removed lines) that the
