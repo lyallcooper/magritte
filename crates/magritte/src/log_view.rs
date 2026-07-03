@@ -81,6 +81,21 @@ pub(crate) struct LogState {
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) load: LogLoad,
     pub(crate) purpose: LogPurpose,
+    /// The args the browse listing was fetched with, and its commit limit, so
+    /// `+`/`-` can re-fetch with a doubled/halved limit (magit's log limit
+    /// keys). Left empty for the select modes, which don't re-limit.
+    pub(crate) args: Vec<String>,
+    pub(crate) limit: usize,
+}
+
+/// The commit limit encoded in a log arg list (`--max-count=N` or `-nN`), if
+/// any — so `+`/`-` know what they're doubling/halving.
+fn log_arg_limit(args: &[String]) -> Option<usize> {
+    args.iter().find_map(|a| {
+        a.strip_prefix("--max-count=")
+            .or_else(|| a.strip_prefix("-n"))
+            .and_then(|n| n.parse().ok())
+    })
 }
 
 /// Load state of the log view, so the body can distinguish still-loading from a
@@ -153,7 +168,42 @@ impl StatusView {
     }
 
     pub(crate) fn start_log(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        let stored = args.clone();
         self.spawn_log(LogPurpose::Browse, move |repo| repo.log_with(&args), cx);
+        // Retain the args + limit so `+`/`-` can re-fetch with a new limit.
+        let limit = log_arg_limit(&stored).unwrap_or(Self::LOG_LIMIT);
+        if let Some(log) = self.log_mut() {
+            log.args = stored;
+            log.limit = limit;
+        }
+    }
+
+    /// Re-fetch the browse log with a doubled (`+`) or halved (`-`) commit
+    /// limit — magit's `magit-log-{double,half}-commit-limit`. No-op outside a
+    /// browse listing.
+    pub(crate) fn relimit_log(&mut self, double: bool, cx: &mut Context<Self>) {
+        let Some(log) = self.log() else { return };
+        if !matches!(log.purpose, LogPurpose::Browse) {
+            return;
+        }
+        let new_limit = if double {
+            log.limit.saturating_mul(2)
+        } else {
+            (log.limit / 2).max(1)
+        };
+        if new_limit == log.limit {
+            return;
+        }
+        // Rebuild the args with the new limit: drop any existing count flag and
+        // put the new one up front (before the revision / `--` paths).
+        let mut args: Vec<String> = log
+            .args
+            .iter()
+            .filter(|a| !a.starts_with("--max-count") && !a.starts_with("-n"))
+            .cloned()
+            .collect();
+        args.insert(0, format!("--max-count={new_limit}"));
+        self.start_log(args, cx);
     }
 
     /// Open the log to pick the commit to rebase interactively *since* — magit's
@@ -480,6 +530,8 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             load: LogLoad::Loading,
             purpose,
+            args: Vec::new(),
+            limit: Self::LOG_LIMIT,
         });
         cx.notify();
         gen
@@ -609,5 +661,18 @@ impl StatusView {
         if let Some(hash) = hash {
             self.copy_to_clipboard(hash, cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_arg_limit;
+
+    #[test]
+    fn log_arg_limit_reads_max_count_and_n() {
+        let a = |s: &str| s.to_string();
+        assert_eq!(log_arg_limit(&[a("--max-count=256"), a("HEAD")]), Some(256));
+        assert_eq!(log_arg_limit(&[a("-n3"), a("dev")]), Some(3));
+        assert_eq!(log_arg_limit(&[a("--reverse"), a("HEAD")]), None);
     }
 }

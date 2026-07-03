@@ -1662,8 +1662,9 @@ impl StatusView {
     /// list of commits; the highlighted row opens on Enter or click.
     pub(crate) fn render_log(&self, log: &LogState, view: &Entity<Self>) -> gpui::Div {
         let count = log.entries.len();
-        // Note when the listing is capped, rather than pretending it's complete.
-        let capped = count >= Self::LOG_LIMIT;
+        // Note when the listing is capped (against the *current* limit, which
+        // `+`/`-` adjust), rather than pretending it's complete.
+        let capped = count >= log.limit;
         let hash_width = log
             .entries
             .iter()

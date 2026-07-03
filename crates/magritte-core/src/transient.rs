@@ -691,6 +691,26 @@ pub fn log_transient() -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::new("-r", "--reverse", "Reverse order")),
+                    Suffix::Switch(Switch::new("-m", "--no-merges", "Omit merge commits")),
+                    Suffix::Switch(Switch::new(
+                        "-p",
+                        "--first-parent",
+                        "Follow only the first parent",
+                    )),
+                    Suffix::Option(Opt {
+                        key: "-s",
+                        arg: "--since=",
+                        description: "Since date",
+                        completion: Completion::None,
+                        pathspec: false,
+                    }),
+                    Suffix::Option(Opt {
+                        key: "-u",
+                        arg: "--until=",
+                        description: "Until date",
+                        completion: Completion::None,
+                        pathspec: false,
+                    }),
                     Suffix::Option(Opt {
                         key: "-o",
                         // The value is the full `--…-order` flag, so no prefix.
