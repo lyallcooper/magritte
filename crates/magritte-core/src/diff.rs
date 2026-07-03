@@ -51,6 +51,20 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
+impl Hunk {
+    /// The new-side line number to jump to when opening this hunk: the first
+    /// *changed* line (the first added line's new-side number), rather than the
+    /// hunk's leading context. Falls back to `new_start` for a delete-only hunk,
+    /// whose change has no new-side line.
+    pub fn first_change_new_line(&self) -> u32 {
+        self.lines
+            .iter()
+            .find(|l| l.kind == LineKind::Added)
+            .and_then(|l| l.new_lineno)
+            .unwrap_or(self.new_start)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileDiff {
     pub old_path: String,

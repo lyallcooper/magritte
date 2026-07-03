@@ -4,7 +4,7 @@
 //! an external editor. `impl StatusView` like the other view slices.
 
 use gpui::{Context, Window};
-use magritte_core::{ConflictSide, DiffSource, FileDiff, LineKind};
+use magritte_core::{ConflictSide, DiffSource, FileDiff, Hunk, LineKind};
 
 use crate::*;
 
@@ -519,17 +519,22 @@ impl StatusView {
         self.set_status(format!("Opening {path}"), true, cx);
     }
 
-    /// The new-side line number to open at for a target: the line at point, the
-    /// hunk's first line, or the file's first hunk (where its diff starts).
+    /// The new-side line number to open at for a target: the line at point, or
+    /// the first *changed* line of the hunk / the file's first hunk (so the
+    /// editor lands on the edit, not the hunk's leading context).
     /// `None` when the diff isn't loaded (a collapsed file) — open without a line.
     pub(crate) fn diff_target_line(&self, target: &Target) -> Option<u32> {
         match target {
-            Target::File(f) => self.diff_for_ref(f)?.hunks.first().map(|h| h.new_start),
+            Target::File(f) => self
+                .diff_for_ref(f)?
+                .hunks
+                .first()
+                .map(Hunk::first_change_new_line),
             Target::Hunk { file, hunk } => self
                 .diff_for_ref(file)?
                 .hunks
                 .get(*hunk)
-                .map(|h| h.new_start),
+                .map(Hunk::first_change_new_line),
             Target::Line { file, hunk, line } => {
                 let diff = self.diff_for_ref(file)?;
                 let h = diff.hunks.get(*hunk)?;

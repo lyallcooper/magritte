@@ -151,6 +151,9 @@ index 1234567..89abcde 100644
         (1, 3, 1, 3)
     );
     assert_eq!(first.section_heading, "fn header");
+    // Jump to the first *changed* line (new "new two" at line 2), not the
+    // hunk's leading context (line 1).
+    assert_eq!(first.first_change_new_line(), 2);
 
     let second = &file.hunks[1];
     assert_eq!(second.old_start, 10);
