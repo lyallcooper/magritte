@@ -8,7 +8,7 @@ use gpui::{div, px, AnyElement, Hsla, SharedString};
 use crate::with_alpha;
 
 /// Spell out one keystroke token as a word label. Modifier and named keys
-/// become words (`Cmd`, `Enter`, `Esc`, `Tab`) rather than the macOS glyphs,
+/// become words (`Cmd`, `Ret`, `Esc`, `Tab`) rather than the macOS glyphs,
 /// which render poorly in our monospace chrome. Plain letters keep their case
 /// (`F` vs `f`) so case alone distinguishes the shifted key — no `Shift` shown.
 fn key_word(token: &str) -> String {
@@ -17,7 +17,7 @@ fn key_word(token: &str) -> String {
         "ctrl" | "control" => "Ctrl".into(),
         "alt" | "opt" | "option" => "Opt".into(),
         "shift" => "Shift".into(),
-        "enter" | "return" => "Return".into(),
+        "enter" | "return" => "Ret".into(),
         "esc" | "ESC" | "escape" => "Esc".into(),
         "tab" | "TAB" => "Tab".into(),
         "space" => "Space".into(),
