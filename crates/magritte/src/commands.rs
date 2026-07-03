@@ -1579,6 +1579,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                     info("A", "Cherry-pick"),
                     info(revert, "Revert"),
                     info("r", "Rebase since"),
+                    info("x", "Reset here"),
                 ]);
             }
             suffixes.push(info("q", "Back"));

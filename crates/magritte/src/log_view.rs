@@ -662,6 +662,26 @@ impl StatusView {
             self.copy_to_clipboard(hash, cx);
         }
     }
+
+    /// Reset the current branch to the commit at point (magit's `x`
+    /// reset-quickly), `--mixed`: move HEAD and the index there, keeping the
+    /// working tree — so the reset-away commits' changes survive as unstaged
+    /// edits. Returns to the status view and confirms first (a one-key HEAD
+    /// move deserves a check, unlike the deliberate reset transient).
+    pub(crate) fn reset_quickly_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rev) = self.selected_commit_hash() else {
+            return;
+        };
+        let short = rev[..7.min(rev.len())].to_string();
+        if self.log().is_some() {
+            self.close_log(window, cx);
+        }
+        self.confirm = Some((
+            format!("Reset HEAD to {short}? (keeps the working tree)"),
+            Confirm::Reset(magritte_core::ResetMode::Mixed, rev),
+        ));
+        cx.notify();
+    }
 }
 
 #[cfg(test)]

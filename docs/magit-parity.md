@@ -532,7 +532,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `k` | delete-thing | evil `x` / vanilla `k` discard | ≈ stash-row drop is hardcoded `x` in both presets |
 | `K` | file-untrack | `K` untrack the file at point (`git rm --cached`) | ✓ |
 | `R` | file-rename | — | ✗ |
-| `x` | reset-quickly (reset to rev at point) | — | ✗ (`x` is discard in evil; unbound in vanilla) |
+| `x` | reset-quickly (reset to rev at point) | log-view `x` resets HEAD (mixed) to the commit at point, confirmed | ∂ done in the log; the status `x` stays discard |
 | `Y` | cherry | — | ✗ |
 | `I` | init | — | ✗ |
 | `y` | show-refs | `y r` via the `y` yank family (evil keeps `y` a prefix) | ∂ |
@@ -687,7 +687,7 @@ Covered above per area; the residual key-level notes:
   buffer); `S` includes untracked; `k` discards but stash-drop stays on `x`;
   `1`–`4` semantics; `DEL` pages (no reverse-preview); `RET` worktree-
   file semantics.
-- ✗ keys with no binding at all: `x` (reset-quickly), `K`, `R`,
+- ✗ keys with no binding at all:
   `M-w`, `C-c C-o` browse, and every missing-feature prefix (`B` `C` `D`
   `H` `I` `L` `o` `O` `T` `W` `y` `Y` `Z` `%` `>`; `w` works only as the
   in-progress am prefix).
@@ -723,9 +723,10 @@ Covered above per area; the residual key-level notes:
 
 ## Other buffers & screens
 
-- **Log**: browse + act ✓ (open, cherry-pick, revert, rebase-since, copy).
-  `+`/`-` double/halve the commit limit ✓ (magit's `=` set-to-value ✗). Still
-  missing: `j` move-to-revision, `L` refresh/margins. `SPC` preview ✓ (from the
+- **Log**: browse + act ✓ (open, cherry-pick, revert, rebase-since, reset-to
+  here via `x`, copy). `+`/`-` double/halve the commit limit ✓ (magit's `=`
+  set-to-value ✗). Still missing: `j` move-to-revision, `L` refresh/margins.
+  `SPC` preview ✓ (from the
   status commit rows). Log-select: same capability, different chord
   (`Cmd-Enter` confirms; `Enter` inspects).
 - **Revision/commit buffer**: ours shows message + flat diff, a `=` details
@@ -806,8 +807,8 @@ Grouped by kind, roughly ordered within each group.
 - Stash variants (`i`/`w`/`x`), file-limited stash push, `b` branch-from-
   stash.
 - Section-local `1`–`4` and `S-TAB` global cycling.
-- `x` reset-quickly. (`K` untrack and `R` rename-at-point — in the refs
-  browser — are done.)
+- (Done: `K` untrack, `R` rename-at-point in the refs browser, and `x`
+  reset-quickly in the log.)
 - Reset `b` (branch) and `f` (file checkout).
 - The git-variable widget → branch-configure + remote-configure (existing
   TODO) + tag `-u`.

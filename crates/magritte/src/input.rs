@@ -859,6 +859,7 @@ impl StatusView {
             "A" => self.pick_selected(PickOp::CherryPick, window, cx),
             "_" if self.is_evil() => self.pick_selected(PickOp::Revert, window, cx),
             "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
+            "x" => self.reset_quickly_selected(window, cx),
             "cmd-c" => self.copy_log_commit(cx),
             // magit's log limit keys: show twice / half as many commits.
             "+" => self.relimit_log(true, cx),
