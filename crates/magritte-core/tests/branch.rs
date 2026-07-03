@@ -74,6 +74,36 @@ fn rename_and_delete() {
 }
 
 #[test]
+fn local_branches_tracking_reports_ahead_behind() {
+    let (t, repo) = repo();
+    let remote = tempfile::tempdir().unwrap();
+    let remote_path = remote.path().to_str().unwrap();
+    t.git(["init", "--bare", remote_path]);
+    t.git(["remote", "add", "origin", remote_path]);
+    t.git(["push", "-u", "origin", "main"]);
+
+    // With an upstream and no divergence, ahead/behind are 0.
+    let synced = repo.local_branches_tracking().unwrap();
+    let main = synced.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!((main.ahead, main.behind), (0, 0));
+
+    // Two local commits not pushed → ahead 2, behind 0.
+    t.write("f", "one\n");
+    t.commit_all("local 1");
+    t.write("f", "two\n");
+    t.commit_all("local 2");
+    let ahead = repo.local_branches_tracking().unwrap();
+    let main = ahead.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!((main.ahead, main.behind), (2, 0));
+
+    // A branch with no upstream at all reports 0/0 (not an error).
+    t.git(["branch", "orphan"]);
+    let all = repo.local_branches_tracking().unwrap();
+    let orphan = all.iter().find(|b| b.name == "orphan").unwrap();
+    assert_eq!((orphan.ahead, orphan.behind), (0, 0));
+}
+
+#[test]
 fn checkout_remote_branch_creates_tracking() {
     // A bare remote with a `feature` branch the local repo has never seen.
     let (t, repo) = repo();

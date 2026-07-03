@@ -340,6 +340,7 @@ impl StatusView {
                 "enter" | "b" => self.refs_checkout_at_point(window, cx),
                 "x" if self.is_evil() => self.refs_delete_at_point(window, cx),
                 "k" if self.is_vanilla() => self.refs_delete_at_point(window, cx),
+                "R" => self.refs_rename_at_point(window, cx),
                 "ctrl-w" | "cmd-c" => self.copy_at_point(cx),
                 _ => {}
             }

@@ -1754,6 +1754,9 @@ impl StatusView {
                 PickerAction::WorktreeMoveTo { from } => {
                     self.do_move_worktree(from, chosen.to_string(), cx)
                 }
+                PickerAction::RefsRename { old } => {
+                    self.do_refs_rename(old, chosen.to_string(), cx)
+                }
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {

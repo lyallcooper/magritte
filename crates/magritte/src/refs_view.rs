@@ -5,7 +5,7 @@
 //! headers and refs share one uniform-height list.
 
 use gpui::{Context, UniformListScrollHandle, Window};
-use magritte_core::Repo;
+use magritte_core::{LocalBranch, Repo};
 
 use crate::*;
 
@@ -13,7 +13,14 @@ use crate::*;
 /// given kind. The kind drives both the act-at-point verb and the coloring.
 pub(crate) enum RefsRow {
     Header(&'static str),
-    Local { name: String, current: bool },
+    Local {
+        name: String,
+        current: bool,
+        /// Divergence from the branch's upstream (0/0 when in sync or no
+        /// upstream), shown as an `↑ahead ↓behind` margin.
+        ahead: u32,
+        behind: u32,
+    },
     Remote(String),
     Tag(String),
 }
@@ -36,7 +43,7 @@ impl RefsRow {
 /// The refs the browser lists, gathered in one background pass.
 pub(crate) struct RefsData {
     pub(crate) current: Option<String>,
-    pub(crate) locals: Vec<String>,
+    pub(crate) locals: Vec<LocalBranch>,
     pub(crate) remotes: Vec<String>,
     pub(crate) tags: Vec<String>,
 }
@@ -70,9 +77,14 @@ fn build_rows(data: RefsData) -> Vec<RefsRow> {
     let mut rows = Vec::new();
     if !data.locals.is_empty() {
         rows.push(RefsRow::Header("Branches"));
-        for name in data.locals {
-            let current = data.current.as_deref() == Some(name.as_str());
-            rows.push(RefsRow::Local { name, current });
+        for b in data.locals {
+            let current = data.current.as_deref() == Some(b.name.as_str());
+            rows.push(RefsRow::Local {
+                name: b.name,
+                current,
+                ahead: b.ahead,
+                behind: b.behind,
+            });
         }
     }
     if !data.remotes.is_empty() {
@@ -106,10 +118,6 @@ impl StatusView {
     /// generation guards a superseded open from populating a newer screen.
     pub(crate) fn open_refs(&mut self, cx: &mut Context<Self>) {
         self.clear_status(cx);
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.next_screen_gen();
         self.screen = Screen::Refs(RefsView {
             rows: Vec::new(),
             selected: 0,
@@ -117,6 +125,17 @@ impl StatusView {
             load: RefsLoad::Loading,
         });
         cx.notify();
+        self.load_refs(cx);
+    }
+
+    /// (Re)gather the ref lists into the open browser off the UI thread — used
+    /// on open and after a rename. The screen-load generation drops a superseded
+    /// load.
+    fn load_refs(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -223,7 +242,7 @@ impl StatusView {
             return;
         };
         match row {
-            RefsRow::Local { name, current } => {
+            RefsRow::Local { name, current, .. } => {
                 if *current {
                     self.set_status("Can't delete the current branch".to_string(), false, cx);
                     return;
@@ -255,6 +274,53 @@ impl StatusView {
             RefsRow::Header(_) => {}
         }
     }
+
+    /// Rename the local branch at point (`R`): prompt for the new name over the
+    /// browser (staying on it, so the picker's input keeps focus), then rename
+    /// and reload the list. Only local branches can be renamed.
+    pub(crate) fn refs_rename_at_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(RefsRow::Local { name, .. }) = self.refs_view().and_then(RefsView::selected_row)
+        else {
+            return;
+        };
+        let old = name.clone();
+        self.open_picker(
+            PickerAction::RefsRename { old },
+            Vec::new(),
+            CreateMode::Any,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    /// Carry out a confirmed refs-browser rename, then reload the list. A blank
+    /// or unchanged name is a no-op (an accidental Return).
+    pub(crate) fn do_refs_rename(&mut self, old: String, new: String, cx: &mut Context<Self>) {
+        let new = new.trim().to_string();
+        if new.is_empty() || new == old {
+            return;
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.set_progress(format!("Renaming {old}…"), cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.rename_branch(&old, &new) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(msg) => {
+                    this.set_status(msg, true, cx);
+                    this.load_refs(cx);
+                }
+                Err(e) => this.report_error(e, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
 
 /// Gather the branch/remote/tag lists in one background pass. A missing current
@@ -262,7 +328,7 @@ impl StatusView {
 fn gather_refs(repo: &Repo) -> magritte_core::Result<RefsData> {
     Ok(RefsData {
         current: repo.current_branch()?,
-        locals: repo.local_branches()?,
+        locals: repo.local_branches_tracking()?,
         remotes: repo.remote_branches()?,
         tags: repo.tags()?,
     })
@@ -276,13 +342,21 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
+    fn local(name: &str, ahead: u32, behind: u32) -> LocalBranch {
+        LocalBranch {
+            name: name.to_string(),
+            ahead,
+            behind,
+        }
+    }
+
     #[test]
     fn build_rows_headers_only_for_nonempty_sections() {
-        // No remotes: the Remotes header is skipped entirely, and the current
-        // branch is marked.
+        // No remotes: the Remotes header is skipped entirely, the current branch
+        // is marked, and ahead/behind ride along.
         let rows = build_rows(RefsData {
             current: Some("main".to_string()),
-            locals: s(&["main", "dev"]),
+            locals: vec![local("main", 0, 0), local("dev", 2, 1)],
             remotes: Vec::new(),
             tags: s(&["v1.0.0"]),
         });
@@ -290,16 +364,19 @@ mod tests {
             .iter()
             .map(|r| match r {
                 RefsRow::Header(h) => format!("#{h}"),
-                RefsRow::Local { name, current } => {
-                    format!("{name}{}", if *current { "*" } else { "" })
-                }
+                RefsRow::Local {
+                    name,
+                    current,
+                    ahead,
+                    behind,
+                } => format!("{name}{}+{ahead}-{behind}", if *current { "*" } else { "" }),
                 RefsRow::Remote(n) => format!("r:{n}"),
                 RefsRow::Tag(n) => format!("t:{n}"),
             })
             .collect();
         assert_eq!(
             shape,
-            vec!["#Branches", "main*", "dev", "#Tags", "t:v1.0.0"]
+            vec!["#Branches", "main*+0-0", "dev+2-1", "#Tags", "t:v1.0.0"]
         );
     }
 

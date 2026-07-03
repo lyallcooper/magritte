@@ -1834,6 +1834,13 @@ impl StatusView {
             view,
             Self::refs_delete_at_point,
         ));
+        header = header.child(self.key_action(
+            "refs-rename",
+            "R",
+            "rename",
+            view,
+            Self::refs_rename_at_point,
+        ));
         header =
             header.child(self.key_action("refs-close", "esc", "close", view, Self::close_refs));
 
@@ -1871,8 +1878,13 @@ impl StatusView {
                 .child(SharedString::from(*title))
                 .into_any_element();
         }
-        let (label, kind, current) = match row {
-            RefsRow::Local { name, current } => (
+        let (label, kind, current, ahead, behind) = match row {
+            RefsRow::Local {
+                name,
+                current,
+                ahead,
+                behind,
+            } => (
                 name.clone(),
                 if *current {
                     RefKind::Head
@@ -1880,9 +1892,11 @@ impl StatusView {
                     RefKind::Local
                 },
                 *current,
+                *ahead,
+                *behind,
             ),
-            RefsRow::Remote(name) => (name.clone(), RefKind::Remote, false),
-            RefsRow::Tag(name) => (name.clone(), RefKind::Tag, false),
+            RefsRow::Remote(name) => (name.clone(), RefKind::Remote, false, 0, 0),
+            RefsRow::Tag(name) => (name.clone(), RefKind::Tag, false, 0, 0),
             RefsRow::Header(_) => unreachable!("handled above"),
         };
         let view = view.clone();
@@ -1917,9 +1931,25 @@ impl StatusView {
                 .text_color(self.palette.branch_local)
                 .child(SharedString::from(if current { "●" } else { "" })),
         );
-        container
-            .child(self.ref_chip(&label, kind))
-            .into_any_element()
+        container = container.child(self.ref_chip(&label, kind));
+        // Ahead/behind vs upstream, matching the title bar's `↑ahead ↓behind`.
+        if ahead > 0 {
+            container = container.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(format!("↑{ahead}"))),
+            );
+        }
+        if behind > 0 {
+            container = container.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(format!("↓{behind}"))),
+            );
+        }
+        container.into_any_element()
     }
 
     /// The worktree browser (`%`): the repo's linked worktrees in a scrollable

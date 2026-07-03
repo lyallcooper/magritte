@@ -351,6 +351,10 @@ pub(crate) enum PickerAction {
     WorktreeMoveTo {
         from: String,
     },
+    /// Rename the branch `old` (from the refs browser) to the typed name.
+    RefsRename {
+        old: String,
+    },
 }
 
 impl PickerAction {
@@ -426,6 +430,7 @@ impl PickerAction {
             PickerAction::WorktreeAddDir { .. }
             | PickerAction::WorktreeBranchDir { .. }
             | PickerAction::WorktreeMoveTo { .. } => transient::plain_title("Worktree directory"),
+            PickerAction::RefsRename { old } => transient::plain_title(format!("Rename {old} to")),
         }
     }
 
@@ -482,6 +487,7 @@ impl PickerAction {
             PickerAction::WorktreeAddRef | PickerAction::WorktreeBranchName => "next",
             PickerAction::WorktreeAddDir { .. } | PickerAction::WorktreeBranchDir { .. } => "add",
             PickerAction::WorktreeMoveTo { .. } => "move",
+            PickerAction::RefsRename { .. } => "rename",
         }
     }
 }

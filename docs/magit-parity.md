@@ -459,12 +459,13 @@ in-progress banner like our rebase banner plus a start flow; all plain
 re-blame at addition/removal, style cycling. The display machinery is the
 bulk; the git side is one command.
 
-**Show-refs (`y`)** ∂ — the refs browser is in: branches, remote-tracking
-refs, and tags in one scrollable list, colored by kind, with checkout
-(Return) and delete (`k`/`x`) at point. Vanilla binds `y` (magit); evil binds
-`yr` via its `y` yank family (matching evil-collection). Remaining: ahead/behind
-counts vs a comparison point, rename at point, and the comparison args
-(`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`).
+**Show-refs (`y`)** ∂ — the refs browser is in: branches (with an `↑ahead
+↓behind` margin vs their upstream), remote-tracking refs, and tags in one
+scrollable list, colored by kind, with checkout (Return), delete (`k`/`x`),
+and rename (`R`, local branches) at point. Vanilla binds `y` (magit); evil
+binds `yr` via its `y` yank family (matching evil-collection). Remaining: the
+comparison args (`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`) and
+ahead/behind vs an arbitrary comparison point (we show it vs the upstream).
 
 **Worktree** ✓ — the worktree browser lists the linked worktrees
 (branch/detached, main + current markers, path) and covers magit's full verb
@@ -736,8 +737,8 @@ Covered above per area; the residual key-level notes:
   (`a`/`v`/`u`, same as the commit view). Still no context keys and no `D`
   refresh transient (refine/file-filter/range-type/flip-revs). `C-c C-d`
   diff-while-committing ≈ our commit editor embeds the staged diff by default.
-- **Refs buffer**: ∂ — branches/remotes/tags with checkout+delete at point;
-  no ahead/behind margins or comparison args yet (see Show-refs above).
+- **Refs buffer**: ∂ — branches/remotes/tags with checkout/delete/rename at
+  point and an ahead/behind margin; no comparison args yet (see Show-refs).
 - **Process buffer**: ≈ — magit has one collapsible section per subprocess
   and `k` kill-at-point; ours is a flat pager, but adds per-command timings
   with slow-command coloring and the hidden-queries toggle. Kill is global
@@ -805,7 +806,8 @@ Grouped by kind, roughly ordered within each group.
 - Stash variants (`i`/`w`/`x`), file-limited stash push, `b` branch-from-
   stash.
 - Section-local `1`–`4` and `S-TAB` global cycling.
-- `x` reset-quickly, `K` untrack, `R` rename at point.
+- `x` reset-quickly, `K` untrack. (`R` rename at point is done in the refs
+  browser.)
 - Reset `b` (branch) and `f` (file checkout).
 - The git-variable widget → branch-configure + remote-configure (existing
   TODO) + tag `-u`.

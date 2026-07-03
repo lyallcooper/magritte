@@ -36,6 +36,7 @@ pub mod tag;
 pub mod transient;
 pub mod worktree;
 
+pub use branch::LocalBranch;
 pub use commit::{CommitMetadata, CommitMode};
 pub use conflict::ConflictSide;
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};

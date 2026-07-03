@@ -4,6 +4,15 @@
 use crate::error::Result;
 use crate::repo::Repo;
 
+/// A local branch with its divergence from its upstream (0/0 when there's no
+/// upstream or it's in sync) — for the refs browser's ahead/behind margin.
+#[derive(Debug, Clone)]
+pub struct LocalBranch {
+    pub name: String,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
 impl Repo {
     /// The current branch name, or `None` when HEAD is detached. Uses
     /// `symbolic-ref` rather than `rev-parse --abbrev-ref` so an unborn branch
@@ -28,6 +37,43 @@ impl Repo {
                 "refs/heads/",
             ])?
             .lines())
+    }
+
+    /// Local branches with their ahead/behind vs their upstream, in one
+    /// `for-each-ref` — the refs browser's margin. `%(upstream:track)` reports
+    /// `[ahead N, behind M]`; `nobracket` drops the brackets. A branch with no
+    /// upstream (or a `gone` one) reports 0/0.
+    pub fn local_branches_tracking(&self) -> Result<Vec<LocalBranch>> {
+        let out = self.run([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%00%(upstream:track,nobracket)",
+            "refs/heads/",
+        ])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text
+            .lines()
+            .filter_map(|line| {
+                let (name, track) = line.split_once('\0').unwrap_or((line, ""));
+                if name.is_empty() {
+                    return None;
+                }
+                let (mut ahead, mut behind) = (0, 0);
+                for part in track.split(',') {
+                    let part = part.trim();
+                    if let Some(n) = part.strip_prefix("ahead ") {
+                        ahead = n.trim().parse().unwrap_or(0);
+                    } else if let Some(n) = part.strip_prefix("behind ") {
+                        behind = n.trim().parse().unwrap_or(0);
+                    }
+                }
+                Some(LocalBranch {
+                    name: name.to_string(),
+                    ahead,
+                    behind,
+                })
+            })
+            .collect())
     }
 
     /// Check out `target`, DWIM-creating a local tracking branch when a

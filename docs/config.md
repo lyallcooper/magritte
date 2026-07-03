@@ -270,7 +270,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |
 | `copy-buffer-revision` | `y b` (evil) | Copy the current view's revision |
-| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, and tags |
+| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (checkout / delete / rename at point) |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
 | `check-updates` | — | Check for updates |
