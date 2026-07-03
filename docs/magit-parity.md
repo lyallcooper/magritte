@@ -629,12 +629,12 @@ of it exists. `SPC` preview is now covered (as a returning overlay).
 | `s` on section headers | stages the section (with confirm for stage-modified) | `s` on Untracked stages all untracked; `s` on Unstaged = stage-modified; `u` on Staged = unstage-all | ✓ |
 | `u` staged file/hunk/region | reverse-apply / reset | same, rename-aware | ✓ |
 | `u` unstaged file | drops intent-to-add entries | no-op | ✗ (no ita support) |
-| `u` committed change | **reverses it in the index** (`magit-unstage-committed` t) — the "extract a change from HEAD" flow | nothing | ✗ notable |
+| `u` committed change | **reverses it in the index** (`magit-unstage-committed` t) — the "extract a change from HEAD" flow | `u` in the commit view reverse-stages the file/hunk at point into the index | ✓ (commit view; status view has no committed changes) |
 | `k`/`x` discard untracked | delete → **system trash**, confirm | system trash, confirm (git clean fallback when unavailable) | ✓ |
 | `k`/`x` discard unstaged/staged | confirm; entry-dispatched | mirrors magit exactly (incl. partial-discard `.rej` reporting) | ✓ |
 | `k` conflicted hunk | smerge-keep-current + per-hunk smerge keys | keyboard verbs refused; take-ours/theirs via right-click only | ∂ |
-| `v` reverse at point | reverse staged/committed hunk/file/region in worktree | no reverse verb (revert-no-commit on whole commit rows only) | ✗ |
-| `a` apply at point | apply committed hunk/file to worktree; untracked file → am; prefix = 3-way | cherry-apply on commit rows only | ∂ |
+| `v` reverse at point | reverse staged/committed hunk/file/region in worktree | commit view: reverse the file/hunk at point in the worktree (evil `-` / vanilla `v`, per preset). Status-view unstaged/staged reverse still ✗ (covered by discard/unstage) | ∂ committed done; region ✗ |
+| `a` apply at point | apply committed hunk/file to worktree; untracked file → am; prefix = 3-way | commit view: apply the file/hunk at point to the worktree (`a`); no `am`/3-way. Plus cherry-apply on commit rows | ∂ committed done; region/am/3-way ✗ |
 
 ### Row types
 
@@ -715,9 +715,11 @@ Covered above per area; the residual key-level notes:
   missing: `j` move-to-revision, `L` refresh/margins. `SPC` preview ✓ (from the
   status commit rows). Log-select: same capability, different chord
   (`Cmd-Enter` confirms; `Enter` inspects).
-- **Revision/commit buffer**: ours shows message + flat diff + `a` details
-  toggle; magit's adds notes and a diffstat section (`--stat` default),
-  per-file visiting, `j` revision-jump, refine-hunk. ∂ thinner.
+- **Revision/commit buffer**: ours shows message + flat diff, a `=` details
+  toggle, and the apply engine at point (`a` apply-to-worktree, `v`/`-`
+  reverse, `u` reverse-in-index); magit's adds notes and a diffstat section
+  (`--stat` default), per-file visiting, `j` revision-jump, refine-hunk. ∂
+  thinner.
 - **Diff buffer**: entry points ✓; the resulting view is display-only — no
   context keys, no `D` refresh transient (refine/file-filter/range-type/
   flip-revs). `C-c C-d` diff-while-committing ≈ our commit editor embeds the
@@ -774,8 +776,10 @@ Grouped by kind, roughly ordered within each group.
 - ~~`SPC` show-or-scroll preview of the commit/stash at point.~~ Done: `SPC`
   on a commit/stash row previews it (returning overlay). Remaining: reverse-
   preview on `DEL`, and scroll-in-place rather than a full-screen swap.
-- `u` on committed changes (reverse-in-index), `v` reverse-at-point, `a`
-  apply-at-point — the second half of magit's apply engine.
+- ~~`u` reverse-in-index, `v` reverse, `a` apply on committed changes.~~ Done
+  in the commit view at file/hunk granularity (`a` apply-to-worktree, `v`/`-`
+  reverse-in-worktree per preset, `u` reverse-in-index). Remaining: region
+  (sub-hunk) scope, and the same verbs in the standalone `d` diff view.
 - ~~Diff context keys `+`/`-`/`0`.~~ Done for the status view (diff/commit
   views still fixed at 3).
 - Merge: in-progress `m` commit-merge; `e` editmsg; `p` preview; strategies.
