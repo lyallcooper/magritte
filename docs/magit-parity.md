@@ -41,8 +41,11 @@ snapshot variants.
 **Notable behavior differences in shared features:**
 
 - Our revert defaults to `--no-edit`; magit defaults to `--edit`.
-- `SPC` pages; magit's `SPC` *previews* the commit/stash at point without
-  leaving the status buffer (a heavily used flow we lack entirely).
+- `SPC` on a commit/stash row now *previews* it (opening the commit view,
+  which `Esc` closes back to the same row) — our single-buffer take on magit's
+  show-or-scroll; `SPC` elsewhere still pages. Remaining nuance: it's a
+  full-screen overlay rather than a side pane, and `DEL` only pages back (no
+  reverse-preview).
 - `1`–`4` fold levels are buffer-wide; magit's digits are section-local
   (ours match magit's `M-1`..`M-4` instead). We also have no cycle commands
   (`S-TAB`, `C-TAB`).
@@ -527,7 +530,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `y` | show-refs | — | ✗ |
 | `RET` | visit-thing | Enter opens file/commit/stash | ✓ (≈ semantics, see act-at-point) |
 | `C-RET` | visit in other window | — | N/A |
-| `SPC` / `DEL` | show-or-scroll (peek commit at point) | page down / up | ≈ no preview concept |
+| `SPC` / `DEL` | show-or-scroll (peek commit at point) | Space previews the commit/stash at point (Esc returns); DEL pages up | ≈ overlay preview, not other-window; no reverse-preview |
 | `+` / `-` / `0` | more / less / default diff context | — | ✗ no context adjustment anywhere |
 | `M-TAB` | dired-jump | — | N/A |
 | `M-<tab>` | cycle diff sections | `1`–`4` levels | ≈ level-set, not cycle |
@@ -608,12 +611,12 @@ green, tags yellow, the current branch bold. Like magit we drop remote
 | `S-TAB` | global cycle | — | ✗ |
 | `1`–`4` | show-level of the **surrounding** section (point-local, region-aware) | buffer-wide | ∂ ours implement magit's `M-1..4`; no local variant, and they clear the visual selection instead of honoring it |
 | `M-1`–`M-4` | show-level **all** | `alt-1..4` = same buffer-wide command | ✓ |
-| `SPC`/`DEL` | peek/scroll the commit at point in the other window | page down/up | ∂ no preview |
+| `SPC`/`DEL` | peek/scroll the commit at point in the other window | Space previews the commit/stash at point (overlay, Esc returns); DEL pages up | ∂ overlay preview; DEL page-only |
 | point restoration | goto-successor | AnchorIdent rebuild anchoring | ✓ |
 | visibility indicators | fringe/`…` | chevrons | ✓ |
 
-The biggest functional holes: no cycling at all, and no SPC preview (magit
-users lean on it to skim unpushed/recent commits without leaving status).
+The biggest functional hole here is cycling (`S-TAB`/`C-TAB`/`M-TAB`): none
+of it exists. `SPC` preview is now covered (as a returning overlay).
 
 ## Act-at-point
 
@@ -674,7 +677,7 @@ Covered above per area; the residual key-level notes:
   `TAB`, `C-w` copy.
 - ≈: `G` is a refresh alias (magit: refresh-all — deliberate, single
   buffer); `S` includes untracked; `k` discards but stash-drop stays on `x`;
-  `1`–`4` semantics; `SPC`/`DEL` page instead of preview; `RET` worktree-
+  `1`–`4` semantics; `DEL` pages (no reverse-preview); `RET` worktree-
   file semantics.
 - ✗ keys with no binding at all: `x` (reset-quickly), `K`, `R`, `+`/`-`/`0`,
   `M-w`, `C-c C-o` browse, and every missing-feature prefix (`B` `C` `D`
@@ -765,7 +768,9 @@ Grouped by kind, roughly ordered within each group.
 
 **High-value additions to existing surfaces**
 
-- `SPC` show-or-scroll preview of the commit/stash at point.
+- ~~`SPC` show-or-scroll preview of the commit/stash at point.~~ Done: `SPC`
+  on a commit/stash row previews it (returning overlay). Remaining: reverse-
+  preview on `DEL`, and scroll-in-place rather than a full-screen swap.
 - `u` on committed changes (reverse-in-index), `v` reverse-at-point, `a`
   apply-at-point — the second half of magit's apply engine.
 - Diff context keys `+`/`-`/`0` on status hunks.

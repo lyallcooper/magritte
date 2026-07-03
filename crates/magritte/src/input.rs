@@ -299,6 +299,19 @@ impl StatusView {
         }
 
         // Command palette via cmd+p / cmd+k handled above, before per-view branches.
+        // SPC on a commit/stash row previews it (magit's show-or-scroll-up),
+        // rather than paging — a heavily used peek flow. SPC anywhere else falls
+        // through to paging (try_nav below). Plain Space only, status screen only.
+        if key == "space"
+            && !shift
+            && !ctrl
+            && !alt
+            && !cmd
+            && matches!(self.screen, Screen::Status)
+            && self.preview_at_point(cx)
+        {
+            return;
+        }
         // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
         if self.try_nav(&key, shift, ctrl, alt, window, cx) {
             return;
@@ -664,6 +677,22 @@ impl StatusView {
         // Only single-keystroke chords reach here (multi-key sequences resolve
         // through the prefix machinery); motions are registry commands too.
         keymap.contains_key(key) || key == ":"
+    }
+
+    /// Preview the commit or stash at point in the commit view (magit's `SPC`
+    /// show-or-scroll): the view overlays the status screen and Escape returns
+    /// to the same row. Returns whether there was something to preview. Once the
+    /// view is open, `SPC` there scrolls it (the normal paging motion).
+    fn preview_at_point(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some((hash, short, subject)) = self.point_commit() {
+            self.open_commit(hash, short, subject, cx);
+            return true;
+        }
+        if let Some((reference, message)) = self.point_stash() {
+            self.open_commit(reference.clone(), reference, message, cx);
+            return true;
+        }
+        false
     }
 
     /// Act-at-point verbs for a status commit row. `key` is in encoded chord
