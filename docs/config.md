@@ -236,6 +236,10 @@ The palette hides commands that don't apply right now — e.g. `jump-to-ignored`
 appears only while the (opt-in) Ignored section is shown, and the other
 `jump-to-*` commands only while their section has content.
 
+The palette also matches common synonyms and git verbs, not just the label, so
+you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
+`Discard`, "yank" finds `Copy`, "history" finds `Log`.
+
 | id | default key | command |
 |----|-------------|---------|
 | `commit` | `c` | Commit (transient) |

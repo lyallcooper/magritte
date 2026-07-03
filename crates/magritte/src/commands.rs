@@ -884,6 +884,86 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
     s
 }
 
+/// Extra search terms for a command in the `:` palette, so a query that isn't in
+/// the (magit-flavored) title still surfaces it — the git verb behind the action
+/// ("add" → Stage, "restore" → Discard), plainer synonyms, and common aliases.
+/// Search-only: the palette still displays the title and resolves by it. Keyed
+/// by command id; anything absent (including user `[[command]]`s) has none.
+const COMMAND_ALIASES: &[(&str, &[&str])] = &[
+    // Transients — the git verb or a plainer word for the area.
+    ("ignore", &["gitignore", "exclude", "skip"]),
+    ("log", &["history", "commits"]),
+    ("diff", &["changes", "compare"]),
+    (
+        "show-refs",
+        &["references", "branches", "tags", "refs browser"],
+    ),
+    ("push", &["publish", "upload"]),
+    ("reset", &["undo", "roll back"]),
+    ("merge", &["combine"]),
+    // Applying — where the git command name differs from our label.
+    ("stage", &["add", "git add", "track"]),
+    ("unstage", &["git reset", "remove from index"]),
+    ("stage-all", &["add all", "git add all"]),
+    ("unstage-all", &["reset all"]),
+    (
+        "discard",
+        &[
+            "restore",
+            "checkout",
+            "revert file",
+            "throw away",
+            "undo changes",
+        ],
+    ),
+    ("open-file", &["edit", "visit"]),
+    ("fold", &["collapse", "expand", "toggle"]),
+    ("refresh", &["reload", "update"]),
+    // Essential.
+    ("visual", &["select", "mark", "region"]),
+    ("yank", &["yank", "clipboard", "copy value"]),
+    (
+        "copy-buffer-revision",
+        &["copy hash", "copy sha", "copy commit", "yank revision"],
+    ),
+    ("settings", &["preferences", "config", "options"]),
+    ("command-log", &["process", "git output", "console"]),
+    ("check-updates", &["upgrade", "new version"]),
+    ("help", &["dispatch", "keybindings", "shortcuts"]),
+    ("quit", &["exit", "close"]),
+    // Commit leaves.
+    ("commit-amend", &["fixup last", "edit last commit"]),
+    (
+        "commit-reword",
+        &["rename commit", "edit message", "change message"],
+    ),
+    // Branch / tag / remote leaves — the CRUD verb.
+    ("branch-create", &["new branch", "checkout -b", "switch -c"]),
+    ("branch-rename", &["move branch"]),
+    ("branch-delete", &["remove branch"]),
+    ("tag-create", &["new tag"]),
+    ("tag-delete", &["remove tag"]),
+    ("remote-add", &["new remote"]),
+    ("remote-remove", &["delete remote"]),
+    // Stash leaves.
+    ("stash-push", &["save", "stash changes"]),
+    ("stash-drop", &["delete stash", "remove stash"]),
+    // Diff leaves.
+    ("diff-staged", &["diff cached"]),
+    // Cherry-pick / revert.
+    ("cherry-pick", &["pick"]),
+    ("revert", &["undo commit"]),
+    ("revert-no-commit", &["undo changes"]),
+];
+
+pub(crate) fn command_aliases(id: &str) -> &'static [&'static str] {
+    COMMAND_ALIASES
+        .iter()
+        .find(|(cmd_id, _)| *cmd_id == id)
+        .map(|(_, aliases)| *aliases)
+        .unwrap_or(&[])
+}
+
 /// Lightweight metadata for any command — built-in or user `[[command]]`.
 /// The cross-cutting consumers (keymap/transient validation, the palette,
 /// suffix labels) read commands through [`all_commands`], so none of them can
@@ -1513,4 +1593,35 @@ pub(crate) fn build_log_args(
         flags.extend(paths);
     }
     flags
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_aliases, commands, COMMAND_ALIASES};
+
+    #[test]
+    fn aliases_reference_real_commands() {
+        for (id, _) in COMMAND_ALIASES {
+            assert!(
+                commands().iter().any(|c| c.id == *id),
+                "command_aliases entry `{id}` has no matching command"
+            );
+        }
+    }
+
+    #[test]
+    fn aliased_commands_are_in_the_palette() {
+        // Aliases only help in the `:` palette, so an alias on a palette-hidden
+        // command is dead weight — catch it.
+        for (id, _) in COMMAND_ALIASES {
+            let cmd = commands().iter().find(|c| c.id == *id).unwrap();
+            assert!(cmd.palette, "aliased command `{id}` isn't in the palette");
+        }
+    }
+
+    #[test]
+    fn unaliased_command_has_no_terms() {
+        assert!(command_aliases("no-such-command").is_empty());
+        assert!(command_aliases("commit").is_empty());
+    }
 }

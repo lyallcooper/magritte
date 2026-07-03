@@ -57,6 +57,22 @@ pub struct PickerList {
 impl PickerList {
     pub fn new(choices: Vec<SharedString>, create: CreateMode) -> Self {
         let lowered = choices.iter().map(|c| c.to_lowercase()).collect();
+        Self::from_parts(choices, lowered, create)
+    }
+
+    /// Like [`Self::new`], but scores against a separate `search` string per
+    /// choice (e.g. the command title plus hidden aliases) while still
+    /// displaying `choices`. `search` must be the same length as `choices`.
+    pub fn with_search(
+        choices: Vec<SharedString>,
+        search: Vec<String>,
+        create: CreateMode,
+    ) -> Self {
+        let lowered = search.iter().map(|s| s.to_lowercase()).collect();
+        Self::from_parts(choices, lowered, create)
+    }
+
+    fn from_parts(choices: Vec<SharedString>, lowered: Vec<String>, create: CreateMode) -> Self {
         let matched = (0..choices.len()).collect();
         Self {
             choices,
@@ -252,6 +268,23 @@ mod tests {
         let l = list(&["origin/main", "backup/main"], CreateMode::None);
         assert_eq!(l.row_count(), 2);
         assert_eq!(l.selected_choice().as_deref(), Some("origin/main"));
+    }
+
+    #[test]
+    fn with_search_matches_hidden_terms_but_displays_the_choice() {
+        // The palette scores against title+aliases while showing just the title:
+        // typing an alias ("yank") surfaces the "Copy" row.
+        let mut l = PickerList::with_search(
+            vec![SharedString::from("Copy"), SharedString::from("Stage")],
+            vec!["copy yank clipboard".to_string(), "stage add".to_string()],
+            CreateMode::None,
+        );
+        l.set_query("yank");
+        assert_eq!(l.row_count(), 1);
+        assert_eq!(l.selected_choice().as_deref(), Some("Copy"));
+
+        l.set_query("add");
+        assert_eq!(l.selected_choice().as_deref(), Some("Stage"));
     }
 
     #[test]

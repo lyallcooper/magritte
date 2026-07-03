@@ -720,10 +720,25 @@ impl StatusView {
             let (sa, sb) = (self.usage.score(&a.0), self.usage.score(&b.0));
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let choices: Vec<String> = entries.into_iter().map(|(_, title)| title).collect();
-        self.open_picker(
+        // Match each command against its title plus any hidden aliases (so
+        // "yank" finds "Copy", "add" finds "Stage", …), while still displaying
+        // just the title.
+        let (choices, search): (Vec<String>, Vec<String>) = entries
+            .into_iter()
+            .map(|(id, title)| {
+                let aliases = command_aliases(&id);
+                let search = if aliases.is_empty() {
+                    title.to_lowercase()
+                } else {
+                    format!("{} {}", title, aliases.join(" ")).to_lowercase()
+                };
+                (title, search)
+            })
+            .unzip();
+        self.open_picker_searchable(
             PickerAction::RunCommand,
             choices,
+            Some(search),
             CreateMode::None,
             Vec::new(),
             window,

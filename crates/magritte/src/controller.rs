@@ -1550,6 +1550,23 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_picker_searchable(action, choices, None, create, switches, window, cx);
+    }
+
+    /// [`Self::open_picker`], but each choice is matched against a parallel
+    /// `search` string (title + hidden aliases) rather than its display text —
+    /// so the palette can surface "Copy" when you type "yank". `search`, when
+    /// given, must line up 1:1 with `choices`.
+    pub(crate) fn open_picker_searchable(
+        &mut self,
+        action: PickerAction,
+        choices: Vec<String>,
+        search: Option<Vec<String>>,
+        create: CreateMode,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let prompt = action.prompt();
         let items: Vec<SharedString> = choices.into_iter().map(SharedString::from).collect();
         // Reserve the candidate area only when there's actually a list to match
@@ -1586,7 +1603,10 @@ impl StatusView {
         self.popup = Some(Popup::Picker(PickerState {
             prompt,
             input,
-            list: PickerList::new(items, create),
+            list: match search {
+                Some(search) => PickerList::with_search(items, search, create),
+                None => PickerList::new(items, create),
+            },
             scroll: UniformListScrollHandle::new(),
             action,
             switches,
