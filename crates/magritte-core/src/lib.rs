@@ -24,6 +24,7 @@ pub mod files;
 pub mod ignore;
 pub mod log;
 pub mod merge;
+pub mod patch;
 pub mod pick;
 pub mod rebase;
 pub mod remote;

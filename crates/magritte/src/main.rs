@@ -1759,7 +1759,7 @@ mod tests {
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$",
-            "%", "B", // commands
+            "%", "B", "W", // commands
             "s", "u", "S", "U", "x", "X", // applying changes (X = evil untrack)
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions

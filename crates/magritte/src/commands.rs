@@ -365,6 +365,14 @@ pub(crate) fn commands() -> &'static [Command] {
             "!",
             |t, w, cx| { t.open_run_git(w, cx) }
         ),
+        top!("patch", "Patch", Category::Commands, "W", |t, _w, cx| {
+            t.open_transient(
+                "patch",
+                transient::patch_transient(),
+                RemoteTargets::default(),
+                cx,
+            )
+        }),
         top!("bisect", "Bisect", Category::Commands, "B", |t, _w, cx| {
             // While bisecting, `B` marks good/bad/skip or resets; otherwise it
             // starts a bisect (magit's `B`).

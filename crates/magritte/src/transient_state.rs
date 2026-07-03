@@ -327,6 +327,11 @@ pub(crate) enum PickerAction {
     PickRange(PickOp),
     /// Run an arbitrary git command typed by the user (magit's `!`).
     RunGit,
+    /// Patch (magit's `W`): apply a typed patch file to the worktree, apply a
+    /// mailbox as commits (`git am`), or create patch files for a typed range.
+    PatchApply,
+    PatchAm,
+    PatchCreate,
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
     /// Stash with the typed message (empty = git's default "WIP on …").
@@ -431,6 +436,9 @@ impl PickerAction {
             | PickerAction::WorktreeBranchDir { .. }
             | PickerAction::WorktreeMoveTo { .. } => transient::plain_title("Worktree directory"),
             PickerAction::RefsRename { old } => transient::plain_title(format!("Rename {old} to")),
+            PickerAction::PatchApply => transient::plain_title("Apply patch file"),
+            PickerAction::PatchAm => transient::plain_title("Apply mailbox (am)"),
+            PickerAction::PatchCreate => transient::plain_title("format-patch"),
         }
     }
 
@@ -488,6 +496,8 @@ impl PickerAction {
             PickerAction::WorktreeAddDir { .. } | PickerAction::WorktreeBranchDir { .. } => "add",
             PickerAction::WorktreeMoveTo { .. } => "move",
             PickerAction::RefsRename { .. } => "rename",
+            PickerAction::PatchApply | PickerAction::PatchAm => "apply",
+            PickerAction::PatchCreate => "create",
         }
     }
 }

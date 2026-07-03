@@ -128,6 +128,9 @@ impl StatusView {
             BisectBad => self.run_bisect_mark(BisectMark::Bad, cx),
             BisectSkip => self.run_bisect_mark(BisectMark::Skip, cx),
             BisectReset => self.run_bisect_reset(cx),
+            PatchApply => self.open_patch_prompt(PickerAction::PatchApply, "", window, cx),
+            PatchAm => self.open_patch_prompt(PickerAction::PatchAm, "", window, cx),
+            PatchCreate => self.open_patch_prompt(PickerAction::PatchCreate, "-1 HEAD", window, cx),
         }
     }
 
@@ -1176,6 +1179,69 @@ impl StatusView {
         );
     }
 
+    /// Open a free-text prompt for a patch operation (magit's `W`/`w`), seeded
+    /// with `seed` (a default range for create; empty for the file prompts).
+    pub(crate) fn open_patch_prompt(
+        &mut self,
+        action: PickerAction,
+        seed: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_picker(
+            action,
+            Vec::new(),
+            CreateMode::Value,
+            Vec::new(),
+            window,
+            cx,
+        );
+        if seed.is_empty() {
+            return;
+        }
+        let seed = seed.to_string();
+        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.list.set_query(&seed);
+            Some(p.input.clone())
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            input.update(cx, |s, cx| s.set_value(seed, window, cx));
+        }
+    }
+
+    /// Apply a typed patch file to the worktree (`git apply`).
+    pub(crate) fn run_patch_apply(&mut self, path: String, cx: &mut Context<Self>) {
+        self.run_job(
+            "Applying patch…",
+            "Applied patch",
+            move |repo| repo.apply_patch_file(path.trim()),
+            cx,
+        );
+    }
+
+    /// Apply a typed mailbox as commits (`git am`); a conflict pauses into the
+    /// am sequence banner.
+    pub(crate) fn run_patch_am(&mut self, path: String, cx: &mut Context<Self>) {
+        self.run_job(
+            "Applying patches…",
+            "Applied patches",
+            move |repo| repo.am_patch(path.trim()),
+            cx,
+        );
+    }
+
+    /// Create patch files for a typed range (`git format-patch`).
+    pub(crate) fn run_patch_create(&mut self, args: String, cx: &mut Context<Self>) {
+        self.run_job(
+            "Creating patch…",
+            "Created",
+            move |repo| repo.format_patch(args.trim()),
+            cx,
+        );
+    }
+
     /// Run the rebase on the background executor, then refresh — a conflict
     /// pauses it, which the in-progress banner then drives.
     pub(crate) fn run_rebase(&mut self, onto: String, args: Vec<String>, cx: &mut Context<Self>) {
@@ -1765,6 +1831,9 @@ impl StatusView {
                     self.pick_rev_with_args(op, chosen.to_string(), p.switches, window, cx)
                 }
                 PickerAction::RunGit => self.run_user_command(chosen.to_string(), cx),
+                PickerAction::PatchApply => self.run_patch_apply(chosen.to_string(), cx),
+                PickerAction::PatchAm => self.run_patch_am(chosen.to_string(), cx),
+                PickerAction::PatchCreate => self.run_patch_create(chosen.to_string(), cx),
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 PickerAction::StashMessage { include_untracked } => {
                     self.run_stash_push(include_untracked, chosen.to_string(), cx)

@@ -176,6 +176,11 @@ pub enum Command {
     BisectBad,
     BisectSkip,
     BisectReset,
+    /// Patch (magit's `W`): apply a diff to the worktree, apply a mailbox as
+    /// commits (`git am`), or create patch files for a range (`format-patch`).
+    PatchApply,
+    PatchAm,
+    PatchCreate,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`). Owned strings so a
@@ -1296,6 +1301,21 @@ pub fn bisect_transient(bisecting: bool) -> Transient {
     }
 }
 
+/// The patch transient (magit's `W`): create patches for a range, apply a diff
+/// to the worktree, or apply a mailbox as commits (`git am`).
+pub fn patch_transient() -> Transient {
+    Transient {
+        title: plain_title("Patch"),
+        groups: vec![Group {
+            title: plain_title("Patch"),
+            suffixes: vec![
+                Action::suffix("c", "create (format-patch a range)", Command::PatchCreate),
+                Action::suffix("a", "apply a patch to the worktree", Command::PatchApply),
+                Action::suffix("w", "apply a mailbox as commits (am)", Command::PatchAm),
+            ],
+        }],
+    }
+}
 
 pub fn ignore_transient() -> Transient {
     Transient {
