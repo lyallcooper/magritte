@@ -633,8 +633,8 @@ of it exists. `SPC` preview is now covered (as a returning overlay).
 | `k`/`x` discard untracked | delete → **system trash**, confirm | system trash, confirm (git clean fallback when unavailable) | ✓ |
 | `k`/`x` discard unstaged/staged | confirm; entry-dispatched | mirrors magit exactly (incl. partial-discard `.rej` reporting) | ✓ |
 | `k` conflicted hunk | smerge-keep-current + per-hunk smerge keys | keyboard verbs refused; take-ours/theirs via right-click only | ∂ |
-| `v` reverse at point | reverse staged/committed hunk/file/region in worktree | commit view: reverse the file/hunk at point in the worktree (evil `-` / vanilla `v`, per preset). Status-view unstaged/staged reverse still ✗ (covered by discard/unstage) | ∂ committed done; region ✗ |
-| `a` apply at point | apply committed hunk/file to worktree; untracked file → am; prefix = 3-way | commit view: apply the file/hunk at point to the worktree (`a`); no `am`/3-way. Plus cherry-apply on commit rows | ∂ committed done; region/am/3-way ✗ |
+| `v` reverse at point | reverse staged/committed hunk/file/region in worktree | commit/diff view: reverse the file / hunk / region at point in the worktree (evil `-` / vanilla `v`, per preset). Status-view unstaged/staged reverse still ✗ (covered by discard/unstage) | ✓ committed (incl. region) |
+| `a` apply at point | apply committed hunk/file to worktree; untracked file → am; prefix = 3-way | commit/diff view: apply the file / hunk / region at point to the worktree (`a`); no `am`/3-way | ∂ committed (incl. region) done; am/3-way ✗ |
 
 ### Row types
 
@@ -777,10 +777,10 @@ Grouped by kind, roughly ordered within each group.
   on a commit/stash row previews it (returning overlay). Remaining: reverse-
   preview on `DEL`, and scroll-in-place rather than a full-screen swap.
 - ~~`u` reverse-in-index, `v` reverse, `a` apply on committed changes.~~ Done
-  in both the commit view and the standalone `d` diff view, at file/hunk
-  granularity (`a` apply-to-worktree, `v`/`-` reverse-in-worktree per preset,
-  `u` reverse-in-index). Remaining: region (sub-hunk) scope, and per-diff-type
-  DWIM (we use uniform apply/reverse semantics rather than magit's
+  in both the commit view and the standalone `d` diff view, at file / hunk /
+  region (sub-hunk, from a visual selection) granularity (`a` apply-to-worktree,
+  `v`/`-` reverse-in-worktree per preset, `u` reverse-in-index). Remaining only:
+  per-diff-type DWIM (we use uniform apply/reverse semantics rather than magit's
   unstaged→stage / staged→unstage branching).
 - ~~Diff context keys `+`/`-`/`0`.~~ Done for the status view (diff/commit
   views still fixed at 3).
