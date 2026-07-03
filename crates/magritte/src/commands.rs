@@ -533,7 +533,20 @@ pub(crate) fn commands() -> &'static [Command] {
             }
         ),
         top!("yank", "Copy", Category::Essential, "y", |t, _w, cx| t
-            .copy_selection(cx)),
+            .copy_at_point(cx)),
+        // The buffer's revision (evil `y b`, magit-copy-buffer-revision):
+        // palette-only, bound to `yb` in the evil preset.
+        Command {
+            id: "copy-buffer-revision",
+            title: "Copy revision",
+            category: Category::Essential,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |t, _w, cx| t.copy_buffer_revision(cx),
+        },
         // Motions: resolved through the keymap (so remappable) but applied
         // screen-aware via the `nav_*` helpers. Kept out of the `?` menu and the
         // `:` palette (`menu: false`/`palette: false`) — cursor motions are
@@ -683,6 +696,15 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("V", "visual"),
     // magit-mode-map's C-w (copy the value at point) — kept in both presets.
     ("ctrl-w", "yank"),
+    // evil-collection-magit's `y` yank family: `y` is a prefix, so copy is
+    // `yy`/`ys` (both our context copy — we don't split whole-line from
+    // section-value), plus `yb` buffer revision and `yr` show-refs. `Cmd-C`
+    // copies directly, without the prefix.
+    ("y y", "yank"),
+    ("y s", "yank"),
+    ("y b", "copy-buffer-revision"),
+    ("y r", "show-refs"),
+    ("cmd-c", "yank"),
     // Fold-level aliases (magit's M-1..M-4).
     ("alt-1", "show-level-1"),
     ("alt-2", "show-level-2"),
@@ -729,6 +751,7 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     // Region selection on set-mark; copy on magit's `magit-copy-section-value`.
     ("ctrl-space", "visual"),
     ("ctrl-w", "yank"),
+    ("cmd-c", "yank"),
     // Magit binds both `h` and `?` to the dispatch (`?` is the fixed key).
     ("h", "help"),
     // Fold-level aliases (magit's M-1..M-4).
@@ -787,7 +810,12 @@ pub(crate) fn default_key_for_command(
 ) -> Option<&'static str> {
     use config::KeymapPreset::*;
     match preset {
-        EvilCollection => cmd.key,
+        // evil-collection-magit makes `y` a yank *prefix* (`yy`/`ys`/`yb`/`yr`),
+        // so copy is on `C-w`/`Cmd-C` and the sequences below — never a bare `y`.
+        EvilCollection => match cmd.id {
+            "yank" => None,
+            _ => cmd.key,
+        },
         Vanilla => match cmd.id {
             "push" => Some("P"),
             "reset" => Some("X"),
@@ -1213,7 +1241,21 @@ pub(crate) fn dispatch_menu(
                 // Prefer the preset's default key (e.g. vanilla `g` for
                 // refresh), not the registry's evil-collection one.
                 let default = default_key_for_command(config.keymap_preset, c);
-                current_key(keymap, c.id, default).map(|keys| {
+                let keys = if c.id == "yank" {
+                    // Copy has no bare key in evil (`y` is the yank prefix); show
+                    // the `yy` family key. Vanilla magit's copy is `C-w`.
+                    Some(
+                        if matches!(config.keymap_preset, config::KeymapPreset::EvilCollection) {
+                            "y y"
+                        } else {
+                            "ctrl-w"
+                        }
+                        .to_string(),
+                    )
+                } else {
+                    current_key(keymap, c.id, default)
+                };
+                keys.map(|keys| {
                     Suffix::Info(transient::Info {
                         keys,
                         description: c.title.to_string(),
@@ -1274,9 +1316,9 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
         title: transient::plain_title(title),
         suffixes,
     };
-    // The copy key differs by preset: evil's `y` vs magit-mode-map's `C-w`
-    // (vanilla magit's `y` is show-refs, so `y`-to-copy would surprise there).
-    let copy_key = if view.is_evil() { "y" } else { "ctrl-w" };
+    // The copy key differs by preset: evil's `yy` yank family vs magit-mode-map's
+    // `C-w` (vanilla magit's `y` is show-refs, so `y`-to-copy would surprise).
+    let copy_key = if view.is_evil() { "y y" } else { "ctrl-w" };
 
     match &view.screen {
         Screen::Commit { view: cv, .. } => Transient {

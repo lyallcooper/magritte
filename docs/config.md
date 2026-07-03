@@ -121,8 +121,8 @@ recent_count = 10
   `.git/magritte/config.toml` to reorder sections for one repository.
 
 **Act at point** in a section: on a commit row, `Return` opens its diff and
-`y` (or `Cmd+C`) copies the hash; on a stash row, `Return` shows it, `a`
-applies, `A` pops, `x` (evil) / `k` (vanilla) drops (confirmed), and `y`
+`Cmd+C` (or `ys`/`C-w`) copies the hash; on a stash row, `Return` shows it, `a`
+applies, `A` pops, `x` (evil) / `k` (vanilla) drops (confirmed), and `Cmd+C`
 copies the reference. File rows stage/unstage/discard as usual; discarded
 files go to the system trash. On a section header, `s`/`u` act on the whole
 section.
@@ -199,6 +199,7 @@ keymap_preset = "evil"
   | `n` / `p`, `alt-n` / `alt-p` | the same two motions (vanilla preset) |
   | `alt-1` … `alt-4` | fold level 1–4 (alias of `1`–`4`) |
   | `g z` `g n` `g i` `g u` `g s` `g f u` `g f p` `g p u` `g p p` | jump to a section (evil; vanilla uses the `j` menu) |
+  | `y y` / `y s` `y b` `y r` | copy the value at point / copy value, copy revision, show refs (evil's `y` yank family) |
   | `ctrl-w` | copy the value at point (magit's `C-w`) |
   | `V` | visual selection (alongside `v`, evil preset) |
   | `ctrl-v` / `alt-v`, `backspace` | page down / up, page up (vanilla preset) |
@@ -221,8 +222,8 @@ keymap_preset = "evil"
     as `!`, `|`, `$`, and vanilla `:` still go through the effective keymap.
   - On a commit or stash row, the act-at-point verbs (`Return`, and for a
     stash `a` apply / `A` pop / `x` drop) act on the item at point. The copy
-    and revert keys follow the preset: copy is evil `y` / vanilla `Ctrl-w`,
-    revert is evil `_`/`-` / vanilla `V`/`v`.
+    and revert keys follow the preset: copy is evil `yy`/`ys` (or `Cmd+C`) /
+    vanilla `Ctrl-w`, revert is evil `_`/`-` / vanilla `V`/`v`.
 
   Keys typed inside a transient, picker, or the commit editor are consumed by
   that mode, not the keymap.
@@ -261,7 +262,9 @@ appears only while the (opt-in) Ignored section is shown, and the other
 | `fold` | `Tab` | Fold / unfold |
 | `refresh` | `g r` | Refresh status |
 | `visual` | `v` | Toggle visual selection |
-| `yank` | `y` | Copy the selection |
+| `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |
+| `copy-buffer-revision` | `y b` (evil) | Copy the current view's revision |
+| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, and tags |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
 | `check-updates` | — | Check for updates |

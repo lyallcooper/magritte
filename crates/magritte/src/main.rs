@@ -1608,7 +1608,7 @@ mod tests {
             "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",",
             "$", // commands
             "s", "u", "S", "U", "x", // applying changes
-            "v", "y", "tab", "g r", ":", "enter", // essential + open file + palette
+            "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
             "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", // half/full page motions
         ];
@@ -1617,6 +1617,9 @@ mod tests {
         // vim/emacs conventions — see the `nav!` block in commands.rs).
         const OVERRIDES: &[&str] = &[
             "j", "k", "g g", "G", "g j", "g k", "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b",
+            // The evil yank family (`yy` copy, `yr` show-refs) shows in the menu
+            // but resolves through the prefix machinery, not `run_dispatch`.
+            "y y", "y r",
         ];
 
         let config = config::Config::default();

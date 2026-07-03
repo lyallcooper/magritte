@@ -104,7 +104,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `w` | am (apply patches) | ∂ in-progress continue/skip/abort only |
 | `W` | patch (format patches) | ✗ |
 | `X` | reset | ✓ ours `O` (vanilla `X`) |
-| `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil via palette); `Y` cherry ✗ |
+| `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil `yr`); `Y` cherry ✗ |
 | `z` | stash | ✓ ours `Z` (vanilla `z`) |
 | `Z` | worktree | ✗ |
 | `!` | run | ✓ |
@@ -460,8 +460,8 @@ bulk; the git side is one command.
 
 **Show-refs (`y`)** ∂ — the refs browser is in: branches, remote-tracking
 refs, and tags in one scrollable list, colored by kind, with checkout
-(Return) and delete (`k`/`x`) at point. Vanilla binds `y` (magit); evil keeps
-`y` for yank, so evil opens it from the `:` palette. Remaining: ahead/behind
+(Return) and delete (`k`/`x`) at point. Vanilla binds `y` (magit); evil binds
+`yr` via its `y` yank family (matching evil-collection). Remaining: ahead/behind
 counts vs a comparison point, rename at point, and the comparison args
 (`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`).
 
@@ -527,7 +527,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `x` | reset-quickly (reset to rev at point) | — | ✗ (`x` is discard in evil; unbound in vanilla) |
 | `Y` | cherry | — | ✗ |
 | `I` | init | — | ✗ |
-| `y` | show-refs | `:` palette (evil keeps `y` for yank) | ∂ |
+| `y` | show-refs | `y r` via the `y` yank family (evil keeps `y` a prefix) | ∂ |
 | `RET` | visit-thing | Enter opens file/commit/stash | ✓ (≈ semantics, see act-at-point) |
 | `C-RET` | visit in other window | — | N/A |
 | `SPC` / `DEL` | show-or-scroll (peek commit at point) | Space previews the commit/stash at point (Esc returns); DEL pages up | ≈ overlay preview, not other-window; no reverse-preview |
@@ -696,15 +696,17 @@ Covered above per area; the residual key-level notes:
 - ≈: **`z` stash** — evil-collection's default keeps magit's `z`; our `Z` is
   its non-default `use-z-for-folds` layout (without the z-fold family).
   `$` — evil-collection moves the process buffer to `` ` `` by default; we
-  keep `$`. `C-w` is our yank (evil-collection: window-map) — deliberate.
+  keep `$`. We also keep `C-w` as copy (evil-collection frees it for
+  window-map) — deliberate; the `y` yank family is our main copy.
   `C-u` scrolls unconditionally (evil gates it behind `want-C-u-scroll`).
   `:` opens our palette (evil-ex analog). `gh` section-up isn't bound
   (magit's `^` works).
+- ✓: the `y` yank family — `y` is a prefix with `yy`/`ys` copy (we don't split
+  whole-line from section-value), `yb` copy-buffer-revision, and `yr` show-refs,
+  matching evil-collection. `Cmd+C` copies without the prefix.
 - ✗: `gR` refresh-all, `o` reset-quickly, `X` untrack, `'`/`"`
   submodule/subtree, `=` less-context, `~` default-context, `S-SPC` preview,
-  `/ n N` search, `yb` copy-buffer-revision. `yr` show-refs ∂ — the browser
-  exists but evil opens it from the `:` palette, since `y` stays yank (we
-  don't implement the evil `y` yank-prefix family, so no `yr`/`yy`/`ys`).
+  `/ n N` search.
 - Rebase todo editor vs evil git-rebase-mode: `p r e s f d` ✓ (+ our `w`
   reword alias); `x` ≈ collision — evil's `x` is **exec** (which we lack
   entirely), ours is a drop alias; `M-j`/`M-k` move vs our `J`/`K`;

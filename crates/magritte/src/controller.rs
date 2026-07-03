@@ -2009,6 +2009,43 @@ impl StatusView {
         self.set_status(COPIED_LABEL.to_string(), true, cx);
     }
 
+    /// The screen-aware "Copy" (evil `yy`/`ys`, magit's `C-w`, and `Cmd-C`):
+    /// copy the value at point for the active view — the selected diff text in a
+    /// commit/diff buffer, the commit hash in the log, the ref at point in the
+    /// refs browser, else the status selection (a commit/stash value or the row
+    /// text). We don't split whole-line from section-value the way a text buffer
+    /// does; our copy already yields the useful value at point.
+    pub(crate) fn copy_at_point(&mut self, cx: &mut Context<Self>) {
+        if self.commit_view().is_some() || self.diff_view().is_some() {
+            self.copy_flat_diff_selection(cx);
+        } else if self.log().is_some() {
+            self.copy_log_commit(cx);
+        } else if let Some(name) = self
+            .refs_view()
+            .and_then(RefsView::selected_row)
+            .and_then(RefsRow::ref_name)
+            .map(str::to_string)
+        {
+            self.copy_to_clipboard(name, cx);
+        } else {
+            self.copy_selection(cx);
+        }
+    }
+
+    /// Copy the revision the current view represents (evil `yb`, magit's
+    /// `magit-copy-buffer-revision`): the shown commit in a commit buffer, else
+    /// the checked-out HEAD.
+    pub(crate) fn copy_buffer_revision(&mut self, cx: &mut Context<Self>) {
+        let rev = match &self.screen {
+            Screen::Commit { view, .. } => Some(view.rev.clone()),
+            _ => self.status.as_ref().and_then(|s| s.head.oid.clone()),
+        };
+        match rev {
+            Some(rev) => self.copy_to_clipboard(rev, cx),
+            None => self.set_status("No revision to copy".to_string(), true, cx),
+        }
+    }
+
     /// Run a resolved push/pull/fetch on the background executor, then refresh.
     /// `chosen` is a remote name for the remote-level transfers, or a
     /// `remote/branch` ref (possibly newly typed) for the `*Ref` ones.

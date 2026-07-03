@@ -145,6 +145,22 @@ impl StatusView {
             return;
         }
 
+        // In evil, `y` is a yank *prefix* (yy/ys/yb/yr) in normal state, but a
+        // direct yank of the selection in visual state — evil-collection's
+        // visual-map `y`. So when a selection is active, copy immediately rather
+        // than starting a sequence.
+        if self.is_evil()
+            && !shift
+            && !ctrl
+            && !alt
+            && !cmd
+            && key == "y"
+            && self.has_visual_selection()
+        {
+            self.copy_at_point(cx);
+            return;
+        }
+
         // The git command-log view takes over the window; esc/q/$ close it, and
         // it scrolls with the usual vi/less keys.
         if self.git_log().is_some() {
@@ -239,8 +255,8 @@ impl StatusView {
                 "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
                 "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                // Copy: evil's `y`; magit-mode-map's `C-w` (the vanilla key).
-                "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
+                // Copy: magit-mode-map's `C-w` and `Cmd-C`. Evil's `y` is a yank
+                // prefix (yy/ys/yb/yr), resolved through the sequence machinery.
                 "w" if ctrl => self.copy_flat_diff_selection(cx),
                 "c" if cmd => self.copy_flat_diff_selection(cx),
                 _ => {}
@@ -270,7 +286,6 @@ impl StatusView {
                 "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
                 "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
                 "w" if ctrl => self.copy_flat_diff_selection(cx),
                 "c" if cmd => self.copy_flat_diff_selection(cx),
                 _ => {}
@@ -325,6 +340,7 @@ impl StatusView {
                 "enter" | "b" => self.refs_checkout_at_point(window, cx),
                 "x" if self.is_evil() => self.refs_delete_at_point(window, cx),
                 "k" if self.is_vanilla() => self.refs_delete_at_point(window, cx),
+                "ctrl-w" | "cmd-c" => self.copy_at_point(cx),
                 _ => {}
             }
             return;
@@ -598,6 +614,16 @@ impl StatusView {
         matches!(self.classify_seq(key), KeyMatch::Prefix)
     }
 
+    /// Whether a visual (region) selection is active on the current screen — the
+    /// flat-diff selection in a commit/diff view, or the status-list selection.
+    pub(crate) fn has_visual_selection(&self) -> bool {
+        if self.flat_diff().is_some() {
+            self.flat_diff().is_some_and(|fd| fd.visual.is_some())
+        } else {
+            matches!(self.screen, Screen::Status) && self.selection.visual.is_some()
+        }
+    }
+
     /// Begin (or extend) a sequence: remember the keys typed so far and show the
     /// lightweight bottom strip. The sequence then waits indefinitely for the
     /// next key; after `which_key_delay_ms` the strip expands into the which-key
@@ -752,9 +778,8 @@ impl StatusView {
             "V" if self.is_vanilla() => self.open_revert_transient(cx),
             "v" if self.is_vanilla() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
             "r" => self.invoke_command("rebase", window, cx),
-            // Evil-only `y`: vanilla's copy is `C-w`, which resolves through
-            // the keymap to yank (copying the full hash for a commit row).
-            "y" if self.is_evil() => self.copy_to_clipboard(hash, cx),
+            // Copy the full hash. `C-w`/`Cmd-C` here; evil's `y`/`ys` yank
+            // resolves through the keymap (also to the full hash).
             "cmd-c" => self.copy_to_clipboard(hash, cx),
             _ => return false,
         }
@@ -782,7 +807,6 @@ impl StatusView {
                 self.confirm = Some((format!("Drop {reference}?"), Confirm::DropStash(reference)));
                 cx.notify();
             }
-            "y" if self.is_evil() => self.copy_to_clipboard(reference, cx),
             "cmd-c" => self.copy_to_clipboard(reference, cx),
             _ => return false,
         }
@@ -799,7 +823,6 @@ impl StatusView {
             "A" => self.pick_selected(PickOp::CherryPick, window, cx),
             "_" if self.is_evil() => self.pick_selected(PickOp::Revert, window, cx),
             "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
-            "y" if self.is_evil() => self.copy_log_commit(cx),
             "cmd-c" => self.copy_log_commit(cx),
             // magit's log limit keys: show twice / half as many commits.
             "+" => self.relimit_log(true, cx),
@@ -858,7 +881,7 @@ impl StatusView {
                 "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
                 "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
+                "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_commit_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -871,7 +894,7 @@ impl StatusView {
                 "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
                 "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
-                "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
+                "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_diff_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
             }
@@ -880,7 +903,7 @@ impl StatusView {
         if self.log().is_some() {
             match key {
                 "r" => self.rebase_since_selected(Vec::new(), cx),
-                "y" | "ctrl-w" => self.copy_log_commit(cx),
+                "ctrl-w" => self.copy_log_commit(cx),
                 "q" => self.close_log(window, cx),
                 _ => {
                     if !self.log_commit_key(key, window, cx) {
