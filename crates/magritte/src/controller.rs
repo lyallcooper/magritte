@@ -1723,6 +1723,37 @@ impl StatusView {
                 PickerAction::StashMessage { include_untracked } => {
                     self.run_stash_push(include_untracked, chosen.to_string(), cx)
                 }
+                // Worktree create/move: step one captures the ref/branch and
+                // opens the directory prompt; step two runs the git command.
+                PickerAction::WorktreeAddRef => {
+                    self.prompt_worktree_dir(
+                        PickerAction::WorktreeAddDir {
+                            commit: chosen.to_string(),
+                        },
+                        &chosen,
+                        window,
+                        cx,
+                    );
+                }
+                PickerAction::WorktreeBranchName => {
+                    self.prompt_worktree_dir(
+                        PickerAction::WorktreeBranchDir {
+                            branch: chosen.to_string(),
+                        },
+                        &chosen,
+                        window,
+                        cx,
+                    );
+                }
+                PickerAction::WorktreeAddDir { commit } => {
+                    self.do_add_worktree(chosen.to_string(), commit, cx)
+                }
+                PickerAction::WorktreeBranchDir { branch } => {
+                    self.do_add_branch_worktree(chosen.to_string(), branch, cx)
+                }
+                PickerAction::WorktreeMoveTo { from } => {
+                    self.do_move_worktree(from, chosen.to_string(), cx)
+                }
                 // Set the option value (empty clears it) and reopen the transient.
                 PickerAction::SetOption { key, .. } => {
                     if let Some(mut ts) = p.resume {

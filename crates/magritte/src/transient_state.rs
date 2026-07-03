@@ -333,6 +333,24 @@ pub(crate) enum PickerAction {
     StashMessage {
         include_untracked: bool,
     },
+    /// The `%` worktree browser's create/move flows — each picks or types a
+    /// value, then a directory, then runs a `git worktree` command.
+    /// Pick an existing ref to check out in a new worktree (then a directory).
+    WorktreeAddRef,
+    /// Directory for a new worktree checking out `commit`.
+    WorktreeAddDir {
+        commit: String,
+    },
+    /// Type a new branch name to create in a new worktree (then a directory).
+    WorktreeBranchName,
+    /// Directory for a new worktree on the new `branch`.
+    WorktreeBranchDir {
+        branch: String,
+    },
+    /// New directory to move the worktree at `from` to.
+    WorktreeMoveTo {
+        from: String,
+    },
 }
 
 impl PickerAction {
@@ -403,6 +421,11 @@ impl PickerAction {
             PickerAction::RunGit => transient::plain_title("Run"),
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
             PickerAction::StashMessage { .. } => transient::plain_title("Stash message (optional)"),
+            PickerAction::WorktreeAddRef => transient::plain_title("Worktree for ref"),
+            PickerAction::WorktreeBranchName => transient::plain_title("New branch name"),
+            PickerAction::WorktreeAddDir { .. }
+            | PickerAction::WorktreeBranchDir { .. }
+            | PickerAction::WorktreeMoveTo { .. } => transient::plain_title("Worktree directory"),
         }
     }
 
@@ -456,6 +479,9 @@ impl PickerAction {
             PickerAction::RunGit => "run",
             PickerAction::Ignore(_) => "ignore",
             PickerAction::StashMessage { .. } => "stash",
+            PickerAction::WorktreeAddRef | PickerAction::WorktreeBranchName => "next",
+            PickerAction::WorktreeAddDir { .. } | PickerAction::WorktreeBranchDir { .. } => "add",
+            PickerAction::WorktreeMoveTo { .. } => "move",
         }
     }
 }

@@ -254,7 +254,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `ignore` | `i` | Ignore (transient) |
 | `log` | `l` | Log (transient) |
 | `diff` | `d` | Diff (transient) |
-| `worktree` | `Z` (vanilla) / `%` | Browse worktrees (visit / remove at point) |
+| `worktree` | `Z` (vanilla) / `%` | Browse worktrees (visit / add / branch / move / remove) |
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |

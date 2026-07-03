@@ -44,6 +44,31 @@ fn lists_the_main_worktree_alone_then_added_ones() {
 }
 
 #[test]
+fn move_relocates_a_linked_worktree() {
+    let (_t, repo) = repo();
+    let wt_root = tempfile::tempdir().unwrap();
+    let from = wt_root.path().join("wt-a");
+    repo.worktree_add_branch(from.to_str().unwrap(), "feature", None)
+        .unwrap();
+
+    let to = wt_root.path().join("wt-b");
+    repo.worktree_move(from.to_str().unwrap(), to.to_str().unwrap())
+        .unwrap();
+
+    let wts = repo.worktrees().unwrap();
+    let feature = wts
+        .iter()
+        .find(|w| w.branch.as_deref() == Some("feature"))
+        .expect("the feature worktree is still listed");
+    assert!(
+        std::fs::canonicalize(&feature.path).unwrap() == std::fs::canonicalize(&to).unwrap(),
+        "the worktree now lives at the new path"
+    );
+    assert!(!from.exists(), "the old directory is gone");
+    assert!(to.join("f").exists(), "the tree moved with it");
+}
+
+#[test]
 fn add_checks_out_an_existing_ref_in_a_new_worktree() {
     let (_t, repo) = repo();
     repo.run(["branch", "dev"]).unwrap();

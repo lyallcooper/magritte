@@ -357,6 +357,11 @@ impl StatusView {
                 "enter" | "g" => self.visit_worktree_at_point(cx),
                 "x" if self.is_evil() => self.remove_worktree_at_point(cx),
                 "k" if self.is_vanilla() => self.remove_worktree_at_point(cx),
+                // Create/move (magit's worktree transient): `b` worktree for an
+                // existing ref, `c` new branch + worktree, `m` move.
+                "b" => self.start_add_worktree(window, cx),
+                "c" => self.start_create_branch_worktree(window, cx),
+                "m" => self.start_move_worktree(window, cx),
                 _ => {}
             }
             return;

@@ -1980,6 +1980,27 @@ impl StatusView {
             Self::remove_worktree_from_button,
         ));
         header = header.child(self.key_action(
+            "worktree-add",
+            "b",
+            "add",
+            view,
+            Self::start_add_worktree,
+        ));
+        header = header.child(self.key_action(
+            "worktree-branch",
+            "c",
+            "branch",
+            view,
+            Self::start_create_branch_worktree,
+        ));
+        header = header.child(self.key_action(
+            "worktree-move",
+            "m",
+            "move",
+            view,
+            Self::start_move_worktree,
+        ));
+        header = header.child(self.key_action(
             "worktree-close",
             "esc",
             "close",
