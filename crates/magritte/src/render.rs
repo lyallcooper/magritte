@@ -1947,7 +1947,6 @@ impl StatusView {
                 "Select a commit to squash into"
             }
             LogPurpose::SelectSquash { .. } => "Select a commit to fix up / squash into",
-            LogPurpose::SelectBisectGood => "Select a known-good commit to bisect from",
             LogPurpose::Browse => "Log",
         };
         let mut header = div().flex().items_center().gap_3().child(

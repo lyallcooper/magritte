@@ -332,6 +332,12 @@ pub(crate) enum PickerAction {
     PatchApply,
     PatchAm,
     PatchCreate,
+    /// Bisect start (magit's `B B`): prompt for the known-bad revision (default
+    /// HEAD), then the known-good revision, then `git bisect start <bad> <good>`.
+    BisectBadRev,
+    BisectGoodRev {
+        bad: String,
+    },
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
     /// Stash with the typed message (empty = git's default "WIP on …").
@@ -439,6 +445,10 @@ impl PickerAction {
             PickerAction::PatchApply => transient::plain_title("Apply patch file"),
             PickerAction::PatchAm => transient::plain_title("Apply mailbox (am)"),
             PickerAction::PatchCreate => transient::plain_title("format-patch"),
+            PickerAction::BisectBadRev => transient::plain_title("Bisect: known-bad revision"),
+            PickerAction::BisectGoodRev { .. } => {
+                transient::plain_title("Bisect: known-good revision")
+            }
         }
     }
 
@@ -498,6 +508,8 @@ impl PickerAction {
             PickerAction::RefsRename { .. } => "rename",
             PickerAction::PatchApply | PickerAction::PatchAm => "apply",
             PickerAction::PatchCreate => "create",
+            PickerAction::BisectBadRev => "next",
+            PickerAction::BisectGoodRev { .. } => "start",
         }
     }
 }

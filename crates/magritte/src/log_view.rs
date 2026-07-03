@@ -38,8 +38,6 @@ pub(crate) enum LogPurpose {
     /// Pick the commit to fix up / squash into (the `--fixup=`/`--squash=`
     /// target), for the chosen [`SquashOp`], with the commit transient's args.
     SelectSquash { op: SquashOp, args: Vec<String> },
-    /// Pick a known-good commit to start a bisect against (`HEAD` is the bad end).
-    SelectBisectGood,
 }
 
 /// The four fixup/squash flavors from the commit transient. Fixup keeps the
@@ -123,7 +121,6 @@ impl StatusView {
                 LogPurpose::SelectRebaseBase { .. }
                     | LogPurpose::SelectRebaseReword { .. }
                     | LogPurpose::SelectSquash { .. }
-                    | LogPurpose::SelectBisectGood
             )
         )
     }
@@ -235,33 +232,6 @@ impl StatusView {
         self.spawn_log(
             LogPurpose::SelectRebaseBase { args: switches },
             move |repo| repo.log_with(&args),
-            cx,
-        );
-    }
-
-    /// Open the log to pick a known-good commit for `git bisect start` (magit's
-    /// `B B`); the checked-out `HEAD` is the bad end.
-    pub(crate) fn start_log_select_bisect(&mut self, cx: &mut Context<Self>) {
-        let args = build_log_args(Vec::new(), LogScope::Current, Vec::new(), Self::LOG_LIMIT);
-        self.spawn_log(
-            LogPurpose::SelectBisectGood,
-            move |repo| repo.log_with(&args),
-            cx,
-        );
-    }
-
-    /// Start a bisect with the log-selected commit as the known-good end and
-    /// `HEAD` as the known-bad end, then return to the status view (its banner
-    /// shows the running bisect).
-    pub(crate) fn bisect_start_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(good) = self.selected_commit_hash() else {
-            return;
-        };
-        self.screen = Screen::Status;
-        self.run_job(
-            "Starting bisect…",
-            "Bisecting",
-            move |repo| repo.bisect_start("HEAD", &good),
             cx,
         );
     }
@@ -549,7 +519,6 @@ impl StatusView {
                 let (op, args) = (*op, args.clone());
                 self.fixup_squash_selected(op, args, cx);
             }
-            Some(LogPurpose::SelectBisectGood) => self.bisect_start_selected(cx),
             _ => {}
         }
     }

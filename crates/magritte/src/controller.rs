@@ -123,14 +123,14 @@ impl StatusView {
             SequenceSkip => self.sequence_skip(window, cx),
             SequenceAbort => self.sequence_abort(window, cx),
             SequenceEditTodo => self.open_rebase_edit_todo(cx),
-            BisectStart => self.start_log_select_bisect(cx),
+            BisectStart => self.open_value_prompt(PickerAction::BisectBadRev, "HEAD", window, cx),
             BisectGood => self.run_bisect_mark(BisectMark::Good, cx),
             BisectBad => self.run_bisect_mark(BisectMark::Bad, cx),
             BisectSkip => self.run_bisect_mark(BisectMark::Skip, cx),
             BisectReset => self.run_bisect_reset(cx),
-            PatchApply => self.open_patch_prompt(PickerAction::PatchApply, "", window, cx),
-            PatchAm => self.open_patch_prompt(PickerAction::PatchAm, "", window, cx),
-            PatchCreate => self.open_patch_prompt(PickerAction::PatchCreate, "-1 HEAD", window, cx),
+            PatchApply => self.open_value_prompt(PickerAction::PatchApply, "", window, cx),
+            PatchAm => self.open_value_prompt(PickerAction::PatchAm, "", window, cx),
+            PatchCreate => self.open_value_prompt(PickerAction::PatchCreate, "-1 HEAD", window, cx),
         }
     }
 
@@ -1179,9 +1179,9 @@ impl StatusView {
         );
     }
 
-    /// Open a free-text prompt for a patch operation (magit's `W`/`w`), seeded
-    /// with `seed` (a default range for create; empty for the file prompts).
-    pub(crate) fn open_patch_prompt(
+    /// Open a free-text value prompt (a patch file/range, a bisect revision, …),
+    /// seeded with `seed` (empty leaves it blank).
+    pub(crate) fn open_value_prompt(
         &mut self,
         action: PickerAction,
         seed: &str,
@@ -1432,6 +1432,17 @@ impl StatusView {
             "Ending bisect…",
             "Bisect ended",
             |repo| repo.bisect_reset(),
+            cx,
+        );
+    }
+
+    /// Start a bisect between the entered bad and good revisions; git checks out
+    /// the midpoint (its banner then drives good/bad/skip).
+    pub(crate) fn run_bisect_start(&mut self, bad: String, good: String, cx: &mut Context<Self>) {
+        self.run_job(
+            "Starting bisect…",
+            "Bisecting",
+            move |repo| repo.bisect_start(bad.trim(), good.trim()),
             cx,
         );
     }
@@ -1834,6 +1845,19 @@ impl StatusView {
                 PickerAction::PatchApply => self.run_patch_apply(chosen.to_string(), cx),
                 PickerAction::PatchAm => self.run_patch_am(chosen.to_string(), cx),
                 PickerAction::PatchCreate => self.run_patch_create(chosen.to_string(), cx),
+                // Bisect start: bad rev captured, now prompt for the good rev;
+                // with both, run `git bisect start`.
+                PickerAction::BisectBadRev => self.open_value_prompt(
+                    PickerAction::BisectGoodRev {
+                        bad: chosen.to_string(),
+                    },
+                    "",
+                    window,
+                    cx,
+                ),
+                PickerAction::BisectGoodRev { bad } => {
+                    self.run_bisect_start(bad, chosen.to_string(), cx)
+                }
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 PickerAction::StashMessage { include_untracked } => {
                     self.run_stash_push(include_untracked, chosen.to_string(), cx)
