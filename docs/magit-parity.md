@@ -526,13 +526,13 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `G` | refresh-all | vanilla `G` → plain refresh | ≈ deliberate — single-buffer app |
 | `q` | bury buffer | Esc/`q` close sub-screens | ≈ no buffer stack |
 | `$` | process buffer | `$` command log | ✓ (see Other buffers) |
-| `%` / `Z` | worktree | — | ✗ |
+| `%` / `Z` | worktree | worktree browser: vanilla `Z`+`%`, evil `%` | ✓ (see Worktree) |
 | `Q` / `:` | git-command | vanilla `:`/`Q`, evil `\|` | ✓ |
 | `s`/`S`/`u`/`U` | stage/stage-modified/unstage/unstage-all | same keys | ✓ (`S` ≈, see act-at-point) |
 | `k` | delete-thing | evil `x` / vanilla `k` discard | ≈ stash-row drop is hardcoded `x` in both presets |
-| `K` | file-untrack | `K` untrack the file at point (`git rm --cached`) | ✓ |
+| `K` | file-untrack | untrack the file at point (`git rm --cached`): vanilla `K`, evil `X` (evil-collection's remap) | ✓ |
 | `R` | file-rename | — | ✗ |
-| `x` | reset-quickly (reset to rev at point) | log-view `x` resets HEAD (mixed) to the commit at point, confirmed | ∂ done in the log; the status `x` stays discard |
+| `x` | reset-quickly (reset to rev at point) | vanilla `x` / evil `o` (evil-collection's remap) resets HEAD (mixed) to the commit at point in the log or a status commit section, confirmed | ✓ |
 | `Y` | cherry | — | ✗ |
 | `I` | init | — | ✗ |
 | `y` | show-refs | `y r` via the `y` yank family (evil keeps `y` a prefix) | ∂ |

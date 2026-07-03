@@ -1022,6 +1022,10 @@ pub(crate) fn default_key_for_command(
         // so copy is on `C-w`/`Cmd-C` and the sequences below — never a bare `y`.
         EvilCollection => match cmd.id {
             "yank" => None,
+            // evil-collection moves untrack from magit's `K` to `X` (its `K` is
+            // free once discard takes `x`); our reset transient sits on `O`, so
+            // `X` is available.
+            "untrack" => Some("X"),
             _ => cmd.key,
         },
         Vanilla => match cmd.id {
@@ -1575,11 +1579,12 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                     config::KeymapPreset::EvilCollection => ("_", "-"),
                     config::KeymapPreset::Vanilla => ("V", "v"),
                 };
+                let reset = if view.is_evil() { "o" } else { "x" };
                 suffixes.extend([
                     info("A", "Cherry-pick"),
                     info(revert, "Revert"),
                     info("r", "Rebase since"),
-                    info("x", "Reset here"),
+                    info(reset, "Reset here"),
                 ]);
             }
             suffixes.push(info("q", "Back"));
@@ -1659,6 +1664,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                     config::KeymapPreset::EvilCollection => ("_", "-"),
                     config::KeymapPreset::Vanilla => ("V", "v"),
                 };
+                let reset = if view.is_evil() { "o" } else { "x" };
                 menu.groups.insert(
                     0,
                     group(
@@ -1671,6 +1677,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                             info(revert, "Revert"),
                             info(reverse, "Revert changes"),
                             info("r", "Rebase since"),
+                            info(reset, "Reset here"),
                         ],
                     ),
                 );

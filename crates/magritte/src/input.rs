@@ -814,6 +814,10 @@ impl StatusView {
             "V" if self.is_vanilla() => self.open_revert_transient(cx),
             "v" if self.is_vanilla() => self.pick_selected(PickOp::RevertNoCommit, window, cx),
             "r" => self.invoke_command("rebase", window, cx),
+            // reset-quickly to this commit: evil-collection's `o`, vanilla
+            // magit's `x` (evil `x` is discard, which no-ops on a commit row).
+            "o" if self.is_evil() => self.reset_quickly_selected(window, cx),
+            "x" if self.is_vanilla() => self.reset_quickly_selected(window, cx),
             // Copy the full hash. `C-w`/`Cmd-C` here; evil's `y`/`ys` yank
             // resolves through the keymap (also to the full hash).
             "cmd-c" => self.copy_to_clipboard(hash, cx),
@@ -859,7 +863,10 @@ impl StatusView {
             "A" => self.pick_selected(PickOp::CherryPick, window, cx),
             "_" if self.is_evil() => self.pick_selected(PickOp::Revert, window, cx),
             "V" if self.is_vanilla() => self.pick_selected(PickOp::Revert, window, cx),
-            "x" => self.reset_quickly_selected(window, cx),
+            // reset-quickly, on the commit at point: evil-collection's `o`,
+            // vanilla magit's `x` (evil `x` is discard).
+            "o" if self.is_evil() => self.reset_quickly_selected(window, cx),
+            "x" if self.is_vanilla() => self.reset_quickly_selected(window, cx),
             "cmd-c" => self.copy_log_commit(cx),
             // magit's log limit keys: show twice / half as many commits.
             "+" => self.relimit_log(true, cx),

@@ -264,7 +264,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `stage-all` | `S` | Stage all tracked changes (confirms if something is already staged) |
 | `unstage-all` | `U` | Unstage all (confirms if unstaged changes exist alongside) |
 | `discard` | `x` | Discard the selection |
-| `untrack` | `K` | Untrack the file at point (`git rm --cached`) |
+| `untrack` | `K` (vanilla) / `X` (evil) | Untrack the file at point (`git rm --cached`) |
 | `open-file` | `Return` | Open file at point in `editor` |
 | `fold` | `Tab` | Fold / unfold |
 | `refresh` | `g r` | Refresh status |

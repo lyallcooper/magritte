@@ -69,6 +69,7 @@ Key cross-cutting models:
 
 ## Conventions
 
+- **Defer to Magit** when there is any imlementation ambiguity. Keybindings and features should work the same way they do as in Magit, unless we have specifically decided otherwise. The "evil" keymap preset keys should match evil-collection-magit, while the "vanilla" keymap preset keys should match vanilla emacs/magit.
 - **Comments** carry only what a future reader needs—don't narrate alternatives considered or justify a choice against one. Match the surrounding comment density.
 - **Commits:** committing with `git commit --no-gpg-sign` is fine here (1Password signing is often locked). Do not include AI/tool attribution or thread-reference trailers in commit messages (no Claude/Codex/Amp co-author lines, generated-by lines, or Amp thread IDs). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md`, `PLAN.md`, and the `scripts/` dev helpers stay out of commits unless asked.
 - **Verify UI changes live** with `scripts/dbg.sh` + a screenshot before considering them done; verify core changes with `cargo test`.
