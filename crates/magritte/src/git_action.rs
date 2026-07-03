@@ -56,6 +56,8 @@ pub enum Action {
     },
     /// Several actions applied in sequence (a region spanning multiple files).
     Batch(Vec<Action>),
+    /// Stop tracking a file (`git rm --cached`), keeping its working copy.
+    Untrack(String),
 }
 
 impl Action {
@@ -72,6 +74,7 @@ impl Action {
             Action::UnstageFile(e) => to_err(repo.unstage_file(&e)),
             Action::DiscardTracked(p) => to_err(repo.discard_tracked_file(&p)),
             Action::DiscardUntracked(p) => to_err(repo.discard_untracked_file(&p)),
+            Action::Untrack(p) => to_err(repo.untrack(&p)),
             Action::StageAll => to_err(repo.stage_modified()),
             Action::StageUntracked(paths) => to_err(repo.stage_untracked(&paths)),
             Action::UnstageAll => to_err(repo.unstage_all()),

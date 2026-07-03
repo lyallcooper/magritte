@@ -1621,7 +1621,7 @@ mod tests {
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$",
             "%", // commands
-            "s", "u", "S", "U", "x", // applying changes
+            "s", "u", "S", "U", "x", "K", // applying changes
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
             "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", // half/full page motions

@@ -104,6 +104,14 @@ impl Repo {
         Ok(())
     }
 
+    /// Stop tracking `path` (`git rm --cached`): remove it from the index while
+    /// leaving the working-tree file in place, so it becomes untracked (magit's
+    /// `K`). `-r` lets it also untrack a directory path.
+    pub fn untrack(&self, path: &str) -> Result<()> {
+        self.run(["rm", "--cached", "-r", "--", path])?;
+        Ok(())
+    }
+
     // --- Hunk-level -------------------------------------------------------
 
     /// Stage an entire hunk into the index.

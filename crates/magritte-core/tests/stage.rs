@@ -533,3 +533,20 @@ fn stage_modified_stages_tracked_only() {
     let s = repo.status().unwrap();
     assert!(entry(&s, "new.txt").unwrap().is_staged());
 }
+
+#[test]
+fn untrack_removes_from_index_keeps_worktree() {
+    let t = TestRepo::new();
+    t.write("keep.txt", "content\n");
+    t.commit_all("add keep.txt");
+    let repo = open(&t);
+
+    repo.untrack("keep.txt").unwrap();
+
+    // Dropped from the index (no longer tracked) but still on disk.
+    assert!(
+        t.git(["ls-files", "keep.txt"]).is_empty(),
+        "keep.txt is no longer tracked"
+    );
+    assert!(t.path().join("keep.txt").exists(), "the working file stays");
+}

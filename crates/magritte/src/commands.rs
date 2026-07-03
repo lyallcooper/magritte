@@ -654,6 +654,14 @@ pub(crate) fn commands() -> &'static [Command] {
             &["restore", "throw away"],
             |t, _w, cx| t.act(Op::Discard, cx)
         ),
+        top!(
+            "untrack",
+            "Untrack file",
+            Category::Applying,
+            "K",
+            &["git rm", "stop tracking", "rm cached"],
+            |t, _w, cx| t.untrack_at_point(cx)
+        ),
         // Essentials.
         top!(
             "open-file",

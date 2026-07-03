@@ -754,6 +754,27 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Untrack the file at point (`K`, `git rm --cached`): drop it from the
+    /// index while keeping the working copy, so it becomes untracked (magit's
+    /// `K`). Only a tracked file has something to untrack.
+    pub(crate) fn untrack_at_point(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.rows.get(self.selected).and_then(|r| r.target.as_ref()) else {
+            return;
+        };
+        let section = match target {
+            Target::File(f) => f.section,
+            Target::Hunk { file, .. } | Target::Line { file, .. } => file.section,
+        };
+        let path = target_path(target).to_string();
+        match section {
+            SectionId::Untracked => {
+                self.set_status(format!("{path} is already untracked"), false, cx)
+            }
+            SectionId::Ignored => self.set_status(format!("{path} is ignored"), false, cx),
+            _ => self.run_action(Action::Untrack(path), cx),
+        }
+    }
+
     /// Run a git mutation on the background executor, then refresh.
     pub(crate) fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
         self.confirm = None;

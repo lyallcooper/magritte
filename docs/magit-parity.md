@@ -506,8 +506,8 @@ context menu). **Mergetool** ✗ — launching `git mergetool --gui` per
 conflicted file is meaningful standalone.
 
 **File-dispatch** mostly N/A (buffer-centric entry point, blob navigation);
-its file-scoped operations (untrack, rename, file log, blame-this-file)
-are ✗ and would live as act-at-point commands on file rows.
+`K` untrack is done (act-at-point on a file row); the rest (rename, file log,
+blame-this-file) are ✗ and would likewise live as act-at-point file commands.
 
 **Margin-settings** N/A (Emacs window margins). **Insert-trailer** ∂ —
 trailer insertion (Acked-by/Reviewed-by/Co-authored-by…) would be a natural
@@ -530,7 +530,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `Q` / `:` | git-command | vanilla `:`/`Q`, evil `\|` | ✓ |
 | `s`/`S`/`u`/`U` | stage/stage-modified/unstage/unstage-all | same keys | ✓ (`S` ≈, see act-at-point) |
 | `k` | delete-thing | evil `x` / vanilla `k` discard | ≈ stash-row drop is hardcoded `x` in both presets |
-| `K` | file-untrack | — | ✗ |
+| `K` | file-untrack | `K` untrack the file at point (`git rm --cached`) | ✓ |
 | `R` | file-rename | — | ✗ |
 | `x` | reset-quickly (reset to rev at point) | — | ✗ (`x` is discard in evil; unbound in vanilla) |
 | `Y` | cherry | — | ✗ |
@@ -806,8 +806,8 @@ Grouped by kind, roughly ordered within each group.
 - Stash variants (`i`/`w`/`x`), file-limited stash push, `b` branch-from-
   stash.
 - Section-local `1`–`4` and `S-TAB` global cycling.
-- `x` reset-quickly, `K` untrack. (`R` rename at point is done in the refs
-  browser.)
+- `x` reset-quickly. (`K` untrack and `R` rename-at-point — in the refs
+  browser — are done.)
 - Reset `b` (branch) and `f` (file checkout).
 - The git-variable widget → branch-configure + remote-configure (existing
   TODO) + tag `-u`.
