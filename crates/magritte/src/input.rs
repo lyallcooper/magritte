@@ -203,6 +203,41 @@ impl StatusView {
             return;
         }
 
+        // The blame view is a pager too (no cursor): `Esc`/`q` close via the
+        // registry, motions translate to less-style scrolling.
+        if matches!(self.screen, Screen::Blame { .. }) {
+            let chorded = chord(&key, shift, ctrl, alt, cmd);
+            if matches!(
+                self.screen_bindings()
+                    .get(&chorded)
+                    .and_then(|v| v.first())
+                    .map(String::as_str),
+                Some("close")
+            ) {
+                return self.close_screen(window, cx);
+            }
+            let page = page_rows(window);
+            let cased = chord(&key, shift, false, false, false);
+            let (skey, sshift) = match self
+                .screen_bindings()
+                .get(&cased)
+                .and_then(|v| v.first())
+                .map(String::as_str)
+            {
+                Some("move-down") => ("j", false),
+                Some("move-up") => ("k", false),
+                Some("goto-bottom") => ("g", true),
+                Some("goto-top") => ("g", false),
+                _ => (key.as_str(), shift),
+            };
+            if let Screen::Blame { view, lines, .. } = &mut self.screen {
+                let len = lines.len();
+                apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
+            }
+            cx.notify();
+            return;
+        }
+
         // A commit's diff detail (opened from the log) is topmost; esc/q returns
         // to the log, and it scrolls with the usual vi/less keys.
         // The interactive-rebase todo editor: set an action, reorder, then start.
@@ -445,6 +480,7 @@ impl StatusView {
             ScreenKind::RebaseTodo => self.close_rebase_todo(window, cx),
             ScreenKind::Refs => self.close_refs(window, cx),
             ScreenKind::Worktree => self.close_worktrees(window, cx),
+            ScreenKind::Blame => self.close_blame(window, cx),
             ScreenKind::Settings => self.close_settings(window, cx),
             ScreenKind::Status | ScreenKind::Editor => {}
         }

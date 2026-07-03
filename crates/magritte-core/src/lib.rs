@@ -15,6 +15,7 @@
 //! its own `magritte-command` crate; until then the one boundary is intentional.
 
 pub mod bisect;
+pub mod blame;
 pub mod branch;
 pub mod commit;
 pub mod conflict;
@@ -39,6 +40,7 @@ pub mod transient;
 pub mod worktree;
 
 pub use bisect::{Bisect, BisectMark};
+pub use blame::BlameLine;
 pub use branch::LocalBranch;
 pub use commit::{CommitMetadata, CommitMode};
 pub use conflict::ConflictSide;

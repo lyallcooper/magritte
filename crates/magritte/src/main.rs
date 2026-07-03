@@ -26,6 +26,7 @@ use gpui::{
 };
 
 mod app_icon;
+mod blame_view;
 mod commands;
 mod commit_diff_view;
 mod commit_editor;
@@ -352,6 +353,13 @@ enum Screen {
     /// The worktree browser (`%`, magit's worktree): linked worktrees with
     /// visit/remove at point.
     Worktree(worktree_view::WorktreeView),
+    /// A file's `git blame`: a scrollable list of annotated lines (sha · author
+    /// · date · content). A pager like the command log — no cursor.
+    Blame {
+        view: ScrollView,
+        path: String,
+        lines: Rc<Vec<magritte_core::BlameLine>>,
+    },
 }
 
 /// A data-free tag for each [`Screen`] — its *keymap context*. Every command
@@ -371,6 +379,7 @@ pub(crate) enum ScreenKind {
     RebaseTodo,
     Refs,
     Worktree,
+    Blame,
 }
 
 impl ScreenKind {
@@ -386,6 +395,7 @@ impl ScreenKind {
         ScreenKind::RebaseTodo,
         ScreenKind::Refs,
         ScreenKind::Worktree,
+        ScreenKind::Blame,
     ];
 }
 
@@ -769,6 +779,7 @@ impl StatusView {
             Screen::RebaseTodo(_) => ScreenKind::RebaseTodo,
             Screen::Refs(_) => ScreenKind::Refs,
             Screen::Worktree(_) => ScreenKind::Worktree,
+            Screen::Blame { .. } => ScreenKind::Blame,
         }
     }
 

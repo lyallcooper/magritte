@@ -383,6 +383,22 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             );
         }),
+        // Blame the file at point (magit's `git blame`); palette-reachable, opens
+        // the scrollable annotated view.
+        Command {
+            id: "blame",
+            contexts: STATUS,
+            title: "Blame",
+            aliases: &["annotate", "who wrote"],
+            category: Category::Commands,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            at_point: false,
+            leaf: None,
+            run: |t, _w, cx| t.open_blame(cx),
+        },
         top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
             // While a rebase is paused, `r` opens the continue/skip/abort
             // transient (magit's `r r` = continue) rather than starting a new one.
@@ -509,6 +525,7 @@ pub(crate) fn commands() -> &'static [Command] {
                 ScreenKind::RebaseTodo,
                 ScreenKind::Refs,
                 ScreenKind::Worktree,
+                ScreenKind::Blame,
             ]),
             title: "Back",
             aliases: &[],
@@ -2202,6 +2219,7 @@ const SECONDARY_MENU_SCREENS: &[ScreenKind] = &[
     ScreenKind::RebaseTodo,
     ScreenKind::Refs,
     ScreenKind::Worktree,
+    ScreenKind::Blame,
 ];
 
 /// Build a secondary screen's `?` menu from the registry: its scoped verbs (the

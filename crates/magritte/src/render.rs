@@ -1657,6 +1657,100 @@ impl StatusView {
             .child(body)
     }
 
+    /// A file's `git blame`: a monospace, scrollable list of annotated lines
+    /// (commit · date · author gutter, shown once per commit run, then the line).
+    pub(crate) fn render_blame(
+        &self,
+        sv: &ScrollView,
+        path: &str,
+        lines: &Rc<Vec<magritte_core::BlameLine>>,
+        view: &Entity<Self>,
+    ) -> gpui::Div {
+        let count = lines.len();
+        let body = uniform_list("blame-rows", count, {
+            let view = view.clone();
+            move |range, _window, cx| {
+                let this = view.read(cx);
+                match &this.screen {
+                    Screen::Blame { lines, .. } => range
+                        .filter_map(|ix| lines.get(ix).map(|l| this.render_blame_row(l)))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                }
+            }
+        })
+        .track_scroll(&sv.scroll)
+        .flex_grow(1.0);
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .font_family(self.font.clone())
+            .p_4()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(self.palette.section)
+                            .child(SharedString::from(format!("Blame: {path}"))),
+                    )
+                    .child(self.header_action("close", "close", view)),
+            )
+            .child(body)
+    }
+
+    fn render_blame_row(&self, line: &magritte_core::BlameLine) -> AnyElement {
+        // The commit/author gutter shows once per commit run (magit's blame
+        // chunking); continued lines leave it blank so the run reads as one.
+        let gutter = if line.group_start {
+            let mut author = line.author.clone();
+            author.truncate(12);
+            format!("{} {} {author}", line.short, line.date)
+        } else {
+            String::new()
+        };
+        div()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .gap_2()
+            .overflow_hidden()
+            .child(
+                div()
+                    .w(px(230.0))
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(gutter)),
+            )
+            .child(
+                div()
+                    .w(px(40.0))
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(line.line_no.to_string())),
+            )
+            .child(
+                div()
+                    .flex_grow(1.0)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(self.palette.fg)
+                    .child(SharedString::from(line.text.clone())),
+            )
+            .into_any_element()
+    }
+
     /// The command log flattened into uniform rows: each invocation becomes a
     /// command row followed by its (dim, indented) stderr lines — git's
     /// progress/error narrative.
@@ -3325,6 +3419,15 @@ impl Render for StatusView {
                     cx,
                 );
             }
+            Screen::Blame {
+                view: scroll,
+                path,
+                lines,
+            } => {
+                return self.render_overlays(
+                    root.child(self.render_blame(scroll, path, lines, &view)),
+                    &view,
+                    window,
                     cx,
                 );
             }
