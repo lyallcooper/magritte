@@ -907,6 +907,9 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     ("ctrl-space", "visual"),
     ("ctrl-w", "yank"),
     ("cmd-c", "yank"),
+    // Worktree's secondary key (magit binds both `Z` and `%`); the primary `Z`
+    // comes from `default_key_for_command`.
+    ("%", "worktree"),
     // Magit binds both `h` and `?` to the dispatch (`?` is the fixed key).
     ("h", "help"),
     // Fold-level aliases (magit's M-1..M-4).
@@ -979,6 +982,10 @@ pub(crate) fn default_key_for_command(
             "refresh" => Some("g"),
             "status-jump" => Some("j"),
             "show-refs" => Some("y"),
+            // Vanilla magit's worktree primary is `Z` (stash is `z`, so `Z` is
+            // free); `%` still works as its secondary (added below). Evil keeps
+            // the registry `%` — its `Z` is stash.
+            "worktree" => Some("Z"),
             // `n`/`p` and `M-n`/`M-p` are aliases below; no Ctrl-j/`g j` in vanilla.
             "next-section" | "prev-section" => None,
             "next-sibling-section" | "prev-sibling-section" => None,

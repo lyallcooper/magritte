@@ -106,7 +106,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `X` | reset | ✓ ours `O` (vanilla `X`) |
 | `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil `yr`); `Y` cherry ✗ |
 | `z` | stash | ✓ ours `Z` (vanilla `z`) |
-| `Z` | worktree | ∂ ours `%` (our `Z` is stash); browse/visit/remove, create ✗ |
+| `Z` | worktree | ∂ vanilla `Z`+`%` (magit); evil `%` (its `Z` is stash, evil-collection's z-for-folds layout); browse/visit/remove, create ✗ |
 | `!` | run | ✓ |
 | `a` | apply change at point | ✗ (cherry-apply exists for commit rows; no diff-section apply) |
 | `v` | reverse change at point | ≈ revert-no-commit on commit rows only; no diff-region reverse |
@@ -465,12 +465,13 @@ refs, and tags in one scrollable list, colored by kind, with checkout
 counts vs a comparison point, rename at point, and the comparison args
 (`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`).
 
-**Worktree (`%`)** ∂ — the worktree browser is in: it lists the linked
-worktrees (branch/detached, main + current markers, path), visits one at point
+**Worktree** ∂ — the worktree browser is in: it lists the linked worktrees
+(branch/detached, main + current markers, path), visits one at point
 (Return/`g` opens or focuses its Magritte window), and removes one (`k`/`x`,
-confirmed, non-force so git refuses a dirty worktree). Bound to `%` (our `Z` is
-stash, unlike magit). Remaining: creating worktrees (checkout an existing ref /
-new branch into a new directory) and moving one — deferred to a follow-up.
+confirmed, non-force so git refuses a dirty worktree). Vanilla binds `Z`+`%`
+(magit's pair); evil binds `%` — its `Z` is stash, matching evil-collection's
+`use-z-for-folds` layout. Remaining: creating worktrees (checkout an existing
+ref / new branch into a new directory) and moving one — deferred to a follow-up.
 
 **Patch (`W`)** ✗ — format-patch (sub-transient with mail args, reroll,
 cover letters), apply plain patch (`--index`/`--cached`/`--3way`), save diff
