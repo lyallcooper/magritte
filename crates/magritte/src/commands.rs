@@ -1602,6 +1602,38 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                 ],
             )],
         },
+        Screen::Refs(_) => {
+            let del = if view.is_evil() { "x" } else { "k" };
+            Transient {
+                title: transient::plain_title("Help"),
+                groups: vec![group(
+                    "Refs",
+                    vec![
+                        info("enter", "Checkout"),
+                        info(del, "Delete"),
+                        info("R", "Rename"),
+                        info("q", "Back"),
+                    ],
+                )],
+            }
+        }
+        Screen::Worktree(_) => {
+            let del = if view.is_evil() { "x" } else { "k" };
+            Transient {
+                title: transient::plain_title("Help"),
+                groups: vec![group(
+                    "Worktree",
+                    vec![
+                        info("enter", "Visit"),
+                        info(del, "Remove"),
+                        info("b", "Add"),
+                        info("c", "Branch"),
+                        info("m", "Move"),
+                        info("q", "Back"),
+                    ],
+                )],
+            }
+        }
         _ => {
             let mut menu = dispatch_menu(&view.keymap, &view.config);
             if view

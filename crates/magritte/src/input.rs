@@ -964,6 +964,28 @@ impl StatusView {
             }
             return;
         }
+        if self.refs_view().is_some() {
+            match key {
+                "enter" | "b" => self.refs_checkout_at_point(window, cx),
+                "x" | "k" => self.refs_delete_at_point(window, cx),
+                "R" => self.refs_rename_at_point(window, cx),
+                "q" => self.close_refs(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
+        if self.worktree_view().is_some() {
+            match key {
+                "enter" | "g" => self.visit_worktree_at_point(cx),
+                "x" | "k" => self.remove_worktree_at_point(cx),
+                "b" => self.start_add_worktree(window, cx),
+                "c" => self.start_create_branch_worktree(window, cx),
+                "m" => self.start_move_worktree(window, cx),
+                "q" => self.close_worktrees(window, cx),
+                _ => self.run_dispatch(key, window, cx),
+            }
+            return;
+        }
         // Menu clicks deliver `ctrl-w` directly (the key path resolves it
         // through the keymap to yank instead), so map it to the point copy
         // before the shared verbs.
