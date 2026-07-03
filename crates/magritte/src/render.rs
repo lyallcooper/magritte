@@ -473,7 +473,12 @@ impl StatusView {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(kbd::key_chip("g", self.palette.dim, &self.font))
+                            .child(kbd::key_chip(
+                                "g",
+                                self.palette.dim,
+                                &self.font,
+                                &self.ui_font,
+                            ))
                             .child(SharedString::from("global")),
                     );
                 if has_repo {
@@ -482,7 +487,12 @@ impl StatusView {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(kbd::key_chip("l", self.palette.dim, &self.font))
+                            .child(kbd::key_chip(
+                                "l",
+                                self.palette.dim,
+                                &self.font,
+                                &self.ui_font,
+                            ))
                             .child(SharedString::from("this repo")),
                     );
                 }
@@ -500,6 +510,7 @@ impl StatusView {
                             TRANSIENT_SAVE_KEY,
                             self.palette.dim,
                             &self.font,
+                            &self.ui_font,
                         ))
                         .child(SharedString::from("save these arguments as the default")),
                 )
@@ -677,11 +688,21 @@ impl StatusView {
                         .flex()
                         .items_center()
                         .gap(px(3.0))
-                        .child(kbd::key_chip(a.key, self.palette.dim, &self.font))
+                        .child(kbd::key_chip(
+                            a.key,
+                            self.palette.dim,
+                            &self.font,
+                            &self.ui_font,
+                        ))
                         .child(div().text_color(self.palette.dim).child("/"))
-                        .child(kbd::key_chip(also, self.palette.dim, &self.font))
+                        .child(kbd::key_chip(
+                            also,
+                            self.palette.dim,
+                            &self.font,
+                            &self.ui_font,
+                        ))
                         .into_any_element(),
-                    None => kbd::key_chip(a.key, self.palette.dim, &self.font),
+                    None => kbd::key_chip(a.key, self.palette.dim, &self.font, &self.ui_font),
                 };
                 // A concrete remote ref is colored like one; placeholders and
                 // non-ref actions ("elsewhere") use the normal foreground.
@@ -746,7 +767,12 @@ impl StatusView {
                     .cursor_pointer()
                     .group(KBD_ROW_GROUP)
                     .child(track_target(key.clone()))
-                    .child(kbd::key_chip(&c.key, self.palette.dim, &self.font))
+                    .child(kbd::key_chip(
+                        &c.key,
+                        self.palette.dim,
+                        &self.font,
+                        &self.ui_font,
+                    ))
                     .child(self.hover_label(&c.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
@@ -969,7 +995,12 @@ impl StatusView {
             .group(KBD_ROW_GROUP)
             .child(track_target(id));
         if let Some(keys) = keys {
-            row = row.child(kbd::key_chip(&keys, self.palette.dim, &self.font));
+            row = row.child(kbd::key_chip(
+                &keys,
+                self.palette.dim,
+                &self.font,
+                &self.ui_font,
+            ));
         }
         row.child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
@@ -1196,10 +1227,12 @@ impl StatusView {
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
     /// `g r`) keeps its keys spaced *inside* the one cap (see [`format_keys`]).
     pub(crate) fn key_tokens(&self, keys: &str) -> gpui::Div {
-        div()
-            .flex()
-            .items_center()
-            .child(kbd::key_chip(keys, self.palette.dim, &self.font))
+        div().flex().items_center().child(kbd::key_chip(
+            keys,
+            self.palette.dim,
+            &self.font,
+            &self.ui_font,
+        ))
     }
 
     /// A clickable key hint: a keycap + label that runs `action` (the same
@@ -1225,7 +1258,12 @@ impl StatusView {
             .cursor_pointer()
             .group(KBD_ROW_GROUP)
             .child(track_target(id))
-            .child(kbd::key_chip(key, self.palette.dim, &self.font))
+            .child(kbd::key_chip(
+                key,
+                self.palette.dim,
+                &self.font,
+                &self.ui_font,
+            ))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| action(v, window, vcx));
@@ -1257,7 +1295,12 @@ impl StatusView {
             .cursor_pointer()
             .group(KBD_ROW_GROUP)
             .child(track_target(id))
-            .child(kbd::key_chip(&key, self.palette.dim, &self.font))
+            .child(kbd::key_chip(
+                &key,
+                self.palette.dim,
+                &self.font,
+                &self.ui_font,
+            ))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(id, window, vcx));
@@ -2873,7 +2916,12 @@ impl StatusView {
                 bar.flex()
                     .items_center()
                     .gap_2()
-                    .child(kbd::key_chip(&keys, self.palette.dim, &self.font))
+                    .child(kbd::key_chip(
+                        &keys,
+                        self.palette.dim,
+                        &self.font,
+                        &self.ui_font,
+                    ))
                     .child(SharedString::from(msg)),
             );
         }
@@ -2904,7 +2952,12 @@ impl StatusView {
                         .items_center()
                         .gap_1()
                         .text_color(self.palette.dim)
-                        .child(kbd::key_chip("ctrl-g", self.palette.dim, &self.font))
+                        .child(kbd::key_chip(
+                            "ctrl-g",
+                            self.palette.dim,
+                            &self.font,
+                            &self.ui_font,
+                        ))
                         .child(SharedString::from("to cancel")),
                 ),
             // A plain message, possibly multi-line (a command's full output):
