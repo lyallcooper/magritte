@@ -98,15 +98,19 @@ impl Repo {
         parse_diff(&out.stdout)
     }
 
-    fn diff_base(extra: &[String]) -> Vec<String> {
+    fn diff_base(&self, extra: &[String]) -> Vec<String> {
         let mut args: Vec<String> = DIFF_BASE.iter().map(|s| s.to_string()).collect();
+        // Adjustable context (`+`/`-`/`0` in the UI); git defaults to 3 when unset.
+        if let Some(n) = self.diff_context {
+            args.push(format!("-U{n}"));
+        }
         args.extend(extra.iter().cloned());
         args
     }
 
     /// The base argv for diffing a [`DiffSource`] (`--cached` for the index).
-    fn diff_source_args(source: DiffSource) -> Vec<String> {
-        let mut args = Self::diff_base(&[]);
+    fn diff_source_args(&self, source: DiffSource) -> Vec<String> {
+        let mut args = self.diff_base(&[]);
         if source == DiffSource::Staged {
             args.push("--cached".to_string());
         }
@@ -116,7 +120,7 @@ impl Repo {
     /// Diff a single path against the index or HEAD. Returns `None` when there
     /// is no diff (e.g. the path is unchanged for that source).
     pub fn diff_path(&self, source: DiffSource, path: &str) -> Result<Option<FileDiff>> {
-        let mut diffs = self.diff_with(Self::diff_source_args(source), &[path.to_string()])?;
+        let mut diffs = self.diff_with(self.diff_source_args(source), &[path.to_string()])?;
         Ok(if diffs.is_empty() {
             None
         } else {
@@ -128,7 +132,7 @@ impl Repo {
     /// --cached` for all staged changes). Used to show the full staged diff in
     /// the commit editor.
     pub fn diff_all(&self, source: DiffSource) -> Result<Vec<FileDiff>> {
-        self.diff_with(Self::diff_source_args(source), &[])
+        self.diff_with(self.diff_source_args(source), &[])
     }
 
     /// Every tracked change vs. HEAD (`git diff HEAD`): staged and unstaged
@@ -141,19 +145,19 @@ impl Repo {
         if !self.succeeds(["rev-parse", "--verify", "--quiet", "HEAD"])? {
             return self.diff_all(DiffSource::Staged);
         }
-        let mut args = Self::diff_base(&[]);
+        let mut args = self.diff_base(&[]);
         args.push("HEAD".to_string());
         self.diff_with(args, &[])
     }
 
     /// The standalone diff transient's unstaged action (`git diff [args]`).
     pub fn diff_unstaged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
-        self.diff_with(Self::diff_base(extra), paths)
+        self.diff_with(self.diff_base(extra), paths)
     }
 
     /// The standalone diff transient's staged action (`git diff --cached [args]`).
     pub fn diff_staged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
-        let mut args = Self::diff_base(extra);
+        let mut args = self.diff_base(extra);
         args.push("--cached".to_string());
         self.diff_with(args, paths)
     }
@@ -166,7 +170,7 @@ impl Repo {
         extra: &[String],
         paths: &[String],
     ) -> Result<Vec<FileDiff>> {
-        let mut args = Self::diff_base(extra);
+        let mut args = self.diff_base(extra);
         args.push(rev.to_string());
         self.diff_with(args, paths)
     }
@@ -178,7 +182,7 @@ impl Repo {
         extra: &[String],
         paths: &[String],
     ) -> Result<Vec<FileDiff>> {
-        let mut args = Self::diff_base(extra);
+        let mut args = self.diff_base(extra);
         args.push(rev_or_range.to_string());
         self.diff_with(args, paths)
     }
@@ -204,7 +208,7 @@ impl Repo {
         } else {
             EMPTY_TREE.to_string()
         };
-        let mut args = Self::diff_base(extra);
+        let mut args = self.diff_base(extra);
         args.push(base);
         args.push(rev.to_string());
         self.diff_with(args, paths)

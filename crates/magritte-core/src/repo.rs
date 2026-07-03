@@ -52,6 +52,9 @@ pub struct Repo {
     /// When set, an invocation exceeding this kills the child and returns
     /// [`Error::TimedOut`] — a backstop against a wedged remote/hook.
     timeout: Option<Duration>,
+    /// Diff context lines (`-U<n>`) for content diffs; `None` uses git's
+    /// default of 3. The UI's `+`/`-`/`0` context keys set it.
+    pub(crate) diff_context: Option<usize>,
 }
 
 /// A tag name paired with the number of commits between it and HEAD.
@@ -301,6 +304,7 @@ impl Repo {
             log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cancel: None,
             timeout: None,
+            diff_context: None,
         })
     }
 
@@ -312,6 +316,7 @@ impl Repo {
             log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cancel: None,
             timeout: None,
+            diff_context: None,
         }
     }
 
@@ -340,6 +345,14 @@ impl Repo {
     pub fn with_cancel(&self, flag: Arc<AtomicBool>) -> Repo {
         let mut repo = self.clone();
         repo.cancel = Some(flag);
+        repo
+    }
+
+    /// A clone whose content diffs use `n` context lines (`-U<n>`) — the UI's
+    /// adjustable diff context.
+    pub fn with_diff_context(&self, n: usize) -> Repo {
+        let mut repo = self.clone();
+        repo.diff_context = Some(n);
         repo
     }
 

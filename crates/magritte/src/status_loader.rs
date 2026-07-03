@@ -398,6 +398,12 @@ impl StatusView {
         let Some(repo) = self.read_repo() else {
             return;
         };
+        // Non-default diff context (`+`/`-`) re-fetches with `-U<n>`.
+        let repo = if self.diff_context == DEFAULT_DIFF_CONTEXT {
+            repo
+        } else {
+            repo.with_diff_context(self.diff_context)
+        };
         if !self.diffs.contains_key(&key) {
             self.diffs.insert(key.clone(), DiffState::Loading);
         }
@@ -455,5 +461,34 @@ impl StatusView {
             .ok();
         })
         .detach();
+    }
+
+    /// Show more (`+`) / fewer (`-`) / the default (`0`) context lines around
+    /// hunks in the status view — magit's `magit-diff-{more,less,default}-
+    /// context`. Each re-fetches the currently-shown diffs at the new width.
+    pub(crate) fn diff_context_more(&mut self, cx: &mut Context<Self>) {
+        self.set_diff_context(self.diff_context.saturating_add(1), cx);
+    }
+
+    pub(crate) fn diff_context_less(&mut self, cx: &mut Context<Self>) {
+        self.set_diff_context(self.diff_context.saturating_sub(1), cx);
+    }
+
+    pub(crate) fn diff_context_default(&mut self, cx: &mut Context<Self>) {
+        self.set_diff_context(DEFAULT_DIFF_CONTEXT, cx);
+    }
+
+    fn set_diff_context(&mut self, new: usize, cx: &mut Context<Self>) {
+        if new == self.diff_context {
+            return;
+        }
+        self.diff_context = new;
+        // Re-fetch every loaded diff at the new context; each rebuilds the rows
+        // (preserving the cursor) as it lands.
+        let keys: Vec<(DiffSource, String)> = self.diffs.keys().cloned().collect();
+        for (source, path) in keys {
+            self.load_diff(source, path, true, cx);
+        }
+        self.set_status(format!("Diff context: {new}"), false, cx);
     }
 }

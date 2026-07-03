@@ -193,6 +193,9 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
 
 /// Fixed row height (points) so `uniform_list` can virtualize every row.
 const ROW_HEIGHT: f32 = 18.0;
+
+/// git's default diff context (`-U3`); the `+`/`-`/`0` keys adjust from here.
+const DEFAULT_DIFF_CONTEXT: usize = 3;
 /// How long a success notice lingers before auto-dismissing (seconds).
 const STATUS_FADE_SECS: u64 = 4;
 /// How long background work must run before the title-bar spinner appears, so
@@ -373,6 +376,9 @@ struct StatusView {
     /// covers lazily loaded diffs too. Cleared by any manual fold toggle, a
     /// refresh, or another level.
     collapse_new_hunks: bool,
+    /// Context lines shown around each hunk in the status view (git's default is
+    /// 3); the `+`/`-`/`0` keys adjust it and reload the shown diffs.
+    diff_context: usize,
     diffs: HashMap<(DiffSource, String), DiffState>,
     /// Cached syntax highlighting per file diff, keyed like `diffs`.
     highlights: HashMap<(DiffSource, String), FileHighlights>,
@@ -612,6 +618,7 @@ impl StatusView {
             expanded,
             collapsed_hunks: HashSet::new(),
             collapse_new_hunks: false,
+            diff_context: DEFAULT_DIFF_CONTEXT,
             diffs: HashMap::new(),
             highlights: HashMap::new(),
             diff_langs: HashMap::new(),

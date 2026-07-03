@@ -354,6 +354,11 @@ impl StatusView {
                 }
                 return self.open_command_palette(window, cx);
             }
+            // Diff context: show more / fewer / the default number of context
+            // lines around hunks (magit's `+`/`-`/`0`), status view only.
+            "+" if matches!(self.screen, Screen::Status) => self.diff_context_more(cx),
+            "-" if matches!(self.screen, Screen::Status) => self.diff_context_less(cx),
+            "0" if matches!(self.screen, Screen::Status) => self.diff_context_default(cx),
             // Everything else resolves through the effective keymap (the
             // shift-cased keystroke → command id), so remap/unbind take effect.
             // The plain command keys (`c`, `s`/`S`, `O`, `F`, `enter`, `v`, …)
