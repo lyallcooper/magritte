@@ -1,0 +1,316 @@
+//! The refs browser (`y`, magit's `magit-show-refs`): a scrollable listing of
+//! local branches, remote-tracking branches, and tags with a cursor and
+//! act-at-point verbs (checkout the ref at point, delete it). `impl StatusView`
+//! like the other view slices; the list is a flat `Vec<RefsRow>` so section
+//! headers and refs share one uniform-height list.
+
+use gpui::{Context, UniformListScrollHandle, Window};
+use magritte_core::Repo;
+
+use crate::*;
+
+/// One row of the refs browser: a section header (not selectable) or a ref of a
+/// given kind. The kind drives both the act-at-point verb and the coloring.
+pub(crate) enum RefsRow {
+    Header(&'static str),
+    Local { name: String, current: bool },
+    Remote(String),
+    Tag(String),
+}
+
+impl RefsRow {
+    fn is_selectable(&self) -> bool {
+        !matches!(self, RefsRow::Header(_))
+    }
+
+    /// The ref name to act on, if this row is a ref.
+    pub(crate) fn ref_name(&self) -> Option<&str> {
+        match self {
+            RefsRow::Header(_) => None,
+            RefsRow::Local { name, .. } => Some(name),
+            RefsRow::Remote(name) | RefsRow::Tag(name) => Some(name),
+        }
+    }
+}
+
+/// The refs the browser lists, gathered in one background pass.
+pub(crate) struct RefsData {
+    pub(crate) current: Option<String>,
+    pub(crate) locals: Vec<String>,
+    pub(crate) remotes: Vec<String>,
+    pub(crate) tags: Vec<String>,
+}
+
+/// Load state, so the body distinguishes still-loading from a load error from a
+/// genuinely empty repo.
+pub(crate) enum RefsLoad {
+    Loading,
+    Loaded,
+    Failed(String),
+}
+
+/// The refs browser screen: rows plus a cursor that skips headers.
+pub(crate) struct RefsView {
+    pub(crate) rows: Vec<RefsRow>,
+    pub(crate) selected: usize,
+    pub(crate) scroll: UniformListScrollHandle,
+    pub(crate) load: RefsLoad,
+}
+
+impl RefsView {
+    /// The ref at the cursor, if the selected row is a ref.
+    pub(crate) fn selected_row(&self) -> Option<&RefsRow> {
+        self.rows.get(self.selected)
+    }
+}
+
+/// Flatten the gathered refs into display rows: only non-empty sections get a
+/// header, so an empty repo shows nothing rather than three empty headings.
+fn build_rows(data: RefsData) -> Vec<RefsRow> {
+    let mut rows = Vec::new();
+    if !data.locals.is_empty() {
+        rows.push(RefsRow::Header("Branches"));
+        for name in data.locals {
+            let current = data.current.as_deref() == Some(name.as_str());
+            rows.push(RefsRow::Local { name, current });
+        }
+    }
+    if !data.remotes.is_empty() {
+        rows.push(RefsRow::Header("Remotes"));
+        rows.extend(data.remotes.into_iter().map(RefsRow::Remote));
+    }
+    if !data.tags.is_empty() {
+        rows.push(RefsRow::Header("Tags"));
+        rows.extend(data.tags.into_iter().map(RefsRow::Tag));
+    }
+    rows
+}
+
+impl StatusView {
+    pub(crate) fn refs_view(&self) -> Option<&RefsView> {
+        match &self.screen {
+            Screen::Refs(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn refs_view_mut(&mut self) -> Option<&mut RefsView> {
+        match &mut self.screen {
+            Screen::Refs(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Open the refs browser: show it (loading) immediately, then gather the
+    /// branch/remote/tag lists off the UI thread and fill it in. The screen-load
+    /// generation guards a superseded open from populating a newer screen.
+    pub(crate) fn open_refs(&mut self, cx: &mut Context<Self>) {
+        self.clear_status(cx);
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        self.screen = Screen::Refs(RefsView {
+            rows: Vec::new(),
+            selected: 0,
+            scroll: UniformListScrollHandle::new(),
+            load: RefsLoad::Loading,
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { gather_refs(&repo) })
+                .await;
+            this.update(cx, |this, cx| this.fill_refs(gen, result, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn fill_refs(
+        &mut self,
+        gen: u64,
+        result: magritte_core::Result<RefsData>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.screen_gen.is_current(gen) {
+            return;
+        }
+        if let Some(refs) = self.refs_view_mut() {
+            match result {
+                Ok(data) => {
+                    refs.rows = build_rows(data);
+                    // Land the cursor on the first selectable row (past the
+                    // leading header).
+                    refs.selected = refs
+                        .rows
+                        .iter()
+                        .position(RefsRow::is_selectable)
+                        .unwrap_or(0);
+                    refs.load = RefsLoad::Loaded;
+                }
+                Err(e) => refs.load = RefsLoad::Failed(e.to_string()),
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_refs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.screen = Screen::Status;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Move the cursor by `delta` rows, skipping section headers, and keep it in
+    /// view.
+    pub(crate) fn refs_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(refs) = self.refs_view_mut() else {
+            return;
+        };
+        if refs.rows.is_empty() {
+            return;
+        }
+        let last = refs.rows.len() as isize - 1;
+        let mut ix = (refs.selected as isize + delta).clamp(0, last);
+        // Step past headers in the direction of travel; if that runs off the
+        // end, fall back toward a selectable row the other way.
+        let step = if delta >= 0 { 1 } else { -1 };
+        while (0..=last).contains(&ix) && !refs.rows[ix as usize].is_selectable() {
+            ix += step;
+        }
+        if !(0..=last).contains(&ix) || !refs.rows[ix as usize].is_selectable() {
+            ix = (refs.selected as isize + delta).clamp(0, last);
+            while (0..=last).contains(&ix) && !refs.rows[ix as usize].is_selectable() {
+                ix -= step;
+            }
+        }
+        if (0..=last).contains(&ix) && refs.rows[ix as usize].is_selectable() {
+            refs.selected = ix as usize;
+            refs.scroll
+                .scroll_to_item(refs.selected, gpui::ScrollStrategy::Top);
+            cx.notify();
+        }
+    }
+
+    /// Check out the ref at point (magit's `magit-visit-ref` / the section-map
+    /// `b`): a local branch is switched to, a remote-tracking ref DWIMs into a
+    /// local tracking branch, a tag detaches HEAD — all handled by
+    /// [`Repo::checkout`].
+    pub(crate) fn refs_checkout_at_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .refs_view()
+            .and_then(RefsView::selected_row)
+            .and_then(RefsRow::ref_name)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.close_refs(window, cx);
+        self.run_job(
+            &format!("Checking out {name}…"),
+            "Checked out",
+            move |repo| repo.checkout(&name),
+            cx,
+        );
+    }
+
+    /// Delete the ref at point. Local branches and tags delete directly (git
+    /// refuses an unmerged branch, surfaced in the report); a remote-tracking
+    /// ref isn't a local ref to delete, so point at the push transient instead.
+    pub(crate) fn refs_delete_at_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = self.refs_view().and_then(RefsView::selected_row) else {
+            return;
+        };
+        match row {
+            RefsRow::Local { name, current } => {
+                if *current {
+                    self.set_status("Can't delete the current branch".to_string(), false, cx);
+                    return;
+                }
+                let name = name.clone();
+                self.close_refs(window, cx);
+                self.run_job(
+                    &format!("Deleting branch {name}…"),
+                    "Deleted branch",
+                    move |repo| repo.delete_branch(&name, false),
+                    cx,
+                );
+            }
+            RefsRow::Tag(name) => {
+                let name = name.clone();
+                self.close_refs(window, cx);
+                self.run_job(
+                    &format!("Deleting tag {name}…"),
+                    "Deleted tag",
+                    move |repo| repo.delete_tag(&name),
+                    cx,
+                );
+            }
+            RefsRow::Remote(_) => self.set_status(
+                "Delete a remote branch from the push transient (P k)".to_string(),
+                false,
+                cx,
+            ),
+            RefsRow::Header(_) => {}
+        }
+    }
+}
+
+/// Gather the branch/remote/tag lists in one background pass. A missing current
+/// branch (detached HEAD) is fine — nothing is marked current.
+fn gather_refs(repo: &Repo) -> magritte_core::Result<RefsData> {
+    Ok(RefsData {
+        current: repo.current_branch()?,
+        locals: repo.local_branches()?,
+        remotes: repo.remote_branches()?,
+        tags: repo.tags()?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn build_rows_headers_only_for_nonempty_sections() {
+        // No remotes: the Remotes header is skipped entirely, and the current
+        // branch is marked.
+        let rows = build_rows(RefsData {
+            current: Some("main".to_string()),
+            locals: s(&["main", "dev"]),
+            remotes: Vec::new(),
+            tags: s(&["v1.0.0"]),
+        });
+        let shape: Vec<_> = rows
+            .iter()
+            .map(|r| match r {
+                RefsRow::Header(h) => format!("#{h}"),
+                RefsRow::Local { name, current } => {
+                    format!("{name}{}", if *current { "*" } else { "" })
+                }
+                RefsRow::Remote(n) => format!("r:{n}"),
+                RefsRow::Tag(n) => format!("t:{n}"),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec!["#Branches", "main*", "dev", "#Tags", "t:v1.0.0"]
+        );
+    }
+
+    #[test]
+    fn build_rows_empty_repo_is_empty() {
+        let rows = build_rows(RefsData {
+            current: None,
+            locals: Vec::new(),
+            remotes: Vec::new(),
+            tags: Vec::new(),
+        });
+        assert!(rows.is_empty());
+    }
+}

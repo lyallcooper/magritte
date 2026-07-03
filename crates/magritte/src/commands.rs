@@ -312,6 +312,19 @@ pub(crate) fn commands() -> &'static [Command] {
                 cx,
             )
         }),
+        // The refs browser (magit's show-refs). Vanilla binds `y` (magit);
+        // evil keeps `y` for yank, so evil reaches this through the palette.
+        Command {
+            id: "show-refs",
+            title: "Show refs",
+            category: Category::Commands,
+            key: None,
+            menu: true,
+            palette: true,
+            enabled: ALWAYS,
+            leaf: None,
+            run: |t, _w, cx| t.open_refs(cx),
+        },
         top!("push", "Push", Category::Commands, "p", |t, _w, cx| {
             let rt = t.remote_targets();
             t.open_transient("push", transient::push_transient(&rt), rt, cx)
@@ -782,6 +795,7 @@ pub(crate) fn default_key_for_command(
             "discard" => Some("k"),
             "refresh" => Some("g"),
             "status-jump" => Some("j"),
+            "show-refs" => Some("y"),
             // `n`/`p` and `M-n`/`M-p` are aliases below; no Ctrl-j/`g j` in vanilla.
             "next-section" | "prev-section" => None,
             "next-sibling-section" | "prev-sibling-section" => None,

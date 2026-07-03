@@ -1778,6 +1778,150 @@ impl StatusView {
             .child(body)
     }
 
+    /// The refs browser (`y`): local branches, remotes, and tags in a scrollable
+    /// list with a cursor. Enter checks out the ref at point; the delete key
+    /// removes it. Ref names use the app-wide coloring (local blue, remote green,
+    /// tag yellow, current branch bold).
+    pub(crate) fn render_refs(&self, refs: &RefsView, view: &Entity<Self>) -> gpui::Div {
+        let count = refs.rows.len();
+        let note = |text: String, color: Hsla| {
+            div()
+                .text_color(color)
+                .child(SharedString::from(text))
+                .into_any_element()
+        };
+        let body = match &refs.load {
+            RefsLoad::Loading => note("Loading…".to_string(), self.palette.dim),
+            RefsLoad::Failed(e) => note(format!("refs failed: {e}"), self.palette.dim),
+            RefsLoad::Loaded if count == 0 => note("No refs".to_string(), self.palette.dim),
+            RefsLoad::Loaded => uniform_list("refs-rows", count, {
+                let view = view.clone();
+                move |range, _window, cx| {
+                    let this = view.read(cx);
+                    match this.refs_view() {
+                        Some(refs) => range
+                            .filter_map(|ix| refs.rows.get(ix).map(|r| (ix, r)))
+                            .map(|(ix, row)| {
+                                this.render_refs_row(ix, row, ix == refs.selected, &view)
+                            })
+                            .collect::<Vec<_>>(),
+                        None => Vec::new(),
+                    }
+                }
+            })
+            .track_scroll(&refs.scroll)
+            .flex_grow(1.0)
+            .into_any_element(),
+        };
+
+        let mut header = div().flex().items_center().gap_3().child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.palette.section)
+                .child(SharedString::from("Refs")),
+        );
+        header = header.child(self.key_action(
+            "refs-checkout",
+            "return",
+            "checkout",
+            view,
+            Self::refs_checkout_at_point,
+        ));
+        header = header.child(self.key_action(
+            "refs-delete",
+            if self.is_evil() { "x" } else { "k" },
+            "delete",
+            view,
+            Self::refs_delete_at_point,
+        ));
+        header =
+            header.child(self.key_action("refs-close", "esc", "close", view, Self::close_refs));
+
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .font_family(self.font.clone())
+            .p_4()
+            .gap_3()
+            .child(header)
+            .child(body)
+    }
+
+    /// One refs-browser row: a dimmed section header, or a ref name colored by
+    /// kind (current branch bold, prefixed with a marker), highlighted and
+    /// clickable when it's a ref.
+    fn render_refs_row(
+        &self,
+        ix: usize,
+        row: &RefsRow,
+        selected: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        if let RefsRow::Header(title) = row {
+            return div()
+                .h(px(ROW_HEIGHT))
+                .flex()
+                .items_center()
+                .px_2()
+                .pt_1()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.palette.section)
+                .child(SharedString::from(*title))
+                .into_any_element();
+        }
+        let (label, kind, current) = match row {
+            RefsRow::Local { name, current } => (
+                name.clone(),
+                if *current {
+                    RefKind::Head
+                } else {
+                    RefKind::Local
+                },
+                *current,
+            ),
+            RefsRow::Remote(name) => (name.clone(), RefKind::Remote, false),
+            RefsRow::Tag(name) => (name.clone(), RefKind::Tag, false),
+            RefsRow::Header(_) => unreachable!("handled above"),
+        };
+        let view = view.clone();
+        let mut container = div()
+            .id(SharedString::from(format!("refs-row-{ix}")))
+            .flex()
+            .items_center()
+            .gap_2()
+            .h(px(ROW_HEIGHT))
+            .w_full()
+            .px_2()
+            .cursor_pointer()
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |this, vcx| {
+                    if let Some(refs) = this.refs_view_mut() {
+                        refs.selected = ix;
+                    }
+                    this.refs_checkout_at_point(window, vcx);
+                });
+            });
+        if selected {
+            container = container.bg(self.palette.selection);
+        } else {
+            container = container.hover(|s| s.bg(self.palette.hover));
+        }
+        // A leading dot marks the current branch (magit's `@`), kept in the
+        // gutter so names still line up.
+        container = container.child(
+            div()
+                .w(px(12.0))
+                .flex_shrink_0()
+                .text_color(self.palette.branch_local)
+                .child(SharedString::from(if current { "●" } else { "" })),
+        );
+        container
+            .child(self.ref_chip(&label, kind))
+            .into_any_element()
+    }
+
     /// One ref decoration, colored by kind per the app-wide rule: local branch
     /// blue, remote-tracking ref green, tag yellow, current branch bold. A
     /// synced entry (current branch folded with its upstream) shows the
@@ -2910,6 +3054,9 @@ impl Render for StatusView {
             }
             Screen::Log(log) => {
                 return self.render_overlays(root.child(self.render_log(log, &view)), &view, cx);
+            }
+            Screen::Refs(refs) => {
+                return self.render_overlays(root.child(self.render_refs(refs, &view)), &view, cx);
             }
             Screen::Status => {}
         }

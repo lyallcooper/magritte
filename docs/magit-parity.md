@@ -30,8 +30,8 @@ vanilla presets differ, both are given.
 
 ## Executive summary
 
-**Whole areas missing:** bisect, blame, a refs browser (`y` show-refs),
-worktree commands, submodules, patch create/apply (and starting a `git am` —
+**Whole areas missing:** bisect, blame, worktree commands, submodules,
+patch create/apply (and starting a `git am` —
 we can only drive one already in progress), clone/init, notes, subtree,
 sparse-checkout, bundle, cherry, wip. Within existing transients, the largest
 gaps are magit's "push something other than the current branch" group, log's
@@ -104,7 +104,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `w` | am (apply patches) | ∂ in-progress continue/skip/abort only |
 | `W` | patch (format patches) | ✗ |
 | `X` | reset | ✓ ours `O` (vanilla `X`) |
-| `y` / `Y` | show-refs / cherry | ✗ |
+| `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil via palette); `Y` cherry ✗ |
 | `z` | stash | ✓ ours `Z` (vanilla `z`) |
 | `Z` | worktree | ✗ |
 | `!` | run | ✓ |
@@ -458,11 +458,12 @@ in-progress banner like our rebase banner plus a start flow; all plain
 re-blame at addition/removal, style cycling. The display machinery is the
 bulk; the git side is one command.
 
-**Show-refs (`y`)** ✗ — the refs browser: all branches/tags with
-ahead/behind counts vs a comparison point, visit/rename/delete at point.
-Args: `--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`. A new
-screen over `git for-each-ref`; substantial but high-value (it's also where
-branch/tag rows as act-at-point targets would live).
+**Show-refs (`y`)** ∂ — the refs browser is in: branches, remote-tracking
+refs, and tags in one scrollable list, colored by kind, with checkout
+(Return) and delete (`k`/`x`) at point. Vanilla binds `y` (magit); evil keeps
+`y` for yank, so evil opens it from the `:` palette. Remaining: ahead/behind
+counts vs a comparison point, rename at point, and the comparison args
+(`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`).
 
 **Worktree (`Z`/`%`)** ✗ — checkout/branch into a new worktree, move,
 delete, visit. Magritte is already worktree-aware internally (per-worktree
@@ -526,7 +527,7 @@ remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
 | `x` | reset-quickly (reset to rev at point) | — | ✗ (`x` is discard in evil; unbound in vanilla) |
 | `Y` | cherry | — | ✗ |
 | `I` | init | — | ✗ |
-| `y` | show-refs | — | ✗ |
+| `y` | show-refs | `:` palette (evil keeps `y` for yank) | ∂ |
 | `RET` | visit-thing | Enter opens file/commit/stash | ✓ (≈ semantics, see act-at-point) |
 | `C-RET` | visit in other window | — | N/A |
 | `SPC` / `DEL` | show-or-scroll (peek commit at point) | Space previews the commit/stash at point (Esc returns); DEL pages up | ≈ overlay preview, not other-window; no reverse-preview |
@@ -653,8 +654,8 @@ of it exists. `SPC` preview is now covered (as a returning overlay).
   `k`).
 - **Stashes header**: magit `RET` opens a stash-list buffer, `k` clears all
   stashes (confirmed). Ours: fold only; no list buffer, no clear anywhere. ✗
-- **Branch/tag/remote/worktree rows**: live in magit's refs buffer, which we
-  lack; all our ref operations go through transients + pickers. ✗
+- **Branch/tag/remote rows**: live in magit's refs buffer — ours is the
+  `y` refs browser (checkout/delete at point). Worktree rows ✗.
 
 ### Region model
 
@@ -701,8 +702,9 @@ Covered above per area; the residual key-level notes:
   (magit's `^` works).
 - ✗: `gR` refresh-all, `o` reset-quickly, `X` untrack, `'`/`"`
   submodule/subtree, `=` less-context, `~` default-context, `S-SPC` preview,
-  `/ n N` search, `yb` copy-buffer-revision, `yr` show-refs (`y` covers
-  `yy`/`ys` roughly).
+  `/ n N` search, `yb` copy-buffer-revision. `yr` show-refs ∂ — the browser
+  exists but evil opens it from the `:` palette, since `y` stays yank (we
+  don't implement the evil `y` yank-prefix family, so no `yr`/`yy`/`ys`).
 - Rebase todo editor vs evil git-rebase-mode: `p r e s f d` ✓ (+ our `w`
   reword alias); `x` ≈ collision — evil's `x` is **exec** (which we lack
   entirely), ours is a drop alias; `M-j`/`M-k` move vs our `J`/`K`;
@@ -724,7 +726,8 @@ Covered above per area; the residual key-level notes:
   (`a`/`v`/`u`, same as the commit view). Still no context keys and no `D`
   refresh transient (refine/file-filter/range-type/flip-revs). `C-c C-d`
   diff-while-committing ≈ our commit editor embeds the staged diff by default.
-- **Refs buffer**: ✗ entirely (see Show-refs above).
+- **Refs buffer**: ∂ — branches/remotes/tags with checkout+delete at point;
+  no ahead/behind margins or comparison args yet (see Show-refs above).
 - **Process buffer**: ≈ — magit has one collapsible section per subprocess
   and `k` kill-at-point; ours is a flat pager, but adds per-command timings
   with slow-command coloring and the hidden-queries toggle. Kill is global
@@ -799,15 +802,14 @@ Grouped by kind, roughly ordered within each group.
 
 **Whole missing features, ranked for a standalone client**
 
-1. Refs browser (`y` show-refs) — also unlocks branch/tag act-at-point.
-2. Blame view.
-3. Worktree commands (we're already worktree-aware internally).
-4. Bisect (banner-driven, like our sequence UI).
-5. Patch create/apply + starting `git am`.
-6. Clone/init (needs the no-repo app state).
-7. Conflict-resolution view beyond take-ours/theirs (the ediff analog),
+1. Blame view.
+2. Worktree commands (we're already worktree-aware internally).
+3. Bisect (banner-driven, like our sequence UI).
+4. Patch create/apply + starting `git am`.
+5. Clone/init (needs the no-repo app state).
+6. Conflict-resolution view beyond take-ours/theirs (the ediff analog),
    and/or `git mergetool` launching.
-8. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
+7. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
 
 **Deliberate deviations to keep (document, don't "fix")**
 

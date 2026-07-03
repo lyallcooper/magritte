@@ -314,6 +314,22 @@ impl StatusView {
             return;
         }
 
+        // The refs browser: motions move the cursor (skipping headers); Enter
+        // checks out the ref at point, the preset delete key removes it.
+        if self.refs_view().is_some() {
+            if self.try_nav(&key, shift, ctrl, alt, window, cx) {
+                return;
+            }
+            match chord(&key, shift, ctrl, alt, cmd).as_str() {
+                "escape" | "q" => self.close_refs(window, cx),
+                "enter" | "b" => self.refs_checkout_at_point(window, cx),
+                "x" if self.is_evil() => self.refs_delete_at_point(window, cx),
+                "k" if self.is_vanilla() => self.refs_delete_at_point(window, cx),
+                _ => {}
+            }
+            return;
+        }
+
         // Command palette via cmd+p / cmd+k handled above, before per-view branches.
         // SPC on a commit/stash row previews it (magit's show-or-scroll-up),
         // rather than paging — a heavily used peek flow. SPC anywhere else falls

@@ -138,6 +138,7 @@ impl StatusView {
             Screen::Log(_) => self.log_move(delta, cx),
             Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
+            Screen::Refs(_) => self.refs_move(delta, cx),
             _ => {
                 self.move_selection(delta);
                 self.scroll
@@ -162,6 +163,7 @@ impl StatusView {
             Screen::Log(_) => self.log_move(delta, cx),
             Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
             Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
+            Screen::Refs(_) => self.refs_move(delta, cx),
             _ => {
                 self.page_selection(delta);
                 self.scroll
@@ -177,7 +179,8 @@ impl StatusView {
             Screen::Log(_)
             | Screen::Commit { .. }
             | Screen::Diff { .. }
-            | Screen::RebaseTodo(_) => self.nav_line(
+            | Screen::RebaseTodo(_)
+            | Screen::Refs(_) => self.nav_line(
                 if to_bottom {
                     isize::MAX / 2
                 } else {

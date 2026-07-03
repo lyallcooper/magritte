@@ -46,6 +46,7 @@ mod log_view;
 mod navigation;
 mod palette;
 mod picker;
+mod refs_view;
 mod render;
 mod row_build;
 mod settings;
@@ -65,6 +66,7 @@ use controller::StatusToast;
 pub(crate) use log_view::*;
 pub(crate) use navigation::*;
 pub(crate) use palette::*;
+pub(crate) use refs_view::*;
 pub(crate) use row_build::*;
 pub(crate) use staging::*;
 pub(crate) use transient_state::*;
@@ -341,6 +343,9 @@ enum Screen {
     Diff { view: DiffView, back: Box<Screen> },
     /// The interactive-rebase todo editor (`r i`).
     RebaseTodo(RebaseTodoView),
+    /// The refs browser (`y`, magit's show-refs): branches, remotes, and tags
+    /// with act-at-point verbs.
+    Refs(refs_view::RefsView),
 }
 
 struct StatusView {
