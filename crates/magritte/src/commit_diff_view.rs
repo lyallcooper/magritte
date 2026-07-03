@@ -6,7 +6,7 @@
 //! embeds. `impl StatusView` like the other view slices.
 
 use gpui::{Context, SharedString, UniformListScrollHandle, Window};
-use magritte_core::{ApplyTarget, CommitMetadata, FileDiff};
+use magritte_core::{ApplyTarget, CommitMetadata, FileDiff, LineKind};
 
 use crate::*;
 
@@ -66,6 +66,58 @@ impl FlatDiff {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// What the apply engine acts on. Indices are into the active view's
+/// `files` (and each file's `hunks`); `Lines` carries hunk-line indices.
+enum ApplyScope {
+    File(usize),
+    Hunk(usize, usize),
+    Lines(usize, usize, Vec<usize>),
+}
+
+/// If the row range `lo..=hi` covers only changed line rows within a single
+/// hunk (no file/hunk header selected), the region scope — `(file, hunk,
+/// hunk-line indices)`. Returns `None` when a header is in range or the
+/// selection spans hunks, so the caller falls back to the file/hunk at point.
+fn line_region_scope(rows: &[CommitDiffRow], lo: usize, hi: usize) -> Option<ApplyScope> {
+    let mut file_ix: Option<usize> = None;
+    let mut hunk_ix: Option<usize> = None;
+    let mut line_ix = 0usize;
+    let mut picked: Vec<(usize, usize, usize)> = Vec::new();
+    for (ix, row) in rows.iter().enumerate() {
+        let selected = (lo..=hi).contains(&ix);
+        match row {
+            CommitDiffRow::File(_) => {
+                if selected {
+                    return None;
+                }
+                file_ix = Some(file_ix.map_or(0, |f| f + 1));
+                hunk_ix = None;
+            }
+            CommitDiffRow::Hunk(_) => {
+                if selected {
+                    return None;
+                }
+                hunk_ix = Some(hunk_ix.map_or(0, |h| h + 1));
+                line_ix = 0;
+            }
+            CommitDiffRow::Line { kind, .. } => {
+                // Only changed lines are patch content; context lines in the
+                // selection are ignored (they stay context either way).
+                if selected && matches!(kind, LineKind::Added | LineKind::Removed) {
+                    picked.push((file_ix?, hunk_ix?, line_ix));
+                }
+                line_ix += 1;
+            }
+            _ => {}
+        }
+    }
+    let (f0, h0, _) = *picked.first()?;
+    picked
+        .iter()
+        .all(|(f, h, _)| *f == f0 && *h == h0)
+        .then(|| ApplyScope::Lines(f0, h0, picked.iter().map(|(_, _, l)| *l).collect()))
 }
 
 /// A single commit's detail (opened from the log): its header and diff, as the
@@ -435,11 +487,31 @@ impl StatusView {
         file_ix.map(|f| (f, hunk_ix))
     }
 
+    /// What the apply engine acts on: a whole file, a whole hunk, or a set of
+    /// changed lines within a hunk (an active region). A region is only used
+    /// when a visual selection covers line rows inside a single hunk; otherwise
+    /// it's the file/hunk at the cursor.
+    fn flat_diff_apply_scope(&self) -> Option<ApplyScope> {
+        let fd = self.flat_diff()?;
+        if let Some(anchor) = fd.visual {
+            let (lo, hi) = (anchor.min(fd.selected), anchor.max(fd.selected));
+            if let Some(scope) = line_region_scope(&fd.rows, lo, hi) {
+                return Some(scope);
+            }
+        }
+        let (f, h) = self.flat_diff_apply_target()?;
+        Some(match h {
+            Some(h) => ApplyScope::Hunk(f, h),
+            None => ApplyScope::File(f),
+        })
+    }
+
     /// Apply (`a`), reverse in the worktree (`v`/`-`), or reverse into the index
     /// (`u`) the change at point of the active commit/diff view, using its diff
-    /// as the patch — magit's apply engine. Whole file when the cursor is on a
-    /// file header, else the hunk at point. `git apply` is atomic and reports
-    /// an inapplicable patch (e.g. already in the worktree) as an error.
+    /// as the patch — magit's apply engine. Acts on the region when a selection
+    /// covers lines in one hunk, else the hunk at point, else the whole file
+    /// (cursor on a file header). `git apply` is atomic and reports an
+    /// inapplicable patch (e.g. already in the worktree) as an error.
     fn apply_at_point(
         &mut self,
         target: ApplyTarget,
@@ -448,9 +520,14 @@ impl StatusView {
         done: &'static str,
         cx: &mut Context<Self>,
     ) {
-        let Some((file_ix, hunk_ix)) = self.flat_diff_apply_target() else {
+        let Some(scope) = self.flat_diff_apply_scope() else {
             self.set_status("No change at point".to_string(), false, cx);
             return;
+        };
+        let (file_ix, hunk_ix, selected) = match scope {
+            ApplyScope::File(f) => (f, None, None),
+            ApplyScope::Hunk(f, h) => (f, Some(h), None),
+            ApplyScope::Lines(f, h, idx) => (f, Some(h), Some(idx)),
         };
         let Some(file) = self
             .active_diff_files()
@@ -460,13 +537,19 @@ impl StatusView {
             return;
         };
         let hunk = hunk_ix.and_then(|h| file.hunks.get(h).cloned());
+        // Deactivate the region: the action consumes it (and the shown diff no
+        // longer reflects the repo once applied).
+        if let Some(fd) = self.flat_diff_mut() {
+            fd.visual = None;
+        }
         self.run_job(
             progress,
             done,
             move |repo| {
-                match &hunk {
-                    Some(h) => repo.apply_hunk_to(&file, h, target, reverse),
-                    None => repo.apply_file_to(&file, target, reverse),
+                match (&hunk, &selected) {
+                    (Some(h), Some(sel)) => repo.apply_lines_to(&file, h, sel, target, reverse),
+                    (Some(h), None) => repo.apply_hunk_to(&file, h, target, reverse),
+                    (None, _) => repo.apply_file_to(&file, target, reverse),
                 }
                 .map(|()| String::new())
             },

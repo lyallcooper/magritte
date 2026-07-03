@@ -149,6 +149,20 @@ impl Repo {
         self.apply_patch(&patch, target, reverse)
     }
 
+    /// Apply only the `selected` changed lines of `hunk` to `target`, reversed
+    /// when `reverse` — the region (sub-hunk) scope of the apply engine.
+    pub fn apply_lines_to(
+        &self,
+        file: &FileDiff,
+        hunk: &Hunk,
+        selected: &[usize],
+        target: ApplyTarget,
+        reverse: bool,
+    ) -> Result<()> {
+        let patch = build_patch(file, hunk, selected, reverse);
+        self.apply_patch(&patch, target, reverse)
+    }
+
     // --- Line-level -------------------------------------------------------
     //
     // `selected` holds indices into `hunk.lines` (Added/Removed lines) that the
