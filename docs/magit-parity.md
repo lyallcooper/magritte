@@ -8,8 +8,8 @@ doesn't apply outside Emacs.
 
 Audited against the Magit 4.x sources in the local `.reference/magit/lisp/`
 checkout (plus `evil-collection-magit.el`); Magritte as of this document's
-last update. Behavioral claims were verified against both sources, not just
-listed from memory.
+last update (2026-07-03). Behavioral claims were verified against both
+sources, not just listed from memory.
 
 **Status legend**
 
@@ -211,6 +211,13 @@ entirely; no git-variable editing exists anywhere in Magritte.
 
 The whole "push things other than the current branch" group is missing.
 
+Ours-only refinements to the `p`/`u`/`e` group: when the push-remote and
+upstream resolve to the same ref we collapse `p` and `u` into one `p/u` entry
+(magit always lists both); and, like magit, the target labels are predictive —
+a configured ref is named (`main → origin/main`), an unconfigured target that
+will be set names the sole remote it would use (`origin/main, setting it`) or
+falls back to `push remote, setting it`.
+
 ### Pull (magit `F` / ours `F`)
 
 **Arguments**
@@ -222,9 +229,10 @@ The whole "push things other than the current branch" group is missing.
 | `-A` | `--autostash` (level 7) | ✗ |
 | `-F` | `--force` | ✗ |
 
-**Actions**: `p`/`u`/`e` ✓; the optional "Fetch from"/"Fetch" groups
-(`:if magit-pull-or-fetch`, off by default upstream) ✗; `r` branch.rebase
-variable ✗ (our config-seeded `-r` partially substitutes); `C` configure ✗.
+**Actions**: `p`/`u`/`e` ✓ (same `p`/`u` collapse as push when the targets
+coincide); the optional "Fetch from"/"Fetch" groups (`:if
+magit-pull-or-fetch`, off by default upstream) ✗; `r` branch.rebase variable
+✗ (our config-seeded `-r` partially substitutes); `C` configure ✗.
 
 Magit declares `--ff-only`/`--rebase` incompatible; if we add `--ff-only`,
 we need an incompatibility mechanism (see cherry-pick).
@@ -234,9 +242,10 @@ we need an incompatibility mechanism (see cherry-pick).
 **Arguments**: `-p --prune` ≈ (ours negatable, seeded from `fetch.prune`);
 `-t --tags` ✗; `-u --unshallow` (level 7) ✗; `-F --force` ✗.
 
-**Actions**: `p`/`u`/`e`/`a` ✓; `o` branch ✗; `r` refspec ✗; `m` submodules ✗
-(no submodule support); `C` configure ✗. `magit-fetch-modules` sub-transient
-✗. Ours only: the background `[fetch]` auto-fetch loop.
+**Actions**: `p`/`u`/`e`/`a` ✓ (`p`/`u` collapse to one entry when the
+push-remote is the upstream's remote); `o` branch ✗; `r` refspec ✗;
+`m` submodules ✗ (no submodule support); `C` configure ✗. `magit-fetch-modules`
+sub-transient ✗. Ours only: the background `[fetch]` auto-fetch loop.
 
 ### Merge (magit `m` / ours `m`)
 
@@ -381,12 +390,14 @@ variants); `-a --all` (untracked + ignored) ✗.
 
 ### Tag (magit `t` / ours `t`)
 
-**Arguments**: `-f` ✓; `-a` ✓; `-e --edit` ✗; `-s --sign` ✗;
-`-u --local-user=` ✗.
+**Arguments**: `-f` ✓; `-a` ✓ (opens the in-app message editor to write the
+annotation — or the external editor when `commit_in_editor` is set — like
+magit's annotated-tag flow); `-e --edit` ✗; `-s --sign` ✗; `-u --local-user=`
+✗.
 
 **Actions**: `t` create ✓; `r` release (version-tag conventions) ✗;
-`k` delete ≈ single tag via picker, no region multi-delete; `p` prune
-(local vs remote) ✗.
+`k` delete ≈ single tag via picker (version-ordered, highest first), no region
+multi-delete; `p` prune (local vs remote) ✗.
 
 ### Remote (magit `M` / ours `M`)
 
@@ -564,6 +575,12 @@ Magritte adds a dirty-worktree dot and busy spinner (no magit analog).
 | child counts | `(N)` ✓; but our unpushed/unpulled fetches are unlimited — no `N+` cap marker, and a pathological divergence lists every commit | ≈ |
 | file-list caps | none | ✗ |
 | optional sections (tracked, skip-worktree, assume-unchanged, cherries, worktrees, modules, ignored) | only `ignored` exists (opt-in) | ∂ 1 of ~8 |
+
+**Ref decorations** on commit rows (and the log view, and the commit-detail
+`Refs:` line) follow magit's faces: local branches blue, remote-tracking refs
+green, tags yellow, the current branch bold. Like magit we drop remote
+`*/HEAD` pointers and fold the current branch with its upstream into one
+`origin/main` entry when both decorate a commit. ✓
 
 ### Collapse defaults & configurability
 
@@ -785,6 +802,9 @@ Grouped by kind, roughly ordered within each group.
 - Expanded-by-default sections with on-disk fold persistence.
 - Always showing both Unpushed and Recent (vs magit's either/or) — arguably
   clearer; keep unless it proves noisy.
+- Collapsing push/pull/fetch `p` and `u` into one entry when the push-remote
+  and upstream resolve to the same ref (magit always lists both) — removes a
+  redundant duplicate line in the common non-triangular case.
 - The permissive visual-selection batching (with its stricter
   conflicted-file refusal).
 - No shell in `!` (with `[[command]]` as the escape hatch).
