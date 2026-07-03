@@ -547,6 +547,9 @@ struct StatusView {
     font: SharedString,
     /// The proportional UI font for prose chrome; equals `font` when unset.
     ui_font: SharedString,
+    /// The platform system UI font, for the `⏎` keycap glyph (always, so a
+    /// custom `ui_font` that lacks the glyph can't turn it into tofu).
+    system_ui_font: SharedString,
     /// The effective config: the global config with this repo's `.git/magritte`
     /// overlay merged on top. Everything renders from this.
     config: config::Config,
@@ -657,6 +660,7 @@ impl StatusView {
         };
         let font = theme::resolve_font(&config, cx);
         let ui_font = theme::resolve_ui_font(&config, cx);
+        let system_ui_font = theme::resolve_system_ui_font(cx);
 
         // Resolve the effective keymap and validate config values; fold any
         // warnings (unknown command id, theme, appearance, …) into the startup
@@ -733,6 +737,7 @@ impl StatusView {
             screen: Screen::Status,
             font,
             ui_font,
+            system_ui_font,
             config,
             config_global,
             keymap,

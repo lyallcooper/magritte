@@ -179,6 +179,13 @@ pub(crate) fn resolve_font(cfg: &config::Config, cx: &App) -> SharedString {
     }
 }
 
+/// The platform's system proportional UI font, regardless of the user's
+/// configured `ui_font` — used for the `⏎` keycap glyph, which a custom display
+/// font might render as tofu.
+pub(crate) fn resolve_system_ui_font(cx: &App) -> SharedString {
+    system_ui_font(cx)
+}
+
 /// The UI font for prose chrome (menus, headings, labels): empty reuses the
 /// monospace [`resolve_font`] (the default, so nothing changes until opted in),
 /// the [`SYSTEM_UI_FONT`] sentinel uses the platform proportional font, and any

@@ -8,7 +8,9 @@ use gpui::{div, px, AnyElement, Hsla, SharedString};
 use crate::with_alpha;
 
 /// The Return keycap glyph (`⏎`). It reads better than "Ret" but many
-/// monospace fonts render it thin/tofu, so keycaps draw it in the UI font.
+/// monospace fonts render it thin/tofu, so keycaps draw it in the system UI
+/// font (passed as `ui_font`) — not the user's configured UI font, which a
+/// custom display face could also lack.
 pub(crate) const RETURN_GLYPH: &str = "⏎";
 
 /// Spell out one keystroke token as a word label. Modifier and named keys

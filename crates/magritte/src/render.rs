@@ -477,7 +477,7 @@ impl StatusView {
                                 "g",
                                 self.palette.dim,
                                 &self.font,
-                                &self.ui_font,
+                                &self.system_ui_font,
                             ))
                             .child(SharedString::from("global")),
                     );
@@ -491,7 +491,7 @@ impl StatusView {
                                 "l",
                                 self.palette.dim,
                                 &self.font,
-                                &self.ui_font,
+                                &self.system_ui_font,
                             ))
                             .child(SharedString::from("this repo")),
                     );
@@ -510,7 +510,7 @@ impl StatusView {
                             TRANSIENT_SAVE_KEY,
                             self.palette.dim,
                             &self.font,
-                            &self.ui_font,
+                            &self.system_ui_font,
                         ))
                         .child(SharedString::from("save these arguments as the default")),
                 )
@@ -692,17 +692,17 @@ impl StatusView {
                             a.key,
                             self.palette.dim,
                             &self.font,
-                            &self.ui_font,
+                            &self.system_ui_font,
                         ))
                         .child(div().text_color(self.palette.dim).child("/"))
                         .child(kbd::key_chip(
                             also,
                             self.palette.dim,
                             &self.font,
-                            &self.ui_font,
+                            &self.system_ui_font,
                         ))
                         .into_any_element(),
-                    None => kbd::key_chip(a.key, self.palette.dim, &self.font, &self.ui_font),
+                    None => kbd::key_chip(a.key, self.palette.dim, &self.font, &self.system_ui_font),
                 };
                 // A concrete remote ref is colored like one; placeholders and
                 // non-ref actions ("elsewhere") use the normal foreground.
@@ -771,7 +771,7 @@ impl StatusView {
                         &c.key,
                         self.palette.dim,
                         &self.font,
-                        &self.ui_font,
+                        &self.system_ui_font,
                     ))
                     .child(self.hover_label(&c.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
@@ -1065,7 +1065,7 @@ impl StatusView {
                 &keys,
                 self.palette.dim,
                 &self.font,
-                &self.ui_font,
+                &self.system_ui_font,
             ));
         }
         row.child(self.hover_label(label, self.palette.dim))
@@ -1297,7 +1297,7 @@ impl StatusView {
             keys,
             self.palette.dim,
             &self.font,
-            &self.ui_font,
+            &self.system_ui_font,
         ))
     }
 
@@ -1328,7 +1328,7 @@ impl StatusView {
                 key,
                 self.palette.dim,
                 &self.font,
-                &self.ui_font,
+                &self.system_ui_font,
             ))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
@@ -1365,7 +1365,7 @@ impl StatusView {
                 &key,
                 self.palette.dim,
                 &self.font,
-                &self.ui_font,
+                &self.system_ui_font,
             ))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
@@ -2978,7 +2978,7 @@ impl StatusView {
                 &pending.seq,
                 self.palette.dim,
                 &self.font,
-                &self.ui_font,
+                &self.system_ui_font,
             ))
             .child(
                 div()
@@ -3046,7 +3046,7 @@ impl StatusView {
                                 token,
                                 self.palette.dim,
                                 &self.font,
-                                &self.ui_font,
+                                &self.system_ui_font,
                             ))
                             .child(div().text_color(self.palette.dim).child(SharedString::from(
                                 title.clone().unwrap_or_else(|| "…".to_string()),
@@ -3099,7 +3099,7 @@ impl StatusView {
                         &keys,
                         self.palette.dim,
                         &self.font,
-                        &self.ui_font,
+                        &self.system_ui_font,
                     ))
                     .child(SharedString::from(msg)),
             );
@@ -3135,7 +3135,7 @@ impl StatusView {
                             "ctrl-g",
                             self.palette.dim,
                             &self.font,
-                            &self.ui_font,
+                            &self.system_ui_font,
                         ))
                         .child(SharedString::from("to cancel")),
                 ),
