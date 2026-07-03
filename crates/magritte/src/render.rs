@@ -2286,13 +2286,6 @@ impl StatusView {
                             .child(cv.subject.clone()),
                     )
                     .child(self.key_action(
-                        "commit-view-close",
-                        "esc",
-                        "back",
-                        view,
-                        Self::close_commit_view,
-                    ))
-                    .child(self.key_action(
                         "commit-view-apply",
                         "a",
                         "apply",
@@ -2329,6 +2322,13 @@ impl StatusView {
                         },
                         view,
                         |this, _window, cx| this.toggle_commit_details(cx),
+                    ))
+                    .child(self.key_action(
+                        "commit-view-close",
+                        "esc",
+                        "back",
+                        view,
+                        Self::close_commit_view,
                     )),
             )
             .child(body)
@@ -2357,14 +2357,6 @@ impl StatusView {
                             .text_color(self.palette.fg)
                             .child(dv.title.clone()),
                     )
-                    .child(div().flex_grow(1.0))
-                    .child(self.key_action(
-                        "diff-view-close",
-                        "esc",
-                        "back",
-                        view,
-                        Self::close_diff_view,
-                    ))
                     .child(self.key_action(
                         "diff-view-apply",
                         "a",
@@ -2389,6 +2381,13 @@ impl StatusView {
                         "reverse in index",
                         view,
                         |this, _window, cx| this.reverse_at_point_in_index(cx),
+                    ))
+                    .child(self.key_action(
+                        "diff-view-close",
+                        "esc",
+                        "back",
+                        view,
+                        Self::close_diff_view,
                     )),
             )
             .child(body)
