@@ -108,6 +108,9 @@ pub(crate) const COMMIT_CACHE_CAPACITY: usize = 64;
 pub(crate) struct DiffView {
     pub(crate) title: SharedString,
     pub(crate) body: FlatDiff,
+    /// Structured per-file diffs (rendered order), for the apply engine
+    /// (`a`/`v`/`u`) — same role as [`CommitView::files`].
+    pub(crate) files: Vec<FileDiff>,
 }
 
 #[derive(Clone)]
@@ -310,6 +313,7 @@ impl StatusView {
             view: DiffView {
                 title: SharedString::from(title.clone()),
                 body: FlatDiff::loading(),
+                files: Vec::new(),
             },
             back,
         };
@@ -346,6 +350,10 @@ impl StatusView {
                 if !this.screen_gen.is_current(gen) || this.diff_view().is_none() {
                     return;
                 }
+                let files: Vec<FileDiff> = match &loaded {
+                    Ok(fs) => fs.iter().map(|(f, _)| f.clone()).collect(),
+                    Err(_) => Vec::new(),
+                };
                 let rows = match loaded {
                     Ok(files) if files.is_empty() => {
                         vec![CommitDiffRow::Note("No changes".to_string())]
@@ -355,6 +363,7 @@ impl StatusView {
                 };
                 if let Some(dv) = this.diff_view_mut() {
                     dv.body.rows = rows;
+                    dv.files = files;
                 }
                 cx.notify();
             })
@@ -388,16 +397,27 @@ impl StatusView {
         rows
     }
 
-    /// The (file, hunk) the commit-view cursor is on, for the apply engine.
-    /// `hunk` is `None` when the cursor sits on a file header (act on the whole
-    /// file) or above the diff (no target → `None`). Indices match `cv.files`
-    /// and each file's `hunks`, since the rows are built in that order.
-    fn commit_apply_target(&self) -> Option<(usize, Option<usize>)> {
-        let cv = self.commit_view()?;
-        let cursor = cv.body.selected;
+    /// The structured per-file diffs of the active flattened-diff screen (commit
+    /// or standalone diff), in rendered order — the apply engine's patch source.
+    fn active_diff_files(&self) -> Option<&[FileDiff]> {
+        match &self.screen {
+            Screen::Commit { view, .. } => Some(&view.files),
+            Screen::Diff { view, .. } => Some(&view.files),
+            _ => None,
+        }
+    }
+
+    /// The (file, hunk) the active flattened-diff cursor is on, for the apply
+    /// engine. `hunk` is `None` when the cursor sits on a file header (act on
+    /// the whole file) or above the diff (no target → `None`). Indices match
+    /// `active_diff_files` and each file's `hunks`, since the rows are built in
+    /// that order.
+    fn flat_diff_apply_target(&self) -> Option<(usize, Option<usize>)> {
+        let fd = self.flat_diff()?;
+        let cursor = fd.selected;
         let mut file_ix: Option<usize> = None;
         let mut hunk_ix: Option<usize> = None;
-        for (ix, row) in cv.body.rows.iter().enumerate() {
+        for (ix, row) in fd.rows.iter().enumerate() {
             match row {
                 CommitDiffRow::File(_) => {
                     file_ix = Some(file_ix.map_or(0, |f| f + 1));
@@ -416,10 +436,11 @@ impl StatusView {
     }
 
     /// Apply (`a`), reverse in the worktree (`v`/`-`), or reverse into the index
-    /// (`u`) the committed change at point, using the commit's own diff as the
-    /// patch — magit's apply engine on a revision buffer. Whole file when the
-    /// cursor is on a file header, else the hunk at point.
-    fn commit_apply_at_point(
+    /// (`u`) the change at point of the active commit/diff view, using its diff
+    /// as the patch — magit's apply engine. Whole file when the cursor is on a
+    /// file header, else the hunk at point. `git apply` is atomic and reports
+    /// an inapplicable patch (e.g. already in the worktree) as an error.
+    fn apply_at_point(
         &mut self,
         target: ApplyTarget,
         reverse: bool,
@@ -427,13 +448,13 @@ impl StatusView {
         done: &'static str,
         cx: &mut Context<Self>,
     ) {
-        let Some((file_ix, hunk_ix)) = self.commit_apply_target() else {
+        let Some((file_ix, hunk_ix)) = self.flat_diff_apply_target() else {
             self.set_status("No change at point".to_string(), false, cx);
             return;
         };
         let Some(file) = self
-            .commit_view()
-            .and_then(|cv| cv.files.get(file_ix).cloned())
+            .active_diff_files()
+            .and_then(|fs| fs.get(file_ix).cloned())
         else {
             self.set_status("No change at point".to_string(), false, cx);
             return;
@@ -453,8 +474,8 @@ impl StatusView {
         );
     }
 
-    pub(crate) fn commit_apply_worktree(&mut self, cx: &mut Context<Self>) {
-        self.commit_apply_at_point(
+    pub(crate) fn apply_at_point_to_worktree(&mut self, cx: &mut Context<Self>) {
+        self.apply_at_point(
             ApplyTarget::Worktree,
             false,
             "Applying…",
@@ -463,8 +484,8 @@ impl StatusView {
         );
     }
 
-    pub(crate) fn commit_reverse_worktree(&mut self, cx: &mut Context<Self>) {
-        self.commit_apply_at_point(
+    pub(crate) fn reverse_at_point_in_worktree(&mut self, cx: &mut Context<Self>) {
+        self.apply_at_point(
             ApplyTarget::Worktree,
             true,
             "Reversing…",
@@ -473,8 +494,8 @@ impl StatusView {
         );
     }
 
-    pub(crate) fn commit_reverse_in_index(&mut self, cx: &mut Context<Self>) {
-        self.commit_apply_at_point(
+    pub(crate) fn reverse_at_point_in_index(&mut self, cx: &mut Context<Self>) {
+        self.apply_at_point(
             ApplyTarget::Index,
             true,
             "Reverse-staging…",

@@ -1974,7 +1974,7 @@ impl StatusView {
                         "a",
                         "apply",
                         view,
-                        |this, _window, cx| this.commit_apply_worktree(cx),
+                        |this, _window, cx| this.apply_at_point_to_worktree(cx),
                     ))
                     .child(self.key_action(
                         "commit-view-reverse",
@@ -1987,14 +1987,14 @@ impl StatusView {
                         },
                         "reverse",
                         view,
-                        |this, _window, cx| this.commit_reverse_worktree(cx),
+                        |this, _window, cx| this.reverse_at_point_in_worktree(cx),
                     ))
                     .child(self.key_action(
                         "commit-view-reverse-index",
                         "u",
                         "reverse in index",
                         view,
-                        |this, _window, cx| this.commit_reverse_in_index(cx),
+                        |this, _window, cx| this.reverse_at_point_in_index(cx),
                     ))
                     .child(self.key_action(
                         "commit-view-details",
@@ -2041,6 +2041,31 @@ impl StatusView {
                         "back",
                         view,
                         Self::close_diff_view,
+                    ))
+                    .child(self.key_action(
+                        "diff-view-apply",
+                        "a",
+                        "apply",
+                        view,
+                        |this, _window, cx| this.apply_at_point_to_worktree(cx),
+                    ))
+                    .child(self.key_action(
+                        "diff-view-reverse",
+                        if self.config.keymap_preset == config::KeymapPreset::Vanilla {
+                            "v"
+                        } else {
+                            "-"
+                        },
+                        "reverse",
+                        view,
+                        |this, _window, cx| this.reverse_at_point_in_worktree(cx),
+                    ))
+                    .child(self.key_action(
+                        "diff-view-reverse-index",
+                        "u",
+                        "reverse in index",
+                        view,
+                        |this, _window, cx| this.reverse_at_point_in_index(cx),
                     )),
             )
             .child(body)

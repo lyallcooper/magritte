@@ -233,12 +233,12 @@ impl StatusView {
                 // details toggle (freeing `a` for apply). Reverse follows the
                 // preset — evil-collection moves it to `-` (keeping `v` for
                 // visual), vanilla magit keeps it on `v`.
-                "a" => self.commit_apply_worktree(cx),
-                "u" => self.commit_reverse_in_index(cx),
+                "a" => self.apply_at_point_to_worktree(cx),
+                "u" => self.reverse_at_point_in_index(cx),
                 "=" => self.toggle_commit_details(cx),
-                "-" if self.is_evil() => self.commit_reverse_worktree(cx),
+                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.commit_reverse_worktree(cx),
+                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
                 // Copy: evil's `y`; magit-mode-map's `C-w` (the vanilla key).
                 "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
                 "w" if ctrl => self.copy_flat_diff_selection(cx),
@@ -263,7 +263,13 @@ impl StatusView {
                         self.close_diff_view(window, cx);
                     }
                 }
-                "v" => self.flat_diff_toggle_visual(cx),
+                // Apply engine (same as the commit view): apply/reverse the
+                // file/hunk at point to the worktree, or reverse into the index.
+                "a" => self.apply_at_point_to_worktree(cx),
+                "u" => self.reverse_at_point_in_index(cx),
+                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
+                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
+                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
                 "y" if self.is_evil() => self.copy_flat_diff_selection(cx),
                 "w" if ctrl => self.copy_flat_diff_selection(cx),
                 "c" if cmd => self.copy_flat_diff_selection(cx),
@@ -830,12 +836,12 @@ impl StatusView {
         self.popup = None;
         if self.commit_view().is_some() {
             match key {
-                "a" => self.commit_apply_worktree(cx),
-                "u" => self.commit_reverse_in_index(cx),
+                "a" => self.apply_at_point_to_worktree(cx),
+                "u" => self.reverse_at_point_in_index(cx),
                 "=" => self.toggle_commit_details(cx),
-                "-" if self.is_evil() => self.commit_reverse_worktree(cx),
+                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
                 "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
-                "v" if self.is_vanilla() => self.commit_reverse_worktree(cx),
+                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
                 "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_commit_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
@@ -844,7 +850,11 @@ impl StatusView {
         }
         if self.diff_view().is_some() {
             match key {
-                "v" => self.flat_diff_toggle_visual(cx),
+                "a" => self.apply_at_point_to_worktree(cx),
+                "u" => self.reverse_at_point_in_index(cx),
+                "-" if self.is_evil() => self.reverse_at_point_in_worktree(cx),
+                "v" if self.is_evil() => self.flat_diff_toggle_visual(cx),
+                "v" if self.is_vanilla() => self.reverse_at_point_in_worktree(cx),
                 "y" | "ctrl-w" => self.copy_flat_diff_selection(cx),
                 "q" => self.close_diff_view(window, cx),
                 _ => self.run_dispatch(key, window, cx),
