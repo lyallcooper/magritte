@@ -113,8 +113,9 @@ use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme, IndexPath};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
-    CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest, LineKind, RebaseAction,
-    RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind, Status, TagsAround,
+    bisect::Bisect, BisectMark, CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest,
+    LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind,
+    Status, TagsAround,
 };
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -432,6 +433,8 @@ struct StatusView {
     conflicted: HashSet<String>,
     /// The in-progress merge/rebase/cherry-pick/revert/am, surfaced as a banner.
     sequence: Option<Sequence>,
+    /// The in-progress `git bisect`, surfaced as a banner (its own good/bad/skip).
+    bisect: Option<Bisect>,
     /// Original commit ids whose `reword` rows were intentionally written to
     /// git as `edit` stops so the in-app editor can handle their messages.
     pending_rebase_rewords: HashSet<String>,
@@ -683,6 +686,7 @@ impl StatusView {
             tag_info: (None, None),
             conflicted: HashSet::new(),
             sequence: None,
+            bisect: None,
             pending_rebase_rewords: HashSet::new(),
             error: None,
             expanded,
@@ -1755,7 +1759,7 @@ mod tests {
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
             "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$",
-            "%", // commands
+            "%", "B", // commands
             "s", "u", "S", "U", "x", "X", // applying changes (X = evil untrack)
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions

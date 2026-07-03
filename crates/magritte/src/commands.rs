@@ -365,6 +365,16 @@ pub(crate) fn commands() -> &'static [Command] {
             "!",
             |t, w, cx| { t.open_run_git(w, cx) }
         ),
+        top!("bisect", "Bisect", Category::Commands, "B", |t, _w, cx| {
+            // While bisecting, `B` marks good/bad/skip or resets; otherwise it
+            // starts a bisect (magit's `B`).
+            t.open_transient(
+                "bisect",
+                transient::bisect_transient(t.bisect.is_some()),
+                RemoteTargets::default(),
+                cx,
+            );
+        }),
         top!("rebase", "Rebase", Category::Commands, "r", |t, _w, cx| {
             // While a rebase is paused, `r` opens the continue/skip/abort
             // transient (magit's `r r` = continue) rather than starting a new one.

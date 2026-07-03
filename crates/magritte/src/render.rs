@@ -970,6 +970,72 @@ impl StatusView {
             .child(actions)
     }
 
+    /// The in-progress bisect banner: a heading, the recorded good/bad/skip
+    /// decisions (tail), and the mark/reset controls (`B g`/`B b`/`B s`/`B r`).
+    pub(crate) fn render_bisect_banner(&self, bisect: &Bisect, view: &Entity<Self>) -> gpui::Div {
+        const MAX: usize = 6;
+        let mut lines = div().flex().flex_col().gap_0().pl(px(2.0));
+        let skipped = bisect.decisions.len().saturating_sub(MAX);
+        for d in bisect.decisions.iter().skip(skipped) {
+            lines = lines.child(
+                div()
+                    .text_color(self.palette.dim)
+                    .font_family(self.font.clone())
+                    .child(SharedString::from(d.clone())),
+            );
+        }
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(self.seq_action(
+                "bisect-good",
+                Some("B g".to_string()),
+                "good",
+                view,
+                Self::bisect_good_action,
+            ))
+            .child(self.seq_action(
+                "bisect-bad",
+                Some("B b".to_string()),
+                "bad",
+                view,
+                Self::bisect_bad_action,
+            ))
+            .child(self.seq_action(
+                "bisect-skip",
+                Some("B s".to_string()),
+                "skip",
+                view,
+                Self::bisect_skip_action,
+            ))
+            .child(self.seq_action(
+                "bisect-reset",
+                Some("B r".to_string()),
+                "reset",
+                view,
+                Self::bisect_reset_action,
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .px_3()
+            .py_2()
+            .bg(self.palette.banner)
+            .border_b_1()
+            .border_color(self.palette.border)
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.palette.section)
+                    .child(SharedString::from("Bisecting")),
+            )
+            .child(lines)
+            .child(actions)
+    }
+
     /// A sequence-banner action button: keycap + label, clickable to run
     /// `action`. `keys` is the full keystroke that triggers it from the status
     /// view (e.g. `r r`); when `None` (a sequence with no status-view prefix)
@@ -1787,6 +1853,7 @@ impl StatusView {
                 "Select a commit to squash into"
             }
             LogPurpose::SelectSquash { .. } => "Select a commit to fix up / squash into",
+            LogPurpose::SelectBisectGood => "Select a known-good commit to bisect from",
             LogPurpose::Browse => "Log",
         };
         let mut header = div().flex().items_center().gap_3().child(
@@ -3268,6 +3335,9 @@ impl Render for StatusView {
         // visible while the user resolves it.
         if let Some(seq) = &self.sequence {
             root = root.child(self.render_sequence_banner(seq, &view));
+        }
+        if let Some(bisect) = &self.bisect {
+            root = root.child(self.render_bisect_banner(bisect, &view));
         }
 
         // The list takes the flexible space; the status bar (added below)

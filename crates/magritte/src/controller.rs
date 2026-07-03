@@ -123,6 +123,11 @@ impl StatusView {
             SequenceSkip => self.sequence_skip(window, cx),
             SequenceAbort => self.sequence_abort(window, cx),
             SequenceEditTodo => self.open_rebase_edit_todo(cx),
+            BisectStart => self.start_log_select_bisect(cx),
+            BisectGood => self.run_bisect_mark(BisectMark::Good, cx),
+            BisectBad => self.run_bisect_mark(BisectMark::Bad, cx),
+            BisectSkip => self.run_bisect_mark(BisectMark::Skip, cx),
+            BisectReset => self.run_bisect_reset(cx),
         }
     }
 
@@ -1337,6 +1342,47 @@ impl StatusView {
             },
             cx,
         );
+    }
+
+    /// Mark the checked-out bisect commit good/bad/skip and let git advance. The
+    /// "Bisecting: N revisions left" line git prints is surfaced as the toast.
+    pub(crate) fn run_bisect_mark(&mut self, mark: BisectMark, cx: &mut Context<Self>) {
+        let (verb, done) = match mark {
+            BisectMark::Good => ("Marking good", "good"),
+            BisectMark::Bad => ("Marking bad", "bad"),
+            BisectMark::Skip => ("Skipping", "skipped"),
+        };
+        self.run_job(
+            &format!("{verb}…"),
+            done,
+            move |repo| repo.bisect_mark(mark),
+            cx,
+        );
+    }
+
+    /// End the bisect session, restoring the original branch.
+    pub(crate) fn run_bisect_reset(&mut self, cx: &mut Context<Self>) {
+        self.run_job(
+            "Ending bisect…",
+            "Bisect ended",
+            |repo| repo.bisect_reset(),
+            cx,
+        );
+    }
+
+    // Fixed-signature wrappers so the bisect banner's clickable buttons can share
+    // the `seq_action` shape (`fn(&mut Self, &mut Window, &mut Context)`).
+    pub(crate) fn bisect_good_action(&mut self, _w: &mut Window, cx: &mut Context<Self>) {
+        self.run_bisect_mark(BisectMark::Good, cx);
+    }
+    pub(crate) fn bisect_bad_action(&mut self, _w: &mut Window, cx: &mut Context<Self>) {
+        self.run_bisect_mark(BisectMark::Bad, cx);
+    }
+    pub(crate) fn bisect_skip_action(&mut self, _w: &mut Window, cx: &mut Context<Self>) {
+        self.run_bisect_mark(BisectMark::Skip, cx);
+    }
+    pub(crate) fn bisect_reset_action(&mut self, _w: &mut Window, cx: &mut Context<Self>) {
+        self.run_bisect_reset(cx);
     }
 
     // --- Push / pull / fetch --------------------------------------------

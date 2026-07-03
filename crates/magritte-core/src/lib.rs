@@ -14,6 +14,7 @@
 //! If a third consumer or heavier UI modeling ever appears, it can be split into
 //! its own `magritte-command` crate; until then the one boundary is intentional.
 
+pub mod bisect;
 pub mod branch;
 pub mod commit;
 pub mod conflict;
@@ -36,6 +37,7 @@ pub mod tag;
 pub mod transient;
 pub mod worktree;
 
+pub use bisect::{Bisect, BisectMark};
 pub use branch::LocalBranch;
 pub use commit::{CommitMetadata, CommitMode};
 pub use conflict::ConflictSide;

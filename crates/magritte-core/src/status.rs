@@ -143,6 +143,7 @@ pub struct Status {
 pub struct RefreshSnapshot {
     pub status: Status,
     pub sequence: Option<Sequence>,
+    pub bisect: Option<crate::bisect::Bisect>,
 }
 
 /// Extra metadata the UI wants attached to a refresh snapshot. Plain
@@ -199,11 +200,14 @@ impl Repo {
     pub fn refresh_snapshot_with(&self, needs: RefreshNeeds) -> Result<RefreshSnapshot> {
         let mut status = self.status()?;
         self.enrich_status(&mut status, needs);
-        let sequence = self
-            .git_dir()
-            .ok()
-            .and_then(|dir| self.sequence_in_dir(&dir));
-        Ok(RefreshSnapshot { status, sequence })
+        let dir = self.git_dir().ok();
+        let sequence = dir.as_deref().and_then(|dir| self.sequence_in_dir(dir));
+        let bisect = dir.as_deref().and_then(|dir| self.bisect_in_dir(dir));
+        Ok(RefreshSnapshot {
+            status,
+            sequence,
+            bisect,
+        })
     }
 
     /// Like [`refresh_snapshot`](Self::refresh_snapshot), but reuses a git-dir
@@ -220,7 +224,12 @@ impl Repo {
         let mut status = self.status()?;
         self.enrich_status(&mut status, needs);
         let sequence = self.sequence_in_dir(git_dir);
-        Ok(RefreshSnapshot { status, sequence })
+        let bisect = self.bisect_in_dir(git_dir);
+        Ok(RefreshSnapshot {
+            status,
+            sequence,
+            bisect,
+        })
     }
 
     fn enrich_status(&self, status: &mut Status, needs: RefreshNeeds) {

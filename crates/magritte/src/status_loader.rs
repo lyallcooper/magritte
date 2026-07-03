@@ -179,7 +179,7 @@ impl StatusView {
         };
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
-            let (result, sequence) = cx
+            let (result, sequence, bisect) = cx
                 .background_executor()
                 .spawn(async move {
                     let snapshot = match worktree_git_dir.as_deref() {
@@ -187,8 +187,8 @@ impl StatusView {
                         None => repo.refresh_snapshot_with(needs),
                     };
                     match snapshot {
-                        Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence),
-                        Err(e) => (Err(e), None),
+                        Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence, snapshot.bisect),
+                        Err(e) => (Err(e), None, None),
                     }
                 })
                 .await;
@@ -198,6 +198,7 @@ impl StatusView {
                     return;
                 }
                 this.sequence = sequence;
+                this.bisect = bisect;
                 match result {
                     Ok(status) => {
                         this.status = Some(status);

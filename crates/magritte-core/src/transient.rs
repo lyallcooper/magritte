@@ -169,6 +169,13 @@ pub enum Command {
     SequenceAbort,
     /// Edit the remaining todo of an in-progress rebase (`--edit-todo`).
     SequenceEditTodo,
+    /// Bisect: start (pick a known-good commit in the log, `HEAD` is bad), mark
+    /// the checked-out commit good/bad/skip, or reset the session.
+    BisectStart,
+    BisectGood,
+    BisectBad,
+    BisectSkip,
+    BisectReset,
 }
 
 /// A toggleable flag (e.g. `-f` → `--force-with-lease`). Owned strings so a
@@ -1262,6 +1269,33 @@ pub fn sequence_transient(kind: SequenceKind, style: KeymapStyle) -> Transient {
         }],
     }
 }
+
+/// The bisect transient (`B`): when a bisect is running, mark the checked-out
+/// commit good/bad/skip or reset; otherwise start one (magit's `B`).
+pub fn bisect_transient(bisecting: bool) -> Transient {
+    let suffixes = if bisecting {
+        vec![
+            Action::suffix("g", "good", Command::BisectGood),
+            Action::suffix("b", "bad", Command::BisectBad),
+            Action::suffix("s", "skip", Command::BisectSkip),
+            Action::suffix("r", "reset", Command::BisectReset),
+        ]
+    } else {
+        vec![Action::suffix(
+            "B",
+            "start (pick a known-good commit)",
+            Command::BisectStart,
+        )]
+    };
+    Transient {
+        title: plain_title(if bisecting { "Bisecting" } else { "Bisect" }),
+        groups: vec![Group {
+            title: plain_title("Bisect"),
+            suffixes,
+        }],
+    }
+}
+
 
 pub fn ignore_transient() -> Transient {
     Transient {
