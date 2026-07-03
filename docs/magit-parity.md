@@ -720,10 +720,10 @@ Covered above per area; the residual key-level notes:
   reverse, `u` reverse-in-index); magit's adds notes and a diffstat section
   (`--stat` default), per-file visiting, `j` revision-jump, refine-hunk. ∂
   thinner.
-- **Diff buffer**: entry points ✓; the resulting view is display-only — no
-  context keys, no `D` refresh transient (refine/file-filter/range-type/
-  flip-revs). `C-c C-d` diff-while-committing ≈ our commit editor embeds the
-  staged diff by default.
+- **Diff buffer**: entry points ✓; the apply engine at point works here too
+  (`a`/`v`/`u`, same as the commit view). Still no context keys and no `D`
+  refresh transient (refine/file-filter/range-type/flip-revs). `C-c C-d`
+  diff-while-committing ≈ our commit editor embeds the staged diff by default.
 - **Refs buffer**: ✗ entirely (see Show-refs above).
 - **Process buffer**: ≈ — magit has one collapsible section per subprocess
   and `k` kill-at-point; ours is a flat pager, but adds per-command timings
@@ -777,9 +777,11 @@ Grouped by kind, roughly ordered within each group.
   on a commit/stash row previews it (returning overlay). Remaining: reverse-
   preview on `DEL`, and scroll-in-place rather than a full-screen swap.
 - ~~`u` reverse-in-index, `v` reverse, `a` apply on committed changes.~~ Done
-  in the commit view at file/hunk granularity (`a` apply-to-worktree, `v`/`-`
-  reverse-in-worktree per preset, `u` reverse-in-index). Remaining: region
-  (sub-hunk) scope, and the same verbs in the standalone `d` diff view.
+  in both the commit view and the standalone `d` diff view, at file/hunk
+  granularity (`a` apply-to-worktree, `v`/`-` reverse-in-worktree per preset,
+  `u` reverse-in-index). Remaining: region (sub-hunk) scope, and per-diff-type
+  DWIM (we use uniform apply/reverse semantics rather than magit's
+  unstaged→stage / staged→unstage branching).
 - ~~Diff context keys `+`/`-`/`0`.~~ Done for the status view (diff/commit
   views still fixed at 3).
 - Merge: in-progress `m` commit-merge; `e` editmsg; `p` preview; strategies.
