@@ -9,18 +9,18 @@
 # DEFAULT below and rerun.
 #
 # The treatment matches Apple's macOS icon grid: the art is scaled to an 824px
-# body on the 1024 canvas (~100px margin), masked to the Big Sur continuous
-# rounded rectangle (straight sides, rounded corners -- not a bulging
-# superellipse), and given a subtle contact shadow. Rerun after changing art:
+# body on the 1024 canvas (~100px margin), masked to a squircle (a superellipse,
+# the continuous-curvature "macOS" corner rather than a circular-arc rounded
+# rectangle), and given a subtle contact shadow. Rerun after changing art:
 #   packaging/macos/icons/make-icns.sh
 #
-# Requires ImageMagick (`magick`) and macOS `iconutil`.
+# Requires ImageMagick (`magick`), python3, and macOS `iconutil`.
 set -euo pipefail
 
 DEFAULT=son-of-man   # the variant used for the bundle's Finder icon
 CANVAS=1024
 BODY=824            # ~80% of the canvas, per Apple's grid
-RADIUS=185          # corner radius for the 824 body (~0.225, the Big Sur curve)
+SQUIRCLE_N=5        # superellipse exponent (~5 ≈ Apple's squircle)
 SS=2                # supersample factor for a smooth mask edge
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -33,12 +33,28 @@ mkdir -p "$MASTER_DIR" "$THUMB_DIR"
 style_master() {  # src -> styled 1024 master
   local src="$1" out="$2" tmp
   tmp="$(mktemp -d)"
-  local big=$((BODY * SS)) r=$((RADIUS * SS))
-  # Art scaled to the rounded-rect body.
+  local big=$((BODY * SS))
+  # Art scaled to the squircle body.
   magick "$src" -resize ${BODY}x${BODY}^ -gravity center -extent ${BODY}x${BODY} "$tmp/body.png"
-  # Rounded-rect mask, supersampled then downscaled for an antialiased edge.
+  # Squircle mask: a superellipse |x/a|^n + |y/a|^n = 1 as a fine polygon,
+  # supersampled then downscaled for an antialiased edge.
+  local pts
+  pts="$(python3 - "$big" "$SQUIRCLE_N" <<'PY'
+import sys, math
+big = int(sys.argv[1]); n = float(sys.argv[2])
+a = (big - 1) / 2.0; N = 720
+pts = []
+for k in range(N):
+    t = 2 * math.pi * k / N
+    ct, st = math.cos(t), math.sin(t)
+    x = a + a * math.copysign(abs(ct) ** (2 / n), ct)
+    y = a + a * math.copysign(abs(st) ** (2 / n), st)
+    pts.append(f"{x:.2f},{y:.2f}")
+print(" ".join(pts))
+PY
+)"
   magick -size ${big}x${big} xc:none -fill white \
-    -draw "roundrectangle 0,0 $((big - 1)),$((big - 1)) $r,$r" \
+    -draw "polygon $pts" \
     -resize ${BODY}x${BODY} "$tmp/mask.png"
   magick "$tmp/body.png" "$tmp/mask.png" -alpha off -compose CopyOpacity -composite "$tmp/rounded.png"
   # Compose on the canvas with a subtle contact shadow.
