@@ -7,14 +7,21 @@ use gpui::{div, px, AnyElement, Hsla, SharedString};
 
 use crate::with_alpha;
 
-/// The Return keycap glyph (`⏎`). It reads better than "Ret" but many
-/// monospace fonts render it thin/tofu, so keycaps draw it in the system UI
-/// font (passed as `ui_font`) — not the user's configured UI font, which a
-/// custom display face could also lack.
+/// Keycap glyphs (`⏎` Return, `⇥` Tab). They read better than "Ret"/"Tab" but
+/// many monospace fonts render them thin/tofu, so keycaps draw them in the
+/// system UI font (passed as `ui_font`) — not the user's configured UI font,
+/// which a custom display face could also lack.
 pub(crate) const RETURN_GLYPH: &str = "⏎";
+pub(crate) const TAB_GLYPH: &str = "⇥";
+
+/// Whether a rendered label is one of the symbol glyphs drawn in the UI font
+/// rather than the monospace keycap font.
+fn is_glyph(label: &str) -> bool {
+    label == RETURN_GLYPH || label == TAB_GLYPH
+}
 
 /// Spell out one keystroke token as a word label. Modifier and named keys
-/// become words (`Cmd`, `Esc`, `Tab`) — or the `⏎` glyph for Return — rather
+/// become words (`Cmd`, `Esc`) — or the `⏎`/`⇥` glyphs for Return/Tab — rather
 /// than the macOS modifier glyphs, which render poorly in our monospace chrome.
 /// Plain letters keep their case (`F` vs `f`) so case alone distinguishes the
 /// shifted key — no `Shift` shown.
@@ -26,7 +33,7 @@ fn key_word(token: &str) -> String {
         "shift" => "Shift".into(),
         "enter" | "return" => RETURN_GLYPH.into(),
         "esc" | "ESC" | "escape" => "Esc".into(),
-        "tab" | "TAB" => "Tab".into(),
+        "tab" | "TAB" => TAB_GLYPH.into(),
         "space" => "Space".into(),
         _ => token.to_string(),
     }
@@ -106,9 +113,9 @@ pub(crate) fn key_chip(
     row.into_any_element()
 }
 
-/// One keystroke step (possibly a chord) as caps joined by `+`. The `⏎` Return
-/// glyph is drawn in the UI font (it's thin/tofu in many monospace fonts);
-/// every other cap stays monospace so keys read as keys.
+/// One keystroke step (possibly a chord) as caps joined by `+`. The `⏎`/`⇥`
+/// symbol glyphs are drawn in the UI font (they're thin/tofu in many monospace
+/// fonts); every other cap stays monospace so keys read as keys.
 fn chord_caps(step: &str, color: Hsla, font: &SharedString, ui_font: &SharedString) -> gpui::Div {
     let parts: Vec<&str> = step.split('-').collect();
     let labels: Vec<String> = if is_chord(&parts) {
@@ -121,7 +128,7 @@ fn chord_caps(step: &str, color: Hsla, font: &SharedString, ui_font: &SharedStri
         if i > 0 {
             row = row.child(div().text_color(color).child(SharedString::from("+")));
         }
-        let cap = if label == RETURN_GLYPH {
+        let cap = if is_glyph(&label) {
             chip_box(color, font).child(
                 div()
                     .font_family(ui_font.clone())
