@@ -201,11 +201,37 @@ pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
     match row {
         CommitDiffRow::Detail(d) => d.clone(),
         CommitDiffRow::Message(m) => m.clone(),
-        CommitDiffRow::File(p) => p.clone(),
+        CommitDiffRow::Stats {
+            files,
+            insertions,
+            deletions,
+        } => diffstat_text(*files, *insertions, *deletions),
+        CommitDiffRow::File { change, path } => {
+            let word = status_label::change_word(*change);
+            if word.is_empty() {
+                path.clone()
+            } else {
+                format!("{word} {path}")
+            }
+        }
         CommitDiffRow::Hunk(h) => h.clone(),
         CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
         CommitDiffRow::Note(n) => n.clone(),
     }
+}
+
+/// The diffstat summary text ("N files changed, K insertions(+), L
+/// deletions(-)"), pluralized and omitting a zero side, like git.
+pub(crate) fn diffstat_text(files: usize, insertions: usize, deletions: usize) -> String {
+    let plural = |n: usize, s: &str| format!("{n} {s}{}", if n == 1 { "" } else { "s" });
+    let mut parts = vec![format!("{} changed", plural(files, "file"))];
+    if insertions > 0 {
+        parts.push(format!("{}(+)", plural(insertions, "insertion")));
+    }
+    if deletions > 0 {
+        parts.push(format!("{}(-)", plural(deletions, "deletion")));
+    }
+    parts.join(", ")
 }
 
 pub(crate) fn commit_metadata_lines(metadata: &CommitMetadata) -> Vec<String> {

@@ -73,6 +73,30 @@ pub(crate) fn status_color(entry: &FileEntry, section: SectionId, p: &Palette) -
     }
 }
 
+/// The status word for a bare [`Change`] (the diff views' file headers, which
+/// derive their change from the file diff rather than a status entry).
+pub(crate) fn change_word(change: Change) -> &'static str {
+    match change {
+        Change::Unmodified => "",
+        Change::Modified => "modified",
+        Change::TypeChanged => "typechange",
+        Change::Added => "new file",
+        Change::Deleted => "deleted",
+        Change::Renamed => "renamed",
+        Change::Copied => "copied",
+        Change::Unmerged => "conflicted",
+    }
+}
+
+/// The color for a bare [`Change`] (matches [`status_color`]).
+pub(crate) fn change_color(change: Change, p: &Palette) -> Hsla {
+    match change {
+        Change::Added | Change::Copied => p.added,
+        Change::Deleted => p.removed,
+        _ => p.modified,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

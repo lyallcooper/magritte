@@ -702,7 +702,9 @@ impl StatusView {
                             &self.system_ui_font,
                         ))
                         .into_any_element(),
-                    None => kbd::key_chip(a.key, self.palette.dim, &self.font, &self.system_ui_font),
+                    None => {
+                        kbd::key_chip(a.key, self.palette.dim, &self.font, &self.system_ui_font)
+                    }
                 };
                 // A concrete remote ref is colored like one; placeholders and
                 // non-ref actions ("elsewhere") use the normal foreground.
@@ -1564,12 +1566,36 @@ impl StatusView {
                 .text_color(self.palette.fg)
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
-            CommitDiffRow::File(path) => base
-                .child(
+            // Status-style file header: a colored change word ("modified"),
+            // then the path — matching the status view's rows.
+            CommitDiffRow::File { change, path } => {
+                let word = status_label::change_word(*change);
+                let mut row = base.gap_2();
+                if !word.is_empty() {
+                    row = row.child(
+                        div()
+                            .text_color(status_label::change_color(*change, &self.palette))
+                            .child(SharedString::from(word)),
+                    );
+                }
+                row.child(
                     div()
-                        .text_color(self.palette.section)
+                        .text_color(self.palette.fg)
                         .child(SharedString::from(path.clone())),
                 )
+                .into_any_element()
+            }
+            CommitDiffRow::Stats {
+                files,
+                insertions,
+                deletions,
+            } => base
+                .text_color(self.palette.dim)
+                .child(SharedString::from(diffstat_text(
+                    *files,
+                    *insertions,
+                    *deletions,
+                )))
                 .into_any_element(),
             CommitDiffRow::Hunk(text) => base
                 .text_color(self.palette.hunk)
@@ -2444,16 +2470,12 @@ impl StatusView {
             .p_4()
             .gap_3()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.fg)
-                            .child(dv.title.clone()),
-                    ),
+                div().flex().items_center().gap_3().child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.palette.fg)
+                        .child(dv.title.clone()),
+                ),
             )
             .child(body)
     }

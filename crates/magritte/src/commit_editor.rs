@@ -7,7 +7,7 @@ use gpui::prelude::*;
 use gpui::{Context, UniformListScrollHandle, Window};
 use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_component::input::{InputEvent, InputState, Position};
-use magritte_core::{CommitMode, DiffSource, FileDiff, LineKind};
+use magritte_core::{Change, CommitMode, DiffSource, FileDiff, LineKind};
 
 use std::rc::Rc;
 
@@ -60,14 +60,34 @@ pub(crate) enum CommitDiffRow {
     Detail(String),
     /// A line from the commit's full message, shown above the diff in commit view.
     Message(String),
-    /// A file header (the path).
-    File(String),
+    /// The diffstat summary shown above the files (files changed, +ins, -del).
+    Stats {
+        files: usize,
+        insertions: usize,
+        deletions: usize,
+    },
+    /// A file header: its change kind (for the status-style word/color) and path.
+    File { change: Change, path: String },
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
     Line { kind: LineKind, spans: Rc<[Span]> },
     /// A dim status note (e.g. when the staged diff couldn't be loaded).
     Note(String),
+}
+
+/// The status-style change kind for a diff'd file (magit's "modified"/"new
+/// file"/"deleted"/"renamed" word), derived from the file diff's flags.
+pub(crate) fn file_change(diff: &FileDiff) -> Change {
+    if diff.is_new {
+        Change::Added
+    } else if diff.is_deleted {
+        Change::Deleted
+    } else if diff.old_path != diff.new_path {
+        Change::Renamed
+    } else {
+        Change::Modified
+    }
 }
 
 impl StatusView {
@@ -498,7 +518,10 @@ impl StatusView {
         let (fg, dim) = (self.palette.fg, self.palette.dim);
         let mut rows = Vec::new();
         for (diff, lang) in files {
-            rows.push(CommitDiffRow::File(diff.display_path().to_string()));
+            rows.push(CommitDiffRow::File {
+                change: file_change(diff),
+                path: diff.display_path().to_string(),
+            });
             let hl = match lang {
                 Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),
                 _ => None,

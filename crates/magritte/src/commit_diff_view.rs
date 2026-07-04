@@ -88,7 +88,7 @@ fn line_region_scope(rows: &[CommitDiffRow], lo: usize, hi: usize) -> Option<App
     for (ix, row) in rows.iter().enumerate() {
         let selected = (lo..=hi).contains(&ix);
         match row {
-            CommitDiffRow::File(_) => {
+            CommitDiffRow::File { .. } => {
                 if selected {
                     return None;
                 }
@@ -445,6 +445,27 @@ impl StatusView {
         if !rows.is_empty() {
             rows.push(CommitDiffRow::Note(String::new()));
         }
+        // A diffstat summary above the files (magit's overview line).
+        if !files.is_empty() {
+            let (mut insertions, mut deletions) = (0usize, 0usize);
+            for (diff, _) in files {
+                for hunk in &diff.hunks {
+                    for line in &hunk.lines {
+                        match line.kind {
+                            LineKind::Added => insertions += 1,
+                            LineKind::Removed => deletions += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            rows.push(CommitDiffRow::Stats {
+                files: files.len(),
+                insertions,
+                deletions,
+            });
+            rows.push(CommitDiffRow::Note(String::new()));
+        }
         rows.extend(self.diff_rows(files, cx));
         rows
     }
@@ -471,7 +492,7 @@ impl StatusView {
         let mut hunk_ix: Option<usize> = None;
         for (ix, row) in fd.rows.iter().enumerate() {
             match row {
-                CommitDiffRow::File(_) => {
+                CommitDiffRow::File { .. } => {
                     file_ix = Some(file_ix.map_or(0, |f| f + 1));
                     hunk_ix = None;
                 }
