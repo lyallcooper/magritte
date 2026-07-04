@@ -1628,31 +1628,9 @@ impl StatusView {
             .gap_3()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(SharedString::from("Command log")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(self.header_action(
-                                "git-log-toggle-queries",
-                                if self.git_log_show_all() {
-                                    "hide queries"
-                                } else {
-                                    "show all"
-                                },
-                                view,
-                            ))
-                            .child(self.header_action("close", "close", view)),
-                    ),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.palette.section)
+                    .child(SharedString::from("Command log")),
             )
             .child(body)
     }
@@ -1692,16 +1670,9 @@ impl StatusView {
             .gap_3()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(SharedString::from(format!("Blame: {path}"))),
-                    )
-                    .child(self.header_action("close", "close", view)),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(self.palette.section)
+                    .child(SharedString::from(format!("Blame: {path}"))),
             )
             .child(body)
     }
@@ -1962,13 +1933,15 @@ impl StatusView {
                     .child(SharedString::from(format!("(first {})", Self::LOG_LIMIT))),
             );
         }
+        // In select mode the user must act (pick a commit), so keep the header
+        // buttons; while browsing, the `?` menu carries the verbs — no header
+        // hints, matching the other detail views.
         if selecting {
             // Return inspects the commit; Cmd+Return picks it as the base.
             header = header.child(self.header_action("log-open", "view", view));
             header = header.child(self.header_action("log-confirm-select", "select", view));
+            header = header.child(self.header_action("close", "cancel", view));
         }
-        let close_label = if selecting { "cancel" } else { "close" };
-        header = header.child(self.header_action("close", close_label, view));
 
         div()
             .flex()
@@ -2019,16 +1992,12 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let mut header = div().flex().items_center().gap_3().child(
+        let header = div().flex().items_center().gap_3().child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(self.palette.section)
                 .child(SharedString::from("Refs")),
         );
-        header = header.child(self.header_action("refs-checkout", "checkout", view));
-        header = header.child(self.header_action("refs-delete", "delete", view));
-        header = header.child(self.header_action("refs-rename", "rename", view));
-        header = header.child(self.header_action("close", "close", view));
 
         div()
             .flex()
@@ -2175,18 +2144,12 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let mut header = div().flex().items_center().gap_3().child(
+        let header = div().flex().items_center().gap_3().child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(self.palette.section)
                 .child(SharedString::from("Worktrees")),
         );
-        header = header.child(self.header_action("worktree-visit", "visit", view));
-        header = header.child(self.header_action("worktree-remove", "remove", view));
-        header = header.child(self.header_action("worktree-add", "add", view));
-        header = header.child(self.header_action("worktree-create-branch", "branch", view));
-        header = header.child(self.header_action("worktree-move", "move", view));
-        header = header.child(self.header_action("close", "close", view));
 
         div()
             .flex()
@@ -2464,20 +2427,7 @@ impl StatusView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.fg)
                             .child(cv.subject.clone()),
-                    )
-                    .child(self.header_action("flat-apply", "apply", view))
-                    .child(self.header_action("flat-reverse-worktree", "reverse", view))
-                    .child(self.header_action("flat-reverse-index", "reverse in index", view))
-                    .child(self.header_action(
-                        "commit-details",
-                        if cv.show_details {
-                            "hide details"
-                        } else {
-                            "details"
-                        },
-                        view,
-                    ))
-                    .child(self.header_action("close", "back", view)),
+                    ),
             )
             .child(body)
     }
@@ -2504,11 +2454,7 @@ impl StatusView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(self.palette.fg)
                             .child(dv.title.clone()),
-                    )
-                    .child(self.header_action("flat-apply", "apply", view))
-                    .child(self.header_action("flat-reverse-worktree", "reverse", view))
-                    .child(self.header_action("flat-reverse-index", "reverse in index", view))
-                    .child(self.header_action("close", "back", view)),
+                    ),
             )
             .child(body)
     }
