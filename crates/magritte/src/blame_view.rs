@@ -8,6 +8,21 @@ use gpui::{Context, UniformListScrollHandle, Window};
 
 use crate::{Screen, ScrollView, StatusView};
 
+/// A row in the blame pager: an inline commit annotation (shown once per commit
+/// run, magit-style) or a file line with its number.
+pub(crate) enum BlameRow {
+    Annotation {
+        short: String,
+        author: String,
+        date: String,
+        summary: String,
+    },
+    Line {
+        line_no: u32,
+        text: String,
+    },
+}
+
 impl StatusView {
     /// Blame the file at point (magit's `git blame`), loading annotations off the
     /// UI thread and opening the blame view. A no-op with a notice when the
@@ -29,13 +44,30 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(lines) => {
+                    // Flatten to rows: an annotation before each commit run, then
+                    // the file lines (magit's inline blame).
+                    let mut rows = Vec::with_capacity(lines.len());
+                    for l in lines {
+                        if l.group_start {
+                            rows.push(BlameRow::Annotation {
+                                short: l.short,
+                                author: l.author,
+                                date: l.date,
+                                summary: l.summary,
+                            });
+                        }
+                        rows.push(BlameRow::Line {
+                            line_no: l.line_no,
+                            text: l.text,
+                        });
+                    }
                     this.screen = Screen::Blame {
                         view: ScrollView {
                             scroll: UniformListScrollHandle::new(),
                             top: 0,
                         },
                         path,
-                        lines: Rc::new(lines),
+                        rows: Rc::new(rows),
                     };
                     cx.notify();
                 }

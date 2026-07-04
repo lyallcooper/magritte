@@ -19,6 +19,8 @@ fn blames_each_line_with_author_and_date() {
     assert_eq!(lines[2].text, "three");
     // Every line is attributed to the test author with a plausible date.
     assert!(lines.iter().all(|l| l.author == "Test"));
+    assert_eq!(lines[0].summary, "first");
+    assert_eq!(lines[2].summary, "second");
     assert!(lines
         .iter()
         .all(|l| l.date.len() == 10 && l.date.contains('-')));

@@ -1641,17 +1641,17 @@ impl StatusView {
         &self,
         sv: &ScrollView,
         path: &str,
-        lines: &Rc<Vec<magritte_core::BlameLine>>,
+        rows: &Rc<Vec<blame_view::BlameRow>>,
         view: &Entity<Self>,
     ) -> gpui::Div {
-        let count = lines.len();
+        let count = rows.len();
         let body = uniform_list("blame-rows", count, {
             let view = view.clone();
             move |range, _window, cx| {
                 let this = view.read(cx);
                 match &this.screen {
-                    Screen::Blame { lines, .. } => range
-                        .filter_map(|ix| lines.get(ix).map(|l| this.render_blame_row(l)))
+                    Screen::Blame { rows, .. } => range
+                        .filter_map(|ix| rows.get(ix).map(|r| this.render_blame_row(r)))
                         .collect::<Vec<_>>(),
                     _ => Vec::new(),
                 }
@@ -1677,49 +1677,48 @@ impl StatusView {
             .child(body)
     }
 
-    fn render_blame_row(&self, line: &magritte_core::BlameLine) -> AnyElement {
-        // The commit/author gutter shows once per commit run (magit's blame
-        // chunking); continued lines leave it blank so the run reads as one.
-        let gutter = if line.group_start {
-            let mut author = line.author.clone();
-            author.truncate(12);
-            format!("{} {} {author}", line.short, line.date)
-        } else {
-            String::new()
-        };
-        div()
+    fn render_blame_row(&self, row: &blame_view::BlameRow) -> AnyElement {
+        let base = div()
             .h(px(ROW_HEIGHT))
             .w_full()
             .px_2()
             .flex()
             .items_center()
             .gap_2()
-            .overflow_hidden()
-            .child(
-                div()
-                    .w(px(230.0))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(gutter)),
-            )
-            .child(
-                div()
-                    .w(px(40.0))
-                    .flex_shrink_0()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(line.line_no.to_string())),
-            )
-            .child(
-                div()
-                    .flex_grow(1.0)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(self.palette.fg)
-                    .child(SharedString::from(line.text.clone())),
-            )
-            .into_any_element()
+            .overflow_hidden();
+        match row {
+            // A full-width inline annotation above each commit run: sha, author,
+            // date, and the commit summary (magit's inline blame).
+            blame_view::BlameRow::Annotation {
+                short,
+                author,
+                date,
+                summary,
+            } => base
+                .bg(self.palette.banner)
+                .text_color(self.palette.dim)
+                .child(SharedString::from(format!(
+                    "{short}  {author}  {date}  {summary}"
+                )))
+                .into_any_element(),
+            blame_view::BlameRow::Line { line_no, text } => base
+                .child(
+                    div()
+                        .w(px(40.0))
+                        .flex_shrink_0()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from(line_no.to_string())),
+                )
+                .child(
+                    div()
+                        .flex_grow(1.0)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_color(self.palette.fg)
+                        .child(SharedString::from(text.clone())),
+                )
+                .into_any_element(),
+        }
     }
 
     /// The command log flattened into uniform rows: each invocation becomes a
@@ -3367,10 +3366,10 @@ impl Render for StatusView {
             Screen::Blame {
                 view: scroll,
                 path,
-                lines,
+                rows,
             } => {
                 return self.render_overlays(
-                    root.child(self.render_blame(scroll, path, lines, &view)),
+                    root.child(self.render_blame(scroll, path, rows, &view)),
                     &view,
                     window,
                     cx,

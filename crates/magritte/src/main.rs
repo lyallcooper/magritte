@@ -353,12 +353,12 @@ enum Screen {
     /// The worktree browser (`%`, magit's worktree): linked worktrees with
     /// visit/remove at point.
     Worktree(worktree_view::WorktreeView),
-    /// A file's `git blame`: a scrollable list of annotated lines (sha · author
-    /// · date · content). A pager like the command log — no cursor.
+    /// A file's `git blame`: a scrollable pager (no cursor) of the file's lines
+    /// with an inline commit annotation inserted above each commit run.
     Blame {
         view: ScrollView,
         path: String,
-        lines: Rc<Vec<magritte_core::BlameLine>>,
+        rows: Rc<Vec<blame_view::BlameRow>>,
     },
 }
 

@@ -16,6 +16,8 @@ pub struct BlameLine {
     pub author: String,
     /// Author date, `YYYY-MM-DD`.
     pub date: String,
+    /// The commit's one-line summary (subject).
+    pub summary: String,
     /// 1-based line number in the final file.
     pub line_no: u32,
     pub text: String,
@@ -40,6 +42,7 @@ impl Repo {
 struct Commit {
     author: String,
     date: String,
+    summary: String,
 }
 
 /// Parse `git blame --porcelain` output into per-line annotations.
@@ -64,6 +67,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
                 short: sha.chars().take(7).collect(),
                 author: commit.author.clone(),
                 date: commit.date.clone(),
+                summary: commit.summary.clone(),
                 line_no,
                 text: content.to_string(),
                 group_start,
@@ -87,6 +91,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
             match maybe_sha {
                 "author" => cur.author = rest.to_string(),
                 "author-time" => author_time = rest.parse().ok(),
+                "summary" => cur.summary = rest.to_string(),
                 _ => {}
             }
         }

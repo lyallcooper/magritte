@@ -230,8 +230,8 @@ impl StatusView {
                 Some("goto-top") => ("g", false),
                 _ => (key.as_str(), shift),
             };
-            if let Screen::Blame { view, lines, .. } = &mut self.screen {
-                let len = lines.len();
+            if let Screen::Blame { view, rows, .. } = &mut self.screen {
+                let len = rows.len();
                 apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
             }
             cx.notify();
