@@ -7,21 +7,23 @@ use gpui::{div, px, AnyElement, Hsla, SharedString};
 
 use crate::with_alpha;
 
-/// Keycap glyphs (`⏎` Return, `⇥` Tab). They read better than "Ret"/"Tab" but
-/// many monospace fonts render them thin/tofu, so keycaps draw them in the
-/// system UI font (passed as `ui_font`) — not the user's configured UI font,
-/// which a custom display face could also lack.
+/// Keycap glyphs (`⏎` Return, `⇥` Tab, `⎋` Esc, `⌫` Backspace). They read better
+/// than the words but many monospace fonts render them thin/tofu, so keycaps
+/// draw them in the system UI font (passed as `ui_font`) — not the user's
+/// configured UI font, which a custom display face could also lack.
 pub(crate) const RETURN_GLYPH: &str = "⏎";
 pub(crate) const TAB_GLYPH: &str = "⇥";
+pub(crate) const ESC_GLYPH: &str = "⎋";
+pub(crate) const BACKSPACE_GLYPH: &str = "⌫";
 
 /// Whether a rendered label is one of the symbol glyphs drawn in the UI font
 /// rather than the monospace keycap font.
 fn is_glyph(label: &str) -> bool {
-    label == RETURN_GLYPH || label == TAB_GLYPH
+    label == RETURN_GLYPH || label == TAB_GLYPH || label == ESC_GLYPH || label == BACKSPACE_GLYPH
 }
 
-/// Spell out one keystroke token as a word label. Modifier and named keys
-/// become words (`Cmd`, `Esc`) — or the `⏎`/`⇥` glyphs for Return/Tab — rather
+/// Spell out one keystroke token as a word label. Modifier keys become words
+/// (`Cmd`, `Ctrl`, `Opt`); Return/Tab/Esc become the `⏎`/`⇥`/`⎋` glyphs — rather
 /// than the macOS modifier glyphs, which render poorly in our monospace chrome.
 /// Plain letters keep their case (`F` vs `f`) so case alone distinguishes the
 /// shifted key — no `Shift` shown.
@@ -32,8 +34,9 @@ fn key_word(token: &str) -> String {
         "alt" | "opt" | "option" => "Opt".into(),
         "shift" => "Shift".into(),
         "enter" | "return" => RETURN_GLYPH.into(),
-        "esc" | "ESC" | "escape" => "Esc".into(),
+        "esc" | "ESC" | "escape" => ESC_GLYPH.into(),
         "tab" | "TAB" => TAB_GLYPH.into(),
+        "backspace" | "delete" => BACKSPACE_GLYPH.into(),
         "space" => "Space".into(),
         _ => token.to_string(),
     }
