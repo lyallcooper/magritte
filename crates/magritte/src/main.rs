@@ -479,6 +479,10 @@ struct StatusView {
     selected: usize,
     /// The active visual/drag/shift-click range selection — see [`Selection`].
     selection: Selection,
+    /// The active mouse char-range selection within one status diff line (a
+    /// plain drag that stayed on its row) — see [`CharSelection`]. Mutually
+    /// exclusive with a spanning [`Selection::visual`].
+    char_sel: Option<CharSelection>,
     generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
@@ -712,6 +716,7 @@ impl StatusView {
             rows: Vec::new(),
             selected: 0,
             selection: Selection::default(),
+            char_sel: None,
             generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,

@@ -17,6 +17,10 @@ pub(crate) struct Selection {
     /// Row where a left-button drag began, while the button is held. Dragging
     /// across rows turns into a visual selection (mouse equivalent of `v`).
     pub(crate) drag_anchor: Option<usize>,
+    /// Byte offset a left-drag anchored at within the anchor row's text (only
+    /// for a text row that can char-select). Paired with [`drag_anchor`] so a
+    /// same-row drag builds a [`CharSelection`]; `None` on a non-text row.
+    pub(crate) char_anchor: Option<usize>,
     /// Set by a shift-click mouse-down so the following click extends the
     /// selection (and doesn't toggle the row's fold).
     pub(crate) shift_click: bool,
@@ -74,6 +78,9 @@ impl StatusView {
     // --- Selection & folding ---------------------------------------------
 
     pub(crate) fn move_selection(&mut self, delta: isize) {
+        // Keyboard motion drops a mouse char selection (it belongs to the row it
+        // was dragged on, not wherever the cursor moves next).
+        self.char_sel = None;
         if self.rows.is_empty() {
             return;
         }
@@ -94,6 +101,7 @@ impl StatusView {
     /// target into range, then snap to the nearest selectable row (so paging at
     /// the ends lands on the last/first selectable row rather than stalling).
     pub(crate) fn page_selection(&mut self, delta: isize) {
+        self.char_sel = None;
         if self.rows.is_empty() {
             return;
         }
@@ -110,6 +118,7 @@ impl StatusView {
     }
 
     pub(crate) fn select_edge(&mut self, last: bool) {
+        self.char_sel = None;
         let found = if last {
             (0..self.rows.len())
                 .rev()
@@ -128,6 +137,7 @@ impl StatusView {
     /// section's own start first (magit's "beginning of the current section"),
     /// which falls out of scanning upward for the nearest start.
     pub(crate) fn select_section(&mut self, forward: bool) {
+        self.char_sel = None;
         let next = if forward {
             (self.selected + 1..self.rows.len()).find(|&i| section_depth(&self.rows[i]).is_some())
         } else {
@@ -146,6 +156,7 @@ impl StatusView {
     /// sibling in that direction, fall back to the fine-grained motion, as
     /// magit does.
     pub(crate) fn select_section_sibling(&mut self, forward: bool) {
+        self.char_sel = None;
         // The current section: this row if it starts one, else the nearest
         // start above (the section the row is inside).
         let Some(cur) = (0..=self.selected)

@@ -215,35 +215,10 @@ impl StatusView {
         (styled, layout)
     }
 
-    fn diff_line_body(
-        &self,
-        kind: LineKind,
-        spans: &[(String, Hsla)],
-    ) -> (gpui::Div, Option<Hsla>) {
-        let (sign, sign_color, tint) = match kind {
-            LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
-            LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
-            _ => (' ', self.palette.dim, None),
-        };
-        let mut line = div().flex().child(
-            div()
-                .text_color(sign_color)
-                .child(SharedString::from(sign.to_string())),
-        );
-        for (text, color) in spans {
-            line = line.child(
-                div()
-                    .text_color(*color)
-                    .child(SharedString::from(text.clone())),
-            );
-        }
-        (line, tint)
-    }
-
     /// The concatenated text of `spans` and the per-span color runs over it —
     /// the input shape [`selectable_text`](Self::selectable_text) wants for a
     /// diff line's colored segments.
-    fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, Vec<(Range<usize>, Hsla)>) {
+    pub(crate) fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, Vec<(Range<usize>, Hsla)>) {
         let mut text = String::new();
         let mut runs = Vec::with_capacity(spans.len());
         for (segment, color) in spans {
@@ -3296,6 +3271,13 @@ impl StatusView {
         let in_region = self
             .visual_range()
             .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
+        // A row mid-char-selection paints its char range instead of the full-row
+        // cursor wash (so the selection shows), and keeps its diff tint.
+        let owns_char = self.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
+        let char_range = self
+            .char_sel
+            .and_then(|c| (c.row == ix && !c.is_empty()).then(|| c.range()));
+        let wash = selected && !owns_char;
 
         let mut el = div()
             .id(row_id.clone())
@@ -3311,9 +3293,9 @@ impl StatusView {
         // Otherwise the current line gets the selection accent.
         if in_region {
             el = el.bg(self.palette.visual);
-        } else if selected {
+        } else if wash {
             el = el.bg(self.palette.selection);
-        } else if clickable {
+        } else if clickable && !owns_char {
             // A subtle hover on rows you can act on (not the current line or a
             // visual selection, which already have a background) — the theme's
             // explicit hover wash, so it reads as a preview of selecting.
@@ -3334,6 +3316,9 @@ impl StatusView {
             el = el.font_family(self.font.clone());
         }
 
+        // A diff row's StyledText layout (for pixel↔offset hit-testing in the
+        // drag handlers); `None` for every other row kind.
+        let mut diff_layout: Option<TextLayout> = None;
         let content = match &row.kind {
             RowKind::Plain { text, color } => el
                 .text_color(*color)
@@ -3398,14 +3383,27 @@ impl StatusView {
                 )
             }
             RowKind::Diff { kind, spans } => {
-                let (line, tint) = self.diff_line_body(*kind, spans);
-                // Add/remove background tint, unless the row is selected/in-region.
+                let (sign, sign_color, tint) = match kind {
+                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
+                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
+                    _ => (' ', self.palette.dim, None),
+                };
+                // Add/remove background tint, unless the row wears the cursor wash
+                // or is in a line region (a char-selecting row keeps its tint).
                 if let Some(t) = tint {
-                    if !selected && !in_region {
+                    if !wash && !in_region {
                         el = el.bg(t);
                     }
                 }
-                el.child(line)
+                let (text, runs) = Self::spans_text_runs(spans);
+                let (styled, layout) = self.selectable_text(text, runs, char_range);
+                diff_layout = Some(layout);
+                el.child(
+                    div()
+                        .text_color(sign_color)
+                        .child(SharedString::from(sign.to_string())),
+                )
+                .child(styled)
             }
             // Commit/stash rows: a lead spacer to align under the section's
             // chevron, then a dim short hash / reference and the subject / message.
@@ -3440,14 +3438,26 @@ impl StatusView {
                 .child(SharedString::from(message.clone())),
         };
         if clickable {
+            let (down_layout, move_layout) = (diff_layout.clone(), diff_layout);
             let el = content
                 .relative()
                 .child(track_target(row_id.to_string()))
                 .on_click({
                     let view = view.clone();
                     move |ev: &gpui::ClickEvent, window, cx: &mut App| {
+                        // A drag (moved between down and up) already selected text;
+                        // don't also click (which would move the cursor / fold).
+                        if let gpui::ClickEvent::Mouse(e) = ev {
+                            if (e.up.position.x - e.down.position.x).abs() > px(4.0)
+                                || (e.up.position.y - e.down.position.y).abs() > px(4.0)
+                            {
+                                return;
+                            }
+                        }
                         let double = ev.click_count() >= 2;
                         view.update(cx, |v, cx| {
+                            // A plain click clears any mouse char selection.
+                            v.char_sel = None;
                             // Enter fires on a double-click or a click of the
                             // already-selected row — the two are equivalent (a
                             // double-click's second press lands on the selection).
@@ -3470,6 +3480,9 @@ impl StatusView {
                 .on_mouse_down(MouseButton::Left, {
                     let view = view.clone();
                     move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                        // Byte offset under the press (only on a diff line); the
+                        // anchor for a same-row char drag.
+                        let offset = down_layout.as_ref().map(|l| offset_at(l, ev.position));
                         view.update(cx, |v, vcx| {
                             if v.popup.is_some() {
                                 return;
@@ -3482,6 +3495,8 @@ impl StatusView {
                                 v.selection.visual = (ix != anchor).then_some(anchor);
                                 v.selected = ix;
                                 v.selection.drag_anchor = None;
+                                v.selection.char_anchor = None;
+                                v.char_sel = None;
                                 v.selection.shift_click = true;
                                 v.selection.reclick = false;
                             } else {
@@ -3490,6 +3505,10 @@ impl StatusView {
                                 v.selection.reclick =
                                     v.selected == ix && v.selection.visual.is_none();
                                 v.selection.drag_anchor = Some(ix);
+                                v.selection.char_anchor = offset;
+                                // A new drag clears any prior char selection; a move
+                                // rebuilds it from this anchor.
+                                v.char_sel = None;
                                 v.selection.visual = None;
                                 v.selected = ix;
                                 v.selection.shift_click = false;
@@ -3504,6 +3523,7 @@ impl StatusView {
                         if ev.pressed_button != Some(MouseButton::Left) {
                             return;
                         }
+                        let offset = move_layout.as_ref().map(|l| offset_at(l, ev.position));
                         view.update(cx, |v, vcx| {
                             let Some(anchor) = v.selection.drag_anchor else {
                                 return;
@@ -3511,15 +3531,34 @@ impl StatusView {
                             if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 return;
                             }
-                            // Skip redundant work while the cursor stays on one row.
+                            if ix == anchor {
+                                // Still on the anchor row → char-wise (only on a
+                                // diff line, where both offsets exist).
+                                if let (Some(a), Some(cursor)) = (v.selection.char_anchor, offset) {
+                                    let sel = CharSelection {
+                                        row: anchor,
+                                        anchor: a,
+                                        cursor,
+                                    };
+                                    if v.char_sel == Some(sel) && v.selection.visual.is_none() {
+                                        return;
+                                    }
+                                    v.selection.visual = None;
+                                    v.char_sel = Some(sel);
+                                    v.selected = anchor;
+                                    vcx.notify();
+                                }
+                                return;
+                            }
+                            // Spanned rows → line-wise region (the staging selection).
                             if v.selected == ix
-                                && (ix == anchor || v.selection.visual == Some(anchor))
+                                && v.selection.visual == Some(anchor)
+                                && v.char_sel.is_none()
                             {
                                 return;
                             }
-                            if ix != anchor {
-                                v.selection.visual = Some(anchor);
-                            }
+                            v.char_sel = None;
+                            v.selection.visual = Some(anchor);
                             v.selected = ix;
                             vcx.notify();
                         });
@@ -3529,8 +3568,25 @@ impl StatusView {
                     let view = view.clone();
                     move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.selection.drag_anchor.take().is_some() {
-                                vcx.notify();
+                            if v.selection.drag_anchor.take().is_none() {
+                                return;
+                            }
+                            v.selection.char_anchor = None;
+                            // A non-empty char range copies on release (precedence
+                            // over the line-wise copy).
+                            let copy = v
+                                .char_sel
+                                .filter(|c| !c.is_empty())
+                                .and_then(|c| match v.rows.get(c.row).map(|r| &r.kind) {
+                                    Some(RowKind::Diff { spans, .. }) => Some(
+                                        c.slice(&StatusView::spans_text_runs(spans).0).to_string(),
+                                    ),
+                                    _ => None,
+                                })
+                                .filter(|t| !t.is_empty());
+                            vcx.notify();
+                            if let Some(text) = copy {
+                                v.copy_to_clipboard(text, vcx);
                             }
                         });
                     }

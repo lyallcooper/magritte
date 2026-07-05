@@ -458,6 +458,15 @@ impl StatusView {
     /// text — for a diff line that's its content, without the `+`/`-` prefix.
     /// Exits visual mode (like an evil yank).
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        // A mouse char selection (within one diff line) takes precedence.
+        if let Some(sel) = self.char_sel.filter(|c| !c.is_empty()) {
+            if let Some(RowKind::Diff { spans, .. }) = self.rows.get(sel.row).map(|r| &r.kind) {
+                let text = sel.slice(&Self::spans_text_runs(spans).0).to_string();
+                self.char_sel = None;
+                self.copy_to_clipboard(text, cx);
+                return;
+            }
+        }
         let text = if let Some((lo, hi)) = self.visual_range() {
             let hi = hi.min(self.rows.len().saturating_sub(1));
             self.rows[lo..=hi]

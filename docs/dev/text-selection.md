@@ -1,13 +1,14 @@
 # Mouse text selection: char-wise within a line, line-wise across lines
 
-Status: implemented for the read-only flattened-diff views (commit detail and
-the `d` diff buffer); the design below is the original plan. Done there: the
-`StyledText` migration of the text rows (diff `Line`, `Message`, `Detail`,
-`Note`, `Hunk`), the `CharSelection` state on `FlatDiff`, the one-drag/two-
-granularity gesture, and copy (mouse-up + Cmd-C precedence, cleared on Esc/
-plain click). Still open: the multi-color rows (`File`/`StatLine`/`Stats`), the
-**status view** diff lines (its row handlers also drive staging), and the `$`
-command-log / blame pagers.
+Status: implemented for the flattened-diff views (commit detail and the `d`
+diff buffer) and the **status view** diff lines; the design below is the
+original plan. Done: the `StyledText` migration of the diff/text rows (`Line`,
+`Message`, `Detail`, `Note`, `Hunk`), `CharSelection` state, the one-drag/two-
+granularity gesture (char-wise on the anchor row, line-wise across rows —
+sharing the status view's staging region), and copy (mouse-up + `y`/Cmd-C
+precedence, cleared on Esc / plain click / keyboard motion). Still open: the
+multi-color rows (`File`/`StatLine`/`Stats`), and the `$` command-log / blame
+pagers.
 
 ## Goal
 
