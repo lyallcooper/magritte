@@ -47,17 +47,77 @@ fn key_word(token: &str) -> String {
     }
 }
 
+/// The four keyboard modifiers, plus a lenient name parser. We accept the common
+/// spellings (and the glyphs) case-insensitively so `Cmd`/`Command`/`super` and
+/// `⌘` all mean the same key.
+#[derive(Clone, Copy)]
+enum Modifier {
+    Cmd,
+    Ctrl,
+    Alt,
+    Shift,
+}
+
+fn parse_modifier(token: &str) -> Option<Modifier> {
+    match token.to_ascii_lowercase().as_str() {
+        "cmd" | "command" | "super" | "meta" | CMD_GLYPH => Some(Modifier::Cmd),
+        "ctrl" | "control" | CTRL_GLYPH => Some(Modifier::Ctrl),
+        "alt" | "opt" | "option" | OPT_GLYPH => Some(Modifier::Alt),
+        "shift" | SHIFT_GLYPH => Some(Modifier::Shift),
+        _ => None,
+    }
+}
+
 fn is_modifier(token: &str) -> bool {
-    matches!(
-        token,
-        "cmd" | "super" | "meta" | "ctrl" | "control" | "alt" | "opt" | "option" | "shift"
-    )
+    parse_modifier(token).is_some()
+}
+
+/// The modifier flags a keystroke step carries.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Mods {
+    pub(crate) cmd: bool,
+    pub(crate) ctrl: bool,
+    pub(crate) alt: bool,
+    pub(crate) shift: bool,
+}
+
+impl Mods {
+    fn any(&self) -> bool {
+        self.cmd || self.ctrl || self.alt || self.shift
+    }
+}
+
+/// Peel the leading modifier tokens off one keystroke step, returning the flags
+/// and the remaining base key. Modifiers may be joined with `-` or `+` and named
+/// in any accepted spelling (`cmd-`, `Command+`, `⌥`); a trailing separator is
+/// treated as the literal key (so `cmd--` is ⌘ plus minus).
+pub(crate) fn parse_step(step: &str) -> (Mods, &str) {
+    let mut rest = step;
+    let mut mods = Mods::default();
+    while let Some(idx) = rest.find(['-', '+']) {
+        let head = &rest[..idx];
+        let after = &rest[idx + 1..];
+        // A separator with nothing after it is the literal `-`/`+` key.
+        if after.is_empty() {
+            break;
+        }
+        match parse_modifier(head) {
+            Some(Modifier::Cmd) => mods.cmd = true,
+            Some(Modifier::Ctrl) => mods.ctrl = true,
+            Some(Modifier::Alt) => mods.alt = true,
+            Some(Modifier::Shift) => mods.shift = true,
+            None => break,
+        }
+        rest = after;
+    }
+    (mods, rest)
 }
 
 /// Validate a user `[keymap]` keystroke spec, returning a human-readable reason
-/// if it's malformed — an empty step, a `+`-joined chord (we use `-`), or an
-/// unknown modifier prefix. Lenient about a literal `-` key (empty segments from
-/// splitting are ignored), so `cmd--` (⌘ and minus) is accepted. `None` = valid.
+/// if it's malformed — an empty step or an unknown modifier prefix. Modifiers may
+/// be joined with `-` or `+` and spelled loosely (`Cmd`, `Command`, `⌘`). Lenient
+/// about a literal `-`/`+` key (empty segments from splitting are ignored), so
+/// `cmd--` (⌘ and minus) is accepted. `None` = valid.
 pub(crate) fn keystroke_error(key: &str) -> Option<String> {
     if key.is_empty() {
         return Some("empty keystroke".to_string());
@@ -66,14 +126,9 @@ pub(crate) fn keystroke_error(key: &str) -> Option<String> {
         if step.is_empty() {
             return Some(format!("\"{key}\": empty step (stray space?)"));
         }
-        if step.contains('+') {
-            return Some(format!(
-                "\"{step}\": join modifiers with '-' (e.g. ctrl-x), not '+'"
-            ));
-        }
         // Every segment but the last is a modifier prefix; the last is the key.
-        // Empty segments (from a literal `-` key) are ignored.
-        let segs: Vec<&str> = step.split('-').collect();
+        // Empty segments (from a literal `-`/`+` key) are ignored.
+        let segs: Vec<&str> = step.split(['-', '+']).collect();
         for (i, seg) in segs.iter().enumerate() {
             let is_last = i == segs.len() - 1;
             if is_last || seg.is_empty() {
@@ -87,11 +142,43 @@ pub(crate) fn keystroke_error(key: &str) -> Option<String> {
     None
 }
 
-/// Whether a `-`-split keystroke is a chord: ≥2 parts where every part but the
-/// last is a modifier (`ctrl-d`, `cmd-shift-x`), vs. a lone key or a literal
-/// `-`.
-fn is_chord(parts: &[&str]) -> bool {
-    parts.len() >= 2 && parts[..parts.len() - 1].iter().all(|p| is_modifier(p))
+/// Whether a base key is a shifted letter — an uppercase ASCII letter, which in
+/// our canonical form encodes Shift (`cmd-N` is ⌘ + Shift + n).
+fn is_shifted_letter(base: &str) -> bool {
+    base.len() == 1 && base.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// The display label for one keystroke step, plus whether it must render in the
+/// UI font (it holds a modifier or symbol glyph). Modifiers are ordered in the
+/// macOS sequence (⌃⌥⇧⌘) and Shift shows explicitly when combined with another
+/// modifier (`cmd-N` → `⇧⌘N`); a lone shifted letter keeps encoding Shift by its
+/// case (`N`, no `⇧`).
+fn step_label(step: &str) -> (String, bool) {
+    let (mut mods, base) = parse_step(step);
+    let has_other = mods.cmd || mods.ctrl || mods.alt;
+    if has_other && is_shifted_letter(base) {
+        mods.shift = true;
+    }
+    if !mods.any() {
+        let label = key_word(base);
+        let is_glyph = is_glyph(&label);
+        return (label, is_glyph);
+    }
+    let mut s = String::new();
+    if mods.ctrl {
+        s.push_str(CTRL_GLYPH);
+    }
+    if mods.alt {
+        s.push_str(OPT_GLYPH);
+    }
+    if mods.shift {
+        s.push_str(SHIFT_GLYPH);
+    }
+    if mods.cmd {
+        s.push_str(CMD_GLYPH);
+    }
+    s.push_str(&key_word(base));
+    (s, true)
 }
 
 /// The keycap chip shell: a bordered, tinted rounded box. Callers fill in the
@@ -115,23 +202,13 @@ pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
 
 /// The display label for a keystroke spec. A multi-keystroke *sequence* is
 /// space-separated (e.g. `g r`, `⌃x ⌃c`) with each step formatted in turn. A
-/// *chord* prefixes its modifier glyphs to the key (`cmd-enter` → `⌘⏎`). A lone
-/// token is word-ified (`tab` → `⇥`).
+/// *chord* prefixes its modifier glyphs to the key in macOS order (`cmd-enter` →
+/// `⌘⏎`, `cmd-N` → `⇧⌘N`). A lone token is word-ified (`tab` → `⇥`).
 pub(crate) fn format_keys(key: &str) -> String {
-    if key.contains(' ') {
-        return key
-            .split(' ')
-            .map(format_keys)
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-    let parts: Vec<&str> = key.split('-').collect();
-    if is_chord(&parts) {
-        // Concatenated, macOS-style (`⌘⇧x`) — no `+` between modifier and key.
-        parts.iter().map(|p| key_word(p)).collect()
-    } else {
-        key_word(key)
-    }
+    key.split(' ')
+        .map(|step| step_label(step).0)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A keyboard key badge: one keycap per keystroke *step*. A chord is a single
@@ -156,14 +233,7 @@ pub(crate) fn key_chip(
 /// glyphs; a lone symbol key (`⏎`/`⇥`/`⎋`/`⌫`) likewise uses the UI font. Any
 /// other lone key stays monospace so keys read as keys.
 fn chord_caps(step: &str, color: Hsla, font: &SharedString, ui_font: &SharedString) -> gpui::Div {
-    let parts: Vec<&str> = step.split('-').collect();
-    let (label, glyph_font) = if is_chord(&parts) {
-        (parts.iter().map(|p| key_word(p)).collect::<String>(), true)
-    } else {
-        let label = key_word(step);
-        let glyph = is_glyph(&label);
-        (label, glyph)
-    };
+    let (label, glyph_font) = step_label(step);
     if glyph_font {
         chip_box(color, font).child(
             div()
@@ -199,27 +269,55 @@ pub(crate) fn switch_chip(
 
 #[cfg(test)]
 mod tests {
-    use super::keystroke_error;
+    use super::{format_keys, keystroke_error};
 
     #[test]
     fn keystroke_validation() {
-        // Valid: plain keys, sequences, chords, and the literal minus key.
+        // Valid: plain keys, sequences, chords (either separator), loose modifier
+        // spellings, and the literal minus/plus keys.
         for ok in [
             "g",
             "K",
             "g r",
             "ctrl-x ctrl-c",
             "cmd-enter",
+            "cmd+x",
+            "Command-N",
+            "Cmd+Shift+n",
             "-",
             "cmd--",
+            "cmd-+",
             "ctrl-space",
         ] {
             assert!(keystroke_error(ok).is_none(), "{ok} should be valid");
         }
-        // Malformed: empty, `+` join, unknown modifier, stray space.
+        // Malformed: empty, unknown modifier, stray space.
         assert!(keystroke_error("").is_some());
-        assert!(keystroke_error("cmd+x").is_some());
         assert!(keystroke_error("kmd-x").is_some());
         assert!(keystroke_error("g  r").is_some());
+    }
+
+    #[test]
+    fn display_labels() {
+        // Modifier + Shift shows an explicit ⇧, in macOS order (⌃⌥⇧⌘).
+        assert_eq!(format_keys("cmd-N"), "⇧⌘N");
+        assert_eq!(format_keys("cmd-ctrl-alt-x"), "⌃⌥⌘x");
+        assert_eq!(format_keys("cmd-enter"), "⌘⏎");
+        // A lone shifted letter keeps encoding Shift by its case — no ⇧.
+        assert_eq!(format_keys("K"), "K");
+        // Sequences format each step; symbol/word keys word-ify.
+        assert_eq!(format_keys("ctrl-x ctrl-c"), "⌃x ⌃c");
+        assert_eq!(format_keys("tab"), "⇥");
+    }
+
+    #[test]
+    fn canonicalizes_loose_specs() {
+        use crate::commands::canonical_keystroke;
+        assert_eq!(canonical_keystroke("Cmd+N"), "cmd-N");
+        assert_eq!(canonical_keystroke("command-n"), "cmd-n");
+        assert_eq!(canonical_keystroke("Cmd+Shift+n"), "cmd-N");
+        assert_eq!(canonical_keystroke("Control+Option+x"), "ctrl-alt-x");
+        assert_eq!(canonical_keystroke("cmd--"), "cmd--");
+        assert_eq!(canonical_keystroke("g r"), "g r");
     }
 }

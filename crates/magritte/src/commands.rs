@@ -1639,6 +1639,20 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
     s
 }
 
+/// Canonicalize a user `[keymap]` keystroke spec into the same form [`chord`]
+/// emits at runtime, so loosely-spelled bindings still match. Each space-
+/// separated step is parsed for its modifiers (any accepted spelling/separator)
+/// and re-encoded: `Cmd+N` and `command-n` both become `cmd-N`.
+pub(crate) fn canonical_keystroke(key: &str) -> String {
+    key.split(' ')
+        .map(|step| {
+            let (mods, base) = kbd::parse_step(step);
+            chord(base, mods.shift, mods.ctrl, mods.alt, mods.cmd)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Lightweight metadata for any command — built-in or user `[[command]]`.
 /// The cross-cutting consumers (keymap/transient validation, the palette,
 /// suffix labels) read commands through [`all_commands`], so none of them can
@@ -1761,9 +1775,11 @@ pub(crate) fn build_keymap(config: &config::Config) -> (ScreenKeymaps, Vec<Strin
         if let Some(err) = kbd::keystroke_error(keystroke) {
             warnings.push(format!("keymap: {err}"));
         }
+        // Normalize the spec to the runtime chord form so `Cmd+N` matches `cmd-N`.
+        let keystroke = canonical_keystroke(keystroke);
         if id == "unbound" {
             for sub in map.values_mut() {
-                sub.remove(keystroke);
+                sub.remove(&keystroke);
             }
         } else if !known(id) {
             warnings.push(format!("keymap: unknown command id \"{id}\""));
