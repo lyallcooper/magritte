@@ -1471,7 +1471,7 @@ impl StatusView {
                 // Marks uncommitted changes in the working tree.
                 info = info.child(self.titlebar_tip(
                     "titlebar-dirty",
-                    "Uncommitted changes",
+                    "Working tree dirty",
                     div().text_color(self.palette.modified).child("○"),
                 ));
             }
