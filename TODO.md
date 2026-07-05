@@ -202,4 +202,4 @@
 - [x] Commit editor diff view should be mouse enabled, collapsible sections, etc — done: File/Hunk headers in the preview show fold triangles and collapse on click (shared fold model with the flat-diff views).
 - [x] The diff stats (+++-- etc) should appear all together before the files, not with each file header (like magit does) — done: a diffstat block (per-file `path N +++---` lines + summary) sits above the diffs; file headers show just the change word and path.
 - [x] Line highlight and select is not visible over green/red diff rows in commit/diff detail views — done: the cursor/visual highlight wins over an added/removed row's tint.
-- [x] Instead of the text "Tag: " before the tag in the title bar, can we use a tag symbol? — done: a tag glyph (bundled `icons/tag.svg`, tinted the tag color) replaces the "Tag:"/"Tags:" label.
+- [x] Instead of the text "Tag: " before the tag in the title bar, can we use a tag symbol? — done: a tiny vertical "TG" letter label (tinted the tag color) replaces the "Tag:"/"Tags:" text; the same `stacked_letters` helper is available for other markers.

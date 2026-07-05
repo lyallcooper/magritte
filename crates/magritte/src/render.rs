@@ -1158,6 +1158,28 @@ impl StatusView {
     /// (`⇡` push / `⇣` pull), the ref name, and `↑ahead`/`↓behind` (each shown
     /// only when non-zero). The ahead/behind are clickable: `↑` opens the push
     /// transient, `↓` the pull transient. `key` namespaces their element ids.
+    /// A tiny vertical letter label for the title bar (`TG` tag, `PU` push, `UP`
+    /// upstream): the letters stack into about one line's height, a compact
+    /// stand-in for the word. Slightly overlapped line height keeps it dense.
+    pub(crate) fn stacked_letters(&self, letters: &str, color: Hsla) -> gpui::Div {
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .flex_none()
+            .font_weight(FontWeight::BOLD)
+            .text_color(color);
+        for c in letters.chars() {
+            col = col.child(
+                div()
+                    .text_size(px(9.0))
+                    .line_height(px(7.0))
+                    .child(SharedString::from(c.to_string())),
+            );
+        }
+        col
+    }
+
     pub(crate) fn track_chunk(
         &self,
         view: &Entity<Self>,
@@ -1275,6 +1297,7 @@ impl StatusView {
             // (a triangular workflow). When the push target equals the upstream,
             // the core leaves `head.push` unset, so we show a single entry.
             match (&head.push, &head.upstream) {
+                // A distinct push target (triangular workflow): push ⇡, upstream ⇣.
                 (Some(push), upstream) => {
                     info = info.child(self.track_chunk(
                         view,
@@ -1295,9 +1318,11 @@ impl StatusView {
                         ));
                     }
                 }
+                // Push and upstream are the same remote: one chunk, the push
+                // arrow (⇡), since there's no separate upstream to distinguish.
                 (None, Some(up)) => {
                     info =
-                        info.child(self.track_chunk(view, "up", "", up, head.ahead, head.behind));
+                        info.child(self.track_chunk(view, "up", "⇡", up, head.ahead, head.behind));
                 }
                 (None, None) => {}
             }
@@ -1314,15 +1339,13 @@ impl StatusView {
             // segment immediately (not just after the next status refresh clears
             // `tag_info`).
             if self.config.show_tags_in_title_bar && !entries.is_empty() {
-                // A tag glyph stands in for the old "Tag:"/"Tags:" label; the
-                // names follow, so the count of icons doesn't need to vary.
-                let mut seg = div().flex().items_center().gap_1().child(
-                    gpui::svg()
-                        .path("icons/tag.svg")
-                        .size(px(13.0))
-                        .flex_none()
-                        .text_color(self.palette.tag),
-                );
+                // A tiny vertical "TG" label stands in for the old "Tag:" text;
+                // the names follow, so it doesn't vary with the count.
+                let mut seg = div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(self.stacked_letters("TG", self.palette.tag));
                 for (i, (name, count)) in entries.iter().enumerate() {
                     let mut text = name.clone();
                     if *count > 0 {
