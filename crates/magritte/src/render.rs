@@ -942,7 +942,8 @@ impl StatusView {
             .text_color(self.palette.fg)
             .font_family(self.font.clone())
             .font_weight(FontWeight::MEDIUM)
-            .child(
+            .child({
+                let tip_font = self.font.clone();
                 div()
                     .id("titlebar-branch")
                     .relative()
@@ -950,10 +951,20 @@ impl StatusView {
                     .px(px(5.0))
                     .child(track_target("titlebar-branch"))
                     .child(SharedString::from(branch.to_string()))
+                    .tooltip(move |window, cx| {
+                        let font = tip_font.clone();
+                        Tooltip::element(move |_, _| {
+                            div()
+                                .font_family(font.clone())
+                                .child("Current branch -- click for branch actions")
+                        })
+                        .build(window, cx)
+                    })
+                    .tooltip_show_delay(Duration::from_millis(400))
                     .on_click(move |_, window, cx: &mut App| {
                         branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
-                    }),
-            )
+                    })
+            })
             // Divider between the two halves of the split chip.
             .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
             .child(self.copy_icon_button(
@@ -1161,27 +1172,8 @@ impl StatusView {
     /// A tiny vertical letter label for the title bar (`TG` tag, `PU` push, `UP`
     /// upstream): the letters stack into about one line's height, a compact
     /// stand-in for the word. Slightly overlapped line height keeps it dense.
-    pub(crate) fn stacked_letters(&self, letters: &str, color: Hsla) -> gpui::Div {
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .flex_none()
-            .font_weight(FontWeight::BOLD)
-            .text_color(color);
-        for c in letters.chars() {
-            col = col.child(
-                div()
-                    .text_size(px(9.0))
-                    .line_height(px(7.0))
-                    .child(SharedString::from(c.to_string())),
-            );
-        }
-        col
-    }
-
-    /// A small, subtle count badge for the title bar (commits-since-tag, ahead,
-    /// behind): a rounded `color`-tinted pill with `color` text.
+    /// A small, subtle count badge for the title bar (ahead/behind): a rounded
+    /// `color`-tinted pill with `color` text.
     pub(crate) fn count_pill(&self, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
         div()
             .px(px(4.0))
@@ -1192,15 +1184,51 @@ impl StatusView {
             .child(text.into())
     }
 
+    /// A tiny outline-only pill sized to nest inside another pill (the
+    /// commits-since-tag count within the tag pill): a `color` border and text,
+    /// no fill, a step smaller than the enclosing pill.
+    pub(crate) fn outline_pill(&self, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+        div()
+            .px(px(3.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(with_alpha(color, 0.6))
+            .text_size(px(9.0))
+            .text_color(color)
+            .child(text.into())
+    }
+
+    /// Wrap a title-bar item with a hover tooltip spelling out what it is (the
+    /// bar's glyphs and counts are terse). Needs a stable `id` for the hitbox.
+    pub(crate) fn titlebar_tip(
+        &self,
+        id: impl Into<SharedString>,
+        tip: impl Into<SharedString>,
+        child: impl IntoElement,
+    ) -> impl IntoElement {
+        let font = self.font.clone();
+        let tip = tip.into();
+        div()
+            .id(id.into())
+            .child(child)
+            .tooltip(move |window, cx| {
+                let (font, tip) = (font.clone(), tip.clone());
+                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
+                    .build(window, cx)
+            })
+            .tooltip_show_delay(Duration::from_millis(400))
+    }
+
     pub(crate) fn track_chunk(
         &self,
         view: &Entity<Self>,
         key: &str,
         glyph: &str,
         name: &str,
-        ahead: u32,
-        behind: u32,
+        divergence: (u32, u32),
+        tip: &'static str,
     ) -> gpui::Div {
+        let (ahead, behind) = divergence;
         let mut chunk = div()
             .flex()
             .items_center()
@@ -1209,27 +1237,32 @@ impl StatusView {
             // Glyph (dim) and ref name (magit's green branch-remote face) sit
             // tight together; the ahead/behind chips follow with a gap.
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .when(!glyph.is_empty(), |d| {
-                        d.child(
+                self.titlebar_tip(
+                    format!("{key}-name"),
+                    tip,
+                    div()
+                        .flex()
+                        .items_center()
+                        .when(!glyph.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_color(self.palette.dim)
+                                    .child(SharedString::from(glyph.to_string())),
+                            )
+                        })
+                        .child(
                             div()
-                                .text_color(self.palette.dim)
-                                .child(SharedString::from(glyph.to_string())),
-                        )
-                    })
-                    .child(
-                        div()
-                            .text_color(self.palette.branch_remote)
-                            .child(SharedString::from(name.to_string())),
-                    ),
+                                .text_color(self.palette.branch_remote)
+                                .child(SharedString::from(name.to_string())),
+                        ),
+                ),
             );
         if ahead > 0 {
             chunk = chunk.child(self.titlebar_action(
                 view,
                 format!("{key}-ahead"),
                 "push",
+                "Unpushed commits -- click to push",
                 self.count_pill(format!("↑{ahead}"), self.palette.branch_remote),
             ));
         }
@@ -1238,6 +1271,7 @@ impl StatusView {
                 view,
                 format!("{key}-behind"),
                 "pull",
+                "Unpulled commits -- click to pull",
                 self.count_pill(format!("↓{behind}"), self.palette.branch_remote),
             ));
         }
@@ -1246,17 +1280,21 @@ impl StatusView {
 
     /// A clickable title-bar element that runs the registry command `command`
     /// (the branch chip → "branch", an ahead count → "push", a behind count →
-    /// "pull"). Brightens on hover to signal it's actionable.
+    /// "pull"), with a hover tooltip describing it. Brightens on hover to signal
+    /// it's actionable.
     pub(crate) fn titlebar_action(
         &self,
         view: &Entity<Self>,
         id: impl Into<SharedString>,
         command: &'static str,
+        tip: impl Into<SharedString>,
         child: impl IntoElement,
     ) -> impl IntoElement {
         let view = view.clone();
         let fg = self.palette.fg;
         let id = id.into();
+        let font = self.font.clone();
+        let tip = tip.into();
         div()
             .id(id.clone())
             .relative()
@@ -1264,6 +1302,12 @@ impl StatusView {
             .hover(move |s| s.text_color(fg))
             .child(track_target(id))
             .child(child)
+            .tooltip(move |window, cx| {
+                let (font, tip) = (font.clone(), tip.clone());
+                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
+                    .build(window, cx)
+            })
+            .tooltip_show_delay(Duration::from_millis(400))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
             })
@@ -1284,9 +1328,13 @@ impl StatusView {
             .unwrap_or_else(|| "—".to_string());
 
         let mut info = div().flex().items_center().gap_2().child(
-            div()
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(repo_name)),
+            self.titlebar_tip(
+                "titlebar-repo",
+                "Repository",
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(SharedString::from(repo_name)),
+            ),
         );
 
         if let Some(status) = &self.status {
@@ -1300,6 +1348,7 @@ impl StatusView {
                         view,
                         "titlebar-branch",
                         "branch",
+                        "Detached HEAD -- click for branch actions",
                         self.branch_chip("detached"),
                     )
                     .into_any_element(),
@@ -1316,8 +1365,8 @@ impl StatusView {
                         "push",
                         "⇡",
                         push,
-                        head.push_ahead,
-                        head.push_behind,
+                        (head.push_ahead, head.push_behind),
+                        "Push target",
                     ));
                     if let Some(up) = upstream {
                         info = info.child(self.track_chunk(
@@ -1325,16 +1374,22 @@ impl StatusView {
                             "up",
                             "⇣",
                             up,
-                            head.ahead,
-                            head.behind,
+                            (head.ahead, head.behind),
+                            "Upstream branch",
                         ));
                     }
                 }
                 // Push and upstream are the same remote: one chunk, the push
                 // arrow (⇡), since there's no separate upstream to distinguish.
                 (None, Some(up)) => {
-                    info =
-                        info.child(self.track_chunk(view, "up", "⇡", up, head.ahead, head.behind));
+                    info = info.child(self.track_chunk(
+                        view,
+                        "up",
+                        "⇡",
+                        up,
+                        (head.ahead, head.behind),
+                        "Upstream branch",
+                    ));
                 }
                 (None, None) => {}
             }
@@ -1351,43 +1406,42 @@ impl StatusView {
             // segment immediately (not just after the next status refresh clears
             // `tag_info`).
             if self.config.show_tags_in_title_bar && !entries.is_empty() {
-                // A tiny vertical "TG" label stands in for the old "Tag:" text;
-                // the names follow, so it doesn't vary with the count.
-                let mut seg = div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(self.stacked_letters("TG", self.palette.tag));
+                let mut seg = div().flex().items_center().gap_1();
                 for (i, (name, count)) in entries.iter().enumerate() {
-                    // The tag name, with the "commits since" count in a small,
-                    // subtle tag-tinted pill rather than parenthesized.
-                    let mut entry = div()
+                    // Each tag is a tag-tinted pill holding the name, with the
+                    // "commits since" count as a nested, smaller outline pill.
+                    let pill = div()
                         .flex()
                         .items_center()
                         .gap_1()
-                        .child(
-                            div()
-                                .text_color(self.palette.tag)
-                                .child(SharedString::from(name.clone())),
-                        )
+                        .px(px(5.0))
+                        .rounded(px(6.0))
+                        .bg(with_alpha(self.palette.tag, 0.15))
+                        .text_size(px(11.0))
+                        .text_color(self.palette.tag)
+                        .child(SharedString::from(name.clone()))
                         .when(*count > 0, |d| {
-                            d.child(self.count_pill(count.to_string(), self.palette.tag))
+                            d.child(self.outline_pill(count.to_string(), self.palette.tag))
                         });
-                    if i + 1 < entries.len() {
-                        entry = entry.child(
-                            div()
-                                .text_color(self.palette.dim)
-                                .child(SharedString::from(",")),
-                        );
-                    }
-                    seg = seg.child(entry);
+                    // The first entry is the tag HEAD is at or past; a second is
+                    // the next tag ahead. The count is commits since that tag.
+                    let tip = if i == 0 {
+                        "Nearest tag (commits since)"
+                    } else {
+                        "Next tag (commits until)"
+                    };
+                    seg = seg.child(self.titlebar_tip(format!("titlebar-tag-{i}"), tip, pill));
                 }
                 info = info.child(seg);
             }
 
             if !status.is_clean() {
                 // Marks uncommitted changes in the working tree.
-                info = info.child(div().text_color(self.palette.modified).child("○"));
+                info = info.child(self.titlebar_tip(
+                    "titlebar-dirty",
+                    "Uncommitted changes",
+                    div().text_color(self.palette.modified).child("○"),
+                ));
             }
         }
 
