@@ -20,6 +20,24 @@ use magritte_core::{RebaseAction, Sequence};
 
 use crate::*;
 
+/// A title-bar remote-tracking chunk (the upstream or a distinct push target):
+/// the direction glyph, the ref name, its ahead/behind divergence, and the
+/// transient the name opens on click. See [`StatusView::track_chunk`].
+pub(crate) struct TrackRef<'a> {
+    /// id prefix for the chunk's clickable sub-elements.
+    pub(crate) key: &'a str,
+    /// Direction glyph: `⇡` (push) or `⇣` (fetch/pull).
+    pub(crate) glyph: &'a str,
+    /// The remote-tracking ref name.
+    pub(crate) name: &'a str,
+    /// `(ahead, behind)` commit counts vs this ref.
+    pub(crate) divergence: (u32, u32),
+    /// Hover tooltip describing the ref.
+    pub(crate) tip: &'static str,
+    /// The transient the ref name opens on click (matching its glyph: push/pull).
+    pub(crate) command: &'static str,
+}
+
 /// How a picker's candidates are colored, derived from what it's choosing.
 #[derive(Clone, Copy)]
 pub(crate) enum PickerRefStyle {
@@ -1203,16 +1221,15 @@ impl StatusView {
             .tooltip_show_delay(Duration::from_millis(400))
     }
 
-    pub(crate) fn track_chunk(
-        &self,
-        view: &Entity<Self>,
-        key: &str,
-        glyph: &str,
-        name: &str,
-        divergence: (u32, u32),
-        tip: &'static str,
-    ) -> gpui::Div {
-        let (ahead, behind) = divergence;
+    pub(crate) fn track_chunk(&self, view: &Entity<Self>, r: TrackRef) -> gpui::Div {
+        let TrackRef {
+            key,
+            glyph,
+            name,
+            divergence: (ahead, behind),
+            tip,
+            command,
+        } = r;
         let mut chunk = div()
             .flex()
             .items_center()
@@ -1221,8 +1238,10 @@ impl StatusView {
             // Glyph (dim) and ref name (magit's green branch-remote face) sit
             // tight together; the ahead/behind chips follow with a gap.
             .child(
-                self.titlebar_tip(
+                self.titlebar_action(
+                    view,
                     format!("{key}-name"),
+                    command,
                     tip,
                     div()
                         .flex()
@@ -1346,20 +1365,26 @@ impl StatusView {
                 (Some(push), upstream) => {
                     info = info.child(self.track_chunk(
                         view,
-                        "push",
-                        "⇡",
-                        push,
-                        (head.push_ahead, head.push_behind),
-                        "Push target",
+                        TrackRef {
+                            key: "push",
+                            glyph: "⇡",
+                            name: push,
+                            divergence: (head.push_ahead, head.push_behind),
+                            tip: "Push target",
+                            command: "push",
+                        },
                     ));
                     if let Some(up) = upstream {
                         info = info.child(self.track_chunk(
                             view,
-                            "up",
-                            "⇣",
-                            up,
-                            (head.ahead, head.behind),
-                            "Upstream branch",
+                            TrackRef {
+                                key: "up",
+                                glyph: "⇣",
+                                name: up,
+                                divergence: (head.ahead, head.behind),
+                                tip: "Upstream branch",
+                                command: "pull",
+                            },
                         ));
                     }
                 }
@@ -1368,11 +1393,14 @@ impl StatusView {
                 (None, Some(up)) => {
                     info = info.child(self.track_chunk(
                         view,
-                        "up",
-                        "⇡",
-                        up,
-                        (head.ahead, head.behind),
-                        "Upstream branch",
+                        TrackRef {
+                            key: "up",
+                            glyph: "⇡",
+                            name: up,
+                            divergence: (head.ahead, head.behind),
+                            tip: "Upstream branch",
+                            command: "push",
+                        },
                     ));
                 }
                 (None, None) => {}
