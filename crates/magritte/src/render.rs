@@ -2423,7 +2423,25 @@ impl StatusView {
                             .map(|(ix, row)| {
                                 let highlighted = ix == fd.selected
                                     || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-                                this.render_commit_diff_row(row, highlighted)
+                                let content = this.render_commit_diff_row(row, highlighted);
+                                // Clicking a row moves the diff cursor there, so
+                                // the apply engine (`a`/`v`/`u`) acts on it.
+                                let v = view.clone();
+                                div()
+                                    .id(("flat-diff-row", ix))
+                                    .w_full()
+                                    .cursor_pointer()
+                                    .child(content)
+                                    .on_click(move |_, _window, cx: &mut App| {
+                                        v.update(cx, |view, vcx| {
+                                            if let Some(fd) = view.flat_diff_mut() {
+                                                fd.selected = ix;
+                                                fd.visual = None;
+                                                vcx.notify();
+                                            }
+                                        });
+                                    })
+                                    .into_any_element()
                             })
                             .collect::<Vec<_>>()
                     }
@@ -2837,8 +2855,20 @@ impl StatusView {
                 .child(track_target(row_id.to_string()))
                 .on_click({
                     let view = view.clone();
-                    move |_, _window, cx: &mut App| {
-                        view.update(cx, |v, cx| v.click_row(ix, cx));
+                    move |ev: &gpui::ClickEvent, window, cx: &mut App| {
+                        let double = ev.click_count() >= 2;
+                        view.update(cx, |v, cx| {
+                            if double {
+                                // Double-click acts like pressing Enter on the
+                                // row (open the file/commit/stash at point).
+                                v.selected = ix;
+                                if let Some(id) = v.resolve_binding("enter") {
+                                    v.invoke_command(&id, window, cx);
+                                }
+                            } else {
+                                v.click_row(ix, cx);
+                            }
+                        });
                     }
                 })
                 // Click-and-drag selects a range, like pressing `v` and moving.
