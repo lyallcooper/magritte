@@ -162,11 +162,19 @@
 - [x] Blame view — done: `git blame --porcelain` parsed into per-line annotations (`Repo::blame` → `BlameLine` {short, author, date, line_no, text, group_start}); a `Blame` pager screen (scrollable, no cursor, like the `$` log) shows a commit·date·author gutter (once per commit run) + line numbers + content, opened via the `:blame` palette command on the file at point, closed with `Esc`/`q`. Core-tested; verified live.
 - [x] Bisect — done: banner-driven like the sequence UI. `Repo::bisect`/`bisect_start`/`bisect_mark`/`bisect_reset` (state read from `BISECT_LOG`); a `B` transient starts a bisect (pick a known-good commit in the log; `HEAD` is bad) or, while bisecting, marks the checked-out commit good/bad/skip or resets. A "Bisecting" banner shows the decisions + `B g`/`B b`/`B s`/`B r` controls. Core-tested; verified live start→good→reset.
 - [x] Patch / `git am` — done: a `W` patch transient — create (`format-patch` a range), apply a diff to the worktree (`git apply`), or apply a mailbox as commits (`git am`, pausing into the existing am sequence banner on conflict). `Repo::format_patch`/`apply_patch_file`/`am_patch`; free-text prompts (like `!`). Core roundtrip-tested; create verified live.
-- [ ] Since the '?' command works correctly in detail views now, we can remove the kbd buttons from the top of the window. But if the user is supposed to take an action (eg select a commit to rebase since) then we should still show the kbd buttons
+- [x] Since the '?' command works correctly in detail views now, we can remove the kbd buttons from the top of the window. But if the user is supposed to take an action (eg select a commit to rebase since) then we should still show the kbd buttons — done: the commit/diff/refs/worktree/command-log/blame views (and the log while browsing) show just their title; the log in select mode still shows view/select/cancel and the rebase-todo keeps start/cancel.
 - [~] In the commit detail view, files and diff hunks should be collapsible (like magit). We should also show commit stats overview between the commit message and the first file (N files changed, K insertions(+)...). The file names should also match the styling from the status view (modified file.txt) — PARTIALLY DONE: the diffstat overview line and status-style file headers (colored change word + path) are done. STILL TODO: making files/hunks collapsible — the commit/diff view is a flat `FlatDiff` row list whose cursor and apply engine (`a`/`v`/`u`) index directly into the full rows, so folding needs a status-view-style fold model (a collapsed-set + a visible-row projection with cursor/apply index remapping), a larger change deferred here.
-- [ ] The app icons should be a squircle like other macOS apps, not just a rounded rect
-- [ ] Opening a file in an editor should open to the first changed line of the hunk, not the start of the hunk
-- [ ] Show the blame inline instead of to the side, like magit. I.e. insert a new line between the lines of the file with the blame details
-- [ ] Ret key icon should just be in the UI font set by the user, but in the system UI font to ensure a quality glyph
-- [ ] Bisect should work by having the user enter the revisions instead of select from log, like magit
-- [ ] Cap which-key at 1/4 window height instead of 1/3
+- [x] The app icons should be a squircle like other macOS apps, not just a rounded rect — done: `make-icns.sh` masks the icon to a superellipse (the continuous-curvature macOS squircle) instead of a circular rounded rect; masters + `Magritte.icns` regenerated.
+- [x] Opening a file in an editor should open to the first changed line of the hunk, not the start of the hunk — done: `Hunk::first_change_new_line` (first added line's new-side number, or the hunk start for a delete-only hunk); used for file/hunk targets.
+- [x] Show the blame inline instead of to the side, like magit. I.e. insert a new line between the lines of the file with the blame details — done: a full-width commit annotation (sha, author, date, summary) is inserted above each commit run, with the file lines beneath.
+- [x] Ret key icon should just be in the UI font set by the user, but in the system UI font to ensure a quality glyph — done: the `⏎` glyph (and `⇥`/`⎋`/`⌫`, plus the `⌘`/`⌥`/`⌃`/`⇧` chord glyphs) render in the platform system UI font, independent of the user's configured `ui_font`.
+- [x] Bisect should work by having the user enter the revisions instead of select from log, like magit — done: bisect start prompts for the known-bad revision (default HEAD) then the known-good revision (two chained free-text prompts), replacing the log-select flow.
+- [x] Cap which-key at 1/4 window height instead of 1/3 — done.
+- [ ] Do we validate user keymap keys from the config file?
+- [ ] Mouse should work on commit detail/diff view
+- [ ] Sections/files/hunks should be collapsible in commit detail/diff view
+- [ ] Commit detail view file change stats should also show the per file "4 +++-" stats
+- [ ] Diff view should show file change stats
+- [ ] Double click with mouse should trigger the enter action on a row
+- [ ] On screens such as interactive rebase log view, where the user is prompted to select a commit, let's change the view keybinding to Space (from Return), and the select keybinding to Return (from Cmd-Return)
+- [ ] Follow magit's lead of not showing
