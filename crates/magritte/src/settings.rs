@@ -70,6 +70,38 @@ pub(crate) struct SettingsState {
 }
 
 impl StatusView {
+    /// Compute the settings screen's font/editor lists on a background thread at
+    /// startup and cache them, so the first "open settings" doesn't stall on the
+    /// (slow) system font enumeration and per-font monospace probing.
+    pub(crate) fn prewarm_settings_caches(&self, cx: &mut Context<Self>) {
+        let text_system = cx.text_system().clone();
+        let task = cx.background_executor().spawn(async move {
+            (
+                theme::monospace_font_names(text_system.as_ref()),
+                theme::all_font_names(text_system.as_ref()),
+                editors::text_editors(),
+            )
+        });
+        cx.spawn(async move |this, cx| {
+            let (mono, ui, editors) = task.await;
+            this.update(cx, |this, _| {
+                let c = &mut this.settings_caches;
+                // Don't clobber a list the user already triggered a compute for.
+                if c.mono_fonts.is_empty() {
+                    c.mono_fonts = mono;
+                }
+                if c.ui_fonts.is_empty() {
+                    c.ui_fonts = ui;
+                }
+                if c.editors.is_empty() {
+                    c.editors = editors;
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Open the live settings screen: appearance/theme/font/keymap dropdowns,
     /// editor commands, and behavior toggles — every control applying its
     /// change immediately (no save button).
@@ -96,8 +128,11 @@ impl StatusView {
         let light_ix = pos(&theme_names, self.config.light_theme());
         let dark_ix = pos(&theme_names, self.config.dark_theme());
 
+        // These lists are normally prewarmed in the background at startup (see
+        // `prewarm_settings_caches`); compute any that aren't ready yet.
         if self.settings_caches.mono_fonts.is_empty() {
-            self.settings_caches.mono_fonts = theme::monospace_font_names(cx);
+            self.settings_caches.mono_fonts =
+                theme::monospace_font_names(cx.text_system().as_ref());
         }
         if self.settings_caches.editors.is_empty() {
             self.settings_caches.editors = editors::text_editors();
@@ -113,7 +148,7 @@ impl StatusView {
         };
 
         if self.settings_caches.ui_fonts.is_empty() {
-            self.settings_caches.ui_fonts = theme::all_font_names(cx);
+            self.settings_caches.ui_fonts = theme::all_font_names(cx.text_system().as_ref());
         }
         // Lead with "Same as monospace" (empty config = the monospace UI we had
         // before opting in) and "System Default" (the platform proportional

@@ -3,7 +3,7 @@
 //! registering our bundled theme sets. The settings screen and the view's
 //! font/appearance plumbing call in here.
 
-use gpui::{App, SharedString, WindowAppearance};
+use gpui::{App, SharedString, TextSystem, WindowAppearance};
 // Only the non-macOS system-font fallbacks read `cx.theme()`; on macOS those are
 // literals, so the trait would be unused there.
 #[cfg(not(target_os = "macos"))]
@@ -26,9 +26,8 @@ pub(crate) const SYSTEM_UI_FONT: &str = "system-ui";
 /// widths — the trait reliably excludes symbol fonts (e.g. Webdings) and
 /// proportional CJK fonts whose Latin glyphs happen to be equal-width, both of
 /// which fooled the old width heuristic.
-pub(crate) fn monospace_font_names(cx: &App) -> Vec<SharedString> {
-    let mut names: Vec<SharedString> = cx
-        .text_system()
+pub(crate) fn monospace_font_names(text_system: &TextSystem) -> Vec<SharedString> {
+    let mut names: Vec<SharedString> = text_system
         .all_font_names()
         .into_iter()
         // Skip dot-prefixed system/fallback tokens (".SystemUIFont", ".ZedSans",
@@ -44,9 +43,8 @@ pub(crate) fn monospace_font_names(cx: &App) -> Vec<SharedString> {
 
 /// All selectable font families (for the proportional UI-font picker), sorted.
 /// Unlike [`monospace_font_names`] this keeps proportional families too.
-pub(crate) fn all_font_names(cx: &App) -> Vec<SharedString> {
-    let mut names: Vec<SharedString> = cx
-        .text_system()
+pub(crate) fn all_font_names(text_system: &TextSystem) -> Vec<SharedString> {
+    let mut names: Vec<SharedString> = text_system
         .all_font_names()
         .into_iter()
         .filter(|name| !name.starts_with('.'))

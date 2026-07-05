@@ -767,6 +767,9 @@ impl StatusView {
             palette: Palette::default(),
         };
         view.refresh(cx);
+        // Warm the settings screen's font/editor lists off-thread so the first
+        // open doesn't stall on system font enumeration.
+        view.prewarm_settings_caches(cx);
         view
     }
 
