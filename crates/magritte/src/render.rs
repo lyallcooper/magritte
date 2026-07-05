@@ -1594,7 +1594,7 @@ impl StatusView {
 
     /// The read-only, scrollable staged-diff preview shown below the message.
     pub(crate) fn render_commit_diff(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
-        let count = ed.diff.len();
+        let count = commit_diff_view::visible_diff_rows(&ed.diff, &ed.diff_collapsed).len();
         div()
             .relative()
             .w_full()
@@ -1607,10 +1607,42 @@ impl StatusView {
                     move |range, _window, cx| {
                         let this = view.read(cx);
                         match this.editor() {
-                            Some(ed) => range
-                                .filter_map(|ix| ed.diff.get(ix))
-                                .map(|row| this.render_commit_diff_row(row, false, false))
-                                .collect::<Vec<_>>(),
+                            Some(ed) => {
+                                let vis = commit_diff_view::visible_diff_rows(
+                                    &ed.diff,
+                                    &ed.diff_collapsed,
+                                );
+                                range
+                                    .filter_map(|pos| vis.get(pos).copied())
+                                    .filter_map(|ix| ed.diff.get(ix).map(|row| (ix, row)))
+                                    .map(|(ix, row)| {
+                                        let foldable = matches!(
+                                            row,
+                                            CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_)
+                                        );
+                                        let collapsed = ed.diff_collapsed.contains(&ix);
+                                        let content =
+                                            this.render_commit_diff_row(row, false, collapsed);
+                                        // Clicking a File/Hunk header folds it; the
+                                        // preview has no cursor, so lines aren't clickable.
+                                        if !foldable {
+                                            return content;
+                                        }
+                                        let v = view.clone();
+                                        div()
+                                            .id(("commit-diff-row", ix))
+                                            .w_full()
+                                            .cursor_pointer()
+                                            .child(content)
+                                            .on_click(move |_, _window, cx: &mut App| {
+                                                v.update(cx, |view, vcx| {
+                                                    view.toggle_commit_diff_fold(ix, vcx)
+                                                });
+                                            })
+                                            .into_any_element()
+                                    })
+                                    .collect::<Vec<_>>()
+                            }
                             None => Vec::new(),
                         }
                     }

@@ -198,7 +198,7 @@
 - [x] The log view still says "first N" even if the log viewing is reversed (-r). Does this make sense? — done: with `--reverse` the header says "last N" (the same most-recent N, shown oldest-first).
 - [x] The help '?' button shouldn't allow click to fall through it — done: the button is `occlude`d.
 - [x] The help button should have a subtle opaque background so it doesn't clash with text below it — done: it has a subtle opaque fill and a faint border.
-- [ ] Commit edit tooltips about summary being too long etc should be opaque
-- [ ] Commit editor diff view should be mouse enabled, collapsible sections, etc
-- [ ] The diff stats (+++-- etc) should appear all together before the files, not with each file header (like magit does)
-- [ ] Line highlight and select is not visible over green/red diff rows in commit/diff detail views
+- [x] Commit edit tooltips about summary being too long etc should be opaque — done: the theme's `warning.background` (which gpui-component paints the diagnostic popover with) is now an opaque popover surface, and the banner keeps its wash via a code-side alpha.
+- [x] Commit editor diff view should be mouse enabled, collapsible sections, etc — done: File/Hunk headers in the preview show fold triangles and collapse on click (shared fold model with the flat-diff views).
+- [x] The diff stats (+++-- etc) should appear all together before the files, not with each file header (like magit does) — done: a diffstat block (per-file `path N +++---` lines + summary) sits above the diffs; file headers show just the change word and path.
+- [x] Line highlight and select is not visible over green/red diff rows in commit/diff detail views — done: the cursor/visual highlight wins over an added/removed row's tint.

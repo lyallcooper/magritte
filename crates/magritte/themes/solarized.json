@@ -126,7 +126,7 @@
         "warning": "#b58900",
         "success.background": "#8599001f",
         "error.background": "#dc322f1f",
-        "warning.background": "#b589002e",
+        "warning.background": "#eee8d5",
         "syntax": {
           "attribute": {
             "color": "#957931"
@@ -343,7 +343,7 @@
         "success.background": "#8599001f",
         "error.background": "#dc322f1f",
         "info.background": "#0a84ff2e",
-        "warning.background": "#b589002e",
+        "warning.background": "#073642",
         "warning.border": "#7B6508",
         "syntax": {
           "attribute": {

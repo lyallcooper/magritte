@@ -37,43 +37,13 @@ impl FlatDiff {
     /// The full-row indices currently visible: everything except lines under a
     /// collapsed hunk and hunks/lines under a collapsed file.
     pub(crate) fn visible_rows(&self) -> Vec<usize> {
-        let mut vis = Vec::with_capacity(self.rows.len());
-        let (mut file_collapsed, mut hunk_collapsed) = (false, false);
-        for (ix, row) in self.rows.iter().enumerate() {
-            match row {
-                CommitDiffRow::File { .. } => {
-                    file_collapsed = self.collapsed.contains(&ix);
-                    hunk_collapsed = false;
-                    vis.push(ix);
-                }
-                CommitDiffRow::Hunk(_) => {
-                    if file_collapsed {
-                        continue;
-                    }
-                    hunk_collapsed = self.collapsed.contains(&ix);
-                    vis.push(ix);
-                }
-                CommitDiffRow::Line { .. } => {
-                    if !file_collapsed && !hunk_collapsed {
-                        vis.push(ix);
-                    }
-                }
-                _ => vis.push(ix),
-            }
-        }
-        vis
+        visible_diff_rows(&self.rows, &self.collapsed)
     }
 
     /// The fold header governing `ix`: the row itself if it's a File/Hunk header,
     /// else the enclosing hunk header for a line. `None` for anything unfoldable.
     fn fold_header_for(&self, ix: usize) -> Option<usize> {
-        match self.rows.get(ix)? {
-            CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) => Some(ix),
-            CommitDiffRow::Line { .. } => self.rows[..ix]
-                .iter()
-                .rposition(|r| matches!(r, CommitDiffRow::Hunk(_))),
-            _ => None,
-        }
+        fold_header_for(&self.rows, ix)
     }
 
     /// Toggle the fold of the header at (or enclosing) `ix`. Returns whether a
@@ -763,6 +733,52 @@ impl StatusView {
 }
 
 /// Added/removed line counts for one file diff.
+/// The full-row indices visible given a set of collapsed File/Hunk headers:
+/// lines under a collapsed hunk, and hunks/lines under a collapsed file, are
+/// hidden. Shared by the flat-diff views and the commit editor's preview.
+pub(crate) fn visible_diff_rows(
+    rows: &[CommitDiffRow],
+    collapsed: &std::collections::HashSet<usize>,
+) -> Vec<usize> {
+    let mut vis = Vec::with_capacity(rows.len());
+    let (mut file_collapsed, mut hunk_collapsed) = (false, false);
+    for (ix, row) in rows.iter().enumerate() {
+        match row {
+            CommitDiffRow::File { .. } => {
+                file_collapsed = collapsed.contains(&ix);
+                hunk_collapsed = false;
+                vis.push(ix);
+            }
+            CommitDiffRow::Hunk(_) => {
+                if file_collapsed {
+                    continue;
+                }
+                hunk_collapsed = collapsed.contains(&ix);
+                vis.push(ix);
+            }
+            CommitDiffRow::Line { .. } => {
+                if !file_collapsed && !hunk_collapsed {
+                    vis.push(ix);
+                }
+            }
+            _ => vis.push(ix),
+        }
+    }
+    vis
+}
+
+/// The fold header governing `ix`: the row itself if it's a File/Hunk header,
+/// else the enclosing hunk header for a line. `None` for anything unfoldable.
+pub(crate) fn fold_header_for(rows: &[CommitDiffRow], ix: usize) -> Option<usize> {
+    match rows.get(ix)? {
+        CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) => Some(ix),
+        CommitDiffRow::Line { .. } => rows[..ix]
+            .iter()
+            .rposition(|r| matches!(r, CommitDiffRow::Hunk(_))),
+        _ => None,
+    }
+}
+
 pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
     let (mut added, mut removed) = (0usize, 0usize);
     for hunk in &diff.hunks {

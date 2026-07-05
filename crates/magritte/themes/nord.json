@@ -131,7 +131,7 @@
         "success.background": "#a3be8c1f",
         "error.background": "#bf616a1f",
         "info.background": "#0a84ff2e",
-        "warning.background": "#ebcb8b2e",
+        "warning.background": "#3b4252",
         "warning.border": "#7B6508",
         "syntax": {
           "attribute": {

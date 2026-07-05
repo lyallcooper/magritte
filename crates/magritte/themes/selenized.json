@@ -126,7 +126,7 @@
         "warning": "#c49700",
         "success.background": "#1d97001f",
         "error.background": "#d6000c1f",
-        "warning.background": "#c497002e",
+        "warning.background": "#ebebeb",
         "syntax": {
           "attribute": {
             "color": "#957931"
@@ -338,7 +338,7 @@
         "warning": "#ad8900",
         "success.background": "#4891001f",
         "error.background": "#d2212d1f",
-        "warning.background": "#ad89002e",
+        "warning.background": "#ece3cc",
         "syntax": {
           "attribute": {
             "color": "#957931"
@@ -555,7 +555,7 @@
         "success.background": "#75b9381f",
         "error.background": "#fa57501f",
         "info.background": "#0a84ff2e",
-        "warning.background": "#dbb32d2e",
+        "warning.background": "#184956",
         "warning.border": "#7B6508",
         "syntax": {
           "attribute": {
@@ -771,7 +771,7 @@
         "success.background": "#70b4331f",
         "error.background": "#ed4a461f",
         "info.background": "#0a84ff2e",
-        "warning.background": "#dbb32d2e",
+        "warning.background": "#252525",
         "warning.border": "#7B6508",
         "syntax": {
           "attribute": {

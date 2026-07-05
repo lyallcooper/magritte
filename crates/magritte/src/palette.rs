@@ -67,7 +67,11 @@ impl Palette {
             removed: status.error(cx),
             added_bg: status.success_background(cx),
             removed_bg: status.error_background(cx),
-            banner: status.warning_background(cx),
+            // Derive the translucent banner from the opaque warning color rather
+            // than `warning_background`: that face is opaque so the diagnostic
+            // popup (which gpui-component paints with it) reads solidly, while the
+            // banner keeps its subtle wash.
+            banner: crate::with_alpha(status.warning(cx), 0.18),
             // Ref colors follow magit's faces: remote branches green, tags
             // yellow. They share the theme's success/warning hues (as the diff
             // added/modified colors do) — context disambiguates a ref from a

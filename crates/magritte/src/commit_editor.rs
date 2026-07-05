@@ -35,6 +35,9 @@ pub(crate) struct CommitEditor {
     /// for reword (which commits no tree change).
     pub(crate) diff: Vec<CommitDiffRow>,
     pub(crate) diff_scroll: UniformListScrollHandle,
+    /// Collapsed File/Hunk header row indices in the preview diff, toggled by
+    /// clicking a header (the preview has no cursor, so folding is mouse-driven).
+    pub(crate) diff_collapsed: std::collections::HashSet<usize>,
     /// Kept alive so the PressEnter subscription stays active.
     pub(crate) _sub: Subscription,
 }
@@ -391,6 +394,7 @@ impl StatusView {
             flash: false,
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
+            diff_collapsed: std::collections::HashSet::new(),
             _sub: sub,
         });
         // Stamp this editor instance so async loads started for it can't write
@@ -513,6 +517,17 @@ impl StatusView {
             .ok();
         })
         .detach();
+    }
+
+    /// Fold or unfold the File/Hunk header at `ix` in the commit editor's diff
+    /// preview (clicked with the mouse — the preview has no cursor).
+    pub(crate) fn toggle_commit_diff_fold(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Screen::Editor(ed) = &mut self.screen {
+            if !ed.diff_collapsed.remove(&ix) {
+                ed.diff_collapsed.insert(ix);
+            }
+            cx.notify();
+        }
     }
 
     /// Flatten loaded file diffs (each paired with its detected language) into
