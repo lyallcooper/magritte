@@ -204,7 +204,10 @@ pub(crate) fn commands() -> &'static [Command] {
                 id: $id,
                 title: $title,
                 aliases: &[],
-                contexts: ScreenSet::ALL,
+                // The jumps target status sections, which only exist on the
+                // status screen — so they aren't bound (or shown in which-key)
+                // elsewhere.
+                contexts: ScreenSet::of(&[ScreenKind::Status]),
                 category: Category::Navigation,
                 key: None,
                 menu: false,

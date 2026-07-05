@@ -3299,22 +3299,29 @@ impl StatusView {
                 let Some(rest) = k.strip_prefix(&lead) else {
                     continue;
                 };
-                let Some(id) = ids.first() else { continue };
+                if ids.is_empty() {
+                    continue;
+                }
                 let token = rest.split(' ').next().unwrap_or(rest).to_string();
                 let completes = format!("{lead}{token}") == *k;
-                // The command's label (built-in or user `[[command]]`); a token
-                // that only leads deeper has no completing binding yet.
-                let title = completes
-                    .then(|| {
-                        all_commands(&self.config)
-                            .find(|c| c.id == id.as_str())
-                            .map(|c| c.title.to_string())
-                    })
-                    .flatten();
-                // A completing binding's label wins over a sibling sub-prefix.
-                let entry = conts.entry(token).or_insert(None);
-                if title.is_some() {
-                    *entry = title;
+                if completes {
+                    // A completing binding: only show it if it currently resolves
+                    // to an *enabled* command (skip an at-point verb whose target
+                    // isn't present, etc.) — don't advertise a dead key.
+                    let Some(id) = self.resolve_binding(k) else {
+                        continue;
+                    };
+                    let title = all_commands(&self.config)
+                        .find(|c| c.id == id.as_str())
+                        .map(|c| c.title.to_string());
+                    // A completing binding's label wins over a sibling sub-prefix.
+                    let entry = conts.entry(token).or_insert(None);
+                    if title.is_some() {
+                        *entry = title;
+                    }
+                } else {
+                    // A deeper sub-prefix (shown as "…"); it leads to further keys.
+                    conts.entry(token).or_insert(None);
                 }
             }
             let entries: Vec<(String, Option<String>)> = conts.into_iter().collect();
@@ -3577,9 +3584,15 @@ impl Render for StatusView {
             // A click that activates the window (macOS first-mouse) should only
             // focus it, not fire the row/button under the cursor. Swallow that
             // one click in the capture phase, before any element arms its click.
-            .capture_any_mouse_down(cx.listener(|_, ev: &gpui::MouseDownEvent, _window, cx| {
+            .capture_any_mouse_down(cx.listener(|this, ev: &gpui::MouseDownEvent, _window, cx| {
                 if ev.first_mouse {
                     cx.stop_propagation();
+                    return;
+                }
+                // A click ends any pending key sequence and dismisses which-key
+                // (like pressing Esc), then proceeds to whatever it clicked on.
+                if this.pending_prefix.take().is_some() {
+                    cx.notify();
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
