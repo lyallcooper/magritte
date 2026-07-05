@@ -1584,7 +1584,7 @@ fn preset_bindings(preset: config::KeymapPreset) -> &'static [(&'static str, &'s
 /// `ctrl-`, `alt-`, in that order) then the key, with a shifted letter
 /// uppercased (so `K`, not `shift-k`). One token; multi-key sequences join these
 /// with spaces (`ctrl-x ctrl-c`). The prefixes match `kbd::format_keys`, so the
-/// display ("Ctrl+x") follows for free.
+/// display (`⌃x`) follows for free.
 pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
     let base = if shift {
         match key {

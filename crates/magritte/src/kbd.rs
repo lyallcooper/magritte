@@ -15,24 +15,29 @@ pub(crate) const RETURN_GLYPH: &str = "⏎";
 pub(crate) const TAB_GLYPH: &str = "⇥";
 pub(crate) const ESC_GLYPH: &str = "⎋";
 pub(crate) const BACKSPACE_GLYPH: &str = "⌫";
+/// Modifier glyphs (`⌘` Cmd, `⌥` Opt, `⌃` Ctrl, `⇧` Shift) — the standard macOS
+/// key symbols, shown prefixed to the key (`⌘x`) rather than as `Cmd+x`.
+pub(crate) const CMD_GLYPH: &str = "⌘";
+pub(crate) const OPT_GLYPH: &str = "⌥";
+pub(crate) const CTRL_GLYPH: &str = "⌃";
+pub(crate) const SHIFT_GLYPH: &str = "⇧";
 
 /// Whether a rendered label is one of the symbol glyphs drawn in the UI font
-/// rather than the monospace keycap font.
+/// rather than the monospace keycap font (they're thin/tofu in many mono fonts).
 fn is_glyph(label: &str) -> bool {
     label == RETURN_GLYPH || label == TAB_GLYPH || label == ESC_GLYPH || label == BACKSPACE_GLYPH
 }
 
-/// Spell out one keystroke token as a word label. Modifier keys become words
-/// (`Cmd`, `Ctrl`, `Opt`); Return/Tab/Esc become the `⏎`/`⇥`/`⎋` glyphs — rather
-/// than the macOS modifier glyphs, which render poorly in our monospace chrome.
-/// Plain letters keep their case (`F` vs `f`) so case alone distinguishes the
-/// shifted key — no `Shift` shown.
+/// Spell out one keystroke token as a label. Modifiers become the macOS glyphs
+/// (`⌘`/`⌥`/`⌃`/`⇧`); Return/Tab/Esc/Backspace become `⏎`/`⇥`/`⎋`/`⌫`. Plain
+/// letters keep their case (`F` vs `f`) so case alone distinguishes the shifted
+/// key — no `⇧` shown for those.
 fn key_word(token: &str) -> String {
     match token {
-        "cmd" | "super" | "meta" => "Cmd".into(),
-        "ctrl" | "control" => "Ctrl".into(),
-        "alt" | "opt" | "option" => "Opt".into(),
-        "shift" => "Shift".into(),
+        "cmd" | "super" | "meta" => CMD_GLYPH.into(),
+        "ctrl" | "control" => CTRL_GLYPH.into(),
+        "alt" | "opt" | "option" => OPT_GLYPH.into(),
+        "shift" => SHIFT_GLYPH.into(),
         "enter" | "return" => RETURN_GLYPH.into(),
         "esc" | "ESC" | "escape" => ESC_GLYPH.into(),
         "tab" | "TAB" => TAB_GLYPH.into(),
@@ -76,9 +81,9 @@ pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
 }
 
 /// The display label for a keystroke spec. A multi-keystroke *sequence* is
-/// space-separated (e.g. `g r`, `ctrl-x ctrl-c`) with each step formatted in
-/// turn. A *chord* joins modifiers to a key with `-` (e.g. `cmd-enter` →
-/// `Cmd+Enter`). A lone token is word-ified (`tab` → `Tab`).
+/// space-separated (e.g. `g r`, `⌃x ⌃c`) with each step formatted in turn. A
+/// *chord* prefixes its modifier glyphs to the key (`cmd-enter` → `⌘⏎`). A lone
+/// token is word-ified (`tab` → `⇥`).
 pub(crate) fn format_keys(key: &str) -> String {
     if key.contains(' ') {
         return key
@@ -89,20 +94,17 @@ pub(crate) fn format_keys(key: &str) -> String {
     }
     let parts: Vec<&str> = key.split('-').collect();
     if is_chord(&parts) {
-        parts
-            .iter()
-            .map(|p| key_word(p))
-            .collect::<Vec<_>>()
-            .join("+")
+        // Concatenated, macOS-style (`⌘⇧x`) — no `+` between modifier and key.
+        parts.iter().map(|p| key_word(p)).collect()
     } else {
         key_word(key)
     }
 }
 
-/// A keyboard key badge: one keycap per key. A chord renders each modifier and
-/// the key as separate caps joined by `+` (`[Ctrl]+[g]`); a sequence renders
-/// each step spaced (`[g] [r]`, `[Ctrl]+[x] [Ctrl]+[c]`). `font` is the
-/// monospace family.
+/// A keyboard key badge: one keycap per keystroke *step*. A chord is a single
+/// cap with the modifier glyphs prefixed to the key (`[⌘x]`, `[⌃⏎]`); a sequence
+/// renders each step spaced (`[g] [r]`, `[⌃x] [⌃c]`). `font` is the monospace
+/// family; `ui_font` draws the glyphs.
 pub(crate) fn key_chip(
     key: &str,
     color: Hsla,
@@ -116,33 +118,28 @@ pub(crate) fn key_chip(
     row.into_any_element()
 }
 
-/// One keystroke step (possibly a chord) as caps joined by `+`. The `⏎`/`⇥`
-/// symbol glyphs are drawn in the UI font (they're thin/tofu in many monospace
-/// fonts); every other cap stays monospace so keys read as keys.
+/// One keystroke step as a single keycap. A chord prefixes its modifier glyphs
+/// to the key (`⌘x`), rendered in the UI font since it holds the `⌘/⌥/⌃/⇧`
+/// glyphs; a lone symbol key (`⏎`/`⇥`/`⎋`/`⌫`) likewise uses the UI font. Any
+/// other lone key stays monospace so keys read as keys.
 fn chord_caps(step: &str, color: Hsla, font: &SharedString, ui_font: &SharedString) -> gpui::Div {
     let parts: Vec<&str> = step.split('-').collect();
-    let labels: Vec<String> = if is_chord(&parts) {
-        parts.iter().map(|p| key_word(p)).collect()
+    let (label, glyph_font) = if is_chord(&parts) {
+        (parts.iter().map(|p| key_word(p)).collect::<String>(), true)
     } else {
-        vec![key_word(step)]
+        let label = key_word(step);
+        let glyph = is_glyph(&label);
+        (label, glyph)
     };
-    let mut row = div().flex().items_center().gap(px(2.0));
-    for (i, label) in labels.into_iter().enumerate() {
-        if i > 0 {
-            row = row.child(div().text_color(color).child(SharedString::from("+")));
-        }
-        let cap = if is_glyph(&label) {
-            chip_box(color, font).child(
-                div()
-                    .font_family(ui_font.clone())
-                    .child(SharedString::from(label)),
-            )
-        } else {
-            chip_box(color, font).child(SharedString::from(label))
-        };
-        row = row.child(cap);
+    if glyph_font {
+        chip_box(color, font).child(
+            div()
+                .font_family(ui_font.clone())
+                .child(SharedString::from(label)),
+        )
+    } else {
+        chip_box(color, font).child(SharedString::from(label))
     }
-    row
 }
 
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
