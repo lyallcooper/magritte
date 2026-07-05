@@ -29,6 +29,10 @@ pub(crate) struct StatusToast {
     /// `g x` in "g x is unbound"). Cleared by every status post; set right
     /// after by the few messages that lead with a key.
     pub(crate) keys: Option<String>,
+    /// Whether the current message is a one-shot notice (e.g. "… is unbound"),
+    /// which the next keypress dismisses — not a job's progress or a sticky
+    /// condition, which stay until they resolve or are dismissed explicitly.
+    pub(crate) transient: bool,
     /// Bumped each time the message changes, so an auto-dismiss timer only
     /// clears the message it was scheduled for (not a newer one).
     pub(crate) seq: Generation,
@@ -1972,6 +1976,7 @@ impl StatusView {
         // Most messages have no leading keycap; the few that do set it right
         // after this call.
         self.toast.keys = None;
+        self.toast.transient = matches!(kind, StatusKind::Notice);
         cx.notify();
         if matches!(kind, StatusKind::Notice) {
             cx.spawn(async move |this, cx| {
@@ -2032,6 +2037,7 @@ impl StatusView {
         self.toast.seq.bump();
         self.toast.message = None;
         self.toast.keys = None;
+        self.toast.transient = false;
         cx.notify();
     }
 

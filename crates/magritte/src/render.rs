@@ -51,6 +51,30 @@ fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
     }
 }
 
+/// Rough rendered width (px) of one transient suffix cell — its keycap plus
+/// description (and the git flag in parens for switches/options). Used to decide
+/// how many columns of a group fit the window; a slight over-estimate keeps text
+/// from overflowing. Tuned for the ~13px UI/mono fonts.
+fn suffix_cell_px(suffix: &Suffix) -> f32 {
+    // (key chars, text chars) — the flag in parens counts toward the text.
+    let (key, text) = match suffix {
+        Suffix::Switch(sw) => (
+            sw.key.chars().count(),
+            sw.description.chars().count() + sw.arg.chars().count() + 3,
+        ),
+        Suffix::Option(o) => (
+            o.key.chars().count(),
+            o.description.chars().count() + o.arg.chars().count() + 3,
+        ),
+        Suffix::Action(a) => (a.key.chars().count(), a.description.chars().count()),
+        Suffix::Info(i) => (i.keys.chars().count(), i.description.chars().count()),
+        Suffix::Custom(c) => (c.key.chars().count(), c.description.chars().count()),
+    };
+    // Keycap: ~9px/char plus its border/padding. Description: ~7px/char at 13px,
+    // plus the gap after the keycap and a little slack.
+    (key as f32 * 9.0 + 16.0) + 8.0 + (text as f32 * 7.0) + 12.0
+}
+
 impl StatusView {
     /// The bottom popup panel (picker / transient): full-width, top border,
     /// panel background, padded column.
@@ -379,11 +403,22 @@ impl StatusView {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
         // Cap the argument band's columns to what fits the window width, so a
         // wide group (e.g. the log arguments) fans into more rows instead of
-        // running off the right edge. A column is a keycap plus a switch/option
-        // description; the long ones (`Follow only the first parent
-        // (--first-parent)`) run ~360px, and `px_3` pads each side.
+        // running off the right edge. Each group's column width is measured from
+        // its widest suffix (keycap + description + flag), rather than assumed, so
+        // narrow and wide bands both fill the width without overflowing. `px_3`
+        // pads the panel on each side.
         let avail = f32::from(window.viewport_size().width) - 24.0;
-        let max_cols = ((avail / 360.0).floor() as usize).max(1);
+        // How many columns of `group` fit in `width` px, given each column is its
+        // widest cell plus the `gap_x_6` (24px) between sub-columns.
+        let fit_columns = |group: &Group, width: f32| -> usize {
+            let cell = group
+                .suffixes
+                .iter()
+                .map(suffix_cell_px)
+                .fold(0.0_f32, f32::max)
+                .max(1.0);
+            (((width + 24.0) / (cell + 24.0)).floor() as usize).max(1)
+        };
 
         // Magit's layout, derived from content rather than hand-authored: an
         // *argument* group (switches/options) is a full-width band, and multiple
@@ -440,7 +475,12 @@ impl StatusView {
         let mut body = div().flex().flex_col().items_start().gap_3();
         if arg_groups.len() == 1 {
             let group = arg_groups[0];
-            let k = group.suffixes.len().div_ceil(band_cap).max(1).min(max_cols);
+            let k = group
+                .suffixes
+                .len()
+                .div_ceil(band_cap)
+                .max(1)
+                .min(fit_columns(group, avail));
             body = body.child(self.render_group(group, k, state, pending_dash, view));
         } else if !arg_groups.is_empty() {
             let mut arg_row = div()
@@ -451,14 +491,14 @@ impl StatusView {
                 .gap_x_8()
                 .gap_y_3();
             // Split the width budget across the side-by-side argument groups.
-            let per_group_cols = (max_cols / arg_groups.len()).max(1);
+            let width_each = avail / arg_groups.len() as f32;
             for group in arg_groups {
                 let k = group
                     .suffixes
                     .len()
                     .div_ceil(band_cap)
                     .max(1)
-                    .min(per_group_cols);
+                    .min(fit_columns(group, width_each));
                 arg_row = arg_row.child(self.render_group(group, k, state, pending_dash, view));
             }
             body = body.child(arg_row);
@@ -1303,41 +1343,29 @@ impl StatusView {
             }
         }
 
-        // A secondary view (log, refs, commit, …) shows an Esc keycap at the far
-        // right so it can be left by mouse, not just the `Esc`/`q` key. Hidden on
-        // status (nothing to leave) and while a popup owns Esc.
-        let show_close = self.popup.is_none() && self.screen_name().is_some();
-        // The far-right cluster: the background-activity spinner (when work
-        // outlasts the delay threshold) and the close button. `TitleBar` lays
-        // children out `justify_between`, so this second child sits at the end.
-        let right = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .pr_3()
-            .when(self.busy, |d| {
-                d.child(
-                    // Same rounded-square shape and fill as the title-bar branch
-                    // chip, so the indicator reads as part of the bar.
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .p_1()
-                        .rounded(px(4.0))
-                        .bg(self.palette.selection)
-                        .child(Spinner::new().small().color(self.palette.fg)),
-                )
-            })
-            .when(show_close, |d| {
-                d.child(self.key_action("close-view", "esc", "close", view, Self::close_screen))
-            });
-
         gpui_component::TitleBar::new()
             .bg(self.palette.bg)
             .border_color(self.palette.border)
             .child(info)
-            .when(self.busy || show_close, |bar| bar.child(right))
+            // A spinner for background activity that outlasts the delay
+            // threshold. The title bar lays children out `justify_between`, so a
+            // second child sits at the far (right) end; pad it off the edge so
+            // it isn't clipped. A subtle rounded background chip makes it read
+            // as a deliberate indicator rather than blending into the bar.
+            .when(self.busy, |bar| {
+                bar.child(
+                    div().pr_3().child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .p_1()
+                            .rounded(px(4.0))
+                            .bg(self.palette.selection)
+                            .child(Spinner::new().small().color(self.palette.fg)),
+                    ),
+                )
+            })
     }
 
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
@@ -1732,7 +1760,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             // Commands and their output are code — monospace.
             .font_family(self.font.clone())
             .p_4()
@@ -1775,7 +1803,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
@@ -2037,10 +2065,18 @@ impl StatusView {
                 .child(SharedString::from(title)),
         );
         if capped {
+            // `--reverse` shows the same most-recent N commits oldest-first, so
+            // "first N" would read as the oldest; say "last N" there instead.
+            let reversed = log.args.iter().any(|a| a == "--reverse");
+            let label = if reversed {
+                format!("(last {})", log.limit)
+            } else {
+                format!("(first {})", log.limit)
+            };
             header = header.child(
                 div()
                     .text_color(self.palette.dim)
-                    .child(SharedString::from(format!("(first {})", log.limit))),
+                    .child(SharedString::from(label)),
             );
         }
         // In select mode the user must act (pick a commit), so keep the header
@@ -2057,7 +2093,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             // Commit rows are columnar (hash / subject / date) — monospace.
             .font_family(self.font.clone())
             .p_4()
@@ -2113,7 +2149,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
@@ -2265,7 +2301,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
@@ -2533,7 +2569,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             // A commit's header + diff is code — monospace.
             .font_family(self.font.clone())
             .p_4()
@@ -2580,7 +2616,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
@@ -2631,7 +2667,7 @@ impl StatusView {
             .flex()
             .flex_col()
             .w_full()
-            .h_full()
+            .flex_grow(1.0)
             .font_family(self.font.clone())
             .p_4()
             .gap_3()
@@ -3335,6 +3371,14 @@ impl StatusView {
                             .justify_center()
                             .rounded(px(14.0))
                             .cursor_pointer()
+                            // A subtle opaque fill (with a faint border) so the
+                            // button reads as a control, not clashing with the
+                            // text it floats over; `occlude` keeps a click on it
+                            // from falling through to the row beneath.
+                            .bg(self.palette.panel)
+                            .border_1()
+                            .border_color(self.palette.border)
+                            .occlude()
                             .text_color(self.palette.dim)
                             .hover(|s| s.bg(self.palette.selection).text_color(self.palette.fg))
                             .child(SharedString::from("?"))
@@ -3350,6 +3394,47 @@ impl StatusView {
                                 cx.notify();
                             })),
                     ),
+            );
+        }
+
+        // A secondary view (log, refs, commit, …) floats a clickable `Esc close`
+        // button at the window's top-right — a mouse affordance for leaving the
+        // view — kept out of the draggable title bar. Hidden on status and while
+        // a popup owns Esc. `occlude` stops the click from reaching the row below.
+        if self.popup.is_none() && self.screen_name().is_some() {
+            let v = view.clone();
+            root = root.child(
+                div()
+                    .absolute()
+                    .top(px(42.0))
+                    .right_4()
+                    .id("close-view")
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .bg(self.palette.panel)
+                    .border_1()
+                    .border_color(self.palette.border)
+                    .occlude()
+                    .hover(|s| s.bg(self.palette.selection))
+                    .child(kbd::key_chip(
+                        "esc",
+                        self.palette.dim,
+                        &self.font,
+                        &self.system_ui_font,
+                    ))
+                    .child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from("close")),
+                    )
+                    .on_click(move |_, window, cx: &mut App| {
+                        v.update(cx, |this, vcx| this.close_screen(window, vcx));
+                    }),
             );
         }
 

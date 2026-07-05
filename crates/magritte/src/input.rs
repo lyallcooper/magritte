@@ -41,6 +41,12 @@ impl StatusView {
             _ => key,
         };
 
+        // A one-shot notice (e.g. "… is unbound") is dismissed by the next
+        // keypress, so it doesn't linger over the action the user takes next.
+        if self.toast.transient && self.toast.message.is_some() {
+            self.clear_status(cx);
+        }
+
         // A sequence is pending: this key continues it. Resolve here — before the
         // per-view branches — so sequences (including `C-x C-c`) work everywhere.
         if self.pending_prefix.is_some() {

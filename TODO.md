@@ -191,3 +191,10 @@
 - [x] Log view's +/- bindings work, but it still shows "first 256" regardless of the actual count displayed — done: the header shows the current `log.limit`, not the default constant.
 - [x] Pressing an unbound key while the help transient is open should dismiss the help and show the usual "<x> is unbound" — done.
 - [x] Pressing an unbound key while in a specific view should show "<x> is unbound in <view name> view" — done: secondary views report the unbound key with the view name.
+- [x] Keep the Esc to close out of the title bar and in the top right of the main window — done: the `Esc close` button is a top-right overlay in the main window, not in the title bar.
+- [x] The reactive window width layout for transients is an improvement, but we're not measuring the widths exactly right it seems. Sometimes the content can still overflow — done: each group's column width is now measured from its widest suffix (keycap + description + flag) instead of a fixed guess.
+- [x] There is an unnecessary gap on some views between the bottom of the content and the bottom of the window. The status view does it correctly. — done: secondary view containers fill with `flex_grow` like the status list, rather than `h_full`.
+- [x] The "x is unbound" message should be dismissed automatically after timeout or if another key is pressed — done: it already fades on a timeout, and now the next keypress clears it too.
+- [x] The log view still says "first N" even if the log viewing is reversed (-r). Does this make sense? — done: with `--reverse` the header says "last N" (the same most-recent N, shown oldest-first).
+- [x] The help '?' button shouldn't allow click to fall through it — done: the button is `occlude`d.
+- [x] The help button should have a subtle opaque background so it doesn't clash with text below it — done: it has a subtle opaque fill and a faint border.
