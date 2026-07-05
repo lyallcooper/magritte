@@ -847,3 +847,100 @@ pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {
         format!("{base} -- {} paths", paths.len())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fold_header_for, visible_diff_rows};
+    use crate::commit_editor::CommitDiffRow;
+    use magritte_core::{Change, LineKind};
+    use std::collections::HashSet;
+    use std::rc::Rc;
+
+    fn line() -> CommitDiffRow {
+        CommitDiffRow::Line {
+            kind: LineKind::Context,
+            spans: Rc::from(Vec::new()),
+        }
+    }
+
+    // Stats(0) → StatLine a(1), StatLine b(2); Note(3); File a(4) → Hunk(5) →
+    // Line(6), Line(7); File b(8) → Hunk(9) → Line(10).
+    fn sample() -> Vec<CommitDiffRow> {
+        vec![
+            CommitDiffRow::Stats {
+                files: 2,
+                insertions: 3,
+                deletions: 1,
+            },
+            CommitDiffRow::StatLine {
+                path: "a".into(),
+                added: 2,
+                removed: 0,
+            },
+            CommitDiffRow::StatLine {
+                path: "b".into(),
+                added: 1,
+                removed: 1,
+            },
+            CommitDiffRow::Note(String::new()),
+            CommitDiffRow::File {
+                change: Change::Modified,
+                path: "a".into(),
+            },
+            CommitDiffRow::Hunk("@@ a".into()),
+            line(),
+            line(),
+            CommitDiffRow::File {
+                change: Change::Modified,
+                path: "b".into(),
+            },
+            CommitDiffRow::Hunk("@@ b".into()),
+            line(),
+        ]
+    }
+
+    fn collapsed(ixs: &[usize]) -> HashSet<usize> {
+        ixs.iter().copied().collect()
+    }
+
+    #[test]
+    fn visible_rows_respects_collapsed_headers() {
+        let rows = sample();
+        // Nothing collapsed: every row visible.
+        assert_eq!(
+            visible_diff_rows(&rows, &collapsed(&[])),
+            (0..rows.len()).collect::<Vec<_>>()
+        );
+        // Collapsed diffstat summary hides its per-file lines (1, 2) only.
+        assert_eq!(
+            visible_diff_rows(&rows, &collapsed(&[0])),
+            vec![0, 3, 4, 5, 6, 7, 8, 9, 10]
+        );
+        // Collapsed file a (4) hides its hunk (5) and lines (6, 7).
+        assert_eq!(
+            visible_diff_rows(&rows, &collapsed(&[4])),
+            vec![0, 1, 2, 3, 4, 8, 9, 10]
+        );
+        // Collapsed hunk (5) hides only its lines (6, 7), not the file.
+        assert_eq!(
+            visible_diff_rows(&rows, &collapsed(&[5])),
+            vec![0, 1, 2, 3, 4, 5, 8, 9, 10]
+        );
+        // Independent folds compose.
+        assert_eq!(
+            visible_diff_rows(&rows, &collapsed(&[0, 8])),
+            vec![0, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn fold_header_maps_rows_to_their_header() {
+        let rows = sample();
+        assert_eq!(fold_header_for(&rows, 0), Some(0)); // Stats → itself
+        assert_eq!(fold_header_for(&rows, 1), Some(0)); // StatLine → its Stats
+        assert_eq!(fold_header_for(&rows, 4), Some(4)); // File → itself
+        assert_eq!(fold_header_for(&rows, 5), Some(5)); // Hunk → itself
+        assert_eq!(fold_header_for(&rows, 6), Some(5)); // Line → enclosing hunk
+        assert_eq!(fold_header_for(&rows, 3), None); // Note → unfoldable
+    }
+}

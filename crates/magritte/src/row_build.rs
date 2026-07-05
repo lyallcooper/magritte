@@ -755,3 +755,38 @@ impl StatusView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{diffstat_text, stat_bar};
+
+    #[test]
+    fn stat_bar_scales_to_at_most_twenty_marks() {
+        // Small diffs render exact counts.
+        assert_eq!(stat_bar(3, 2), (3, 2));
+        assert_eq!(stat_bar(0, 0), (0, 0));
+        assert_eq!(stat_bar(20, 0), (20, 0));
+        // Large diffs scale down to <=20 total, keeping each nonzero side >=1.
+        let (p, m) = stat_bar(300, 100);
+        assert!(p + m <= 20 && p >= 1 && m >= 1, "got ({p}, {m})");
+        assert!(p > m, "the +side should dominate a 3:1 diff");
+        // A one-sided huge diff keeps the other side at zero.
+        let (p, m) = stat_bar(1000, 0);
+        assert_eq!((p, m), (20, 0));
+        // A tiny minority side still shows at least one mark.
+        let (p, m) = stat_bar(1000, 1);
+        assert_eq!(m, 1);
+        assert!(p <= 19);
+    }
+
+    #[test]
+    fn diffstat_text_pluralizes_and_omits_zero_sides() {
+        assert_eq!(diffstat_text(1, 1, 0), "1 file changed, 1 insertion(+)");
+        assert_eq!(
+            diffstat_text(2, 5, 3),
+            "2 files changed, 5 insertions(+), 3 deletions(-)"
+        );
+        assert_eq!(diffstat_text(1, 0, 2), "1 file changed, 2 deletions(-)");
+        assert_eq!(diffstat_text(3, 0, 0), "3 files changed");
+    }
+}

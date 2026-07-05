@@ -725,3 +725,72 @@ cancel flag + timeout with a killable run path, wired to read-supersession
 (refresh kills outpaced status/diff reads) and a C-g cancel for the active job.
 Add any new feedback BELOW this marker.
 ────────────────────────────────────────────────────────────────────────── -->
+
+## Current Design Assessment (2026-07-05)
+
+Subjectively, Magritte is a medium-sized but fairly complex project: roughly
+34k lines of Rust, with the complexity concentrated less in raw code volume and
+more in the combination of Git semantics, Magit parity, a keyboard-driven
+desktop UI, async refresh/job orchestration, cancellation, config layering, and
+large diff rendering.
+
+The current high-level architecture is still sound. Keeping `magritte-core`
+synchronous and UI-free gives the Git behavior a testable boundary, and keeping
+the GPUI app as a single `Entity<StatusView>` is a reasonable fit for a
+single-pane modal application. The best next improvements should therefore
+reduce coupling inside the app layer rather than replace the basic architecture.
+
+Recommended direction:
+
+- **Group `StatusView` fields into explicit sub-state structs.** The single
+  entity can stay, but the state should communicate its own boundaries better.
+  Natural groupings include repository/status data, row/diff/fold state,
+  async generations and cancellation, config/keymap/scopes, chrome/popup/toast
+  state, and screen-specific state. This would make invariants easier to audit
+  without introducing GPUI message-passing ceremony.
+
+- **Make status-row construction more model-driven and testable.**
+  `rebuild_rows` has the right responsibility, but it still reads a wide slice
+  of `StatusView` and mutates both the row list and conflict cache. Most of that
+  could become a pure `build_status_rows(input) -> BuiltStatusRows` function,
+  covering section ordering, clean-state display, conflict lookup data, fold
+  expansion, commit/stash sections, and diff rows. That would make UI-model
+  behavior easier to test without constructing a full view.
+
+- **Continue consolidating async/job orchestration.** The current generation
+  counters, cancel flags, and `run_job*` helpers are good foundations. The
+  remaining opportunity is to make read jobs, mutating jobs, screen loads,
+  picker loads, and timer-scoped work feel like variants of one small internal
+  task abstraction, so stale-result checks, progress, cancellation, refresh,
+  and reporting do not drift.
+
+- **Push more command behavior into typed command-family boundaries.** The
+  command registry is a strong single source of truth for keys, menus, palette
+  entries, contexts, and metadata. Execution still fans back into broad
+  `StatusView` dispatch methods. Command families such as transfer, branch,
+  stash, log, rebase, reset, merge, ignore, and diff would be easier to audit if
+  their execution inputs and policies were grouped more explicitly.
+
+- **Extract reusable list-screen mechanics.** Status rows, log rows, refs,
+  worktrees, blame, commit diffs, standalone diffs, and the command log all
+  repeat variants of cursor movement, scroll state, row copying, empty/loading
+  states, and act-at-point behavior. Avoid over-abstracting rendering, but share
+  the boring state mechanics where it reduces duplicated edge-case policy.
+
+- **Strengthen typed Git intent at the core boundary.** `Repo` is a good
+  boundary, but complex UI operations still pass around scattered switch
+  vectors, path lists, and transient arguments. Introducing typed request
+  structs for complex operations would reduce the chance that switches valid for
+  one Git verb leak into another and would make command-family behavior easier
+  to test.
+
+- **Add more cheap UI-model tests.** Core integration coverage is valuable, but
+  the app would benefit from focused tests around row construction, target
+  resolution from visual selections, command enablement by screen, keymap/context
+  dispatch, stale-generation handling, and fold/cursor preservation after
+  refresh.
+
+In short: keep the single-entity GPUI model, but make it a composed state model
+with purer builders and tighter command/task boundaries. That preserves the
+current pragmatic architecture while making future Git/Magit behavior less risky
+to add.
