@@ -3,10 +3,11 @@
 //! parsed status + fold state + loaded diffs into [`Row`]s, plus the small
 //! row/text constructors the builders and copy paths share.
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::Hsla;
-use magritte_core::{CommitMetadata, DiffSource, EntryKind, LogEntry, Stash};
+use magritte_core::{CommitMetadata, DiffSource, EntryKind, LogEntry, Stash, Status};
 
 use crate::*;
 
@@ -354,39 +355,70 @@ impl StatusView {
             })
             .unwrap_or_default();
 
-        let mut rows = Vec::new();
-
-        if let Some(error) = &self.error {
-            rows.push(plain(format!("Error: {error}"), self.palette.removed));
-            self.rows = rows;
-            return;
-        }
-        let Some(status) = &self.status else {
-            rows.push(plain("Loading…", self.palette.dim));
-            self.rows = rows;
-            return;
+        self.rows = if let Some(error) = &self.error {
+            vec![plain(format!("Error: {error}"), self.palette.removed)]
+        } else if let Some(status) = &self.status {
+            StatusRows {
+                status,
+                status_sections: &self.status_sections,
+                expanded: &self.expanded,
+                collapsed_hunks: &self.collapsed_hunks,
+                loading_sections: &self.loading_sections,
+                diffs: &self.diffs,
+                highlights: &self.highlights,
+                section_ids: self.config.status.section_ids(),
+                recent_count: self.config.status.recent_count,
+                palette: &self.palette,
+            }
+            .build()
+        } else {
+            vec![plain("Loading…", self.palette.dim)]
         };
+    }
+}
 
+/// The borrowed view state that status-row building reads — passed by
+/// [`StatusView::rebuild_rows`] so the builder is a pure function of its inputs
+/// and testable without constructing a full view.
+struct StatusRows<'a> {
+    status: &'a Status,
+    status_sections: &'a StatusSections,
+    expanded: &'a HashSet<FoldKey>,
+    collapsed_hunks: &'a HashSet<FoldKey>,
+    loading_sections: &'a HashSet<SectionId>,
+    diffs: &'a HashMap<(DiffSource, String), DiffState>,
+    highlights: &'a HashMap<(DiffSource, String), FileHighlights>,
+    /// Section ids to render, in configured order (`[status].sections`).
+    section_ids: Vec<String>,
+    recent_count: usize,
+    palette: &'a Palette,
+}
+
+impl StatusRows<'_> {
+    /// Flatten the status into the ordered row list — sections/files/hunks/lines
+    /// plus the commit and stash listings — honoring the fold state. Pure: a
+    /// function of the borrowed inputs, mutating nothing.
+    fn build(&self) -> Vec<Row> {
+        let mut rows = Vec::new();
         // The branch and its upstream/push tracking live in the title bar (see
         // `render_title_bar`), not in header rows here. Sections render in the
-        // configured order (`[status].sections`); an unknown id was warned about
-        // at startup and is skipped here.
-        let head = &status.head;
+        // configured order; an unknown id was warned about at startup, skip it.
+        let head = &self.status.head;
         let upstream = head.upstream.as_deref();
         // The distinct push target (triangular workflow), for the pushremote
         // sections; `None` when the push target is the upstream.
         let push = head.push.as_deref();
         // When there's nothing staged/unstaged/untracked, lead with the clean
         // notice — above the stashes/recent/log listings, not buried under them.
-        if status.is_clean() {
+        if self.status.is_clean() {
             rows.push(spacer());
             rows.push(plain(
                 "Nothing to commit, working tree clean",
                 self.palette.dim,
             ));
         }
-        for id in self.config.status.section_ids() {
-            let Some(section) = SectionId::from_config_id(&id) else {
+        for id in &self.section_ids {
+            let Some(section) = SectionId::from_config_id(id) else {
                 continue;
             };
             match section {
@@ -394,21 +426,21 @@ impl StatusView {
                     &mut rows,
                     section,
                     "Untracked files",
-                    status.untracked().collect(),
+                    self.status.untracked().collect(),
                     None,
                 ),
                 SectionId::Unstaged => self.push_section(
                     &mut rows,
                     section,
                     "Unstaged changes",
-                    status.unstaged().collect(),
+                    self.status.unstaged().collect(),
                     Some(DiffSource::Unstaged),
                 ),
                 SectionId::Staged => self.push_section(
                     &mut rows,
                     section,
                     "Staged changes",
-                    status.staged().collect(),
+                    self.status.staged().collect(),
                     Some(DiffSource::Staged),
                 ),
                 SectionId::Stashes => self.push_stash_section(&mut rows),
@@ -442,13 +474,9 @@ impl StatusView {
                 }
                 SectionId::Recent => {
                     // Honor recent_count at render too, so lowering it takes
-                    // effect on the next reload (the list is fetched at the
-                    // count from the last status refresh).
-                    let n = self
-                        .config
-                        .status
-                        .recent_count
-                        .min(self.status_sections.recent.len());
+                    // effect on the next reload (the list is fetched at the count
+                    // from the last status refresh).
+                    let n = self.recent_count.min(self.status_sections.recent.len());
                     self.push_commit_section(
                         &mut rows,
                         section,
@@ -489,11 +517,10 @@ impl StatusView {
                 SectionId::Ignored => self.push_ignored_section(&mut rows),
             }
         }
-
-        self.rows = rows;
+        rows
     }
 
-    pub(crate) fn push_section(
+    fn push_section(
         &self,
         rows: &mut Vec<Row>,
         id: SectionId,
@@ -541,7 +568,7 @@ impl StatusView {
                 target: Some(Target::File(file_ref.clone())),
                 kind: RowKind::File {
                     status: status_label::status_label(entry, id),
-                    status_color: status_label::status_color(entry, id, &self.palette),
+                    status_color: status_label::status_color(entry, id, self.palette),
                     label,
                     expanded: file_expanded,
                 },
@@ -586,10 +613,7 @@ impl StatusView {
         if !expanded {
             return;
         }
-        let upstream = self
-            .status
-            .as_ref()
-            .and_then(|s| s.head.upstream.as_deref());
+        let upstream = self.status.head.upstream.as_deref();
         for c in commits {
             rows.push(Row {
                 indent: 1,

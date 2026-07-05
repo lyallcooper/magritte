@@ -203,3 +203,5 @@
 - [x] The diff stats (+++-- etc) should appear all together before the files, not with each file header (like magit does) — done: a diffstat block (per-file `path N +++---` lines + summary) sits above the diffs; file headers show just the change word and path.
 - [x] Line highlight and select is not visible over green/red diff rows in commit/diff detail views — done: the cursor/visual highlight wins over an added/removed row's tint.
 - [x] Instead of the text "Tag: " before the tag in the title bar, can we use a tag symbol? — done: a tiny vertical "TG" letter label (tinted the tag color) replaces the "Tag:"/"Tags:" text; the same `stacked_letters` helper is available for other markers.
+- [ ] Add (brief) mouseover tooltips for the various titlebar items describing what they are
+- [ ] Instead of our TG glyph to mark the tag in the title bar, pillify the tag text. Include the commits since tag
