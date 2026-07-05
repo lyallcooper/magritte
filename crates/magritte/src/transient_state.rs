@@ -259,6 +259,7 @@ pub(crate) enum BranchAction {
 #[derive(Clone, Copy)]
 pub(crate) enum TagAction {
     Create { annotated: bool },
+    Release { annotated: bool },
     Delete,
 }
 
@@ -393,6 +394,7 @@ impl PickerAction {
             PickerAction::Tag(TagAction::Create { annotated: false }) => {
                 transient::plain_title("Create tag")
             }
+            PickerAction::Tag(TagAction::Release { .. }) => transient::plain_title("Release tag"),
             PickerAction::Tag(TagAction::Delete) => transient::plain_title("Delete tag"),
             PickerAction::Remote(r) => match r {
                 RemoteAction::AddName => transient::plain_title("Add remote"),
@@ -480,6 +482,7 @@ impl PickerAction {
             }
             PickerAction::Branch(BranchAction::Delete) => "delete",
             PickerAction::Tag(TagAction::Create { .. }) => "tag",
+            PickerAction::Tag(TagAction::Release { .. }) => "release",
             PickerAction::Tag(TagAction::Delete) => "delete",
             PickerAction::Remote(RemoteAction::AddName | RemoteAction::AddUrl { .. }) => "add",
             PickerAction::Remote(RemoteAction::RenameFrom | RemoteAction::RenameTo { .. }) => {

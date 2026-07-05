@@ -303,6 +303,47 @@ impl StatusView {
         );
     }
 
+    /// Begin creating a release tag: like [`start_annotated_tag`], but the
+    /// in-app editor opens pre-filled with the proposed release message (from the
+    /// previous release, with the new version swapped in) for the user to review
+    /// or edit before the tag is created on submit.
+    ///
+    /// [`start_annotated_tag`]: Self::start_annotated_tag
+    pub(crate) fn start_release_tag(
+        &mut self,
+        name: String,
+        target: String,
+        force: bool,
+        message: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_editor_after(
+            CommitMode::Create,
+            Vec::new(),
+            CommitAfterSubmit::CreateTag {
+                name,
+                target,
+                force,
+            },
+            window,
+            cx,
+        );
+        if message.is_empty() {
+            return;
+        }
+        // Seed the editor and record the message as the baseline, so leaving it
+        // unedited doesn't trigger the discard prompt (mirrors the amend path).
+        if let Some(ed) = self.editor() {
+            let state = ed.state.clone();
+            state.update(cx, |s, cx| s.set_value(message.clone(), window, cx));
+        }
+        if let Some(ed) = self.editor_mut() {
+            ed.initial = message;
+        }
+        self.on_editor_changed(window, cx);
+    }
+
     /// Create an annotated tag by launching the external editor on its message
     /// (mirrors `commit_via_external_editor`): git blocks on the editor, we show
     /// a waiting notice, then report and refresh.

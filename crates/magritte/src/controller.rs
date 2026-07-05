@@ -94,7 +94,7 @@ impl StatusView {
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
                 self.dispatch_branch(command, window, cx)
             }
-            TagCreate | TagDelete => self.dispatch_tag(command, args, window, cx),
+            TagCreate | TagRelease | TagDelete => self.dispatch_tag(command, args, window, cx),
             RemoteAdd | RemoteRename | RemoteRemove => {
                 self.dispatch_remote(command, args, window, cx)
             }
@@ -479,6 +479,33 @@ impl StatusView {
                     window,
                     cx,
                 )
+            }
+            TagRelease => {
+                // Propose the next release tag off the UI thread (it reads the
+                // tag list + HEAD), then open the name prompt seeded with it so
+                // the user can review or bump the version before tagging.
+                let annotated = args.iter().any(|s| s == "--annotate");
+                let Some(repo) = self.repo.clone() else {
+                    return;
+                };
+                cx.spawn_in(window, async move |this, cx| {
+                    let seed = cx
+                        .background_executor()
+                        .spawn(async move { repo.next_release_seed() })
+                        .await;
+                    let tag = seed.map(|s| s.tag).unwrap_or_default();
+                    this.update_in(cx, |this, window, cx| {
+                        this.open_picker_seeded(
+                            PickerAction::Tag(TagAction::Release { annotated }),
+                            tag,
+                            args,
+                            window,
+                            cx,
+                        );
+                    })
+                    .ok();
+                })
+                .detach();
             }
             TagDelete => self.open_listed_picker(
                 PickerAction::Tag(TagAction::Delete),
@@ -1680,6 +1707,29 @@ impl StatusView {
         self.open_picker_searchable(action, choices, None, create, switches, window, cx);
     }
 
+    /// A pure-entry picker (no candidate list, `CreateMode::Any`) pre-filled with
+    /// `seed` — used by the release flow to propose a tag name the user can edit.
+    pub(crate) fn open_picker_seeded(
+        &mut self,
+        action: PickerAction,
+        seed: String,
+        switches: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_picker(action, Vec::new(), CreateMode::Any, switches, window, cx);
+        if seed.is_empty() {
+            return;
+        }
+        if let Some(Popup::Picker(p)) = self.popup.as_ref() {
+            let input = p.input.clone();
+            input.update(cx, |s, cx| s.set_value(seed.clone(), window, cx));
+        }
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.list.set_query(&seed);
+        }
+    }
+
     /// [`Self::open_picker`], but each choice is matched against a parallel
     /// `search` string (title + hidden aliases) rather than its display text —
     /// so the palette can surface "Copy" when you type "yank". `search`, when
@@ -2381,6 +2431,32 @@ impl StatusView {
                 self.start_annotated_tag(chosen, target, force, window, cx)
             }
             TagAction::Create { annotated: false } => self.run_job(
+                "Tagging…",
+                "Tagged",
+                move |repo| repo.create_tag(&chosen, &target, force),
+                cx,
+            ),
+            // A release: an annotated tag opens the editor pre-filled with the
+            // proposed message (reusing the previous release's, version-swapped)
+            // for review; a lightweight release just creates the tag.
+            TagAction::Release { annotated: true } => {
+                let Some(repo) = self.repo.clone() else {
+                    return;
+                };
+                let tag = chosen.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    let message = cx
+                        .background_executor()
+                        .spawn(async move { repo.release_message(&tag).unwrap_or_default() })
+                        .await;
+                    this.update_in(cx, |this, window, cx| {
+                        this.start_release_tag(chosen, target, force, message, window, cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            TagAction::Release { annotated: false } => self.run_job(
                 "Tagging…",
                 "Tagged",
                 move |repo| repo.create_tag(&chosen, &target, force),

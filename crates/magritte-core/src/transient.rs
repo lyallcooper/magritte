@@ -79,6 +79,8 @@ pub enum Command {
     BranchDelete,
     /// Create a lightweight tag at point/HEAD (prompts for name).
     TagCreate,
+    /// Create the next release tag on HEAD (proposes the name/message).
+    TagRelease,
     /// Delete a local tag (prompts for the tag).
     TagDelete,
     /// Add a remote (prompts for name then URL).
@@ -638,7 +640,10 @@ pub fn tag_transient(style: KeymapStyle) -> Transient {
             },
             Group {
                 title: plain_title("Create"),
-                suffixes: vec![Action::suffix("t", "tag", Command::TagCreate)],
+                suffixes: vec![
+                    Action::suffix("t", "tag", Command::TagCreate),
+                    Action::suffix("r", "release", Command::TagRelease),
+                ],
             },
             Group {
                 title: plain_title("Do"),

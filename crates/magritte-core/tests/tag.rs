@@ -65,6 +65,68 @@ fn tags_listed_in_version_order_highest_first() {
 }
 
 #[test]
+fn list_releases_orders_and_filters() {
+    let (t, repo) = repo();
+    let head = t.git(["rev-parse", "HEAD"]);
+    repo.create_annotated_tag("v0.9.0", &head, false, "Notes 0.9.0")
+        .unwrap();
+    repo.create_annotated_tag("v1.0.0", &head, false, "Notes 1.0.0")
+        .unwrap();
+    // A non-release tag is excluded from the release list.
+    repo.create_tag("nightly", &head, false).unwrap();
+
+    let releases = repo.list_releases().unwrap();
+    let tags: Vec<&str> = releases.iter().map(|r| r.tag.as_str()).collect();
+    assert_eq!(tags, ["v1.0.0", "v0.9.0"]);
+    assert_eq!(releases[0].version, "1.0.0");
+    assert_eq!(releases[0].message, "Notes 1.0.0");
+}
+
+#[test]
+fn next_release_seed_from_release_commit_reapplies_prefix() {
+    let (t, repo) = repo();
+    let head = t.git(["rev-parse", "HEAD"]);
+    repo.create_annotated_tag("v1.0.0", &head, false, "Notes 1.0.0")
+        .unwrap();
+    t.write("f", "2\n");
+    t.commit_all("Release version 1.1.0");
+
+    let seed = repo.next_release_seed().unwrap();
+    assert_eq!(seed.tag, "v1.1.0");
+    assert!(!seed.first);
+}
+
+#[test]
+fn next_release_seed_without_release_commit_uses_highest_tag() {
+    let (t, repo) = repo();
+    let head = t.git(["rev-parse", "HEAD"]);
+    repo.create_tag("v0.2.0", &head, false).unwrap();
+    repo.create_tag("v0.10.0", &head, false).unwrap();
+
+    let seed = repo.next_release_seed().unwrap();
+    assert_eq!(seed.tag, "v0.10.0");
+    assert!(!seed.first);
+}
+
+#[test]
+fn release_message_substitutes_version_or_defaults() {
+    let (t, repo) = repo();
+    let head = t.git(["rev-parse", "HEAD"]);
+    repo.create_annotated_tag("v1.0.0", &head, false, "Magritte 1.0.0")
+        .unwrap();
+    // The previous message's version is swapped for the new one.
+    assert_eq!(repo.release_message("v1.1.0").unwrap(), "Magritte 1.1.0");
+}
+
+#[test]
+fn release_message_defaults_to_repo_and_version() {
+    let (_t, repo) = repo();
+    // No prior release: fall back to "<Repo> <version>".
+    let msg = repo.release_message("v2.0.0").unwrap();
+    assert!(msg.ends_with("2.0.0"), "unexpected default message: {msg}");
+}
+
+#[test]
 fn create_annotated_tag_with_message() {
     let (t, repo) = repo();
     let head = t.git(["rev-parse", "HEAD"]);
