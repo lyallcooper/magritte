@@ -1666,7 +1666,9 @@ impl StatusView {
                                     .map(|(ix, row)| {
                                         let foldable = matches!(
                                             row,
-                                            CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_)
+                                            CommitDiffRow::File { .. }
+                                                | CommitDiffRow::Hunk(_)
+                                                | CommitDiffRow::Stats { .. }
                                         );
                                         let collapsed = ed.diff_collapsed.contains(&ix);
                                         let content =
@@ -1809,7 +1811,7 @@ impl StatusView {
                 files,
                 insertions,
                 deletions,
-            } => base
+            } => fold_marker(base.gap_2())
                 .text_color(self.palette.dim)
                 .child(SharedString::from(diffstat_text(
                     *files,
@@ -2656,7 +2658,9 @@ impl StatusView {
                                     || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
                                 let foldable = matches!(
                                     row,
-                                    CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_)
+                                    CommitDiffRow::File { .. }
+                                        | CommitDiffRow::Hunk(_)
+                                        | CommitDiffRow::Stats { .. }
                                 );
                                 let collapsed = fd.collapsed.contains(&ix);
                                 let content =

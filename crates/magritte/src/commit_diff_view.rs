@@ -741,9 +741,19 @@ pub(crate) fn visible_diff_rows(
     collapsed: &std::collections::HashSet<usize>,
 ) -> Vec<usize> {
     let mut vis = Vec::with_capacity(rows.len());
-    let (mut file_collapsed, mut hunk_collapsed) = (false, false);
+    let (mut file_collapsed, mut hunk_collapsed, mut stats_collapsed) = (false, false, false);
     for (ix, row) in rows.iter().enumerate() {
         match row {
+            CommitDiffRow::Stats { .. } => {
+                stats_collapsed = collapsed.contains(&ix);
+                vis.push(ix);
+            }
+            // The per-file lines are the diffstat summary's foldable content.
+            CommitDiffRow::StatLine { .. } => {
+                if !stats_collapsed {
+                    vis.push(ix);
+                }
+            }
             CommitDiffRow::File { .. } => {
                 file_collapsed = collapsed.contains(&ix);
                 hunk_collapsed = false;
@@ -767,14 +777,20 @@ pub(crate) fn visible_diff_rows(
     vis
 }
 
-/// The fold header governing `ix`: the row itself if it's a File/Hunk header,
-/// else the enclosing hunk header for a line. `None` for anything unfoldable.
+/// The fold header governing `ix`: the row itself if it's a File/Hunk/Stats
+/// header, the enclosing hunk header for a diff line, or the diffstat summary for
+/// a per-file line. `None` for anything unfoldable.
 pub(crate) fn fold_header_for(rows: &[CommitDiffRow], ix: usize) -> Option<usize> {
     match rows.get(ix)? {
-        CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) => Some(ix),
+        CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) | CommitDiffRow::Stats { .. } => {
+            Some(ix)
+        }
         CommitDiffRow::Line { .. } => rows[..ix]
             .iter()
             .rposition(|r| matches!(r, CommitDiffRow::Hunk(_))),
+        CommitDiffRow::StatLine { .. } => rows[..ix]
+            .iter()
+            .rposition(|r| matches!(r, CommitDiffRow::Stats { .. })),
         _ => None,
     }
 }
@@ -793,30 +809,32 @@ pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
     (added, removed)
 }
 
-/// The diffstat block above the diffs (magit's overview): a per-file `path
-/// N +++---` line for each file, then the "N files changed …" summary. Empty
-/// when there are no files.
+/// The diffstat block above the diffs (magit's overview): the "N files changed …"
+/// summary, then a per-file `path N +++---` line for each file. The summary is a
+/// collapsible header over the per-file lines. Empty when there are no files.
 pub(crate) fn diffstat_block(files: &[(FileDiff, Option<&'static str>)]) -> Vec<CommitDiffRow> {
     if files.is_empty() {
         return Vec::new();
     }
     let (mut insertions, mut deletions) = (0usize, 0usize);
-    let mut rows = Vec::with_capacity(files.len() + 1);
+    let mut stat_lines = Vec::with_capacity(files.len());
     for (diff, _) in files {
         let (a, r) = file_line_counts(diff);
         insertions += a;
         deletions += r;
-        rows.push(CommitDiffRow::StatLine {
+        stat_lines.push(CommitDiffRow::StatLine {
             path: diff.display_path().to_string(),
             added: a,
             removed: r,
         });
     }
+    let mut rows = Vec::with_capacity(files.len() + 1);
     rows.push(CommitDiffRow::Stats {
         files: files.len(),
         insertions,
         deletions,
     });
+    rows.extend(stat_lines);
     rows
 }
 
