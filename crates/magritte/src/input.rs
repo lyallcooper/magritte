@@ -502,9 +502,13 @@ impl StatusView {
     /// flat-diff view, `Esc` first cancels an active visual selection (magit's
     /// two-step). A no-op on the status screen.
     pub(crate) fn close_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.flat_diff().is_some_and(|fd| fd.visual.is_some()) {
+        if self
+            .flat_diff()
+            .is_some_and(|fd| fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty()))
+        {
             if let Some(fd) = self.flat_diff_mut() {
                 fd.visual = None;
+                fd.char_sel = None;
             }
             cx.notify();
             return;

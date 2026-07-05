@@ -21,6 +21,16 @@ pub(crate) struct FlatDiff {
     /// Row indices of collapsed File/Hunk headers — their contents are hidden.
     /// Indices into `rows` (the full model), so the apply engine is unaffected.
     pub(crate) collapsed: std::collections::HashSet<usize>,
+    /// The active character-range selection within one row (a plain drag that
+    /// stayed on its anchor row). Mutually exclusive with a spanning [`visual`]:
+    /// a drag off the anchor row clears this and sets `visual`.
+    ///
+    /// [`visual`]: Self::visual
+    pub(crate) char_sel: Option<CharSelection>,
+    /// `(row, byte offset)` a left-drag began at, while the button is held
+    /// (`None` otherwise): the row lets a move tell whether the drag has left its
+    /// anchor row, and the offset re-anchors the char selection if it comes back.
+    pub(crate) drag_anchor: Option<(usize, usize)>,
 }
 
 impl FlatDiff {
@@ -31,6 +41,8 @@ impl FlatDiff {
             selected: 0,
             visual: None,
             collapsed: std::collections::HashSet::new(),
+            char_sel: None,
+            drag_anchor: None,
         }
     }
 
@@ -63,6 +75,9 @@ impl FlatDiff {
 
     /// Move the cursor by `delta` visible rows, keeping it in view.
     fn move_by(&mut self, delta: isize) {
+        // Keyboard motion drops a mouse char selection (it belongs to the cursor
+        // row it was dragged on, not wherever the cursor moves next).
+        self.char_sel = None;
         let vis = self.visible_rows();
         if vis.is_empty() {
             return;
@@ -75,6 +90,7 @@ impl FlatDiff {
 
     /// Toggle a visual selection anchored at the cursor.
     fn toggle_visual(&mut self) {
+        self.char_sel = None;
         self.visual = if self.visual.is_some() {
             None
         } else {
@@ -720,8 +736,20 @@ impl StatusView {
         let Some(fd) = self.flat_diff_mut() else {
             return;
         };
-        let text = fd.selection_text();
-        fd.visual = None;
+        // A mouse char selection takes precedence over the line-wise selection.
+        let text = if let Some(sel) = fd.char_sel.filter(|c| !c.is_empty()) {
+            let row_text = fd
+                .rows
+                .get(sel.row)
+                .map(commit_row_text)
+                .unwrap_or_default();
+            fd.char_sel = None;
+            sel.slice(&row_text).to_string()
+        } else {
+            let text = fd.selection_text();
+            fd.visual = None;
+            text
+        };
         self.copy_to_clipboard(text, cx);
     }
 

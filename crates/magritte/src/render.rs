@@ -6,8 +6,9 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, Context, Entity, Hsla, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, Context, Entity, HighlightStyle, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, StyledText,
+    TextLayout, Window,
 };
 use gpui_component::input::Input;
 use gpui_component::menu::ContextMenuExt;
@@ -17,6 +18,7 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{Icon, IconName, Sizable};
 use magritte_core::transient::{Group, Suffix, TitleSpan, Transient};
 use magritte_core::{RebaseAction, Sequence};
+use std::ops::Range;
 
 use crate::*;
 
@@ -57,6 +59,73 @@ fn picker_ref_style(action: &PickerAction) -> Option<PickerRefStyle> {
         PickerAction::Tag(_) => Some(PickerRefStyle::Tag),
         PickerAction::Remote(_) => Some(PickerRefStyle::Remote),
         _ => None,
+    }
+}
+
+/// Merge per-range color `runs` with an optional selection `sel` into the
+/// sorted, non-overlapping `(Range, HighlightStyle)` list `StyledText` wants:
+/// each piece keeps its span color, and pieces inside `sel` also get `sel_bg`.
+/// Splits color runs at the selection boundaries so a partial-line selection
+/// composes color + background without overlapping runs. With no color runs
+/// (a single-colored row), only the selection range is emitted (background
+/// over the inherited color).
+fn merge_highlights(
+    runs: &[(Range<usize>, Hsla)],
+    sel: Option<Range<usize>>,
+    sel_bg: Hsla,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let sel = sel.filter(|r| r.start < r.end);
+    if runs.is_empty() {
+        return sel
+            .map(|r| {
+                vec![(
+                    r,
+                    HighlightStyle {
+                        background_color: Some(sel_bg),
+                        ..Default::default()
+                    },
+                )]
+            })
+            .unwrap_or_default();
+    }
+    let mut out = Vec::new();
+    for (run, color) in runs {
+        let mut cuts = vec![run.start, run.end];
+        if let Some(s) = &sel {
+            if s.start > run.start && s.start < run.end {
+                cuts.push(s.start);
+            }
+            if s.end > run.start && s.end < run.end {
+                cuts.push(s.end);
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for pair in cuts.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            let mut style = HighlightStyle {
+                color: Some(*color),
+                ..Default::default()
+            };
+            if sel
+                .as_ref()
+                .is_some_and(|s| start >= s.start && end <= s.end)
+            {
+                style.background_color = Some(sel_bg);
+            }
+            out.push((start..end, style));
+        }
+    }
+    out
+}
+
+/// The byte offset in a laid-out [`TextLayout`] nearest the window-absolute
+/// `position`. `index_for_position` returns `Err(nearest)` past a line's end;
+/// either way we want that nearest offset (so dragging off the right edge
+/// selects to end-of-line rather than doing nothing).
+fn offset_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
+    match layout.index_for_position(position) {
+        Ok(index) | Err(index) => index,
     }
 }
 
@@ -125,6 +194,27 @@ impl StatusView {
     /// as adjacent runs (no gap) — plus the add/remove background tint the
     /// caller applies under its own selection rules. Shared by the status rows
     /// and the flattened diff screens.
+    /// Render `text` as a single [`StyledText`] with per-range colors (`runs`)
+    /// and — when this row owns the active char selection — a selection
+    /// background over `sel`. Returns the element's [`TextLayout`] (a shared
+    /// handle) so a mouse handler can map pixels ↔ byte offsets after paint.
+    ///
+    /// Font/size are inherited from the surrounding view (via `with_highlights`,
+    /// which resolves against the ambient text style), so no `TextStyle` is
+    /// supplied here. `runs` may be empty for a single-colored row, whose base
+    /// color then comes from the row's own `text_color`.
+    fn selectable_text(
+        &self,
+        text: impl Into<SharedString>,
+        runs: Vec<(Range<usize>, Hsla)>,
+        sel: Option<Range<usize>>,
+    ) -> (StyledText, TextLayout) {
+        let highlights = merge_highlights(&runs, sel, self.palette.selection);
+        let styled = StyledText::new(text).with_highlights(highlights);
+        let layout = styled.layout().clone();
+        (styled, layout)
+    }
+
     fn diff_line_body(
         &self,
         kind: LineKind,
@@ -148,6 +238,20 @@ impl StatusView {
             );
         }
         (line, tint)
+    }
+
+    /// The concatenated text of `spans` and the per-span color runs over it —
+    /// the input shape [`selectable_text`](Self::selectable_text) wants for a
+    /// diff line's colored segments.
+    fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, Vec<(Range<usize>, Hsla)>) {
+        let mut text = String::new();
+        let mut runs = Vec::with_capacity(spans.len());
+        for (segment, color) in spans {
+            let start = text.len();
+            text.push_str(segment);
+            runs.push((start..text.len(), *color));
+        }
+        (text, runs)
     }
 
     /// Render a popup (command transient or the `?` help menu) as a bottom
@@ -1772,8 +1876,10 @@ impl StatusView {
                                                 | CommitDiffRow::Stats { .. }
                                         );
                                         let collapsed = ed.diff_collapsed.contains(&ix);
-                                        let content =
-                                            this.render_commit_diff_row(row, false, collapsed);
+                                        // The editor's diff preview is read-only chrome — no
+                                        // char selection there, so drop the layout handle.
+                                        let (content, _) = this
+                                            .render_commit_diff_row(row, false, collapsed, None);
                                         // Every row highlights on hover; a line's
                                         // translucent tint blends over the wash so it
                                         // shows there too. Clicking a File/Hunk header
@@ -1809,12 +1915,18 @@ impl StatusView {
             .vertical_scrollbar(&ed.diff_scroll)
     }
 
+    /// Render a flattened-diff row. `sel`, when `Some`, is the char-selection
+    /// byte range within *this* row's text (the caller supplies it only for the
+    /// row that owns the active [`CharSelection`]). Returns the row element and,
+    /// for the text-bearing kinds, the [`TextLayout`] of their [`StyledText`] so
+    /// the drag handlers can hit-test pixels to byte offsets.
     pub(crate) fn render_commit_diff_row(
         &self,
         row: &CommitDiffRow,
         highlighted: bool,
         collapsed: bool,
-    ) -> AnyElement {
+        sel: Option<Range<usize>>,
+    ) -> (AnyElement, Option<TextLayout>) {
         let base = div()
             .h(px(ROW_HEIGHT))
             .w_full()
@@ -1849,16 +1961,26 @@ impl StatusView {
                 for (label, kind) in parse_refs(decoration, upstream) {
                     row = row.child(self.ref_chip(&label, kind));
                 }
-                row.into_any_element()
+                (row.into_any_element(), None)
             }
-            CommitDiffRow::Detail(text) => base
-                .text_color(self.palette.dim)
-                .child(SharedString::from(text.clone()))
-                .into_any_element(),
-            CommitDiffRow::Message(text) => base
-                .text_color(self.palette.fg)
-                .child(SharedString::from(text.clone()))
-                .into_any_element(),
+            CommitDiffRow::Detail(text) => {
+                let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
+                (
+                    base.text_color(self.palette.dim)
+                        .child(styled)
+                        .into_any_element(),
+                    Some(layout),
+                )
+            }
+            CommitDiffRow::Message(text) => {
+                let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
+                (
+                    base.text_color(self.palette.fg)
+                        .child(styled)
+                        .into_any_element(),
+                    Some(layout),
+                )
+            }
             // A diffstat line: the path, then a git-style `N +++---` bar (total
             // changed + a scaled run of green `+` / red `-`). These sit together
             // in the block above the diffs.
@@ -1869,25 +1991,28 @@ impl StatusView {
             } => {
                 let total = added + removed;
                 let (plus, minus) = stat_bar(*added, *removed);
-                base.gap_2()
-                    .text_color(self.palette.dim)
-                    .child(
-                        div()
-                            .text_color(self.palette.fg)
-                            .child(SharedString::from(path.clone())),
-                    )
-                    .child(div().child(SharedString::from(total.to_string())))
-                    .child(
-                        div()
-                            .text_color(self.palette.added)
-                            .child(SharedString::from("+".repeat(plus))),
-                    )
-                    .child(
-                        div()
-                            .text_color(self.palette.removed)
-                            .child(SharedString::from("-".repeat(minus))),
-                    )
-                    .into_any_element()
+                (
+                    base.gap_2()
+                        .text_color(self.palette.dim)
+                        .child(
+                            div()
+                                .text_color(self.palette.fg)
+                                .child(SharedString::from(path.clone())),
+                        )
+                        .child(div().child(SharedString::from(total.to_string())))
+                        .child(
+                            div()
+                                .text_color(self.palette.added)
+                                .child(SharedString::from("+".repeat(plus))),
+                        )
+                        .child(
+                            div()
+                                .text_color(self.palette.removed)
+                                .child(SharedString::from("-".repeat(minus))),
+                        )
+                        .into_any_element(),
+                    None,
+                )
             }
             // Status-style file header: a colored change word ("modified") + path.
             // The per-file counts live in the diffstat block above, not here.
@@ -1901,35 +2026,58 @@ impl StatusView {
                             .child(SharedString::from(word)),
                     );
                 }
-                row.child(
-                    div()
-                        .text_color(self.palette.fg)
-                        .child(SharedString::from(path.clone())),
+                (
+                    row.child(
+                        div()
+                            .text_color(self.palette.fg)
+                            .child(SharedString::from(path.clone())),
+                    )
+                    .into_any_element(),
+                    None,
                 )
-                .into_any_element()
             }
             CommitDiffRow::Stats {
                 files,
                 insertions,
                 deletions,
-            } => fold_marker(base.gap_2())
-                .text_color(self.palette.dim)
-                .child(SharedString::from(diffstat_text(
-                    *files,
-                    *insertions,
-                    *deletions,
-                )))
-                .into_any_element(),
-            CommitDiffRow::Hunk(text) => fold_marker(base.gap_2())
-                .text_color(self.palette.hunk)
-                .child(SharedString::from(text.clone()))
-                .into_any_element(),
-            CommitDiffRow::Note(text) => base
-                .text_color(self.palette.dim)
-                .child(SharedString::from(text.clone()))
-                .into_any_element(),
+            } => (
+                fold_marker(base.gap_2())
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(diffstat_text(
+                        *files,
+                        *insertions,
+                        *deletions,
+                    )))
+                    .into_any_element(),
+                None,
+            ),
+            CommitDiffRow::Hunk(text) => {
+                let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
+                (
+                    fold_marker(base.gap_2())
+                        .text_color(self.palette.hunk)
+                        .child(styled)
+                        .into_any_element(),
+                    Some(layout),
+                )
+            }
+            CommitDiffRow::Note(text) => {
+                let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
+                (
+                    base.text_color(self.palette.dim)
+                        .child(styled)
+                        .into_any_element(),
+                    Some(layout),
+                )
+            }
             CommitDiffRow::Line { kind, spans } => {
-                let (line, tint) = self.diff_line_body(*kind, spans);
+                let (sign, sign_color, tint) = match kind {
+                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
+                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
+                    _ => (' ', self.palette.dim, None),
+                };
+                let (text, runs) = Self::spans_text_runs(spans);
+                let (styled, layout) = self.selectable_text(text, runs, sel);
                 let mut el = base;
                 // The cursor/visual highlight must stay visible over an added/
                 // removed row's tint, so it wins; the +/- sign color still marks
@@ -1939,7 +2087,16 @@ impl StatusView {
                         el = el.bg(t);
                     }
                 }
-                el.child(line).into_any_element()
+                (
+                    el.child(
+                        div()
+                            .text_color(sign_color)
+                            .child(SharedString::from(sign.to_string())),
+                    )
+                    .child(styled)
+                    .into_any_element(),
+                    Some(layout),
+                )
             }
         }
     }
@@ -2711,8 +2868,17 @@ impl StatusView {
                             .filter_map(|pos| visible.get(pos).copied())
                             .filter_map(|ix| fd.rows.get(ix).map(|row| (ix, row)))
                             .map(|(ix, row)| {
-                                let highlighted = ix == fd.selected
-                                    || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
+                                // The char-selection range within this row (only the
+                                // row that owns a non-empty selection paints one).
+                                let sel = fd.char_sel.and_then(|c| {
+                                    (c.row == ix && !c.is_empty()).then(|| c.range())
+                                });
+                                // A row mid-char-selection skips the full-row cursor
+                                // wash so the char-range background stays visible; it
+                                // *is* still the cursor row, just painted per-char.
+                                let highlighted = sel.is_none()
+                                    && (ix == fd.selected
+                                        || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi));
                                 let foldable = matches!(
                                     row,
                                     CommitDiffRow::File { .. }
@@ -2720,32 +2886,141 @@ impl StatusView {
                                         | CommitDiffRow::Stats { .. }
                                 );
                                 let collapsed = fd.collapsed.contains(&ix);
-                                let content =
-                                    this.render_commit_diff_row(row, highlighted, collapsed);
-                                // Clicking a line moves the diff cursor there (so the
-                                // apply engine acts on it); clicking a File/Hunk header
-                                // also toggles its fold. Rows highlight on hover (the
-                                // cursor row already has the selection wash).
-                                let v = view.clone();
+                                let has_char_sel = sel.is_some();
+                                let (content, layout) =
+                                    this.render_commit_diff_row(row, highlighted, collapsed, sel);
+                                // Plain click positions the cursor / toggles a fold; a
+                                // left-drag selects — char-wise while it stays on this
+                                // row, line-wise once it spans rows (see the handlers).
                                 let hover = this.palette.hover;
+                                let (down_layout, move_layout) = (layout.clone(), layout);
+                                let (v_down, v_move, v_up, v_click) =
+                                    (view.clone(), view.clone(), view.clone(), view.clone());
+                                // No hover wash while this row shows a char selection,
+                                // so the per-char background isn't washed over.
+                                let hoverable = !highlighted && !has_char_sel;
                                 div()
                                     .id(("flat-diff-row", ix))
                                     .w_full()
                                     .cursor_pointer()
-                                    .when(!highlighted, |d| d.hover(move |s| s.bg(hover)))
+                                    .when(hoverable, |d| d.hover(move |s| s.bg(hover)))
                                     .child(content)
-                                    .on_click(move |_, _window, cx: &mut App| {
-                                        v.update(cx, |view, vcx| {
-                                            if let Some(fd) = view.flat_diff_mut() {
-                                                fd.selected = ix;
-                                                fd.visual = None;
-                                                if foldable {
-                                                    fd.toggle_fold(ix);
+                                    .on_mouse_down(MouseButton::Left, {
+                                        move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                                            let offset = down_layout
+                                                .as_ref()
+                                                .map(|l| offset_at(l, ev.position));
+                                            v_down.update(cx, |view, vcx| {
+                                                if view.popup.is_some() {
+                                                    return;
+                                                }
+                                                if let Some(fd) = view.flat_diff_mut() {
+                                                    fd.selected = ix;
+                                                    fd.visual = None;
+                                                    // Clear any prior selection now; a drag
+                                                    // rebuilds it from this anchor offset.
+                                                    fd.char_sel = None;
+                                                    fd.drag_anchor =
+                                                        Some((ix, offset.unwrap_or(0)));
+                                                    vcx.notify();
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .on_mouse_move({
+                                        move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+                                            if ev.pressed_button != Some(MouseButton::Left) {
+                                                return;
+                                            }
+                                            let offset = move_layout
+                                                .as_ref()
+                                                .map(|l| offset_at(l, ev.position));
+                                            v_move.update(cx, |view, vcx| {
+                                                let Some((anchor_row, anchor_off)) =
+                                                    view.flat_diff().and_then(|fd| fd.drag_anchor)
+                                                else {
+                                                    return;
+                                                };
+                                                let Some(fd) = view.flat_diff_mut() else {
+                                                    return;
+                                                };
+                                                if ix == anchor_row {
+                                                    // Still on the anchor row → char-wise.
+                                                    let Some(cursor) = offset else {
+                                                        return;
+                                                    };
+                                                    fd.visual = None;
+                                                    fd.selected = anchor_row;
+                                                    fd.char_sel = Some(CharSelection {
+                                                        row: anchor_row,
+                                                        anchor: anchor_off,
+                                                        cursor,
+                                                    });
+                                                } else {
+                                                    // Spanned rows → line-wise region.
+                                                    fd.char_sel = None;
+                                                    fd.visual = Some(anchor_row);
+                                                    fd.selected = ix;
                                                 }
                                                 vcx.notify();
-                                            }
-                                        });
+                                            });
+                                        }
                                     })
+                                    .on_mouse_up(MouseButton::Left, {
+                                        move |_, _window, cx: &mut App| {
+                                            v_up.update(cx, |view, vcx| {
+                                                let Some(fd) = view.flat_diff_mut() else {
+                                                    return;
+                                                };
+                                                if fd.drag_anchor.take().is_none() {
+                                                    return;
+                                                }
+                                                // A non-empty char range copies on release.
+                                                let copy = fd
+                                                    .char_sel
+                                                    .filter(|c| !c.is_empty())
+                                                    .and_then(|c| {
+                                                        fd.rows.get(c.row).map(|row| {
+                                                            c.slice(&commit_row_text(row))
+                                                                .to_string()
+                                                        })
+                                                    })
+                                                    .filter(|t| !t.is_empty());
+                                                vcx.notify();
+                                                if let Some(text) = copy {
+                                                    view.copy_to_clipboard(text, vcx);
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .on_click(
+                                        move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
+                                            // A drag (moved between down and up) already
+                                            // selected; don't also click (which would move
+                                            // the cursor or toggle a fold).
+                                            if let gpui::ClickEvent::Mouse(e) = ev {
+                                                let moved = (e.up.position.x - e.down.position.x)
+                                                    .abs()
+                                                    > px(4.0)
+                                                    || (e.up.position.y - e.down.position.y).abs()
+                                                        > px(4.0);
+                                                if moved {
+                                                    return;
+                                                }
+                                            }
+                                            v_click.update(cx, |view, vcx| {
+                                                if let Some(fd) = view.flat_diff_mut() {
+                                                    fd.selected = ix;
+                                                    fd.visual = None;
+                                                    fd.char_sel = None;
+                                                    if foldable {
+                                                        fd.toggle_fold(ix);
+                                                    }
+                                                    vcx.notify();
+                                                }
+                                            });
+                                        },
+                                    )
                                     .into_any_element()
                             })
                             .collect::<Vec<_>>()

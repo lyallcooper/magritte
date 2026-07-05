@@ -1,6 +1,13 @@
 # Mouse text selection: char-wise within a line, line-wise across lines
 
-Status: proposal. A design/implementation plan, not a finished feature.
+Status: implemented for the read-only flattened-diff views (commit detail and
+the `d` diff buffer); the design below is the original plan. Done there: the
+`StyledText` migration of the text rows (diff `Line`, `Message`, `Detail`,
+`Note`, `Hunk`), the `CharSelection` state on `FlatDiff`, the one-drag/two-
+granularity gesture, and copy (mouse-up + Cmd-C precedence, cleared on Esc/
+plain click). Still open: the multi-color rows (`File`/`StatLine`/`Stats`), the
+**status view** diff lines (its row handlers also drive staging), and the `$`
+command-log / blame pagers.
 
 ## Goal
 

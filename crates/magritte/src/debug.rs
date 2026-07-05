@@ -170,6 +170,16 @@ async fn run_command(
             dispatch_move(handle, x, y, cx)?;
             Ok(None)
         }
+        "drag" => {
+            let mut parts = rest.split_whitespace();
+            let mut next = || parts.next().and_then(|s| s.parse::<f32>().ok());
+            let (x1, y1, x2, y2) = match (next(), next(), next(), next()) {
+                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                _ => return Err("drag needs: x1 y1 x2 y2".into()),
+            };
+            dispatch_drag(handle, (x1, y1), (x2, y2), cx)?;
+            Ok(None)
+        }
         "click-id" | "shift-click-id" => {
             // Force a paint first: when the window is occluded the OS display
             // link is paused, so the target registry would otherwise be stale.
@@ -319,6 +329,66 @@ fn dispatch_click(
                 button: MouseButton::Left,
                 position: pos,
                 modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Dispatch a left-drag from `start` to `end` (window-relative points): press
+/// at `start`, several button-held moves toward `end`, then release — so the
+/// row mouse-move handlers (and the char-selection gesture) see the same event
+/// stream a real drag produces.
+fn dispatch_drag(
+    handle: AnyWindowHandle,
+    start: (f32, f32),
+    end: (f32, f32),
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let start_pos = point(px(start.0), px(start.1));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: start_pos,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: start_pos,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        // Interpolate button-held moves so each crossed row fires its handler.
+        const STEPS: u32 = 8;
+        for step in 1..=STEPS {
+            let t = step as f32 / STEPS as f32;
+            let pos = point(
+                px(start.0 + (end.0 - start.0) * t),
+                px(start.1 + (end.1 - start.1) * t),
+            );
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position: pos,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+        }
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: point(px(end.0), px(end.1)),
+                modifiers: Modifiers::default(),
                 click_count: 1,
             }),
             cx,

@@ -26,6 +26,50 @@ pub(crate) struct Selection {
     pub(crate) reclick: bool,
 }
 
+/// A character-range selection within a single row's text, in byte offsets into
+/// that row's rendered text. Drives sub-line mouse selection in the read-only
+/// diff views; at most one is active, and it yields to the line-wise
+/// [`Selection`] the moment a drag spans rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CharSelection {
+    /// The row (index into the view's row list) the selection lives on.
+    pub(crate) row: usize,
+    /// Byte offset the drag anchored at.
+    pub(crate) anchor: usize,
+    /// Byte offset the drag currently reaches.
+    pub(crate) cursor: usize,
+}
+
+impl CharSelection {
+    /// The selected byte range, `low..high`.
+    pub(crate) fn range(&self) -> std::ops::Range<usize> {
+        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
+    }
+
+    /// Whether nothing is actually selected (anchor == cursor).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.anchor == self.cursor
+    }
+
+    /// The selected slice of `text`, clamped to char boundaries within bounds.
+    pub(crate) fn slice<'a>(&self, text: &'a str) -> &'a str {
+        let range = self.range();
+        let start = clamp_boundary(text, range.start);
+        let end = clamp_boundary(text, range.end.max(start));
+        &text[start..end]
+    }
+}
+
+/// Clamp `offset` down to the nearest char boundary at or before it, within
+/// `text` (so a byte offset from hit-testing can safely slice the string).
+fn clamp_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 impl StatusView {
     // --- Selection & folding ---------------------------------------------
 
@@ -804,4 +848,68 @@ pub(crate) fn apply_scroll_key(
         handle.scroll_to_item_strict(*top, gpui::ScrollStrategy::Top);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CharSelection;
+
+    #[test]
+    fn char_range_normalizes_regardless_of_drag_direction() {
+        // Forward and backward drags over the same span select the same range.
+        let forward = CharSelection {
+            row: 3,
+            anchor: 2,
+            cursor: 7,
+        };
+        let backward = CharSelection {
+            row: 3,
+            anchor: 7,
+            cursor: 2,
+        };
+        assert_eq!(forward.range(), 2..7);
+        assert_eq!(backward.range(), 2..7);
+        assert!(!forward.is_empty());
+    }
+
+    #[test]
+    fn empty_selection_has_empty_range() {
+        let sel = CharSelection {
+            row: 1,
+            anchor: 5,
+            cursor: 5,
+        };
+        assert!(sel.is_empty());
+        assert_eq!(sel.range(), 5..5);
+    }
+
+    #[test]
+    fn slice_extracts_the_selected_text_and_clamps_bounds() {
+        let sel = CharSelection {
+            row: 0,
+            anchor: 6,
+            cursor: 2,
+        };
+        assert_eq!(sel.slice("hello world"), "llo ");
+        // A cursor past the end clamps to the string's length.
+        let past_end = CharSelection {
+            row: 0,
+            anchor: 0,
+            cursor: 999,
+        };
+        assert_eq!(past_end.slice("hi"), "hi");
+    }
+
+    #[test]
+    fn slice_snaps_to_char_boundaries_inside_multibyte_text() {
+        // "café" — the 'é' is two bytes (3..5). An offset landing mid-char snaps
+        // back to a boundary rather than panicking.
+        let text = "café";
+        let sel = CharSelection {
+            row: 0,
+            anchor: 0,
+            cursor: 4,
+        };
+        assert_eq!(sel.slice(text), "caf");
+    }
 }
