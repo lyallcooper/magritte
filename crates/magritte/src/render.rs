@@ -1566,9 +1566,15 @@ impl StatusView {
                 .text_color(self.palette.fg)
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
-            // Status-style file header: a colored change word ("modified"),
-            // then the path — matching the status view's rows.
-            CommitDiffRow::File { change, path } => {
+            // Status-style file header: a colored change word ("modified"), the
+            // path, then a git-style `N ++--` stat bar (total changed + a scaled
+            // run of green `+` / red `-`).
+            CommitDiffRow::File {
+                change,
+                path,
+                added,
+                removed,
+            } => {
                 let word = status_label::change_word(*change);
                 let mut row = base.gap_2();
                 if !word.is_empty() {
@@ -1578,12 +1584,32 @@ impl StatusView {
                             .child(SharedString::from(word)),
                     );
                 }
-                row.child(
+                row = row.child(
                     div()
                         .text_color(self.palette.fg)
                         .child(SharedString::from(path.clone())),
-                )
-                .into_any_element()
+                );
+                let total = added + removed;
+                if total > 0 {
+                    let (plus, minus) = stat_bar(*added, *removed);
+                    row = row
+                        .child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(total.to_string())),
+                        )
+                        .child(
+                            div()
+                                .text_color(self.palette.added)
+                                .child(SharedString::from("+".repeat(plus))),
+                        )
+                        .child(
+                            div()
+                                .text_color(self.palette.removed)
+                                .child(SharedString::from("-".repeat(minus))),
+                        );
+                }
+                row.into_any_element()
             }
             CommitDiffRow::Stats {
                 files,

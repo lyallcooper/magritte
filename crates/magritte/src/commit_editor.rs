@@ -66,8 +66,14 @@ pub(crate) enum CommitDiffRow {
         insertions: usize,
         deletions: usize,
     },
-    /// A file header: its change kind (for the status-style word/color) and path.
-    File { change: Change, path: String },
+    /// A file header: its change kind (for the status-style word/color), path,
+    /// and added/removed line counts (for the git-style `N ++--` stat bar).
+    File {
+        change: Change,
+        path: String,
+        added: usize,
+        removed: usize,
+    },
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
@@ -518,9 +524,12 @@ impl StatusView {
         let (fg, dim) = (self.palette.fg, self.palette.dim);
         let mut rows = Vec::new();
         for (diff, lang) in files {
+            let (added, removed) = file_line_counts(diff);
             rows.push(CommitDiffRow::File {
                 change: file_change(diff),
                 path: diff.display_path().to_string(),
+                added,
+                removed,
             });
             let hl = match lang {
                 Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),

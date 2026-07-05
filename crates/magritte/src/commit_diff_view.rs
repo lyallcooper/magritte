@@ -410,7 +410,16 @@ impl StatusView {
                     Ok(files) if files.is_empty() => {
                         vec![CommitDiffRow::Note("No changes".to_string())]
                     }
-                    Ok(files) => this.diff_rows(&files, cx),
+                    Ok(files) => {
+                        // Lead with the diffstat overview, like the commit view.
+                        let mut rows = Vec::new();
+                        if let Some(stats) = diffstat_row(&files) {
+                            rows.push(stats);
+                            rows.push(CommitDiffRow::Note(String::new()));
+                        }
+                        rows.extend(this.diff_rows(&files, cx));
+                        rows
+                    }
                     Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
                 };
                 if let Some(dv) = this.diff_view_mut() {
@@ -446,24 +455,8 @@ impl StatusView {
             rows.push(CommitDiffRow::Note(String::new()));
         }
         // A diffstat summary above the files (magit's overview line).
-        if !files.is_empty() {
-            let (mut insertions, mut deletions) = (0usize, 0usize);
-            for (diff, _) in files {
-                for hunk in &diff.hunks {
-                    for line in &hunk.lines {
-                        match line.kind {
-                            LineKind::Added => insertions += 1,
-                            LineKind::Removed => deletions += 1,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            rows.push(CommitDiffRow::Stats {
-                files: files.len(),
-                insertions,
-                deletions,
-            });
+        if let Some(stats) = diffstat_row(files) {
+            rows.push(stats);
             rows.push(CommitDiffRow::Note(String::new()));
         }
         rows.extend(self.diff_rows(files, cx));
@@ -689,6 +682,40 @@ impl StatusView {
             cx.notify();
         }
     }
+}
+
+/// Added/removed line counts for one file diff.
+pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
+    let (mut added, mut removed) = (0usize, 0usize);
+    for hunk in &diff.hunks {
+        for line in &hunk.lines {
+            match line.kind {
+                LineKind::Added => added += 1,
+                LineKind::Removed => removed += 1,
+                _ => {}
+            }
+        }
+    }
+    (added, removed)
+}
+
+/// The diffstat summary row for a set of files (magit's overview line), or
+/// `None` when there are no files.
+pub(crate) fn diffstat_row(files: &[(FileDiff, Option<&'static str>)]) -> Option<CommitDiffRow> {
+    if files.is_empty() {
+        return None;
+    }
+    let (mut insertions, mut deletions) = (0usize, 0usize);
+    for (diff, _) in files {
+        let (a, r) = file_line_counts(diff);
+        insertions += a;
+        deletions += r;
+    }
+    Some(CommitDiffRow::Stats {
+        files: files.len(),
+        insertions,
+        deletions,
+    })
 }
 
 pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {

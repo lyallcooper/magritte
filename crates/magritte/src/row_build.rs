@@ -206,7 +206,7 @@ pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
             insertions,
             deletions,
         } => diffstat_text(*files, *insertions, *deletions),
-        CommitDiffRow::File { change, path } => {
+        CommitDiffRow::File { change, path, .. } => {
             let word = status_label::change_word(*change);
             if word.is_empty() {
                 path.clone()
@@ -218,6 +218,25 @@ pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
         CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
         CommitDiffRow::Note(n) => n.clone(),
     }
+}
+
+/// The number of `+`/`-` marks for a per-file stat bar (git's `N ++--`), scaling
+/// the added/removed counts down to at most `MAX` total marks while keeping each
+/// nonzero side at least one mark. Small diffs render their exact counts.
+pub(crate) fn stat_bar(added: usize, removed: usize) -> (usize, usize) {
+    const MAX: usize = 20;
+    let total = added + removed;
+    if total == 0 || total <= MAX {
+        return (added, removed);
+    }
+    let plus = if added == 0 {
+        0
+    } else {
+        (((added as f64 / total as f64) * MAX as f64).round() as usize)
+            .clamp(1, if removed > 0 { MAX - 1 } else { MAX })
+    };
+    let minus = if removed == 0 { 0 } else { (MAX - plus).max(1) };
+    (plus, minus)
 }
 
 /// The diffstat summary text ("N files changed, K insertions(+), L
