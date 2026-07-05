@@ -2667,12 +2667,15 @@ impl StatusView {
                                     this.render_commit_diff_row(row, highlighted, collapsed);
                                 // Clicking a line moves the diff cursor there (so the
                                 // apply engine acts on it); clicking a File/Hunk header
-                                // also toggles its fold.
+                                // also toggles its fold. Rows highlight on hover (the
+                                // cursor row already has the selection wash).
                                 let v = view.clone();
+                                let hover = this.palette.hover;
                                 div()
                                     .id(("flat-diff-row", ix))
                                     .w_full()
                                     .cursor_pointer()
+                                    .when(!highlighted, |d| d.hover(move |s| s.bg(hover)))
                                     .child(content)
                                     .on_click(move |_, _window, cx: &mut App| {
                                         v.update(cx, |view, vcx| {
