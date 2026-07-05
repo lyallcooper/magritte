@@ -1763,7 +1763,9 @@ impl StatusView {
             .flex_grow(1.0)
             // Commands and their output are code — monospace.
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(
                 div()
@@ -1805,7 +1807,9 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(
                 div()
@@ -2096,7 +2100,9 @@ impl StatusView {
             .flex_grow(1.0)
             // Commit rows are columnar (hash / subject / date) — monospace.
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(header)
             .child(body)
@@ -2151,7 +2157,9 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(header)
             .child(body)
@@ -2303,7 +2311,9 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(header)
             .child(body)
@@ -2572,7 +2582,9 @@ impl StatusView {
             .flex_grow(1.0)
             // A commit's header + diff is code — monospace.
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(
                 div()
@@ -2618,7 +2630,9 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .p_4()
+            .px_4()
+            .pt_4()
+            .pb_2()
             .gap_3()
             .child(
                 div().flex().items_center().gap_3().child(
@@ -2669,7 +2683,7 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .p_4()
+            .px_4().pt_4().pb_2()
             .gap_3()
             .child(if rt.confirming_cancel {
                 // Unsaved edits to the plan: confirm before discarding them.
@@ -3397,45 +3411,18 @@ impl StatusView {
             );
         }
 
-        // A secondary view (log, refs, commit, …) floats a clickable `Esc close`
-        // button at the window's top-right — a mouse affordance for leaving the
-        // view — kept out of the draggable title bar. Hidden on status and while
-        // a popup owns Esc. `occlude` stops the click from reaching the row below.
-        if self.popup.is_none() && self.screen_name().is_some() {
-            let v = view.clone();
-            root = root.child(
-                div()
-                    .absolute()
-                    .top(px(42.0))
-                    .right_4()
-                    .id("close-view")
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .bg(self.palette.panel)
-                    .border_1()
-                    .border_color(self.palette.border)
-                    .occlude()
-                    .hover(|s| s.bg(self.palette.selection))
-                    .child(kbd::key_chip(
-                        "esc",
-                        self.palette.dim,
-                        &self.font,
-                        &self.system_ui_font,
-                    ))
-                    .child(
-                        div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from("close")),
-                    )
-                    .on_click(move |_, window, cx: &mut App| {
-                        v.update(cx, |this, vcx| this.close_screen(window, vcx));
-                    }),
-            );
+        // A secondary view floats an `Esc close` button at the window's top-right
+        // — a mouse affordance for leaving the view — kept out of the draggable
+        // title bar and styled like the settings screen's close button. Hidden on
+        // status and while a popup owns Esc; skipped on screens that render their
+        // own close button (settings), so it isn't duplicated. `occlude` stops the
+        // click from reaching the row below.
+        let renders_own_close = matches!(self.screen_kind(), ScreenKind::Settings);
+        if self.popup.is_none() && self.screen_name().is_some() && !renders_own_close {
+            root =
+                root.child(div().absolute().top(px(42.0)).right_4().occlude().child(
+                    self.key_action("close-view", "esc", "close", view, Self::close_screen),
+                ));
         }
 
         root.children(self.prefix_indicator(window))
