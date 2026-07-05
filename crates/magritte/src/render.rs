@@ -3296,6 +3296,10 @@ impl StatusView {
             // A next key that completes a binding shows its command's label; one
             // that only leads deeper shows "…" to mark a further sub-sequence.
             let lead = format!("{} ", pending.seq);
+            // Command id → title, built once (not re-scanned per continuation).
+            let titles: std::collections::HashMap<String, String> = all_commands(&self.config)
+                .map(|c| (c.id.to_string(), c.title.to_string()))
+                .collect();
             let mut conts: std::collections::BTreeMap<String, Option<String>> =
                 std::collections::BTreeMap::new();
             for (k, ids) in self.screen_bindings() {
@@ -3314,9 +3318,7 @@ impl StatusView {
                     let Some(id) = self.resolve_binding(k) else {
                         continue;
                     };
-                    let title = all_commands(&self.config)
-                        .find(|c| c.id == id.as_str())
-                        .map(|c| c.title.to_string());
+                    let title = titles.get(&id).cloned();
                     // A completing binding's label wins over a sibling sub-prefix.
                     let entry = conts.entry(token).or_insert(None);
                     if title.is_some() {
