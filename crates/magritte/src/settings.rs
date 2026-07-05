@@ -102,6 +102,30 @@ impl StatusView {
         .detach();
     }
 
+    /// Subscribe to a settings `Select`'s confirm event, invoking `on_confirm`
+    /// with the chosen item — folding away the `subscribe_in` + `SelectEvent::
+    /// Confirm(Some(..))` unwrap each dropdown otherwise repeats.
+    fn on_select_confirm<T>(
+        entity: &Entity<SelectState<T>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_confirm: impl Fn(&mut Self, &SharedString, &mut Context<Self>) + 'static,
+    ) -> Subscription
+    where
+        T: gpui_component::searchable_list::SearchableListDelegate + 'static,
+        T::Item: gpui_component::searchable_list::SearchableListItem<Value = SharedString>,
+    {
+        cx.subscribe_in(
+            entity,
+            window,
+            move |this, _, ev: &SelectEvent<T>, _w, cx| {
+                if let SelectEvent::Confirm(Some(value)) = ev {
+                    on_confirm(this, value, cx);
+                }
+            },
+        )
+    }
+
     /// Open the live settings screen: appearance/theme/font/keymap dropdowns,
     /// editor commands, and behavior toggles — every control applying its
     /// change immediately (no save button).
@@ -279,21 +303,15 @@ impl StatusView {
                 },
             ),
             #[cfg(target_os = "macos")]
-            cx.subscribe_in(
-                &editor,
-                window,
-                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, _cx| {
-                    if let SelectEvent::Confirm(Some(name)) = ev {
-                        let val = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
-                            String::new()
-                        } else {
-                            name.to_string()
-                        };
-                        this.edit_global(|c| c.editor = val.clone());
-                        config::save_settings(&this.config_global);
-                    }
-                },
-            ),
+            Self::on_select_confirm(&editor, window, cx, |this, name, _cx| {
+                let val = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
+                    String::new()
+                } else {
+                    name.to_string()
+                };
+                this.edit_global(|c| c.editor = val.clone());
+                config::save_settings(&this.config_global);
+            }),
             #[cfg(not(target_os = "macos"))]
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -302,95 +320,59 @@ impl StatusView {
                     this.save_settings_debounced(cx);
                 }
             }),
-            cx.subscribe_in(
-                &appearance,
-                window,
-                |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(label)) = ev {
-                        let value = APPEARANCE_OPTIONS
-                            .iter()
-                            .find(|(l, _)| *l == label.as_ref())
-                            .map_or("auto", |(_, v)| v);
-                        this.edit_global(|c| c.appearance = value.to_string());
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &keymap_preset,
-                window,
-                |this, _, ev: &SelectEvent<Vec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(label)) = ev {
-                        let preset = KEYMAP_OPTIONS
-                            .iter()
-                            .find(|(l, _)| *l == label.as_ref())
-                            .map_or(config::KeymapPreset::default(), |(_, p)| *p);
-                        this.edit_global(|c| c.keymap_preset = preset);
-                        // The effective keymap is derived from the preset;
-                        // rebuild it so the change applies immediately.
-                        this.keymap = build_keymap(&this.config).0;
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &light_theme,
-                window,
-                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.edit_global(|c| c.light_theme = name.to_string());
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &dark_theme,
-                window,
-                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(name)) = ev {
-                        this.edit_global(|c| c.dark_theme = name.to_string());
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &font,
-                window,
-                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(name)) = ev {
-                        // "System Default" → empty config (adaptive system mono).
-                        let val = if name.as_ref() == theme::SYSTEM_FONT_LABEL {
-                            String::new()
-                        } else {
-                            name.to_string()
-                        };
-                        this.edit_global(|c| c.font = val.clone());
-                        this.font = theme::resolve_font(&this.config, cx);
-                        // The UI font may track the editor font ("Same as
-                        // editor"), so re-resolve it too.
-                        this.ui_font = theme::resolve_ui_font(&this.config, cx);
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
-            cx.subscribe_in(
-                &ui_font,
-                window,
-                |this, _, ev: &SelectEvent<SearchableVec<SharedString>>, _w, cx| {
-                    if let SelectEvent::Confirm(Some(name)) = ev {
-                        let val = match name.as_ref() {
-                            // Reuse the monospace font (no proportional UI).
-                            theme::UI_FONT_DEFAULT_LABEL => String::new(),
-                            // Platform proportional UI font.
-                            theme::SYSTEM_FONT_LABEL => theme::SYSTEM_UI_FONT.to_string(),
-                            other => other.to_string(),
-                        };
-                        this.edit_global(|c| c.ui_font = val.clone());
-                        this.ui_font = theme::resolve_ui_font(&this.config, cx);
-                        this.apply_and_save(cx);
-                    }
-                },
-            ),
+            Self::on_select_confirm(&appearance, window, cx, |this, label, cx| {
+                let value = APPEARANCE_OPTIONS
+                    .iter()
+                    .find(|(l, _)| *l == label.as_ref())
+                    .map_or("auto", |(_, v)| v);
+                this.edit_global(|c| c.appearance = value.to_string());
+                this.apply_and_save(cx);
+            }),
+            Self::on_select_confirm(&keymap_preset, window, cx, |this, label, cx| {
+                let preset = KEYMAP_OPTIONS
+                    .iter()
+                    .find(|(l, _)| *l == label.as_ref())
+                    .map_or(config::KeymapPreset::default(), |(_, p)| *p);
+                this.edit_global(|c| c.keymap_preset = preset);
+                // The effective keymap is derived from the preset; rebuild it so
+                // the change applies immediately.
+                this.keymap = build_keymap(&this.config).0;
+                this.apply_and_save(cx);
+            }),
+            Self::on_select_confirm(&light_theme, window, cx, |this, name, cx| {
+                this.edit_global(|c| c.light_theme = name.to_string());
+                this.apply_and_save(cx);
+            }),
+            Self::on_select_confirm(&dark_theme, window, cx, |this, name, cx| {
+                this.edit_global(|c| c.dark_theme = name.to_string());
+                this.apply_and_save(cx);
+            }),
+            Self::on_select_confirm(&font, window, cx, |this, name, cx| {
+                // "System Default" → empty config (adaptive system mono).
+                let val = if name.as_ref() == theme::SYSTEM_FONT_LABEL {
+                    String::new()
+                } else {
+                    name.to_string()
+                };
+                this.edit_global(|c| c.font = val.clone());
+                this.font = theme::resolve_font(&this.config, cx);
+                // The UI font may track the editor font ("Same as editor"), so
+                // re-resolve it too.
+                this.ui_font = theme::resolve_ui_font(&this.config, cx);
+                this.apply_and_save(cx);
+            }),
+            Self::on_select_confirm(&ui_font, window, cx, |this, name, cx| {
+                let val = match name.as_ref() {
+                    // Reuse the monospace font (no proportional UI).
+                    theme::UI_FONT_DEFAULT_LABEL => String::new(),
+                    // Platform proportional UI font.
+                    theme::SYSTEM_FONT_LABEL => theme::SYSTEM_UI_FONT.to_string(),
+                    other => other.to_string(),
+                };
+                this.edit_global(|c| c.ui_font = val.clone());
+                this.ui_font = theme::resolve_ui_font(&this.config, cx);
+                this.apply_and_save(cx);
+            }),
         ];
 
         appearance.update(cx, |st, cx| st.focus(window, cx));
