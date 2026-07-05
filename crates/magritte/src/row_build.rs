@@ -782,7 +782,98 @@ impl StatusRows<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diffstat_text, stat_bar};
+    use super::{diffstat_text, stat_bar, StatusRows};
+    use crate::*;
+    use magritte_core::{Change, EntryKind, FileEntry, HeadInfo, Status};
+    use std::collections::{HashMap, HashSet};
+
+    /// Build the status rows for `status` with the given expanded sections, over
+    /// otherwise-empty inputs (no loaded diffs / listings).
+    fn build(status: &Status, expanded: &HashSet<FoldKey>, section_ids: &[&str]) -> Vec<Row> {
+        let sections = StatusSections::default();
+        let (collapsed, loading) = (HashSet::new(), HashSet::new());
+        let diffs = HashMap::new();
+        let highlights = HashMap::new();
+        let palette = Palette::default();
+        StatusRows {
+            status,
+            status_sections: &sections,
+            expanded,
+            collapsed_hunks: &collapsed,
+            loading_sections: &loading,
+            diffs: &diffs,
+            highlights: &highlights,
+            section_ids: section_ids.iter().map(|s| s.to_string()).collect(),
+            recent_count: 0,
+            palette: &palette,
+        }
+        .build()
+    }
+
+    #[test]
+    fn clean_status_shows_the_clean_notice() {
+        let rows = build(&Status::default(), &HashSet::new(), &["unstaged", "staged"]);
+        assert!(
+            rows.iter().any(|r| matches!(
+                &r.kind,
+                RowKind::Plain { text, .. } if text.contains("Nothing to commit")
+            )),
+            "a clean status should lead with the clean notice"
+        );
+    }
+
+    #[test]
+    fn expanded_unstaged_section_renders_header_and_file() {
+        let status = Status {
+            head: HeadInfo::default(),
+            entries: vec![FileEntry {
+                path: "a.txt".into(),
+                orig_path: None,
+                kind: EntryKind::Tracked,
+                index: Change::Unmodified,
+                worktree: Change::Modified,
+            }],
+        };
+        let mut expanded = HashSet::new();
+        expanded.insert(FoldKey::Section(SectionId::Unstaged));
+        let rows = build(&status, &expanded, &["unstaged"]);
+
+        // No clean notice (there's a change), a counted+expanded section header,
+        // and the file row beneath it.
+        assert!(!rows.iter().any(|r| matches!(
+            &r.kind,
+            RowKind::Plain { text, .. } if text.contains("Nothing to commit")
+        )));
+        assert!(rows.iter().any(|r| matches!(
+            &r.kind,
+            RowKind::Section { title, count, expanded, .. }
+                if title == "Unstaged changes" && *count == Some(1) && *expanded
+        )));
+        assert!(rows.iter().any(|r| matches!(
+            &r.kind,
+            RowKind::File { label, .. } if label == "a.txt"
+        )));
+    }
+
+    #[test]
+    fn collapsed_section_hides_its_files() {
+        let status = Status {
+            head: HeadInfo::default(),
+            entries: vec![FileEntry {
+                path: "a.txt".into(),
+                orig_path: None,
+                kind: EntryKind::Tracked,
+                index: Change::Unmodified,
+                worktree: Change::Modified,
+            }],
+        };
+        // Section not in `expanded` → collapsed: header shows, no file row.
+        let rows = build(&status, &HashSet::new(), &["unstaged"]);
+        assert!(rows.iter().any(
+            |r| matches!(&r.kind, RowKind::Section { title, .. } if title == "Unstaged changes")
+        ));
+        assert!(!rows.iter().any(|r| matches!(&r.kind, RowKind::File { .. })));
+    }
 
     #[test]
     fn stat_bar_scales_to_at_most_twenty_marks() {
