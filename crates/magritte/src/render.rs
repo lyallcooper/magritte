@@ -373,9 +373,17 @@ impl StatusView {
         &self,
         def: &Transient,
         state: Option<&TransientState>,
+        window: &Window,
         view: &Entity<Self>,
     ) -> gpui::Div {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
+        // Cap the argument band's columns to what fits the window width, so a
+        // wide group (e.g. the log arguments) fans into more rows instead of
+        // running off the right edge. A column is a keycap plus a switch/option
+        // description; the long ones (`Follow only the first parent
+        // (--first-parent)`) run ~360px, and `px_3` pads each side.
+        let avail = f32::from(window.viewport_size().width) - 24.0;
+        let max_cols = ((avail / 360.0).floor() as usize).max(1);
 
         // Magit's layout, derived from content rather than hand-authored: an
         // *argument* group (switches/options) is a full-width band, and multiple
@@ -432,7 +440,7 @@ impl StatusView {
         let mut body = div().flex().flex_col().items_start().gap_3();
         if arg_groups.len() == 1 {
             let group = arg_groups[0];
-            let k = group.suffixes.len().div_ceil(band_cap).max(1);
+            let k = group.suffixes.len().div_ceil(band_cap).max(1).min(max_cols);
             body = body.child(self.render_group(group, k, state, pending_dash, view));
         } else if !arg_groups.is_empty() {
             let mut arg_row = div()
@@ -442,8 +450,15 @@ impl StatusView {
                 .items_start()
                 .gap_x_8()
                 .gap_y_3();
+            // Split the width budget across the side-by-side argument groups.
+            let per_group_cols = (max_cols / arg_groups.len()).max(1);
             for group in arg_groups {
-                let k = group.suffixes.len().div_ceil(band_cap).max(1);
+                let k = group
+                    .suffixes
+                    .len()
+                    .div_ceil(band_cap)
+                    .max(1)
+                    .min(per_group_cols);
                 arg_row = arg_row.child(self.render_group(group, k, state, pending_dash, view));
             }
             body = body.child(arg_row);
@@ -1288,31 +1303,41 @@ impl StatusView {
             }
         }
 
+        // A secondary view (log, refs, commit, …) shows an Esc keycap at the far
+        // right so it can be left by mouse, not just the `Esc`/`q` key. Hidden on
+        // status (nothing to leave) and while a popup owns Esc.
+        let show_close = self.popup.is_none() && self.screen_name().is_some();
+        // The far-right cluster: the background-activity spinner (when work
+        // outlasts the delay threshold) and the close button. `TitleBar` lays
+        // children out `justify_between`, so this second child sits at the end.
+        let right = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pr_3()
+            .when(self.busy, |d| {
+                d.child(
+                    // Same rounded-square shape and fill as the title-bar branch
+                    // chip, so the indicator reads as part of the bar.
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p_1()
+                        .rounded(px(4.0))
+                        .bg(self.palette.selection)
+                        .child(Spinner::new().small().color(self.palette.fg)),
+                )
+            })
+            .when(show_close, |d| {
+                d.child(self.key_action("close-view", "esc", "close", view, Self::close_screen))
+            });
+
         gpui_component::TitleBar::new()
             .bg(self.palette.bg)
             .border_color(self.palette.border)
             .child(info)
-            // A spinner for background activity that outlasts the delay
-            // threshold. The title bar lays children out `justify_between`, so a
-            // second child sits at the far (right) end; pad it off the edge so
-            // it isn't clipped. A subtle rounded background chip makes it read
-            // as a deliberate indicator rather than blending into the bar.
-            .when(self.busy, |bar| {
-                bar.child(
-                    div().pr_3().child(
-                        // Same rounded-square shape and fill as the title-bar
-                        // branch chip, so the indicator reads as part of the bar.
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .p_1()
-                            .rounded(px(4.0))
-                            .bg(self.palette.selection)
-                            .child(Spinner::new().small().color(self.palette.fg)),
-                    ),
-                )
-            })
+            .when(self.busy || show_close, |bar| bar.child(right))
     }
 
     /// Render a key spec as a single keycap. A multi-keystroke sequence (e.g.
@@ -2015,7 +2040,7 @@ impl StatusView {
             header = header.child(
                 div()
                     .text_color(self.palette.dim)
-                    .child(SharedString::from(format!("(first {})", Self::LOG_LIMIT))),
+                    .child(SharedString::from(format!("(first {})", log.limit))),
             );
         }
         // In select mode the user must act (pick a commit), so keep the header
@@ -3234,8 +3259,10 @@ impl StatusView {
     ) -> gpui::Div {
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
-                Popup::Transient(state) => self.render_transient(&state.def, Some(state), view),
-                Popup::Dispatch(def) => self.render_transient(def, None, view),
+                Popup::Transient(state) => {
+                    self.render_transient(&state.def, Some(state), window, view)
+                }
+                Popup::Dispatch(def) => self.render_transient(def, None, window, view),
                 Popup::Picker(state) => self.render_picker(state, view),
             });
         } else if let Some((prompt, _)) = &self.confirm {

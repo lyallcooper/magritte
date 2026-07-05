@@ -95,7 +95,15 @@ impl StatusView {
                 }
                 k if self.is_prefix(k) => self.enter_prefix(k.to_string(), window, cx),
                 k if dispatch_has_key(def, k) => self.run_info_key(k, window, cx),
-                _ => {}
+                // An unbound key dismisses the help and reports it, like pressing
+                // it on the underlying screen would.
+                k => {
+                    self.popup = None;
+                    if !cmd && !alt && !ctrl {
+                        self.report_unbound(k, cx);
+                    }
+                    cx.notify();
+                }
             }
             return;
         }
@@ -251,7 +259,7 @@ impl StatusView {
                 }
                 return;
             }
-            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
@@ -260,7 +268,7 @@ impl StatusView {
         // registry, keyed per-context. `Esc`/`q` (the `close` verb) cancels a
         // visual selection first, then leaves the view.
         if self.commit_view().is_some() || self.diff_view().is_some() {
-            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
@@ -268,21 +276,21 @@ impl StatusView {
         // reset/rebase-since/relimit) is a registry command scoped to the Log
         // context; motions and copy resolve through the shared dispatch too.
         if self.log().is_some() {
-            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
         // The refs browser: motions move the cursor (skipping headers); Enter
         // checks out the ref at point, the preset delete key removes it.
         if self.refs_view().is_some() {
-            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
         // The worktree browser: motions move the cursor; the registry owns visit,
         // remove, and the add/branch/move creators.
         if self.worktree_view().is_some() {
-            self.dispatch_key(&chord(&key, shift, ctrl, alt, cmd), window, cx);
+            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
@@ -441,6 +449,28 @@ impl StatusView {
         };
         self.invoke_command(&id, window, cx);
         true
+    }
+
+    /// Dispatch a keystroke on a secondary screen; if nothing claims it, report
+    /// "… is unbound in <view> view". Only for plain/shifted keys — an unbound
+    /// key held with cmd/alt/ctrl is usually an OS shortcut we don't model.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_or_report(
+        &mut self,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        cmd: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dispatch_key(&chord(key, shift, ctrl, alt, cmd), window, cx) {
+            return;
+        }
+        if !cmd && !alt && !ctrl {
+            self.report_unbound(&chord(key, shift, false, false, false), cx);
+        }
     }
 
     /// The command a keystroke resolves to on the current screen: the first of
@@ -706,7 +736,11 @@ impl StatusView {
     /// Note that a keystroke sequence isn't bound (magit/emacs' "… is undefined"
     /// echo-area feedback), as a fading notice with the keys shown as keycaps.
     pub(crate) fn report_unbound(&mut self, seq: &str, cx: &mut Context<Self>) {
-        self.set_status("is unbound".to_string(), true, cx);
+        let message = match self.screen_name() {
+            Some(view) => format!("is unbound in {view} view"),
+            None => "is unbound".to_string(),
+        };
+        self.set_status(message, true, cx);
         self.toast.keys = Some(seq.to_string());
     }
 

@@ -1795,7 +1795,10 @@ pub(crate) fn build_keymap(config: &config::Config) -> (ScreenKeymaps, Vec<Strin
     let known = |id: &str| all_commands(config).any(|c| c.id == id);
     for (keystroke, id) in &config.keymap {
         if let Some(err) = kbd::keystroke_error(keystroke) {
+            // An invalid spec is dropped entirely (not inserted), so it can't
+            // surface in transients or shadow a real key.
             warnings.push(format!("keymap: {err}"));
+            continue;
         }
         // Normalize the spec to the runtime chord form so `Cmd+N` matches `cmd-N`.
         let keystroke = canonical_keystroke(keystroke);

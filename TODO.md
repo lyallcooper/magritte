@@ -185,4 +185,9 @@
 - [x] We should validate keybindings such that "abc" isn't valid — done: a base must be a single character, a named key, or `f1`..`f12`.
 - [x] "Esc", "Escape", "Ret", "Return", "Space", "SPC", "Tab" etc should be valid ways of spelling the keys in keybindings — done: named-key aliases are accepted and normalized to the runtime form.
 - [x] Command palette should show command id (in italics?) after the keybinding to help in id discovery for user keymaps — done: the id shows dim and italic at the row's end.
-- [ ]
+- [x] All views that have a Esc to cancel/go back binding should show the Esc kbd button in the top right to support mouse usage — done: secondary views show a clickable `Esc close` keycap at the title bar's right.
+- [x] Transient layout should try to take window size into account to ensure that nothing overflows off the right edge of the window (eg log's arguments do right now) — done: the argument band caps its columns to what fits the window width, fanning into more rows instead of overflowing.
+- [x] If a binding is invalid, eg "abc", don't save it to the internal keymap at all so it doesn't show up in transients etc — done: an invalid spec is warned about and dropped, never inserted.
+- [x] Log view's +/- bindings work, but it still shows "first 256" regardless of the actual count displayed — done: the header shows the current `log.limit`, not the default constant.
+- [x] Pressing an unbound key while the help transient is open should dismiss the help and show the usual "<x> is unbound" — done.
+- [x] Pressing an unbound key while in a specific view should show "<x> is unbound in <view name> view" — done: secondary views report the unbound key with the view name.

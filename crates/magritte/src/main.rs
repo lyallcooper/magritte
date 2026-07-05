@@ -791,6 +791,23 @@ impl StatusView {
         }
     }
 
+    /// A short human name for the active screen, for "… is unbound in <name>
+    /// view" feedback. `None` on the status screen (the default, un-named).
+    pub(crate) fn screen_name(&self) -> Option<&'static str> {
+        match self.screen_kind() {
+            ScreenKind::Status | ScreenKind::Editor => None,
+            ScreenKind::Settings => Some("settings"),
+            ScreenKind::GitLog => Some("command log"),
+            ScreenKind::Log => Some("log"),
+            ScreenKind::Commit => Some("commit"),
+            ScreenKind::Diff => Some("diff"),
+            ScreenKind::RebaseTodo => Some("rebase"),
+            ScreenKind::Refs => Some("refs"),
+            ScreenKind::Worktree => Some("worktree"),
+            ScreenKind::Blame => Some("blame"),
+        }
+    }
+
     /// The active screen's keystroke → candidate-ids submap. Every screen has an
     /// entry (text-entry screens' is empty), so this can't miss.
     pub(crate) fn screen_bindings(&self) -> &commands::KeyBindings {
