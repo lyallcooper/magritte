@@ -1462,6 +1462,21 @@ impl StatusView {
             })
     }
 
+    /// The outer container every secondary view shares: a full-height,
+    /// monospace, padded flex column that fills the space below the title bar.
+    /// Callers add the header and body as children.
+    pub(crate) fn screen_scaffold(&self) -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_grow(1.0)
+            .font_family(self.font.clone())
+            .px_4()
+            .pt_4()
+            .gap_3()
+    }
+
     /// A view's header row: the given `left` content, with a right-aligned `Esc`
     /// close button matching the settings screen. `label` adapts to context —
     /// "close" for a browser, "cancel" where leaving discards edits. Used by every
@@ -1870,16 +1885,7 @@ impl StatusView {
             .into_any_element()
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            // Commands and their output are code — monospace.
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(
                 self.view_header(
                     div()
@@ -1918,15 +1924,7 @@ impl StatusView {
         .track_scroll(&sv.scroll)
         .flex_grow(1.0);
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(
                 self.view_header(
                     div()
@@ -2226,18 +2224,7 @@ impl StatusView {
             self.view_header(left, "close", view)
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            // Commit rows are columnar (hash / subject / date) — monospace.
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
-            .child(header)
-            .child(body)
+        self.screen_scaffold().child(header).child(body)
     }
 
     /// The refs browser (`y`): local branches, remotes, and tags in a scrollable
@@ -2281,15 +2268,7 @@ impl StatusView {
             .text_color(self.palette.section)
             .child(SharedString::from("Refs"));
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(self.view_header(title, "close", view))
             .child(body)
     }
@@ -2432,15 +2411,7 @@ impl StatusView {
             .text_color(self.palette.section)
             .child(SharedString::from("Worktrees"));
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(self.view_header(title, "close", view))
             .child(body)
     }
@@ -2706,16 +2677,7 @@ impl StatusView {
     pub(crate) fn render_commit_view(&self, cv: &CommitView, view: &Entity<Self>) -> gpui::Div {
         let body = self.flat_diff_body("commit-view-rows", &cv.body, view);
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            // A commit's header + diff is code — monospace.
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(
                 self.view_header(
                     div()
@@ -2758,15 +2720,7 @@ impl StatusView {
     pub(crate) fn render_diff_view(&self, dv: &DiffView, view: &Entity<Self>) -> gpui::Div {
         let body = self.flat_diff_body("diff-view-rows", &dv.body, view);
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            .font_family(self.font.clone())
-            .px_4()
-            .pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(
                 self.view_header(
                     div()
@@ -2812,14 +2766,7 @@ impl StatusView {
         .track_scroll(&rt.scroll)
         .flex_grow(1.0);
 
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .flex_grow(1.0)
-            .font_family(self.font.clone())
-            .px_4().pt_4()
-            .gap_3()
+        self.screen_scaffold()
             .child(if rt.confirming_cancel {
                 // Unsaved edits to the plan: confirm before discarding them.
                 div()
