@@ -18,6 +18,9 @@ pub(crate) struct FlatDiff {
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) selected: usize,
     pub(crate) visual: Option<usize>,
+    /// Row indices of collapsed File/Hunk headers — their contents are hidden.
+    /// Indices into `rows` (the full model), so the apply engine is unaffected.
+    pub(crate) collapsed: std::collections::HashSet<usize>,
 }
 
 impl FlatDiff {
@@ -27,18 +30,77 @@ impl FlatDiff {
             scroll: UniformListScrollHandle::new(),
             selected: 0,
             visual: None,
+            collapsed: std::collections::HashSet::new(),
         }
     }
 
-    /// Move the cursor by `delta`, keeping it in view.
+    /// The full-row indices currently visible: everything except lines under a
+    /// collapsed hunk and hunks/lines under a collapsed file.
+    pub(crate) fn visible_rows(&self) -> Vec<usize> {
+        let mut vis = Vec::with_capacity(self.rows.len());
+        let (mut file_collapsed, mut hunk_collapsed) = (false, false);
+        for (ix, row) in self.rows.iter().enumerate() {
+            match row {
+                CommitDiffRow::File { .. } => {
+                    file_collapsed = self.collapsed.contains(&ix);
+                    hunk_collapsed = false;
+                    vis.push(ix);
+                }
+                CommitDiffRow::Hunk(_) => {
+                    if file_collapsed {
+                        continue;
+                    }
+                    hunk_collapsed = self.collapsed.contains(&ix);
+                    vis.push(ix);
+                }
+                CommitDiffRow::Line { .. } => {
+                    if !file_collapsed && !hunk_collapsed {
+                        vis.push(ix);
+                    }
+                }
+                _ => vis.push(ix),
+            }
+        }
+        vis
+    }
+
+    /// The fold header governing `ix`: the row itself if it's a File/Hunk header,
+    /// else the enclosing hunk header for a line. `None` for anything unfoldable.
+    fn fold_header_for(&self, ix: usize) -> Option<usize> {
+        match self.rows.get(ix)? {
+            CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) => Some(ix),
+            CommitDiffRow::Line { .. } => self.rows[..ix]
+                .iter()
+                .rposition(|r| matches!(r, CommitDiffRow::Hunk(_))),
+            _ => None,
+        }
+    }
+
+    /// Toggle the fold of the header at (or enclosing) `ix`. Returns whether a
+    /// header was toggled. Keeps the cursor visible by snapping it to the header.
+    pub(crate) fn toggle_fold(&mut self, ix: usize) -> bool {
+        let Some(header) = self.fold_header_for(ix) else {
+            return false;
+        };
+        if !self.collapsed.remove(&header) {
+            self.collapsed.insert(header);
+        }
+        if !self.visible_rows().contains(&self.selected) {
+            self.selected = header;
+        }
+        true
+    }
+
+    /// Move the cursor by `delta` visible rows, keeping it in view.
     fn move_by(&mut self, delta: isize) {
-        if self.rows.is_empty() {
+        let vis = self.visible_rows();
+        if vis.is_empty() {
             return;
         }
-        let last = self.rows.len() as isize - 1;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
-        self.scroll
-            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+        let cur = vis.iter().position(|&i| i == self.selected).unwrap_or(0);
+        let next = (cur as isize + delta).clamp(0, vis.len() as isize - 1) as usize;
+        self.selected = vis[next];
+        self.scroll.scroll_to_item(next, gpui::ScrollStrategy::Top);
     }
 
     /// Toggle a visual selection anchored at the cursor.
@@ -350,6 +412,7 @@ impl StatusView {
         if let Some(cv) = self.commit_view_mut() {
             cv.details = details;
             cv.body.rows = rows;
+            cv.body.collapsed.clear();
             cv.files = files;
         }
     }
@@ -424,6 +487,7 @@ impl StatusView {
                 };
                 if let Some(dv) = this.diff_view_mut() {
                     dv.body.rows = rows;
+                    dv.body.collapsed.clear();
                     dv.files = files;
                 }
                 cx.notify();
@@ -644,6 +708,16 @@ impl StatusView {
         }
     }
 
+    /// Fold or unfold the File/Hunk section at the open diff screen's cursor.
+    pub(crate) fn flat_diff_toggle_fold(&mut self, cx: &mut Context<Self>) {
+        if let Some(fd) = self.flat_diff_mut() {
+            let ix = fd.selected;
+            if fd.toggle_fold(ix) {
+                cx.notify();
+            }
+        }
+    }
+
     /// Toggle a visual selection in the open diff screen.
     pub(crate) fn flat_diff_toggle_visual(&mut self, cx: &mut Context<Self>) {
         if let Some(fd) = self.flat_diff_mut() {
@@ -666,6 +740,8 @@ impl StatusView {
     pub(crate) fn toggle_commit_details(&mut self, cx: &mut Context<Self>) {
         if let Some(cv) = self.commit_view_mut() {
             cv.show_details = !cv.show_details;
+            // Prepending/removing the detail rows shifts every header index.
+            cv.body.collapsed.clear();
             if cv.show_details {
                 prepend_commit_details(&mut cv.body.rows, &cv.details);
             } else {

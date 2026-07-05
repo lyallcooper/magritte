@@ -1514,7 +1514,7 @@ impl StatusView {
                         match this.editor() {
                             Some(ed) => range
                                 .filter_map(|ix| ed.diff.get(ix))
-                                .map(|row| this.render_commit_diff_row(row, false))
+                                .map(|row| this.render_commit_diff_row(row, false, false))
                                 .collect::<Vec<_>>(),
                             None => Vec::new(),
                         }
@@ -1531,6 +1531,7 @@ impl StatusView {
         &self,
         row: &CommitDiffRow,
         highlighted: bool,
+        collapsed: bool,
     ) -> AnyElement {
         let base = div()
             .h(px(ROW_HEIGHT))
@@ -1539,6 +1540,16 @@ impl StatusView {
             .flex()
             .items_center()
             .when(highlighted, |el| el.bg(self.palette.selection));
+        // A fold triangle for the collapsible headers (File/Hunk): ▾ open, ▸ shut.
+        let fold_marker = |el: gpui::Div| {
+            el.child(
+                div()
+                    .w(px(12.0))
+                    .flex_none()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(if collapsed { "▸" } else { "▾" })),
+            )
+        };
         match row {
             // The metadata "Refs:" line renders its decorations as colored ref
             // chips (like the commit/log rows); other detail lines stay dim.
@@ -1576,7 +1587,7 @@ impl StatusView {
                 removed,
             } => {
                 let word = status_label::change_word(*change);
-                let mut row = base.gap_2();
+                let mut row = fold_marker(base.gap_2());
                 if !word.is_empty() {
                     row = row.child(
                         div()
@@ -1623,7 +1634,7 @@ impl StatusView {
                     *deletions,
                 )))
                 .into_any_element(),
-            CommitDiffRow::Hunk(text) => base
+            CommitDiffRow::Hunk(text) => fold_marker(base.gap_2())
                 .text_color(self.palette.hunk)
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
@@ -2411,21 +2422,30 @@ impl StatusView {
         fd: &FlatDiff,
         view: &Entity<Self>,
     ) -> gpui::UniformList {
-        uniform_list(id, fd.rows.len(), {
+        uniform_list(id, fd.visible_rows().len(), {
             let view = view.clone();
             move |range, _window, cx| {
                 let this = view.read(cx);
                 match this.flat_diff() {
                     Some(fd) => {
                         let vis = fd.visual.map(|a| (a.min(fd.selected), a.max(fd.selected)));
+                        let visible = fd.visible_rows();
                         range
+                            .filter_map(|pos| visible.get(pos).copied())
                             .filter_map(|ix| fd.rows.get(ix).map(|row| (ix, row)))
                             .map(|(ix, row)| {
                                 let highlighted = ix == fd.selected
                                     || vis.is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-                                let content = this.render_commit_diff_row(row, highlighted);
-                                // Clicking a row moves the diff cursor there, so
-                                // the apply engine (`a`/`v`/`u`) acts on it.
+                                let foldable = matches!(
+                                    row,
+                                    CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_)
+                                );
+                                let collapsed = fd.collapsed.contains(&ix);
+                                let content =
+                                    this.render_commit_diff_row(row, highlighted, collapsed);
+                                // Clicking a line moves the diff cursor there (so the
+                                // apply engine acts on it); clicking a File/Hunk header
+                                // also toggles its fold.
                                 let v = view.clone();
                                 div()
                                     .id(("flat-diff-row", ix))
@@ -2437,6 +2457,9 @@ impl StatusView {
                                             if let Some(fd) = view.flat_diff_mut() {
                                                 fd.selected = ix;
                                                 fd.visual = None;
+                                                if foldable {
+                                                    fd.toggle_fold(ix);
+                                                }
                                                 vcx.notify();
                                             }
                                         });

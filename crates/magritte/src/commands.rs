@@ -631,6 +631,13 @@ pub(crate) fn commands() -> &'static [Command] {
             |t, _w, cx| t.flat_diff_toggle_visual(cx)
         ),
         verb!(
+            "flat-fold",
+            "Fold section",
+            ScreenSet::of(&[ScreenKind::Commit, ScreenKind::Diff]),
+            "tab",
+            |t, _w, cx| t.flat_diff_toggle_fold(cx)
+        ),
+        verb!(
             "commit-details",
             "Toggle details",
             ScreenSet::of(&[ScreenKind::Commit]),
