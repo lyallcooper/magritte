@@ -1230,7 +1230,7 @@ impl StatusView {
                 view,
                 format!("{key}-ahead"),
                 "push",
-                self.count_pill(format!("↑{ahead}"), self.palette.branch_local),
+                self.count_pill(format!("↑{ahead}"), self.palette.branch_remote),
             ));
         }
         if behind > 0 {
@@ -1238,7 +1238,7 @@ impl StatusView {
                 view,
                 format!("{key}-behind"),
                 "pull",
-                self.count_pill(format!("↓{behind}"), self.palette.branch_local),
+                self.count_pill(format!("↓{behind}"), self.palette.branch_remote),
             ));
         }
         chunk
