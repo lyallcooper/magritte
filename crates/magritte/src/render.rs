@@ -954,9 +954,7 @@ impl StatusView {
                     .tooltip(move |window, cx| {
                         let font = tip_font.clone();
                         Tooltip::element(move |_, _| {
-                            div()
-                                .font_family(font.clone())
-                                .child("Current branch -- click for branch actions")
+                            div().font_family(font.clone()).child("Current branch")
                         })
                         .build(window, cx)
                     })
@@ -1184,20 +1182,6 @@ impl StatusView {
             .child(text.into())
     }
 
-    /// A tiny outline-only pill sized to nest inside another pill (the
-    /// commits-since-tag count within the tag pill): a `color` border and text,
-    /// no fill, a step smaller than the enclosing pill.
-    pub(crate) fn outline_pill(&self, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
-        div()
-            .px(px(3.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(with_alpha(color, 0.6))
-            .text_size(px(9.0))
-            .text_color(color)
-            .child(text.into())
-    }
-
     /// Wrap a title-bar item with a hover tooltip spelling out what it is (the
     /// bar's glyphs and counts are terse). Needs a stable `id` for the hitbox.
     pub(crate) fn titlebar_tip(
@@ -1262,7 +1246,7 @@ impl StatusView {
                 view,
                 format!("{key}-ahead"),
                 "push",
-                "Unpushed commits -- click to push",
+                "Unpushed commits",
                 self.count_pill(format!("↑{ahead}"), self.palette.branch_remote),
             ));
         }
@@ -1271,7 +1255,7 @@ impl StatusView {
                 view,
                 format!("{key}-behind"),
                 "pull",
-                "Unpulled commits -- click to pull",
+                "Unpulled commits",
                 self.count_pill(format!("↓{behind}"), self.palette.branch_remote),
             ));
         }
@@ -1348,7 +1332,7 @@ impl StatusView {
                         view,
                         "titlebar-branch",
                         "branch",
-                        "Detached HEAD -- click for branch actions",
+                        "Detached HEAD",
                         self.branch_chip("detached"),
                     )
                     .into_any_element(),
@@ -1408,29 +1392,41 @@ impl StatusView {
             if self.config.show_tags_in_title_bar && !entries.is_empty() {
                 let mut seg = div().flex().items_center().gap_1();
                 for (i, (name, count)) in entries.iter().enumerate() {
-                    // Each tag is a tag-tinted pill holding the name, with the
-                    // "commits since" count as a nested, smaller outline pill.
-                    let pill = div()
+                    // The first entry is the tag HEAD is at or past; a second is
+                    // the next tag ahead. The count is commits since (until) it.
+                    let tip = if i == 0 { "Nearest tag" } else { "Next tag" };
+                    // A tag-tinted pill: the name (click opens the tag transient)
+                    // and, divided off like the branch chip's copy button, the
+                    // commits-since count.
+                    let mut pill = div()
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .px(px(5.0))
                         .rounded(px(6.0))
                         .bg(with_alpha(self.palette.tag, 0.15))
                         .text_size(px(11.0))
                         .text_color(self.palette.tag)
-                        .child(SharedString::from(name.clone()))
-                        .when(*count > 0, |d| {
-                            d.child(self.outline_pill(count.to_string(), self.palette.tag))
-                        });
-                    // The first entry is the tag HEAD is at or past; a second is
-                    // the next tag ahead. The count is commits since that tag.
-                    let tip = if i == 0 {
-                        "Nearest tag (commits since)"
-                    } else {
-                        "Next tag (commits until)"
-                    };
-                    seg = seg.child(self.titlebar_tip(format!("titlebar-tag-{i}"), tip, pill));
+                        .child(self.titlebar_action(
+                            view,
+                            format!("titlebar-tag-{i}"),
+                            "tag",
+                            tip,
+                            div().px(px(5.0)).child(SharedString::from(name.clone())),
+                        ));
+                    if *count > 0 {
+                        pill = pill
+                            .child(
+                                div()
+                                    .w(px(1.0))
+                                    .h(px(12.0))
+                                    .bg(with_alpha(self.palette.tag, 0.4)),
+                            )
+                            .child(
+                                div()
+                                    .px(px(4.0))
+                                    .child(SharedString::from(count.to_string())),
+                            );
+                    }
+                    seg = seg.child(pill);
                 }
                 info = info.child(seg);
             }
