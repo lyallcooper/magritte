@@ -1283,8 +1283,10 @@ impl StatusView {
 
     /// A clickable title-bar element that runs the registry command `command`
     /// (the branch chip → "branch", an ahead count → "push", a behind count →
-    /// "pull"), with a hover tooltip describing it. Brightens on hover to signal
-    /// it's actionable.
+    /// "pull"), with a hover tooltip describing it. The pointer cursor and
+    /// tooltip signal it's actionable — the semantic text color is left intact
+    /// (a hover recolor would fire only on items whose text has no explicit
+    /// color, so it read inconsistently across the bar).
     pub(crate) fn titlebar_action(
         &self,
         view: &Entity<Self>,
@@ -1294,7 +1296,6 @@ impl StatusView {
         child: impl IntoElement,
     ) -> impl IntoElement {
         let view = view.clone();
-        let fg = self.palette.fg;
         let id = id.into();
         let font = self.font.clone();
         let tip = tip.into();
@@ -1302,7 +1303,6 @@ impl StatusView {
             .id(id.clone())
             .relative()
             .cursor_pointer()
-            .hover(move |s| s.text_color(fg))
             .child(track_target(id))
             .child(child)
             .tooltip(move |window, cx| {
@@ -1422,7 +1422,11 @@ impl StatusView {
                 for (i, (name, count)) in entries.iter().enumerate() {
                     // The first entry is the tag HEAD is at or past; a second is
                     // the next tag ahead. The count is commits since (until) it.
-                    let tip = if i == 0 { "Nearest tag" } else { "Next tag" };
+                    let (tip, count_tip) = if i == 0 {
+                        ("Nearest tag", "Commits since tag")
+                    } else {
+                        ("Next tag", "Commits until tag")
+                    };
                     // A tag-tinted pill: the name (click opens the tag transient)
                     // and, divided off like the branch chip's copy button, the
                     // commits-since count.
@@ -1449,9 +1453,13 @@ impl StatusView {
                                     .bg(with_alpha(self.palette.tag, 0.4)),
                             )
                             .child(
-                                div()
-                                    .px(px(4.0))
-                                    .child(SharedString::from(count.to_string())),
+                                self.titlebar_tip(
+                                    format!("titlebar-tag-{i}-count"),
+                                    count_tip,
+                                    div()
+                                        .px(px(4.0))
+                                        .child(SharedString::from(count.to_string())),
+                                ),
                             );
                     }
                     seg = seg.child(pill);
