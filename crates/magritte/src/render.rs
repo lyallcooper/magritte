@@ -2757,7 +2757,26 @@ impl StatusView {
                 match this.rebase_todo() {
                     Some(rt) => range
                         .filter_map(|ix| rt.steps.get(ix).map(|s| (ix, s)))
-                        .map(|(ix, step)| this.render_rebase_todo_row(rt, step, ix))
+                        .map(|(ix, step)| {
+                            let selected = ix == rt.selected;
+                            let hover = this.palette.hover;
+                            let v = view.clone();
+                            // Clicking a step moves the cursor to it; rows highlight
+                            // on hover (the cursor row already has the selection wash).
+                            this.render_rebase_todo_row(rt, step, ix)
+                                .id(("rebase-row", ix))
+                                .cursor_pointer()
+                                .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                                .on_click(move |_, _window, cx: &mut App| {
+                                    v.update(cx, |view, vcx| {
+                                        if let Some(rt) = view.rebase_todo_mut() {
+                                            rt.selected = ix;
+                                            vcx.notify();
+                                        }
+                                    });
+                                })
+                                .into_any_element()
+                        })
                         .collect(),
                     None => Vec::new(),
                 }
