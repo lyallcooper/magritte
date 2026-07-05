@@ -1829,7 +1829,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(
                 self.view_header(
@@ -1877,7 +1876,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(
                 self.view_header(
@@ -2187,7 +2185,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(header)
             .child(body)
@@ -2242,7 +2239,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(self.view_header(title, "close", view))
             .child(body)
@@ -2394,7 +2390,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(self.view_header(title, "close", view))
             .child(body)
@@ -2665,7 +2660,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(
                 self.view_header(
@@ -2717,7 +2711,6 @@ impl StatusView {
             .font_family(self.font.clone())
             .px_4()
             .pt_4()
-            .pb_2()
             .gap_3()
             .child(
                 self.view_header(
@@ -2770,7 +2763,7 @@ impl StatusView {
             .w_full()
             .flex_grow(1.0)
             .font_family(self.font.clone())
-            .px_4().pt_4().pb_2()
+            .px_4().pt_4()
             .gap_3()
             .child(if rt.confirming_cancel {
                 // Unsaved edits to the plan: confirm before discarding them.
