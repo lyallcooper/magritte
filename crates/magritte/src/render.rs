@@ -1347,18 +1347,36 @@ impl StatusView {
                     .gap_1()
                     .child(self.stacked_letters("TG", self.palette.tag));
                 for (i, (name, count)) in entries.iter().enumerate() {
-                    let mut text = name.clone();
-                    if *count > 0 {
-                        text.push_str(&format!(" ({count})"));
-                    }
+                    // The tag name, with the "commits since" count in a small,
+                    // subtle tag-tinted pill rather than parenthesized.
+                    let mut entry = div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(self.palette.tag)
+                                .child(SharedString::from(name.clone())),
+                        )
+                        .when(*count > 0, |d| {
+                            d.child(
+                                div()
+                                    .px(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(with_alpha(self.palette.tag, 0.15))
+                                    .text_size(px(11.0))
+                                    .text_color(self.palette.tag)
+                                    .child(SharedString::from(count.to_string())),
+                            )
+                        });
                     if i + 1 < entries.len() {
-                        text.push(',');
+                        entry = entry.child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(",")),
+                        );
                     }
-                    seg = seg.child(
-                        div()
-                            .text_color(self.palette.tag)
-                            .child(SharedString::from(text)),
-                    );
+                    seg = seg.child(entry);
                 }
                 info = info.child(seg);
             }
