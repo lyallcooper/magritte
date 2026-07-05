@@ -1414,6 +1414,25 @@ impl StatusView {
             })
     }
 
+    /// A view's header row: the given `left` content, with a right-aligned `Esc`
+    /// close button matching the settings screen. `label` adapts to context —
+    /// "close" for a browser, "cancel" where leaving discards edits. Used by every
+    /// secondary view so the close affordance sits in the same place everywhere.
+    pub(crate) fn view_header(
+        &self,
+        left: impl IntoElement,
+        label: &'static str,
+        view: &Entity<Self>,
+    ) -> gpui::Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(left)
+            .child(self.key_action("close-view", "esc", label, view, Self::close_screen))
+    }
+
     /// A header hint for a registry command: the key is resolved from the live
     /// per-context keymap (so it always matches what the keyboard dispatches, and
     /// reflects the preset/remaps) and the click invokes the command by id. Only
@@ -1768,10 +1787,14 @@ impl StatusView {
             .pb_2()
             .gap_3()
             .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.palette.section)
-                    .child(SharedString::from("Command log")),
+                self.view_header(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.palette.section)
+                        .child(SharedString::from("Command log")),
+                    "close",
+                    view,
+                ),
             )
             .child(body)
     }
@@ -1812,10 +1835,14 @@ impl StatusView {
             .pb_2()
             .gap_3()
             .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(format!("Blame: {path}"))),
+                self.view_header(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.palette.section)
+                        .child(SharedString::from(format!("Blame: {path}"))),
+                    "close",
+                    view,
+                ),
             )
             .child(body)
     }
@@ -2062,7 +2089,7 @@ impl StatusView {
             LogPurpose::SelectSquash { .. } => "Select a commit to fix up / squash into",
             LogPurpose::Browse => "Log",
         };
-        let mut header = div().flex().items_center().gap_3().child(
+        let mut left = div().flex().items_center().gap_3().child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(self.palette.section)
@@ -2077,21 +2104,34 @@ impl StatusView {
             } else {
                 format!("(first {})", log.limit)
             };
-            header = header.child(
+            left = left.child(
                 div()
                     .text_color(self.palette.dim)
                     .child(SharedString::from(label)),
             );
         }
-        // In select mode the user must act (pick a commit), so keep the header
-        // buttons; while browsing, the `?` menu carries the verbs — no header
-        // hints, matching the other detail views.
-        if selecting {
-            // Space inspects the commit; Return picks it for the pending action.
-            header = header.child(self.header_action("log-select-view", "view", view));
-            header = header.child(self.header_action("log-open", "select", view));
-            header = header.child(self.header_action("close", "cancel", view));
-        }
+        // In select mode the user must act (pick a commit): Space inspects the
+        // commit, Return picks it, and the close button reads "cancel". While
+        // browsing, the `?` menu carries the verbs and the close reads "close".
+        let header = if selecting {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .child(left)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(self.header_action("log-select-view", "view", view))
+                        .child(self.header_action("log-open", "select", view))
+                        .child(self.header_action("close", "cancel", view)),
+                )
+        } else {
+            self.view_header(left, "close", view)
+        };
 
         div()
             .flex()
@@ -2144,12 +2184,10 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let header = div().flex().items_center().gap_3().child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(self.palette.section)
-                .child(SharedString::from("Refs")),
-        );
+        let title = div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(self.palette.section)
+            .child(SharedString::from("Refs"));
 
         div()
             .flex()
@@ -2161,7 +2199,7 @@ impl StatusView {
             .pt_4()
             .pb_2()
             .gap_3()
-            .child(header)
+            .child(self.view_header(title, "close", view))
             .child(body)
     }
 
@@ -2298,12 +2336,10 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let header = div().flex().items_center().gap_3().child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(self.palette.section)
-                .child(SharedString::from("Worktrees")),
-        );
+        let title = div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(self.palette.section)
+            .child(SharedString::from("Worktrees"));
 
         div()
             .flex()
@@ -2315,7 +2351,7 @@ impl StatusView {
             .pt_4()
             .pb_2()
             .gap_3()
-            .child(header)
+            .child(self.view_header(title, "close", view))
             .child(body)
     }
 
@@ -2587,35 +2623,39 @@ impl StatusView {
             .pb_2()
             .gap_3()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    // The hash and its copy button share one highlight as a
-                    // divided pill, mirroring the title-bar branch chip.
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .rounded(px(4.0))
-                            .bg(self.palette.selection)
-                            .text_color(self.palette.fg)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(div().px(px(5.0)).child(cv.short.clone()))
-                            .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
-                            .child(self.copy_icon_button(
-                                view,
-                                "commit-sha-copy",
-                                cv.rev.clone(),
-                                "Copy commit hash",
-                            )),
-                    )
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.fg)
-                            .child(cv.subject.clone()),
-                    ),
+                self.view_header(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        // The hash and its copy button share one highlight as a
+                        // divided pill, mirroring the title-bar branch chip.
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.0))
+                                .bg(self.palette.selection)
+                                .text_color(self.palette.fg)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(div().px(px(5.0)).child(cv.short.clone()))
+                                .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
+                                .child(self.copy_icon_button(
+                                    view,
+                                    "commit-sha-copy",
+                                    cv.rev.clone(),
+                                    "Copy commit hash",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(self.palette.fg)
+                                .child(cv.subject.clone()),
+                        ),
+                    "close",
+                    view,
+                ),
             )
             .child(body)
     }
@@ -2635,11 +2675,13 @@ impl StatusView {
             .pb_2()
             .gap_3()
             .child(
-                div().flex().items_center().gap_3().child(
+                self.view_header(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(self.palette.fg)
                         .child(dv.title.clone()),
+                    "close",
+                    view,
                 ),
             )
             .child(body)
@@ -2715,7 +2757,8 @@ impl StatusView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .justify_between()
+                    .w_full()
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -2725,15 +2768,21 @@ impl StatusView {
                                 RebaseTodoMode::Edit => "Edit rebase todo".to_string(),
                             })),
                     )
-                    .child(self.header_action(
-                        "rebase-todo-run",
-                        match rt.mode {
-                            RebaseTodoMode::Start => "start",
-                            RebaseTodoMode::Edit => "save",
-                        },
-                        view,
-                    ))
-                    .child(self.header_action("close", "cancel", view))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(self.header_action(
+                                "rebase-todo-run",
+                                match rt.mode {
+                                    RebaseTodoMode::Start => "start",
+                                    RebaseTodoMode::Edit => "save",
+                                },
+                                view,
+                            ))
+                            .child(self.header_action("close", "cancel", view)),
+                    )
             })
             .child(body)
             .child(
@@ -3409,20 +3458,6 @@ impl StatusView {
                             })),
                     ),
             );
-        }
-
-        // A secondary view floats an `Esc close` button at the window's top-right
-        // — a mouse affordance for leaving the view — kept out of the draggable
-        // title bar and styled like the settings screen's close button. Hidden on
-        // status and while a popup owns Esc; skipped on screens that render their
-        // own close button (settings), so it isn't duplicated. `occlude` stops the
-        // click from reaching the row below.
-        let renders_own_close = matches!(self.screen_kind(), ScreenKind::Settings);
-        if self.popup.is_none() && self.screen_name().is_some() && !renders_own_close {
-            root =
-                root.child(div().absolute().top(px(42.0)).right_4().occlude().child(
-                    self.key_action("close-view", "esc", "close", view, Self::close_screen),
-                ));
         }
 
         root.children(self.prefix_indicator(window))
