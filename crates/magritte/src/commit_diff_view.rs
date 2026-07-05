@@ -187,6 +187,34 @@ pub(crate) struct CommitCacheEntry {
 
 pub(crate) const COMMIT_CACHE_CAPACITY: usize = 64;
 
+/// An LRU of immutable commit-detail loads. Bundles the entry map with its
+/// insertion-order queue so the eviction invariant (the queue mirrors the map's
+/// live keys, oldest first, bounded by [`COMMIT_CACHE_CAPACITY`]) is enforced in
+/// one place rather than across two raw fields kept in sync by hand.
+#[derive(Default)]
+pub(crate) struct CommitCache {
+    entries: std::collections::HashMap<CommitCacheKey, CommitCacheEntry>,
+    order: std::collections::VecDeque<CommitCacheKey>,
+}
+
+impl CommitCache {
+    pub(crate) fn get(&self, key: &CommitCacheKey) -> Option<&CommitCacheEntry> {
+        self.entries.get(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: CommitCacheKey, entry: CommitCacheEntry) {
+        if !self.entries.contains_key(&key) {
+            self.order.push_back(key.clone());
+        }
+        self.entries.insert(key, entry);
+        while self.order.len() > COMMIT_CACHE_CAPACITY {
+            if let Some(old) = self.order.pop_front() {
+                self.entries.remove(&old);
+            }
+        }
+    }
+}
+
 /// A standalone diff buffer (`d` / Magit's `magit-diff`): a title plus a
 /// flattened, read-only list of file/hunk/line rows.
 pub(crate) struct DiffView {
@@ -346,25 +374,13 @@ impl StatusView {
                         return;
                     }
                 };
-                this.insert_commit_cache(key, loaded.clone());
+                this.commit_cache.insert(key, loaded.clone());
                 this.populate_commit_view(&loaded, cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
-    }
-
-    pub(crate) fn insert_commit_cache(&mut self, key: CommitCacheKey, entry: CommitCacheEntry) {
-        if !self.commit_cache.contains_key(&key) {
-            self.commit_cache_order.push_back(key.clone());
-        }
-        self.commit_cache.insert(key, entry);
-        while self.commit_cache_order.len() > COMMIT_CACHE_CAPACITY {
-            if let Some(old) = self.commit_cache_order.pop_front() {
-                self.commit_cache.remove(&old);
-            }
-        }
     }
 
     pub(crate) fn populate_commit_view(

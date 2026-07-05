@@ -98,6 +98,98 @@ pub(crate) enum DiffState {
     Failed(String),
 }
 
+/// A loaded file diff's cache key: its source (staged/unstaged/…) and path.
+pub(crate) type DiffKey = (DiffSource, String);
+
+/// The lazily-loaded per-file diff cache for the status view: each file's async
+/// [`DiffState`], the highlight language detected at load time, and the computed
+/// highlight spans — all keyed by `(source, path)`. Bundling the three maps puts
+/// their shared-key invariant in one place: they evict together on refresh
+/// ([`retain`](Self::retain)) and the highlight map is rebuilt from the diffs +
+/// languages on a theme change ([`recompute_highlights`](Self::recompute_highlights)).
+#[derive(Default)]
+pub(crate) struct DiffCache {
+    states: std::collections::HashMap<DiffKey, DiffState>,
+    langs: std::collections::HashMap<DiffKey, &'static str>,
+    highlights: std::collections::HashMap<DiffKey, FileHighlights>,
+}
+
+impl DiffCache {
+    /// The async load state of a file's diff, if a load has been started.
+    pub(crate) fn state(&self, key: &DiffKey) -> Option<&DiffState> {
+        self.states.get(key)
+    }
+
+    /// The cached highlight spans for a loaded diff, if computed.
+    pub(crate) fn highlight(&self, key: &DiffKey) -> Option<&FileHighlights> {
+        self.highlights.get(key)
+    }
+
+    /// Whether a load has been recorded for `key` (loading, loaded, or failed).
+    pub(crate) fn contains(&self, key: &DiffKey) -> bool {
+        self.states.contains_key(key)
+    }
+
+    /// The keys of every diff a load has been recorded for.
+    pub(crate) fn keys(&self) -> Vec<DiffKey> {
+        self.states.keys().cloned().collect()
+    }
+
+    /// Iterate the loaded diffs (key → parsed diff), skipping entries still
+    /// loading, empty, or failed.
+    pub(crate) fn loaded(&self) -> impl Iterator<Item = (&DiffKey, &FileDiff)> {
+        self.states.iter().filter_map(|(key, state)| match state {
+            DiffState::Loaded(diff) => Some((key, diff.as_ref())),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn set_state(&mut self, key: DiffKey, state: DiffState) {
+        self.states.insert(key, state);
+    }
+
+    pub(crate) fn set_lang(&mut self, key: DiffKey, lang: &'static str) {
+        self.langs.insert(key, lang);
+    }
+
+    pub(crate) fn set_highlight(&mut self, key: DiffKey, highlights: FileHighlights) {
+        self.highlights.insert(key, highlights);
+    }
+
+    /// Drop every entry whose key isn't in `keep` — across all three maps at
+    /// once, so a status refresh keeps only the still-expanded files' diffs.
+    pub(crate) fn retain(&mut self, keep: &std::collections::HashSet<DiffKey>) {
+        self.states.retain(|key, _| keep.contains(key));
+        self.langs.retain(|key, _| keep.contains(key));
+        self.highlights.retain(|key, _| keep.contains(key));
+    }
+
+    /// Rebuild the highlight spans for every loaded, non-binary diff from its
+    /// load-time language via `rehighlight` (which carries the current theme).
+    /// No files are re-read — only the spans are recomputed.
+    pub(crate) fn recompute_highlights(
+        &mut self,
+        mut rehighlight: impl FnMut(&FileDiff, &'static str) -> FileHighlights,
+    ) {
+        if self.highlights.is_empty() && self.langs.is_empty() {
+            return;
+        }
+        let mut next = std::collections::HashMap::new();
+        for (key, state) in &self.states {
+            let DiffState::Loaded(diff) = state else {
+                continue;
+            };
+            if diff.is_binary {
+                continue;
+            }
+            if let Some(&lang) = self.langs.get(key) {
+                next.insert(key.clone(), rehighlight(diff, lang));
+            }
+        }
+        self.highlights = next;
+    }
+}
+
 /// One rendered line. Every row is the same height so `uniform_list` can
 /// virtualize them.
 pub(crate) struct Row {
@@ -211,7 +303,7 @@ impl StatusView {
     /// `Arc` clone, not a deep copy).
     pub(crate) fn diff_for(&self, file: &FileRef) -> Option<Arc<FileDiff>> {
         let source = section_source(file.section)?;
-        match self.diffs.get(&(source, file.path.clone()))? {
+        match self.diff_cache.state(&(source, file.path.clone()))? {
             DiffState::Loaded(diff) => Some(diff.clone()),
             _ => None,
         }
@@ -221,7 +313,7 @@ impl StatusView {
     /// count, a target line).
     pub(crate) fn diff_for_ref(&self, file: &FileRef) -> Option<&FileDiff> {
         let source = section_source(file.section)?;
-        match self.diffs.get(&(source, file.path.clone()))? {
+        match self.diff_cache.state(&(source, file.path.clone()))? {
             DiffState::Loaded(diff) => Some(diff),
             _ => None,
         }

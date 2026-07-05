@@ -14,26 +14,9 @@ impl StatusView {
     /// current theme. Reuses the languages detected at load time, so no files
     /// are re-read.
     pub(crate) fn recompute_highlights(&mut self, cx: &mut Context<Self>) {
-        if self.highlights.is_empty() && self.diff_langs.is_empty() {
-            return;
-        }
         let default = cx.theme().foreground;
-        let mut next = HashMap::new();
-        for (key, state) in &self.diffs {
-            let DiffState::Loaded(diff) = state else {
-                continue;
-            };
-            if diff.is_binary {
-                continue;
-            }
-            if let Some(&lang) = self.diff_langs.get(key) {
-                next.insert(
-                    key.clone(),
-                    highlight::highlight_diff(diff, lang, cx, default),
-                );
-            }
-        }
-        self.highlights = next;
+        self.diff_cache
+            .recompute_highlights(|diff, lang| highlight::highlight_diff(diff, lang, cx, default));
     }
 
     /// Reload status from scratch, invalidating any in-flight work.
@@ -54,11 +37,7 @@ impl StatusView {
                 FoldKey::Section(_) | FoldKey::Hunk(..) => None,
             })
             .collect();
-        self.diffs.retain(|key, _| expanded_diff_keys.contains(key));
-        self.highlights
-            .retain(|key, _| expanded_diff_keys.contains(key));
-        self.diff_langs
-            .retain(|key, _| expanded_diff_keys.contains(key));
+        self.diff_cache.retain(&expanded_diff_keys);
         self.transient_config_defaults.clear();
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
@@ -365,7 +344,7 @@ impl StatusView {
                     if lines > PREFETCH_LINE_CAP {
                         continue;
                     }
-                    if this.diffs.contains_key(&(source, path.clone())) {
+                    if this.diff_cache.contains(&(source, path.clone())) {
                         continue;
                     }
                     this.ensure_diff(source, path, cx);
@@ -393,7 +372,7 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let key = (source, path.clone());
-        if !replace_existing && self.diffs.contains_key(&key) {
+        if !replace_existing && self.diff_cache.contains(&key) {
             return;
         }
         let Some(repo) = self.read_repo() else {
@@ -405,8 +384,8 @@ impl StatusView {
         } else {
             repo.with_diff_context(self.diff_context)
         };
-        if !self.diffs.contains_key(&key) {
-            self.diffs.insert(key.clone(), DiffState::Loading);
+        if !self.diff_cache.contains(&key) {
+            self.diff_cache.set_state(key.clone(), DiffState::Loading);
         }
         let generation = self.generation.current();
         self.begin_activity(cx);
@@ -434,7 +413,7 @@ impl StatusView {
                     Err(e) => DiffState::Failed(e.to_string()),
                 };
                 if let Some(lang) = lang {
-                    this.diff_langs.insert(key.clone(), lang);
+                    this.diff_cache.set_lang(key.clone(), lang);
                 }
                 // Precompute syntax highlighting for the loaded diff.
                 if let DiffState::Loaded(diff) = &state {
@@ -442,7 +421,7 @@ impl StatusView {
                         if let Some(lang) = lang {
                             let default = cx.theme().foreground;
                             let hl = highlight::highlight_diff(diff, lang, cx, default);
-                            this.highlights.insert(key.clone(), hl);
+                            this.diff_cache.set_highlight(key.clone(), hl);
                         }
                     }
                     // Fold level 3 (hunks closed) extends to diffs that were
@@ -454,7 +433,7 @@ impl StatusView {
                         }
                     }
                 }
-                this.diffs.insert(key, state);
+                this.diff_cache.set_state(key, state);
                 // A diff finishing load inserts rows; keep the cursor put.
                 this.rebuild_preserving_selection();
                 cx.notify();
@@ -486,8 +465,7 @@ impl StatusView {
         self.diff_context = new;
         // Re-fetch every loaded diff at the new context; each rebuilds the rows
         // (preserving the cursor) as it lands.
-        let keys: Vec<(DiffSource, String)> = self.diffs.keys().cloned().collect();
-        for (source, path) in keys {
+        for (source, path) in self.diff_cache.keys() {
             self.load_diff(source, path, true, cx);
         }
         self.set_status(format!("Diff context: {new}"), true, cx);

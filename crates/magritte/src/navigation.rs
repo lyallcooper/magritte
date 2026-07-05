@@ -298,14 +298,9 @@ impl StatusView {
                 }
                 if level == 3 {
                     let loaded: Vec<(DiffSource, String, usize)> = self
-                        .diffs
-                        .iter()
-                        .filter_map(|((source, path), state)| match state {
-                            DiffState::Loaded(diff) => {
-                                Some((*source, path.clone(), diff.hunks.len()))
-                            }
-                            _ => None,
-                        })
+                        .diff_cache
+                        .loaded()
+                        .map(|((source, path), diff)| (*source, path.clone(), diff.hunks.len()))
                         .collect();
                     for (source, path, hunks) in loaded {
                         for ix in 0..hunks {

@@ -3,7 +3,7 @@
 //! parsed status + fold state + loaded diffs into [`Row`]s, plus the small
 //! row/text constructors the builders and copy paths share.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::Hsla;
@@ -364,8 +364,7 @@ impl StatusView {
                 expanded: &self.expanded,
                 collapsed_hunks: &self.collapsed_hunks,
                 loading_sections: &self.loading_sections,
-                diffs: &self.diffs,
-                highlights: &self.highlights,
+                diff_cache: &self.diff_cache,
                 section_ids: self.config.status.section_ids(),
                 recent_count: self.config.status.recent_count,
                 palette: &self.palette,
@@ -386,8 +385,7 @@ struct StatusRows<'a> {
     expanded: &'a HashSet<FoldKey>,
     collapsed_hunks: &'a HashSet<FoldKey>,
     loading_sections: &'a HashSet<SectionId>,
-    diffs: &'a HashMap<(DiffSource, String), DiffState>,
-    highlights: &'a HashMap<(DiffSource, String), FileHighlights>,
+    diff_cache: &'a DiffCache,
     /// Section ids to render, in configured order (`[status].sections`).
     section_ids: Vec<String>,
     recent_count: usize,
@@ -711,7 +709,7 @@ impl StatusRows<'_> {
     }
 
     pub(crate) fn push_file_body(&self, rows: &mut Vec<Row>, source: DiffSource, file: &FileRef) {
-        match self.diffs.get(&(source, file.path.clone())) {
+        match self.diff_cache.state(&(source, file.path.clone())) {
             Some(DiffState::Loaded(diff)) => {
                 if diff.is_binary {
                     rows.push(message("Binary file", self.palette.dim));
@@ -737,7 +735,7 @@ impl StatusRows<'_> {
                     if !hunk_expanded {
                         continue;
                     }
-                    let file_hl = self.highlights.get(&(source, file.path.clone()));
+                    let file_hl = self.diff_cache.highlight(&(source, file.path.clone()));
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
                         // Use cached highlight spans if present, else a single
                         // fallback span in the default color.
@@ -785,15 +783,14 @@ mod tests {
     use super::{diffstat_text, stat_bar, StatusRows};
     use crate::*;
     use magritte_core::{Change, EntryKind, FileEntry, HeadInfo, Status};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     /// Build the status rows for `status` with the given expanded sections, over
     /// otherwise-empty inputs (no loaded diffs / listings).
     fn build(status: &Status, expanded: &HashSet<FoldKey>, section_ids: &[&str]) -> Vec<Row> {
         let sections = StatusSections::default();
         let (collapsed, loading) = (HashSet::new(), HashSet::new());
-        let diffs = HashMap::new();
-        let highlights = HashMap::new();
+        let diff_cache = DiffCache::default();
         let palette = Palette::default();
         StatusRows {
             status,
@@ -801,8 +798,7 @@ mod tests {
             expanded,
             collapsed_hunks: &collapsed,
             loading_sections: &loading,
-            diffs: &diffs,
-            highlights: &highlights,
+            diff_cache: &diff_cache,
             section_ids: section_ids.iter().map(|s| s.to_string()).collect(),
             recent_count: 0,
             palette: &palette,

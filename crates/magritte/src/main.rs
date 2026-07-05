@@ -12,7 +12,7 @@
 //! runs on the background executor; a generation counter drops stale results.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -464,17 +464,13 @@ struct StatusView {
     /// Context lines shown around each hunk in the status view (git's default is
     /// 3); the `+`/`-`/`0` keys adjust it and reload the shown diffs.
     diff_context: usize,
-    diffs: HashMap<(DiffSource, String), DiffState>,
-    /// Cached syntax highlighting per file diff, keyed like `diffs`.
-    highlights: HashMap<(DiffSource, String), FileHighlights>,
-    /// Detected highlight language per file diff, kept so highlighting can be
-    /// recomputed on a theme change without re-reading files off the UI thread.
-    diff_langs: HashMap<(DiffSource, String), &'static str>,
+    /// The lazily-loaded per-file diff cache (states + languages + highlight
+    /// spans), keyed by `(source, path)`. See [`DiffCache`].
+    diff_cache: DiffCache,
     /// Immutable commit detail loads (metadata/message/diff), keyed by full OID
     /// plus diff args/pathspecs. Rows are re-rendered from this on demand so the
     /// current theme still controls highlight colors.
-    commit_cache: HashMap<CommitCacheKey, CommitCacheEntry>,
-    commit_cache_order: VecDeque<CommitCacheKey>,
+    commit_cache: CommitCache,
     /// Resolved git-config defaults for transient switches during the current
     /// repository generation. Cleared on refresh so external git config changes
     /// are picked up without re-querying on every popup open.
@@ -710,11 +706,8 @@ impl StatusView {
             collapsed_hunks: HashSet::new(),
             collapse_new_hunks: false,
             diff_context: DEFAULT_DIFF_CONTEXT,
-            diffs: HashMap::new(),
-            highlights: HashMap::new(),
-            diff_langs: HashMap::new(),
-            commit_cache: HashMap::new(),
-            commit_cache_order: VecDeque::new(),
+            diff_cache: DiffCache::default(),
+            commit_cache: CommitCache::default(),
             transient_config_defaults: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
