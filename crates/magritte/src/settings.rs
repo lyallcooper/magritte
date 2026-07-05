@@ -548,11 +548,16 @@ impl StatusView {
     /// Tab moves focus to the next settings control, cycling through every one
     /// of them (the dropdowns have distinct `SelectState` types and the editor
     /// fields are `Select`/`Input`, so each arm focuses its own entity).
-    pub(crate) fn cycle_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn cycle_settings_focus(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = self.settings_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + 1) % 8;
+        s.focus_ix = (s.focus_ix + if forward { 1 } else { 7 }) % 8;
         match s.focus_ix {
             0 => s
                 .appearance

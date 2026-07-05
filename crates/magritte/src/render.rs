@@ -181,12 +181,20 @@ impl StatusView {
                                         })
                                         .flatten()
                                         .map(SharedString::from);
+                                    let id = palette
+                                        .then(|| {
+                                            let v = view.read(cx);
+                                            commands::command_id_for_title(&v.config, &r.label)
+                                        })
+                                        .flatten()
+                                        .map(SharedString::from);
                                     view.read(cx).render_picker_row(
                                         ix,
                                         r.label,
                                         r.is_create,
                                         ix == p.list.selected(),
                                         hint,
+                                        id,
                                         ref_style,
                                         &view,
                                     )
@@ -273,6 +281,7 @@ impl StatusView {
     /// One candidate row: a full-width highlight when current (vertico-style, no
     /// boxy border), a subtle hover for the mouse, and click-to-confirm.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_picker_row(
         &self,
         ix: usize,
@@ -280,6 +289,7 @@ impl StatusView {
         is_create: bool,
         selected: bool,
         hint: Option<SharedString>,
+        id: Option<SharedString>,
         ref_style: Option<PickerRefStyle>,
         view: &Entity<Self>,
     ) -> AnyElement {
@@ -341,6 +351,19 @@ impl StatusView {
                     // proportional UI font.
                     .font_family(self.font.clone())
                     .child(SharedString::from(kbd::format_keys(&seq))),
+            );
+        }
+        // The command id, dim and italic, at the row's end — the handle a user
+        // needs for a `[keymap]` binding, surfaced right where they'd discover it.
+        if let Some(id) = id {
+            el = el.child(
+                div()
+                    .ml_auto()
+                    .pr(px(ROW_PAD_LEFT))
+                    .italic()
+                    .text_color(self.palette.dim)
+                    .font_family(self.font.clone())
+                    .child(id),
             );
         }
         el.into_any_element()
@@ -2881,9 +2904,12 @@ impl StatusView {
                     move |ev: &gpui::ClickEvent, window, cx: &mut App| {
                         let double = ev.click_count() >= 2;
                         view.update(cx, |v, cx| {
-                            if double {
-                                // Double-click acts like pressing Enter on the
-                                // row (open the file/commit/stash at point).
+                            // Enter fires on a double-click or a click of the
+                            // already-selected row — the two are equivalent (a
+                            // double-click's second press lands on the selection).
+                            let enter = double || v.selection.reclick;
+                            v.selection.reclick = false;
+                            if enter {
                                 v.selected = ix;
                                 if let Some(id) = v.resolve_binding("enter") {
                                     v.invoke_command(&id, window, cx);
@@ -2913,7 +2939,12 @@ impl StatusView {
                                 v.selected = ix;
                                 v.selection.drag_anchor = None;
                                 v.selection.shift_click = true;
+                                v.selection.reclick = false;
                             } else {
+                                // Clicking the row that's already the sole selection
+                                // arms Enter for the click that follows this press.
+                                v.selection.reclick =
+                                    v.selected == ix && v.selection.visual.is_none();
                                 v.selection.drag_anchor = Some(ix);
                                 v.selection.visual = None;
                                 v.selected = ix;
@@ -3333,11 +3364,23 @@ impl Render for StatusView {
                 // through the keymap like any key, so rebinding/unbinding `tab`
                 // in `[keymap]` takes effect.
                 if this.settings().is_some() {
-                    this.cycle_settings_focus(window, cx);
+                    this.cycle_settings_focus(true, window, cx);
                 } else if this.editor().is_none()
                     && matches!(this.popup, None | Some(Popup::Dispatch(_)))
                 {
                     this.run_dispatch("tab", window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &BackTab, window, cx| {
+                // Shift-Tab, likewise overridden from gpui's reverse focus-nav so
+                // a `[keymap]` binding for it (or reverse settings-field cycling)
+                // works instead of being swallowed.
+                if this.settings().is_some() {
+                    this.cycle_settings_focus(false, window, cx);
+                } else if this.editor().is_none()
+                    && matches!(this.popup, None | Some(Popup::Dispatch(_)))
+                {
+                    this.run_dispatch("shift-tab", window, cx);
                 }
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, cx| {

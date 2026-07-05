@@ -1600,30 +1600,13 @@ fn preset_bindings(preset: config::KeymapPreset) -> &'static [(&'static str, &'s
 /// with spaces (`ctrl-x ctrl-c`). The prefixes match `kbd::format_keys`, so the
 /// display (`⌃x`) follows for free.
 pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
-    let base = if shift {
-        match key {
-            "1" => "!".to_string(),
-            "4" => "$".to_string(),
-            "5" => "%".to_string(),
-            "6" => "^".to_string(),
-            "-" => "_".to_string(),
-            "=" => "+".to_string(),
-            "[" => "{".to_string(),
-            "]" => "}".to_string(),
-            "\\" => "|".to_string(),
-            ";" => ":".to_string(),
-            "'" => "\"".to_string(),
-            "," => "<".to_string(),
-            "." => ">".to_string(),
-            "/" => "?".to_string(),
-            "`" => "~".to_string(),
-            _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
-                key.to_uppercase()
-            }
-            _ => key.to_string(),
-        }
-    } else {
-        key.to_string()
+    // Shift folds into a printable key's character (`k`→`K`, `1`→`!`); on a named
+    // key that Shift doesn't reshape (`tab`, `space`, `escape`, arrows…) it stays
+    // an explicit `shift-` prefix, so `⇧⇥` is distinct from `⇥`.
+    let (base, shift_prefix) = match (shift, shifted_char(key)) {
+        (true, Some(c)) => (c, false),
+        (true, None) => (key.to_string(), true),
+        (false, _) => (key.to_string(), false),
     };
     let mut s = String::new();
     if cmd {
@@ -1635,8 +1618,45 @@ pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) ->
     if alt {
         s.push_str("alt-");
     }
+    if shift_prefix {
+        s.push_str("shift-");
+    }
     s.push_str(&base);
     s
+}
+
+/// The character a shifted key produces on a US keyboard, or `None` if Shift
+/// doesn't reshape it (named keys like `tab`/`space`, so Shift is kept as a
+/// modifier prefix instead).
+fn shifted_char(key: &str) -> Option<String> {
+    let shifted = match key {
+        "1" => "!",
+        "2" => "@",
+        "3" => "#",
+        "4" => "$",
+        "5" => "%",
+        "6" => "^",
+        "7" => "&",
+        "8" => "*",
+        "9" => "(",
+        "0" => ")",
+        "-" => "_",
+        "=" => "+",
+        "[" => "{",
+        "]" => "}",
+        "\\" => "|",
+        ";" => ":",
+        "'" => "\"",
+        "," => "<",
+        "." => ">",
+        "/" => "?",
+        "`" => "~",
+        _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
+            return Some(key.to_uppercase())
+        }
+        _ => return None,
+    };
+    Some(shifted.to_string())
 }
 
 /// Canonicalize a user `[keymap]` keystroke spec into the same form [`chord`]
@@ -1647,7 +1667,9 @@ pub(crate) fn canonical_keystroke(key: &str) -> String {
     key.split(' ')
         .map(|step| {
             let (mods, base) = kbd::parse_step(step);
-            chord(base, mods.shift, mods.ctrl, mods.alt, mods.cmd)
+            // Normalize named-key aliases (`Esc`/`Ret`/`SPC`…) to the runtime form.
+            let base = kbd::normalize_key_name(base);
+            chord(&base, mods.shift, mods.ctrl, mods.alt, mods.cmd)
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -1938,6 +1960,22 @@ pub(crate) const TRANSIENT_IDS: &[&str] = &[
 /// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
 /// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
 /// has no binding. Lets the `:` palette double as a keymap reference.
+/// The command id for a palette title — built-in or user `[[command]]`. Shown in
+/// the palette so a user can discover the id to bind in `[keymap]`.
+pub(crate) fn command_id_for_title(config: &config::Config, title: &str) -> Option<String> {
+    commands()
+        .iter()
+        .find(|c| c.title == title)
+        .map(|c| c.id.to_string())
+        .or_else(|| {
+            config
+                .commands
+                .iter()
+                .find(|c| c.title == title)
+                .map(|c| c.id.clone())
+        })
+}
+
 pub(crate) fn command_keys(
     keymap: &KeyBindings,
     config: &config::Config,

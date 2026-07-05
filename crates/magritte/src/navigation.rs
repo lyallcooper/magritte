@@ -20,6 +20,10 @@ pub(crate) struct Selection {
     /// Set by a shift-click mouse-down so the following click extends the
     /// selection (and doesn't toggle the row's fold).
     pub(crate) shift_click: bool,
+    /// Set by a mouse-down on the already-selected row, so the following click
+    /// fires Enter (magit's "click the selected row to open it"). A double-click
+    /// hits this on its second press; a slow re-click hits it too.
+    pub(crate) reclick: bool,
 }
 
 impl StatusView {

@@ -87,9 +87,12 @@ use settings::SettingsCaches;
 /// over gpui-component Root's focus-navigation `tab`.
 const STATUS_CONTEXT: &str = "MagritteStatus";
 
-// Tab is bound by gpui-component's Root (focus nav) and so never reaches an
-// on_key_down listener; we override it with an action in our key context.
-actions!(magritte, [ToggleFold, Quit, CloseWindow, OpenSettings]);
+// Tab and Shift-Tab are bound by gpui-component's Root (focus nav) and so never
+// reach an on_key_down listener; we override them with actions in our key context.
+actions!(
+    magritte,
+    [ToggleFold, BackTab, Quit, CloseWindow, OpenSettings]
+);
 // Right-click context-menu actions; dispatched by the PopupMenu and handled on
 // the status view, which applies them to the row at point (selected on
 // right-click) or the active visual selection.
@@ -1114,6 +1117,7 @@ fn main() {
         cx.bind_keys([
             // Our tab binding, in our context, outranks Root's focus-nav tab.
             KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT)),
+            KeyBinding::new("shift-tab", BackTab, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-,", OpenSettings, Some(STATUS_CONTEXT)),

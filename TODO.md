@@ -177,4 +177,12 @@
 - [x] Diff view should show file change stats — done: the diff view leads with the same diffstat overview and per-file stat bars as the commit view.
 - [x] Double click with mouse should trigger the enter action on a row — done: a double-click on a status row invokes its Enter action.
 - [x] On screens such as interactive rebase log view, where the user is prompted to select a commit, let's change the view keybinding to Space (from Return), and the select keybinding to Return (from Cmd-Return) — done: in select mode Space views the commit at point and Return confirms the selection.
-- [ ] Follow magit's lead of not showing
+- [x] Clicking on an already selected row should also trigger the enter action. Maybe this can supercede our double click logic since double clicking should be equivalent to selecting the row then clicking again — done: a click on the already-selected row fires Enter; the double-click path folds into this (its second press lands on the selection).
+- [x] The "x" in "⌘x" should still be rendered in the user's selected font — done: keycaps draw the modifier glyphs in the system UI font but the key itself in the monospace keycap font.
+- [x] I think there's a bug with custom bindings that have shift + a key like esc or tab in them. They don't seem to work properly. — done: `chord` keeps Shift as an explicit prefix on named keys (`shift-tab`/`shift-escape`), and Shift-Tab is overridden from gpui's reverse-focus-nav so its binding can dispatch.
+- [x] Shift+space should be treated as a different input from space alone, same for other modifier keys + special keys — done: Shift on a named key stays an explicit modifier, so `shift-space` is distinct from `space`.
+- [x] Change Escape back to being displayed as "Esc" — done: Esc spells out again (the other named keys keep their glyphs).
+- [x] We should validate keybindings such that "abc" isn't valid — done: a base must be a single character, a named key, or `f1`..`f12`.
+- [x] "Esc", "Escape", "Ret", "Return", "Space", "SPC", "Tab" etc should be valid ways of spelling the keys in keybindings — done: named-key aliases are accepted and normalized to the runtime form.
+- [x] Command palette should show command id (in italics?) after the keybinding to help in id discovery for user keymaps — done: the id shows dim and italic at the row's end.
+- [ ]

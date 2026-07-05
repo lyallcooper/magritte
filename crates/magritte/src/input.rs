@@ -318,8 +318,9 @@ impl StatusView {
         match key.as_str() {
             // Tab toggles a fold (also delivered via the ToggleFold action, since
             // Root binds tab). Kept explicit — and out of the remappable keymap.
-            "tab" => self.toggle_fold(cx),
-            "escape" => {
+            // Shift-Tab falls through so a user binding for it can dispatch.
+            "tab" if !shift => self.toggle_fold(cx),
+            "escape" if !shift => {
                 // A running job takes priority: C-g/Esc kills its subprocess.
                 // Otherwise cancel a visual selection, else dismiss the
                 // status/error banner if one is showing.
