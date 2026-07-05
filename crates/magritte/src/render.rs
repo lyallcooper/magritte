@@ -1988,9 +1988,9 @@ impl StatusView {
         // buttons; while browsing, the `?` menu carries the verbs — no header
         // hints, matching the other detail views.
         if selecting {
-            // Return inspects the commit; Cmd+Return picks it as the base.
-            header = header.child(self.header_action("log-open", "view", view));
-            header = header.child(self.header_action("log-confirm-select", "select", view));
+            // Space inspects the commit; Return picks it for the pending action.
+            header = header.child(self.header_action("log-select-view", "view", view));
+            header = header.child(self.header_action("log-open", "select", view));
             header = header.child(self.header_action("close", "cancel", view));
         }
 

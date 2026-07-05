@@ -637,24 +637,31 @@ pub(crate) fn commands() -> &'static [Command] {
             "=",
             |t, _w, cx| t.toggle_commit_details(cx)
         ),
-        // Commit-log verbs: open a commit's diff (Return), confirm a pending
-        // select (Cmd-Return), cherry-pick `A`, revert (evil `_` / vanilla `V`),
-        // reset-quickly (evil `o` / vanilla `x`), rebase-since `r`, and the log
-        // limit keys `+`/`-`. Copy is the global `yank`.
+        // Commit-log verbs. `Return` opens the commit while browsing, but
+        // *confirms* the selection in a select mode (rebase-since/reword/squash);
+        // `Space` then views the commit at point without leaving the select. The
+        // rest: cherry-pick `A`, revert (evil `_` / vanilla `V`), reset-quickly
+        // (evil `o` / vanilla `x`), rebase-since `r`, limit keys `+`/`-`.
         verb!(
             "log-open",
             "Open commit",
             ScreenSet::of(&[ScreenKind::Log]),
             "enter",
-            |t, _w, cx| t.open_commit_view(cx)
+            |t, w, cx| {
+                if t.log_selecting() {
+                    t.confirm_log_select(w, cx);
+                } else {
+                    t.open_commit_view(cx);
+                }
+            }
         ),
         verb!(
-            "log-confirm-select",
-            "Confirm selection",
+            "log-select-view",
+            "View",
             ScreenSet::of(&[ScreenKind::Log]),
-            "cmd-enter",
+            "space",
             |t: &StatusView| t.log_selecting(),
-            |t, w, cx| t.confirm_log_select(w, cx)
+            |t, _w, cx| t.open_commit_view(cx)
         ),
         verb!(
             "log-cherry-pick",
