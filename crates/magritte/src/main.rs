@@ -1968,8 +1968,6 @@ mod tests {
             CommitDiffRow::File {
                 change: magritte_core::Change::Modified,
                 path: "a.txt".to_string(),
-                added: 0,
-                removed: 0,
             },
         ];
 
@@ -1986,8 +1984,6 @@ mod tests {
         let mut bodyless = vec![CommitDiffRow::File {
             change: magritte_core::Change::Modified,
             path: "a.txt".to_string(),
-            added: 0,
-            removed: 0,
         }];
         prepend_commit_details(&mut bodyless, &details);
         bodyless.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));

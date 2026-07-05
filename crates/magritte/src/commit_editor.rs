@@ -60,20 +60,23 @@ pub(crate) enum CommitDiffRow {
     Detail(String),
     /// A line from the commit's full message, shown above the diff in commit view.
     Message(String),
-    /// The diffstat summary shown above the files (files changed, +ins, -del).
+    /// One file's line in the diffstat block above the diffs (magit's overview):
+    /// its path and a git-style `N +++---` bar. The whole block sits together,
+    /// before the file sections, rather than the counts repeating per header.
+    StatLine {
+        path: String,
+        added: usize,
+        removed: usize,
+    },
+    /// The diffstat summary shown below the per-file lines (files changed, +ins,
+    /// -del).
     Stats {
         files: usize,
         insertions: usize,
         deletions: usize,
     },
-    /// A file header: its change kind (for the status-style word/color), path,
-    /// and added/removed line counts (for the git-style `N ++--` stat bar).
-    File {
-        change: Change,
-        path: String,
-        added: usize,
-        removed: usize,
-    },
+    /// A file header: its change kind (for the status-style word/color) and path.
+    File { change: Change, path: String },
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
@@ -524,12 +527,9 @@ impl StatusView {
         let (fg, dim) = (self.palette.fg, self.palette.dim);
         let mut rows = Vec::new();
         for (diff, lang) in files {
-            let (added, removed) = file_line_counts(diff);
             rows.push(CommitDiffRow::File {
                 change: file_change(diff),
                 path: diff.display_path().to_string(),
-                added,
-                removed,
             });
             let hl = match lang {
                 Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),

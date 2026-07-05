@@ -206,7 +206,20 @@ pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
             insertions,
             deletions,
         } => diffstat_text(*files, *insertions, *deletions),
-        CommitDiffRow::File { change, path, .. } => {
+        CommitDiffRow::StatLine {
+            path,
+            added,
+            removed,
+        } => {
+            let (plus, minus) = stat_bar(*added, *removed);
+            format!(
+                "{path} {} {}{}",
+                added + removed,
+                "+".repeat(plus),
+                "-".repeat(minus)
+            )
+        }
+        CommitDiffRow::File { change, path } => {
             let word = status_label::change_word(*change);
             if word.is_empty() {
                 path.clone()

@@ -198,3 +198,7 @@
 - [x] The log view still says "first N" even if the log viewing is reversed (-r). Does this make sense? — done: with `--reverse` the header says "last N" (the same most-recent N, shown oldest-first).
 - [x] The help '?' button shouldn't allow click to fall through it — done: the button is `occlude`d.
 - [x] The help button should have a subtle opaque background so it doesn't clash with text below it — done: it has a subtle opaque fill and a faint border.
+- [ ] Commit edit tooltips about summary being too long etc should be opaque
+- [ ] Commit editor diff view should be mouse enabled, collapsible sections, etc
+- [ ] The diff stats (+++-- etc) should appear all together before the files, not with each file header (like magit does)
+- [ ] Line highlight and select is not visible over green/red diff rows in commit/diff detail views

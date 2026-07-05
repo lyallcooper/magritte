@@ -476,8 +476,9 @@ impl StatusView {
                     Ok(files) => {
                         // Lead with the diffstat overview, like the commit view.
                         let mut rows = Vec::new();
-                        if let Some(stats) = diffstat_row(&files) {
-                            rows.push(stats);
+                        let stat = diffstat_block(&files);
+                        if !stat.is_empty() {
+                            rows.extend(stat);
                             rows.push(CommitDiffRow::Note(String::new()));
                         }
                         rows.extend(this.diff_rows(&files, cx));
@@ -518,9 +519,10 @@ impl StatusView {
         if !rows.is_empty() {
             rows.push(CommitDiffRow::Note(String::new()));
         }
-        // A diffstat summary above the files (magit's overview line).
-        if let Some(stats) = diffstat_row(files) {
-            rows.push(stats);
+        // The diffstat block above the files (magit's overview).
+        let stat = diffstat_block(files);
+        if !stat.is_empty() {
+            rows.extend(stat);
             rows.push(CommitDiffRow::Note(String::new()));
         }
         rows.extend(self.diff_rows(files, cx));
@@ -775,23 +777,31 @@ pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
     (added, removed)
 }
 
-/// The diffstat summary row for a set of files (magit's overview line), or
-/// `None` when there are no files.
-pub(crate) fn diffstat_row(files: &[(FileDiff, Option<&'static str>)]) -> Option<CommitDiffRow> {
+/// The diffstat block above the diffs (magit's overview): a per-file `path
+/// N +++---` line for each file, then the "N files changed …" summary. Empty
+/// when there are no files.
+pub(crate) fn diffstat_block(files: &[(FileDiff, Option<&'static str>)]) -> Vec<CommitDiffRow> {
     if files.is_empty() {
-        return None;
+        return Vec::new();
     }
     let (mut insertions, mut deletions) = (0usize, 0usize);
+    let mut rows = Vec::with_capacity(files.len() + 1);
     for (diff, _) in files {
         let (a, r) = file_line_counts(diff);
         insertions += a;
         deletions += r;
+        rows.push(CommitDiffRow::StatLine {
+            path: diff.display_path().to_string(),
+            added: a,
+            removed: r,
+        });
     }
-    Some(CommitDiffRow::Stats {
+    rows.push(CommitDiffRow::Stats {
         files: files.len(),
         insertions,
         deletions,
-    })
+    });
+    rows
 }
 
 pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {

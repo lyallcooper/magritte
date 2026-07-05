@@ -1672,15 +1672,39 @@ impl StatusView {
                 .text_color(self.palette.fg)
                 .child(SharedString::from(text.clone()))
                 .into_any_element(),
-            // Status-style file header: a colored change word ("modified"), the
-            // path, then a git-style `N ++--` stat bar (total changed + a scaled
-            // run of green `+` / red `-`).
-            CommitDiffRow::File {
-                change,
+            // A diffstat line: the path, then a git-style `N +++---` bar (total
+            // changed + a scaled run of green `+` / red `-`). These sit together
+            // in the block above the diffs.
+            CommitDiffRow::StatLine {
                 path,
                 added,
                 removed,
             } => {
+                let total = added + removed;
+                let (plus, minus) = stat_bar(*added, *removed);
+                base.gap_2()
+                    .text_color(self.palette.dim)
+                    .child(
+                        div()
+                            .text_color(self.palette.fg)
+                            .child(SharedString::from(path.clone())),
+                    )
+                    .child(div().child(SharedString::from(total.to_string())))
+                    .child(
+                        div()
+                            .text_color(self.palette.added)
+                            .child(SharedString::from("+".repeat(plus))),
+                    )
+                    .child(
+                        div()
+                            .text_color(self.palette.removed)
+                            .child(SharedString::from("-".repeat(minus))),
+                    )
+                    .into_any_element()
+            }
+            // Status-style file header: a colored change word ("modified") + path.
+            // The per-file counts live in the diffstat block above, not here.
+            CommitDiffRow::File { change, path } => {
                 let word = status_label::change_word(*change);
                 let mut row = fold_marker(base.gap_2());
                 if !word.is_empty() {
@@ -1690,32 +1714,12 @@ impl StatusView {
                             .child(SharedString::from(word)),
                     );
                 }
-                row = row.child(
+                row.child(
                     div()
                         .text_color(self.palette.fg)
                         .child(SharedString::from(path.clone())),
-                );
-                let total = added + removed;
-                if total > 0 {
-                    let (plus, minus) = stat_bar(*added, *removed);
-                    row = row
-                        .child(
-                            div()
-                                .text_color(self.palette.dim)
-                                .child(SharedString::from(total.to_string())),
-                        )
-                        .child(
-                            div()
-                                .text_color(self.palette.added)
-                                .child(SharedString::from("+".repeat(plus))),
-                        )
-                        .child(
-                            div()
-                                .text_color(self.palette.removed)
-                                .child(SharedString::from("-".repeat(minus))),
-                        );
-                }
-                row.into_any_element()
+                )
+                .into_any_element()
             }
             CommitDiffRow::Stats {
                 files,
@@ -1740,8 +1744,13 @@ impl StatusView {
             CommitDiffRow::Line { kind, spans } => {
                 let (line, tint) = self.diff_line_body(*kind, spans);
                 let mut el = base;
-                if let Some(t) = tint {
-                    el = el.bg(t);
+                // The cursor/visual highlight must stay visible over an added/
+                // removed row's tint, so it wins; the +/- sign color still marks
+                // the line's kind. Only tint an unhighlighted line.
+                if !highlighted {
+                    if let Some(t) = tint {
+                        el = el.bg(t);
+                    }
                 }
                 el.child(line).into_any_element()
             }
