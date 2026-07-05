@@ -1,154 +1,155 @@
-# In-row character selection (mouse) — implementation plan
+# Mouse text selection: char-wise within a line, line-wise across lines
 
 Status: proposal. A design/implementation plan, not a finished feature.
 
-## Goal & scope
+## Goal
 
-Let the user drag-select an arbitrary character range **within a single row** of a
-read-only view (a diff line, a hunk header, a commit subject, a message line) and
-copy it. This covers the common "grab part of this line" need without the
-cross-row selection layer that the full feature would require.
+Make plain left-drag selection do the intuitive thing in the read-only views:
 
-Explicitly out of scope here:
+- **Within a single line** — select a character range (drag to grab part of a
+  diff line, a commit subject, a message line), then copy it.
+- **Across lines** — once the drag leaves the starting row, fall back to the
+  existing **line-wise** selection (whole rows), which already powers stage/
+  unstage/copy over a range.
 
-- **Cross-row selection.** Selecting a range that spans multiple rows (and the
-  model-reconstruction copy it needs) is deferred; see "Later".
-- **The commit editor.** It's an `InputState` text field and already has native
-  character selection.
-- **The `$` command-log and blame pagers.** Non-interactive; can come later once
-  the per-row mechanism exists.
+No modifier key: the *same* plain drag is char-wise while it stays on the anchor
+row and line-wise the moment it spans rows (and reverts to char-wise if it comes
+back to a single row). This is the resolution to the earlier "drag is already
+line-select" gesture conflict — we don't add an Alt gesture, we let the span of
+the drag pick the granularity.
 
-Today only *line/unit* copy exists (tier 1 in the TODO): `y` / Cmd-C /
-right-click-Copy yank the visual selection or the line at point. This adds
-sub-line granularity by mouse.
+Out of scope:
+
+- **Cross-line *character* selection.** Multi-line selection is intentionally
+  line-wise (that's what stage-a-range wants, and it reuses machinery we already
+  have) — so there is no cross-row char layer to build.
+- **The commit editor** (an `InputState` field with native char selection).
+- **The `$` command-log and blame pagers** (non-interactive; later).
+
+Today only line/unit copy exists: `y` / Cmd-C / right-click-Copy yank the visual
+(line-wise) selection or the line at point. This adds sub-line granularity to the
+same drag.
 
 ## The core obstacle (and the fix)
 
-A text-bearing row today renders its text as a **flex of separate colored `div`s**
-— e.g. `diff_line_body` builds one `div().child(text)` per syntax-highlight span.
-There is no shaped-text layout to ask "what character is under this pixel?", and
-no way to paint a selection background over a byte range. gpui isn't used for
-`StyledText`/`TextLayout` anywhere in the app yet.
+A text-bearing row renders its text as a **flex of separate colored `div`s** —
+`diff_line_body` builds one `div().child(text)` per syntax-highlight span. There's
+no shaped-text layout to hit-test ("what character is under this pixel?") and no
+way to paint a selection background over a byte range. gpui's `StyledText`/
+`TextLayout` aren't used anywhere in the app yet.
 
-The fix is to render each *selectable* row's text as a single
-`gpui::StyledText`:
+The fix is to render each *selectable* row's text as a single `gpui::StyledText`:
 
-- **Colors survive.** `StyledText::with_default_highlights(default_style, runs)`
-  takes `(Range<usize>, HighlightStyle)` runs — so the per-span colors we build
-  in `diff_line_body` become highlight runs over one string instead of sibling
-  divs. Same appearance, one text element.
-- **Pixel → offset.** `StyledText::layout()` returns a `TextLayout` (an
-  `Rc<RefCell<…>>` shared handle). After paint, `TextLayout::index_for_position(
-  point) -> Result<usize, usize>` maps a mouse position to a byte index (`Ok`
-  inside a glyph, `Err(nearest)` past the end). `position_for_index` is the
-  inverse.
-- **Selection paint.** Overlay the selection as one more highlight run with a
-  `background_color` (`with_highlights([(range, HighlightStyle { background_color:
-  Some(sel), .. })])`), composed on top of the color runs.
+- **Colors survive.** `with_default_highlights(default_style, runs)` takes
+  `(Range<usize>, HighlightStyle)` runs, so the per-span colors become highlight
+  runs over one string — same look, one element.
+- **Pixel → offset.** `StyledText::layout()` returns a `TextLayout` (cloneable
+  shared handle). After paint, `TextLayout::index_for_position(point) ->
+  Result<usize, usize>` maps a mouse position to a byte offset (`Ok` inside a
+  glyph, `Err(nearest)` past the end); `position_for_index` is the inverse.
+- **Selection paint.** Overlay the char selection as one more highlight run with a
+  `background_color`, composed on top of the color runs.
 
-So the work is a targeted rendering migration of text rows to `StyledText`, plus a
-small selection state machine and mouse handlers — not a new editor and no
-gpui-component changes.
+This is a targeted rendering migration of text rows to `StyledText` plus a small
+state machine — no new editor, no gpui-component changes. The cross-line case
+needs none of it (it uses the existing whole-row highlight).
 
 ## Selection model
 
+Two representations, chosen by how far the drag has gone from its anchor row:
+
 ```
-struct CharSelection {
-    row: usize,             // index into the current view's row model
-    anchor: usize,          // byte offset within that row's text
-    cursor: usize,          // byte offset within that row's text
-}
+// New: a character range within one row.
+struct CharSelection { row: usize, anchor: usize, cursor: usize } // byte offsets
+
+// Existing: line-wise region (Selection::visual), whole rows
+// min(anchor_row, row)..=max(...).
 ```
 
-Held on the view (e.g. `Option<CharSelection>`), distinct from the line-wise
-`Selection::visual`. The selected range is `min(anchor,cursor)..max(…)`. It's
-cleared when a different row's text is pressed, on Esc, or on a plain click
-(consistent with the which-key/prefix dismissal already added).
+The view holds `Option<CharSelection>` alongside the existing line-wise
+`Selection`. Invariant: at most one is active. A drag confined to the anchor row
+drives `CharSelection`; a drag that has touched another row drives the line-wise
+`visual` (and clears `CharSelection`).
 
-Because it's one row, copy is trivial: the row's own text sliced by the range —
-no model reconstruction, no virtualization concern (the row is on-screen by
-definition, since you're dragging on it).
+Both are cleared on a plain click elsewhere or Esc (consistent with the prefix/
+which-key dismissal already added).
 
-## Mouse gesture
+## Gesture: one drag, two granularities
 
-Plain left-drag is already **line-wise visual selection** (`drag_anchor →
-visual`), and that's a load-bearing gesture (drag to stage a range). So
-character selection uses **Alt(Option)-drag**:
+Extend the existing row mouse handlers (which today set `drag_anchor`/`visual`):
 
-- `Alt + mouse-down` on a row's text → start a char selection (anchor = index at
-  point), suppress the line-visual drag.
-- `Alt + mouse-move` (button held) → extend `cursor` to the index at the current
-  point, clamped to the same row (in-row only — vertical drift is ignored, or
-  clamps to row start/end).
-- `mouse-up` → finalize; copy immediately (see below) or leave it for Cmd-C.
+- **mouse-down** on a row's text: record the anchor row and — via that row's
+  `TextLayout::index_for_position` — the anchor **byte offset**. Keep setting the
+  cursor row as today (a bare click still just selects/positions). Start with no
+  active selection (an empty char range).
+- **mouse-move** (button held):
+  - **same row as anchor** → char mode: set `CharSelection { row, anchor,
+    cursor = index_at_point }`, clear line-wise `visual`.
+  - **different row** → line mode: set `visual = anchor_row` (the existing
+    behavior), clear `CharSelection`.
+  - The two transitions compose both ways, so dragging down into line-mode and
+    back up to the origin row returns to char-mode automatically.
+- **mouse-up**: finalize. A non-empty char range copies (below); a line-wise
+  region behaves exactly as today.
 
-Alt-drag is the least-disruptive choice (keeps every existing gesture intact); it
-needs a docs line for discoverability. The alternative — making plain-drag
-char-select and moving line-visual onto `v`+motion / shift-click — is a larger UX
-change and is not proposed here.
+`shift-click` keeps its current line-wise extend behavior.
 
 ## Rendering & wiring
 
-- **A `selectable_text` helper** that, given the row's `(text, color-runs)` and the
-  row index, returns a `StyledText` with the color runs plus the selection
-  background run (when this row is the selected one), and stashes its
-  `layout()` handle where the mouse handlers can reach it.
-- **Layout handles.** `TextLayout` is a cloneable shared handle but is only
-  populated after prepaint. Keep a per-frame map `row_ix -> TextLayout` on the
-  view (rebuilt as rows render, like other per-frame render state), so the
-  `on_mouse_down`/`on_mouse_move` closures can call `index_for_position` against
-  the right row's layout. The closures capture the row's cloned layout handle
-  directly, so no lookup race.
-- **Handlers** live on the row's container `div` (the same element that already
-  has `on_mouse_down`/drag for line-visual): branch on `ev.modifiers.alt`.
-- **Which rows:** the text-bearing kinds — diff `Line`, `Hunk`, `Message`,
-  `Detail`, `StatLine`, `Note`, and commit/log subjects. Structural rows (section
-  headers, file rows with chips) can opt in later; start with the diff/message
-  text where sub-line copy is most wanted.
+- **A `selectable_text` helper** that, given a row's `(text, color-runs, row_ix)`,
+  returns a `StyledText` with the color runs plus the char-selection background
+  run (when this row owns the active `CharSelection`), and exposes its `layout()`
+  handle to the handlers.
+- **Layout handles.** `TextLayout` is populated only after prepaint. The
+  mouse-down/move closures capture the row's cloned `TextLayout` directly (it's an
+  `Rc`), so hit-testing calls `index_for_position` on the right row without a
+  lookup. Guard against a not-yet-laid-out layout (early mouse event → no-op).
+- **Handlers** stay on the row container `div` that already has
+  `on_mouse_down`/`on_mouse_move`/`on_mouse_up`; the char/line branch is decided
+  by comparing the current row to the anchor row (no modifier check).
+- **Selectable rows:** the text-bearing kinds — diff `Line`, `Hunk`, `Message`,
+  `Detail`, `StatLine`, `Note`, commit/log subjects. Structural rows (section
+  headers, chip'd file rows) can opt in later; start with the diff/message text.
 
 ## Copy
 
-On mouse-up with a non-empty range (or on Cmd-C while a char selection exists),
-copy `row_text[range]` via the existing `copy_to_clipboard`, which already shows
-the "Copied …" flash. A char selection takes precedence over the line/unit copy
-when present, so Cmd-C does the intuitive thing.
+- **Char range:** on mouse-up (or Cmd-C while a `CharSelection` is active), copy
+  the row's text sliced by the range via the existing `copy_to_clipboard` (with
+  its "Copied …" flash). A char selection takes precedence over line/unit copy.
+- **Line-wise region:** unchanged — the existing yank of the visual selection.
 
 ## Testing
 
-- **Unit tests** for the pure parts: range normalization (`anchor`/`cursor` →
-  ordered range), clamping to a row's text bounds, and text extraction. These run
-  headless.
-- `index_for_position` depends on a painted layout, so the pixel→offset path
-  can't be unit-tested without a window — cover it **live** via `scripts/dbg.sh`:
-  Alt-drag across a diff line, screenshot the highlight, and confirm the copied
-  value (paste into the message field or check the "Copied" flash).
+- **Unit tests** (headless) for the pure parts: char-range normalization,
+  clamping to a row's text bounds, single-row text extraction, and the
+  char-vs-line decision given `(anchor_row, current_row)`.
+- The pixel→offset path needs a painted layout, so exercise it **live** via
+  `scripts/dbg.sh`: drag within a diff line (char highlight + copy), then drag
+  across lines (line-wise region), then back (char again); screenshot each.
 
 ## Phasing
 
-1. **Rendering migration:** render diff `Line` (and `Hunk`/`Message`) text as
-   `StyledText` with color runs; confirm no visual regression and comparable
-   perf. No selection yet.
-2. **Selection state + Alt-drag:** the `CharSelection` model, the mouse handlers,
-   and the highlight run. Clear on plain click / Esc.
-3. **Copy:** mouse-up + Cmd-C copy the range; "Copied" flash.
-4. **Widen the row set** to the remaining text rows; document the Alt-drag gesture.
-5. **Later:** cross-row selection (track `(row, offset)` pairs, render highlights
-   only for visible rows, reconstruct copied text from the full model), and the
-   pager views.
+1. **Rendering migration:** render diff `Line` (then `Hunk`/`Message`) as
+   `StyledText` with color runs; verify no visual regression and comparable perf.
+2. **Char selection + gesture:** `CharSelection`, the same-row/other-row branch in
+   the drag handlers, and the background highlight run. Clear on plain click / Esc.
+3. **Copy:** mouse-up + Cmd-C copy the char range; "Copied" flash; precedence over
+   line copy.
+4. **Widen** the selectable row set.
+5. **Later:** the pager views.
 
 ## Risks / open questions
 
 - **Rendering-migration blast radius.** Moving diff lines from span-divs to
-  `StyledText` touches a hot path. Expected to be perf-neutral-or-better (one
-  element vs many), but verify: `StyledText` shapes the whole line; the current
-  code relies on `uniform_list` only realizing visible rows, which still holds.
-- **Layout timing.** `index_for_position` panics if called before measurement;
-  guard the handlers so a mouse event on an as-yet-unlaid-out row is a no-op.
-- **Row-height / wrapping.** Rows are single-line (`ROW_HEIGHT`); if any selectable
-  text ever wraps, `index_for_position`'s multi-line path applies — fine, but keep
-  rows single-line to keep offset math simple.
-- **Gesture discoverability.** Alt-drag isn't obvious; needs a docs mention (and
-  possibly a hint). Revisit if users expect plain-drag to select text.
-- **Interaction with hover/line-visual.** Alt-drag must fully suppress the
-  line-visual `drag_anchor` path for that gesture, and the hover highlight should
-  not fight the selection background (selection wins).
+  `StyledText` touches a hot path; expected perf-neutral-or-better (one element vs
+  many). `uniform_list` still realizes only visible rows.
+- **Layout timing.** `index_for_position` requires a measured layout; guard the
+  handlers so an event on an unpainted row is a no-op.
+- **Same-row threshold.** Decide the exact rule for "still on the anchor row"
+  (strict row equality is simplest); vertical drift within a single-line row's
+  band stays char-wise, crossing into the next row's band flips to line-wise.
+- **Drag start precision.** `index_for_position` returns `Err(nearest)` past a
+  line's end — treat that as the end offset so dragging off the right edge selects
+  to end-of-line rather than doing nothing.
+- **Hover vs selection paint.** The char-selection background should win over the
+  row hover wash.
