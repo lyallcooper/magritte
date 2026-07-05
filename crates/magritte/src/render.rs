@@ -1180,6 +1180,18 @@ impl StatusView {
         col
     }
 
+    /// A small, subtle count badge for the title bar (commits-since-tag, ahead,
+    /// behind): a rounded `color`-tinted pill with `color` text.
+    pub(crate) fn count_pill(&self, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+        div()
+            .px(px(4.0))
+            .rounded(px(6.0))
+            .bg(with_alpha(color, 0.15))
+            .text_size(px(11.0))
+            .text_color(color)
+            .child(text.into())
+    }
+
     pub(crate) fn track_chunk(
         &self,
         view: &Entity<Self>,
@@ -1218,7 +1230,7 @@ impl StatusView {
                 view,
                 format!("{key}-ahead"),
                 "push",
-                SharedString::from(format!("↑{ahead}")),
+                self.count_pill(format!("↑{ahead}"), self.palette.branch_local),
             ));
         }
         if behind > 0 {
@@ -1226,7 +1238,7 @@ impl StatusView {
                 view,
                 format!("{key}-behind"),
                 "pull",
-                SharedString::from(format!("↓{behind}")),
+                self.count_pill(format!("↓{behind}"), self.palette.branch_local),
             ));
         }
         chunk
@@ -1359,15 +1371,7 @@ impl StatusView {
                                 .child(SharedString::from(name.clone())),
                         )
                         .when(*count > 0, |d| {
-                            d.child(
-                                div()
-                                    .px(px(4.0))
-                                    .rounded(px(6.0))
-                                    .bg(with_alpha(self.palette.tag, 0.15))
-                                    .text_size(px(11.0))
-                                    .text_color(self.palette.tag)
-                                    .child(SharedString::from(count.to_string())),
-                            )
+                            d.child(self.count_pill(count.to_string(), self.palette.tag))
                         });
                     if i + 1 < entries.len() {
                         entry = entry.child(
