@@ -1075,6 +1075,25 @@ type RepoWindows = Rc<RefCell<HashMap<PathBuf, AnyWindowHandle>>>;
 pub(crate) struct GlobalRepoWindows(pub(crate) RepoWindows);
 impl gpui::Global for GlobalRepoWindows {}
 
+/// Asset source: our own bundled SVGs (a few icons Lucide's set lacks, e.g. the
+/// title-bar tag), falling back to gpui-component's icon set for everything else.
+struct AppAssets;
+
+impl gpui::AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if path == "icons/tag.svg" {
+            return Ok(Some(std::borrow::Cow::Borrowed(
+                include_bytes!("../assets/icons/tag.svg").as_slice(),
+            )));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -1121,7 +1140,7 @@ fn main() {
         return;
     }
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(AppAssets);
     app.run(move |cx: &mut App| {
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);

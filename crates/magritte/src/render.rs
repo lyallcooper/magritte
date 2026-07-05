@@ -1314,11 +1314,14 @@ impl StatusView {
             // segment immediately (not just after the next status refresh clears
             // `tag_info`).
             if self.config.show_tags_in_title_bar && !entries.is_empty() {
-                let label = if entries.len() > 1 { "Tags:" } else { "Tag:" };
+                // A tag glyph stands in for the old "Tag:"/"Tags:" label; the
+                // names follow, so the count of icons doesn't need to vary.
                 let mut seg = div().flex().items_center().gap_1().child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(label)),
+                    gpui::svg()
+                        .path("icons/tag.svg")
+                        .size(px(13.0))
+                        .flex_none()
+                        .text_color(self.palette.tag),
                 );
                 for (i, (name, count)) in entries.iter().enumerate() {
                     let mut text = name.clone();
