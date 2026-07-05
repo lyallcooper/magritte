@@ -1751,6 +1751,9 @@ pub(crate) fn build_keymap(config: &config::Config) -> (ScreenKeymaps, Vec<Strin
     // A binding target is valid if it names any command — built-in or user.
     let known = |id: &str| all_commands(config).any(|c| c.id == id);
     for (keystroke, id) in &config.keymap {
+        if let Some(err) = kbd::keystroke_error(keystroke) {
+            warnings.push(format!("keymap: {err}"));
+        }
         if id == "unbound" {
             for sub in map.values_mut() {
                 sub.remove(keystroke);

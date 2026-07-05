@@ -54,6 +54,39 @@ fn is_modifier(token: &str) -> bool {
     )
 }
 
+/// Validate a user `[keymap]` keystroke spec, returning a human-readable reason
+/// if it's malformed — an empty step, a `+`-joined chord (we use `-`), or an
+/// unknown modifier prefix. Lenient about a literal `-` key (empty segments from
+/// splitting are ignored), so `cmd--` (⌘ and minus) is accepted. `None` = valid.
+pub(crate) fn keystroke_error(key: &str) -> Option<String> {
+    if key.is_empty() {
+        return Some("empty keystroke".to_string());
+    }
+    for step in key.split(' ') {
+        if step.is_empty() {
+            return Some(format!("\"{key}\": empty step (stray space?)"));
+        }
+        if step.contains('+') {
+            return Some(format!(
+                "\"{step}\": join modifiers with '-' (e.g. ctrl-x), not '+'"
+            ));
+        }
+        // Every segment but the last is a modifier prefix; the last is the key.
+        // Empty segments (from a literal `-` key) are ignored.
+        let segs: Vec<&str> = step.split('-').collect();
+        for (i, seg) in segs.iter().enumerate() {
+            let is_last = i == segs.len() - 1;
+            if is_last || seg.is_empty() {
+                continue;
+            }
+            if !is_modifier(seg) {
+                return Some(format!("\"{step}\": unknown modifier \"{seg}\""));
+            }
+        }
+    }
+    None
+}
+
 /// Whether a `-`-split keystroke is a chord: ≥2 parts where every part but the
 /// last is a modifier (`ctrl-d`, `cmd-shift-x`), vs. a lone key or a literal
 /// `-`.
@@ -162,4 +195,31 @@ pub(crate) fn switch_chip(
                 .child(SharedString::from(rest.to_string())),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keystroke_error;
+
+    #[test]
+    fn keystroke_validation() {
+        // Valid: plain keys, sequences, chords, and the literal minus key.
+        for ok in [
+            "g",
+            "K",
+            "g r",
+            "ctrl-x ctrl-c",
+            "cmd-enter",
+            "-",
+            "cmd--",
+            "ctrl-space",
+        ] {
+            assert!(keystroke_error(ok).is_none(), "{ok} should be valid");
+        }
+        // Malformed: empty, `+` join, unknown modifier, stray space.
+        assert!(keystroke_error("").is_some());
+        assert!(keystroke_error("cmd+x").is_some());
+        assert!(keystroke_error("kmd-x").is_some());
+        assert!(keystroke_error("g  r").is_some());
+    }
 }
