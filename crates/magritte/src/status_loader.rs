@@ -46,7 +46,13 @@ impl StatusView {
         self.error = None;
 
         if self.read_repo().is_none() {
-            self.error = Some(format!("Not a git repository: {}", self.root.display()));
+            // A recorded open failure (git missing) wins over the generic
+            // not-a-repository message.
+            self.error = Some(
+                self.open_error
+                    .clone()
+                    .unwrap_or_else(|| format!("Not a git repository: {}", self.root.display())),
+            );
             self.loading_sections.clear();
             self.rebuild_rows();
             return;
@@ -182,6 +188,9 @@ impl StatusView {
                     Ok(status) => {
                         this.status = Some(status);
                         this.error = None;
+                    }
+                    Err(e) if e.is_git_missing() => {
+                        this.error = Some(GIT_MISSING_MESSAGE.to_string())
                     }
                     Err(e) => this.error = Some(e.to_string()),
                 }

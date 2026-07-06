@@ -60,6 +60,15 @@ impl fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether this error means the `git` binary itself is missing (not
+    /// installed or not on `PATH`) — a spawn failure with `ErrorKind::NotFound`,
+    /// as opposed to any other spawn or run failure.
+    pub fn is_git_missing(&self) -> bool {
+        matches!(self, Error::Spawn { source } if source.kind() == std::io::ErrorKind::NotFound)
+    }
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

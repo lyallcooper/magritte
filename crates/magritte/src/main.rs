@@ -220,6 +220,10 @@ const CONFIRM_FLASH_MS: u64 = 400;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";
+/// Shown when the `git` binary can't be found — Magritte shells out to `git`,
+/// so nothing works without it.
+const GIT_MISSING_MESSAGE: &str =
+    "git was not found. Install git or add it to your PATH, then reopen Magritte.";
 /// Left padding (points) added per indent level.
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
@@ -452,6 +456,10 @@ struct StatusView {
     /// git as `edit` stops so the in-app editor can handle their messages.
     pending_rebase_rewords: HashSet<String>,
     error: Option<String>,
+    /// A message explaining why the repo couldn't be opened at startup, when the
+    /// reason isn't the ordinary "not a git repository" (currently: `git` is not
+    /// installed). Shown by `refresh` in place of the generic message.
+    open_error: Option<String>,
     expanded: HashSet<FoldKey>,
     /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
     /// to expanded, so this tracks the exceptions rather than `expanded` does.
@@ -640,7 +648,14 @@ impl StatusView {
         let root = start_dir
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        let repo = Repo::discover(&root).ok();
+        // Keep discovery's failure reason: a missing `git` binary must read as
+        // "git not found" rather than the misleading "not a git repository" that
+        // any `None` repo would otherwise produce.
+        let (repo, open_error) = match Repo::discover(&root) {
+            Ok(repo) => (Some(repo), None),
+            Err(e) if e.is_git_missing() => (None, Some(GIT_MISSING_MESSAGE.to_string())),
+            Err(_) => (None, None),
+        };
         // The repo's settings scope (`.git/magritte`) and its saved argument sets,
         // overlaid on the global ones when a transient opens. Keyed to the
         // *common* git dir, so config/arguments are shared across worktrees.
@@ -721,6 +736,7 @@ impl StatusView {
             bisect: None,
             pending_rebase_rewords: HashSet::new(),
             error: None,
+            open_error,
             expanded,
             collapsed_hunks: HashSet::new(),
             collapse_new_hunks: false,

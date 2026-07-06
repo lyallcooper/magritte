@@ -211,4 +211,4 @@
 - [x] Commit details view sha should be char-wise selectable — done: the head line is a normal selectable row, so the sha drag-selects and copies like any other text.
 - [x] Clicking anywhere should dismiss the current selection, not just when other selectable text is clicked — done: a root bubble-phase handler clears the active char/visual selection on any left click that didn't land on a selectable row (empty space, chrome, a section header).
 - [ ] Add config support a la magit's branch at remote (and whatever other) transients
-- [ ] Gracefully handle when git is not installed and provide a brief but helpful error message
+- [x] Gracefully handle when git is not installed and provide a brief but helpful error message — done: `Error::is_git_missing()` classifies a spawn `NotFound`; startup discovery keeps that reason so a missing `git` shows "git was not found. Install git or add it to your PATH…" instead of the misleading "not a git repository", and a mid-session disappearance shows the same.
