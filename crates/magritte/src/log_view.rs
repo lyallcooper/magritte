@@ -86,6 +86,16 @@ pub(crate) struct LogState {
     /// keys). Left empty for the select modes, which don't re-limit.
     pub(crate) args: Vec<String>,
     pub(crate) limit: usize,
+    /// The active mouse char-range selection within a row's subject (a drag) —
+    /// see [`CharSelection`]. The log's rows aren't line-selectable, so this is
+    /// the only selection here.
+    pub(crate) char_sel: Option<CharSelection>,
+    /// Row a left-drag began on / its byte offset within the subject, while the
+    /// button is held; and whether the press landed on a live selection (so the
+    /// following click clears it rather than opening the commit).
+    pub(crate) drag_anchor: Option<usize>,
+    pub(crate) char_anchor: Option<usize>,
+    pub(crate) char_click: bool,
 }
 
 /// The commit limit encoded in a log arg list (`--max-count=N` or `-nN`), if
@@ -540,6 +550,10 @@ impl StatusView {
             purpose,
             args: Vec::new(),
             limit: Self::LOG_LIMIT,
+            char_sel: None,
+            drag_anchor: None,
+            char_anchor: None,
+            char_click: false,
         });
         cx.notify();
         gen
@@ -578,6 +592,7 @@ impl StatusView {
     /// Move the log's selection by `delta`, keeping it in view.
     pub(crate) fn log_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         if let Some(log) = self.log_mut() {
+            log.char_sel = None;
             if log.entries.is_empty() {
                 return;
             }
@@ -662,6 +677,19 @@ impl StatusView {
 
     /// Copy the full hash of the commit selected in the log.
     pub(crate) fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
+        // A mouse char selection (within a row's subject) wins over the hash.
+        let selected = self.log().and_then(|l| {
+            let sel = l.char_sel.filter(|c| !c.is_empty())?;
+            let entry = l.entries.get(sel.row)?;
+            Some(sel.slice(&entry.subject).to_string())
+        });
+        if let Some(text) = selected {
+            if let Some(log) = self.log_mut() {
+                log.char_sel = None;
+            }
+            self.copy_to_clipboard(text, cx);
+            return;
+        }
         let hash = self
             .log()
             .and_then(|l| l.entries.get(l.selected))

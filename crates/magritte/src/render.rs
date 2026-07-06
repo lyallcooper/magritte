@@ -2789,7 +2789,13 @@ impl StatusView {
         hash_width: f32,
         view: &Entity<Self>,
     ) -> AnyElement {
-        let view = view.clone();
+        // The char selection within this row's subject, if it owns one.
+        let sel = self
+            .log()
+            .and_then(|l| l.char_sel)
+            .filter(|c| c.row == ix && !c.is_empty())
+            .map(|c| c.range());
+        let owns_char = sel.is_some();
         let mut row = div()
             .id(SharedString::from(format!("log-row-{ix}")))
             .flex()
@@ -2798,18 +2804,12 @@ impl StatusView {
             .h(px(ROW_HEIGHT))
             .w_full()
             .px_2()
-            .cursor_pointer()
-            .on_click(move |_, _window, cx: &mut App| {
-                view.update(cx, |this, vcx| {
-                    if let Some(log) = this.log_mut() {
-                        log.selected = ix;
-                    }
-                    this.open_commit_view(vcx);
-                });
-            });
-        if selected {
+            .cursor_pointer();
+        // A row mid-char-selection keeps the char background visible (no full-row
+        // wash / hover over it).
+        if selected && !owns_char {
             row = row.bg(self.palette.selection);
-        } else {
+        } else if !owns_char {
             row = row.hover(|s| s.bg(self.palette.hover));
         }
         row = row.child(
@@ -2829,19 +2829,102 @@ impl StatusView {
         for (label, kind) in parse_refs(&entry.refs, upstream) {
             row = row.child(self.ref_chip(&label, kind));
         }
-        row.child(
-            div()
-                .text_color(self.palette.fg)
-                .child(SharedString::from(entry.subject.clone())),
-        )
-        .child(div().flex_grow(1.0))
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_color(self.palette.dim)
-                .child(SharedString::from(entry.date.clone())),
-        )
-        .into_any_element()
+        // The subject as a selectable StyledText; its layout drives hit-testing.
+        let (subject, layout) = self.selectable_text(
+            entry.subject.clone(),
+            vec![(0..entry.subject.len(), self.palette.fg)],
+            sel,
+        );
+        let (down_layout, move_layout) = (layout.clone(), layout);
+        let (v_down, v_move, v_up, v_open) =
+            (view.clone(), view.clone(), view.clone(), view.clone());
+        row.child(subject)
+            .child(div().flex_grow(1.0))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(entry.date.clone())),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                    let offset = offset_at(&down_layout, ev.position);
+                    v_down.update(cx, |this, vcx| {
+                        if let Some(log) = this.log_mut() {
+                            log.char_click =
+                                log.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
+                            log.char_sel = None;
+                            log.drag_anchor = Some(ix);
+                            log.char_anchor = Some(offset);
+                            log.selected = ix;
+                            vcx.notify();
+                        }
+                    });
+                },
+            )
+            .on_mouse_move(move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                let offset = offset_at(&move_layout, ev.position);
+                v_move.update(cx, |this, vcx| {
+                    if let Some(log) = this.log_mut() {
+                        let (Some(anchor), Some(a)) = (log.drag_anchor, log.char_anchor) else {
+                            return;
+                        };
+                        // A drag onto another row can't char-select there (single
+                        // row); keep the selection anchored on its origin row.
+                        if anchor != ix {
+                            return;
+                        }
+                        let candidate = CharSelection {
+                            row: anchor,
+                            anchor: a,
+                            cursor: offset,
+                        };
+                        if log.char_sel != Some(candidate) {
+                            log.char_sel = Some(candidate);
+                            vcx.notify();
+                        }
+                    }
+                });
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _window, cx: &mut App| {
+                v_up.update(cx, |this, vcx| {
+                    if let Some(log) = this.log_mut() {
+                        if log.drag_anchor.take().is_some() {
+                            log.char_anchor = None;
+                            vcx.notify();
+                        }
+                    }
+                });
+            })
+            .on_click(move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
+                // A drag selected text; don't also open the commit.
+                if let gpui::ClickEvent::Mouse(e) = ev {
+                    if (e.up.position.x - e.down.position.x).abs() > px(4.0)
+                        || (e.up.position.y - e.down.position.y).abs() > px(4.0)
+                    {
+                        return;
+                    }
+                }
+                v_open.update(cx, |this, vcx| {
+                    if let Some(log) = this.log_mut() {
+                        // A click on a row that had a selection just clears it.
+                        if log.char_click {
+                            log.char_click = false;
+                            log.char_sel = None;
+                            vcx.notify();
+                            return;
+                        }
+                        log.char_sel = None;
+                        log.selected = ix;
+                    }
+                    this.open_commit_view(vcx);
+                });
+            })
+            .into_any_element()
     }
 
     /// The virtualized row list shared by the flattened diff screens: rows

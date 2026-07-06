@@ -517,6 +517,17 @@ impl StatusView {
             cx.notify();
             return;
         }
+        // Esc first clears a log char selection, then (next Esc) closes.
+        if self
+            .log()
+            .is_some_and(|l| l.char_sel.is_some_and(|c| !c.is_empty()))
+        {
+            if let Some(log) = self.log_mut() {
+                log.char_sel = None;
+            }
+            cx.notify();
+            return;
+        }
         match self.screen_kind() {
             ScreenKind::Log => self.close_log(window, cx),
             ScreenKind::GitLog => self.close_git_log(window, cx),
@@ -677,6 +688,8 @@ impl StatusView {
     pub(crate) fn has_visual_selection(&self) -> bool {
         if let Some(fd) = self.flat_diff() {
             fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty())
+        } else if let Some(log) = self.log() {
+            log.char_sel.is_some_and(|c| !c.is_empty())
         } else {
             matches!(self.screen, Screen::Status)
                 && (self.selection.visual.is_some() || self.char_sel.is_some_and(|c| !c.is_empty()))
