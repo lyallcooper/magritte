@@ -28,6 +28,10 @@ pub(crate) struct Selection {
     /// fires Enter (magit's "click the selected row to open it"). A double-click
     /// hits this on its second press; a slow re-click hits it too.
     pub(crate) reclick: bool,
+    /// Set by a mouse-down on a row that had an active char selection, so the
+    /// following click just clears the selection (rather than firing Enter); the
+    /// click after that — with no selection — fires Enter as usual.
+    pub(crate) char_click: bool,
 }
 
 /// A character-range selection within a single row's text, in byte offsets into

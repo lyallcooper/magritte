@@ -2890,13 +2890,16 @@ impl StatusView {
                                                     return;
                                                 }
                                                 if let Some(fd) = view.flat_diff_mut() {
+                                                    // A press on a live char selection means
+                                                    // the coming click just clears it.
+                                                    fd.char_click = fd.char_sel.is_some_and(|c| {
+                                                        c.row == ix && !c.is_empty()
+                                                    });
                                                     fd.selected = ix;
                                                     fd.visual = None;
-                                                    // Clear any prior selection now; a drag
-                                                    // rebuilds it from this anchor offset.
                                                     fd.char_sel = None;
-                                                    fd.drag_anchor =
-                                                        Some((ix, offset.unwrap_or(0)));
+                                                    fd.drag_anchor = Some(ix);
+                                                    fd.char_anchor = offset;
                                                     vcx.notify();
                                                 }
                                             });
@@ -2911,32 +2914,58 @@ impl StatusView {
                                                 .as_ref()
                                                 .map(|l| offset_at(l, ev.position));
                                             v_move.update(cx, |view, vcx| {
-                                                let Some((anchor_row, anchor_off)) =
-                                                    view.flat_diff().and_then(|fd| fd.drag_anchor)
-                                                else {
-                                                    return;
-                                                };
                                                 let Some(fd) = view.flat_diff_mut() else {
                                                     return;
                                                 };
-                                                if ix == anchor_row {
-                                                    // Still on the anchor row → char-wise.
-                                                    let Some(cursor) = offset else {
-                                                        return;
-                                                    };
-                                                    fd.visual = None;
-                                                    fd.selected = anchor_row;
-                                                    fd.char_sel = Some(CharSelection {
-                                                        row: anchor_row,
-                                                        anchor: anchor_off,
-                                                        cursor,
-                                                    });
-                                                } else {
-                                                    // Spanned rows → line-wise region.
-                                                    fd.char_sel = None;
-                                                    fd.visual = Some(anchor_row);
-                                                    fd.selected = ix;
+                                                let Some(anchor) = fd.drag_anchor else {
+                                                    return;
+                                                };
+                                                if ix == anchor {
+                                                    match (fd.char_anchor, offset) {
+                                                        // On the anchor text row → char-wise.
+                                                        (Some(a), Some(cursor)) => {
+                                                            let sel = CharSelection {
+                                                                row: anchor,
+                                                                anchor: a,
+                                                                cursor,
+                                                            };
+                                                            if fd.char_sel == Some(sel)
+                                                                && fd.visual.is_none()
+                                                            {
+                                                                return;
+                                                            }
+                                                            fd.visual = None;
+                                                            fd.char_sel = Some(sel);
+                                                            fd.selected = anchor;
+                                                            vcx.notify();
+                                                        }
+                                                        // Back on the anchor after going
+                                                        // line-wise → collapse to it.
+                                                        _ => {
+                                                            if fd.visual.is_some()
+                                                                || fd.selected != anchor
+                                                            {
+                                                                fd.visual = None;
+                                                                fd.char_sel = None;
+                                                                fd.selected = anchor;
+                                                                vcx.notify();
+                                                            }
+                                                        }
+                                                    }
+                                                    return;
                                                 }
+                                                // Spanned rows → line-wise; the drag has left
+                                                // the anchor, so a return won't re-char-select.
+                                                fd.char_anchor = None;
+                                                if fd.selected == ix
+                                                    && fd.visual == Some(anchor)
+                                                    && fd.char_sel.is_none()
+                                                {
+                                                    return;
+                                                }
+                                                fd.char_sel = None;
+                                                fd.visual = Some(anchor);
+                                                fd.selected = ix;
                                                 vcx.notify();
                                             });
                                         }
@@ -2944,26 +2973,11 @@ impl StatusView {
                                     .on_mouse_up(MouseButton::Left, {
                                         move |_, _window, cx: &mut App| {
                                             v_up.update(cx, |view, vcx| {
-                                                let Some(fd) = view.flat_diff_mut() else {
-                                                    return;
-                                                };
-                                                if fd.drag_anchor.take().is_none() {
-                                                    return;
-                                                }
-                                                // A non-empty char range copies on release.
-                                                let copy = fd
-                                                    .char_sel
-                                                    .filter(|c| !c.is_empty())
-                                                    .and_then(|c| {
-                                                        fd.rows.get(c.row).map(|row| {
-                                                            c.slice(&commit_row_text(row))
-                                                                .to_string()
-                                                        })
-                                                    })
-                                                    .filter(|t| !t.is_empty());
-                                                vcx.notify();
-                                                if let Some(text) = copy {
-                                                    view.copy_to_clipboard(text, vcx);
+                                                if let Some(fd) = view.flat_diff_mut() {
+                                                    if fd.drag_anchor.take().is_some() {
+                                                        fd.char_anchor = None;
+                                                        vcx.notify();
+                                                    }
                                                 }
                                             });
                                         }
@@ -2971,8 +2985,7 @@ impl StatusView {
                                     .on_click(
                                         move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
                                             // A drag (moved between down and up) already
-                                            // selected; don't also click (which would move
-                                            // the cursor or toggle a fold).
+                                            // selected; don't also click.
                                             if let gpui::ClickEvent::Mouse(e) = ev {
                                                 let moved = (e.up.position.x - e.down.position.x)
                                                     .abs()
@@ -2985,6 +2998,14 @@ impl StatusView {
                                             }
                                             v_click.update(cx, |view, vcx| {
                                                 if let Some(fd) = view.flat_diff_mut() {
+                                                    // A click on a row that had a char
+                                                    // selection only clears it (no fold).
+                                                    if fd.char_click {
+                                                        fd.char_click = false;
+                                                        fd.char_sel = None;
+                                                        vcx.notify();
+                                                        return;
+                                                    }
                                                     fd.selected = ix;
                                                     fd.visual = None;
                                                     fd.char_sel = None;
@@ -3456,7 +3477,14 @@ impl StatusView {
                         }
                         let double = ev.click_count() >= 2;
                         view.update(cx, |v, cx| {
-                            // A plain click clears any mouse char selection.
+                            // A click on a row that had a char selection only clears
+                            // it — the next click (with none) fires Enter as usual.
+                            if v.selection.char_click {
+                                v.selection.char_click = false;
+                                v.char_sel = None;
+                                cx.notify();
+                                return;
+                            }
                             v.char_sel = None;
                             // Enter fires on a double-click or a click of the
                             // already-selected row — the two are equivalent (a
@@ -3499,11 +3527,18 @@ impl StatusView {
                                 v.char_sel = None;
                                 v.selection.shift_click = true;
                                 v.selection.reclick = false;
+                                v.selection.char_click = false;
                             } else {
+                                // A press on a live char selection means the coming
+                                // click just clears it (not Enter).
+                                let had_char =
+                                    v.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
+                                v.selection.char_click = had_char;
                                 // Clicking the row that's already the sole selection
-                                // arms Enter for the click that follows this press.
+                                // arms Enter — but not when there's a selection to
+                                // clear first.
                                 v.selection.reclick =
-                                    v.selected == ix && v.selection.visual.is_none();
+                                    !had_char && v.selected == ix && v.selection.visual.is_none();
                                 v.selection.drag_anchor = Some(ix);
                                 v.selection.char_anchor = offset;
                                 // A new drag clears any prior char selection; a move
@@ -3532,25 +3567,40 @@ impl StatusView {
                                 return;
                             }
                             if ix == anchor {
-                                // Still on the anchor row → char-wise (only on a
-                                // diff line, where both offsets exist).
-                                if let (Some(a), Some(cursor)) = (v.selection.char_anchor, offset) {
-                                    let sel = CharSelection {
-                                        row: anchor,
-                                        anchor: a,
-                                        cursor,
-                                    };
-                                    if v.char_sel == Some(sel) && v.selection.visual.is_none() {
-                                        return;
+                                match (v.selection.char_anchor, offset) {
+                                    // On the anchor text row → char-wise.
+                                    (Some(a), Some(cursor)) => {
+                                        let sel = CharSelection {
+                                            row: anchor,
+                                            anchor: a,
+                                            cursor,
+                                        };
+                                        if v.char_sel == Some(sel) && v.selection.visual.is_none() {
+                                            return;
+                                        }
+                                        v.selection.visual = None;
+                                        v.char_sel = Some(sel);
+                                        v.selected = anchor;
+                                        vcx.notify();
                                     }
-                                    v.selection.visual = None;
-                                    v.char_sel = Some(sel);
-                                    v.selected = anchor;
-                                    vcx.notify();
+                                    // Back on the anchor after going line-wise (char
+                                    // anchor cleared) or a non-text anchor → collapse
+                                    // the region to just the anchor row.
+                                    _ => {
+                                        if v.selection.visual.is_some() || v.selected != anchor {
+                                            v.selection.visual = None;
+                                            v.char_sel = None;
+                                            v.selected = anchor;
+                                            vcx.notify();
+                                        }
+                                    }
                                 }
                                 return;
                             }
                             // Spanned rows → line-wise region (the staging selection).
+                            // The drag has left the anchor, so drop the char anchor:
+                            // returning to it collapses rather than re-char-selecting.
+                            v.selection.char_anchor = None;
                             if v.selected == ix
                                 && v.selection.visual == Some(anchor)
                                 && v.char_sel.is_none()
@@ -3568,25 +3618,9 @@ impl StatusView {
                     let view = view.clone();
                     move |_, _window, cx: &mut App| {
                         view.update(cx, |v, vcx| {
-                            if v.selection.drag_anchor.take().is_none() {
-                                return;
-                            }
-                            v.selection.char_anchor = None;
-                            // A non-empty char range copies on release (precedence
-                            // over the line-wise copy).
-                            let copy = v
-                                .char_sel
-                                .filter(|c| !c.is_empty())
-                                .and_then(|c| match v.rows.get(c.row).map(|r| &r.kind) {
-                                    Some(RowKind::Diff { spans, .. }) => Some(
-                                        c.slice(&StatusView::spans_text_runs(spans).0).to_string(),
-                                    ),
-                                    _ => None,
-                                })
-                                .filter(|t| !t.is_empty());
-                            vcx.notify();
-                            if let Some(text) = copy {
-                                v.copy_to_clipboard(text, vcx);
+                            if v.selection.drag_anchor.take().is_some() {
+                                v.selection.char_anchor = None;
+                                vcx.notify();
                             }
                         });
                     }

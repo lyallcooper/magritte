@@ -27,10 +27,16 @@ pub(crate) struct FlatDiff {
     ///
     /// [`visual`]: Self::visual
     pub(crate) char_sel: Option<CharSelection>,
-    /// `(row, byte offset)` a left-drag began at, while the button is held
-    /// (`None` otherwise): the row lets a move tell whether the drag has left its
-    /// anchor row, and the offset re-anchors the char selection if it comes back.
-    pub(crate) drag_anchor: Option<(usize, usize)>,
+    /// Row a left-drag began on, while the button is held (`None` otherwise), so
+    /// a move can tell whether the drag has left its anchor row.
+    pub(crate) drag_anchor: Option<usize>,
+    /// Byte offset the drag anchored at within the anchor row (only on a text
+    /// row). Cleared once the drag leaves the anchor row, so a return to it
+    /// collapses the line region rather than re-entering char selection.
+    pub(crate) char_anchor: Option<usize>,
+    /// Set by a mouse-down on a row that had an active char selection: the
+    /// following click only clears the selection (see [`Selection::char_click`]).
+    pub(crate) char_click: bool,
 }
 
 impl FlatDiff {
@@ -43,6 +49,8 @@ impl FlatDiff {
             collapsed: std::collections::HashSet::new(),
             char_sel: None,
             drag_anchor: None,
+            char_anchor: None,
+            char_click: false,
         }
     }
 

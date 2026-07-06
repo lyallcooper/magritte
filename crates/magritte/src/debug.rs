@@ -171,13 +171,15 @@ async fn run_command(
             Ok(None)
         }
         "drag" => {
-            let mut parts = rest.split_whitespace();
-            let mut next = || parts.next().and_then(|s| s.parse::<f32>().ok());
-            let (x1, y1, x2, y2) = match (next(), next(), next(), next()) {
-                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
-                _ => return Err("drag needs: x1 y1 x2 y2".into()),
-            };
-            dispatch_drag(handle, (x1, y1), (x2, y2), cx)?;
+            let coords: Vec<f32> = rest
+                .split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if coords.len() < 4 || coords.len() % 2 != 0 {
+                return Err("drag needs: x1 y1 x2 y2 [x3 y3 …]".into());
+            }
+            let points: Vec<(f32, f32)> = coords.chunks(2).map(|p| (p[0], p[1])).collect();
+            dispatch_drag(handle, &points, cx)?;
             Ok(None)
         }
         "click-id" | "shift-click-id" => {
@@ -337,17 +339,19 @@ fn dispatch_click(
     .map_err(|e| e.to_string())
 }
 
-/// Dispatch a left-drag from `start` to `end` (window-relative points): press
-/// at `start`, several button-held moves toward `end`, then release — so the
-/// row mouse-move handlers (and the char-selection gesture) see the same event
-/// stream a real drag produces.
+/// Dispatch a left-drag along `points` (window-relative): press at the first,
+/// button-held moves interpolated through each leg, then release at the last —
+/// so the row mouse-move handlers (and the char-selection gesture) see the same
+/// event stream a real drag produces. A polyline (3+ points) exercises paths
+/// like drag-away-then-back.
 fn dispatch_drag(
     handle: AnyWindowHandle,
-    start: (f32, f32),
-    end: (f32, f32),
+    points: &[(f32, f32)],
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
-    let start_pos = point(px(start.0), px(start.1));
+    let first = points[0];
+    let last = points[points.len() - 1];
+    let start_pos = point(px(first.0), px(first.1));
     cx.update_window(handle, |_, window, cx| {
         window.dispatch_event(
             PlatformInput::MouseMove(MouseMoveEvent {
@@ -367,27 +371,31 @@ fn dispatch_drag(
             }),
             cx,
         );
-        // Interpolate button-held moves so each crossed row fires its handler.
+        // Interpolate button-held moves along each leg so every crossed row
+        // fires its handler.
         const STEPS: u32 = 8;
-        for step in 1..=STEPS {
-            let t = step as f32 / STEPS as f32;
-            let pos = point(
-                px(start.0 + (end.0 - start.0) * t),
-                px(start.1 + (end.1 - start.1) * t),
-            );
-            window.dispatch_event(
-                PlatformInput::MouseMove(MouseMoveEvent {
-                    position: pos,
-                    pressed_button: Some(MouseButton::Left),
-                    modifiers: Modifiers::default(),
-                }),
-                cx,
-            );
+        for leg in points.windows(2) {
+            let (from, to) = (leg[0], leg[1]);
+            for step in 1..=STEPS {
+                let t = step as f32 / STEPS as f32;
+                let pos = point(
+                    px(from.0 + (to.0 - from.0) * t),
+                    px(from.1 + (to.1 - from.1) * t),
+                );
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: pos,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::default(),
+                    }),
+                    cx,
+                );
+            }
         }
         window.dispatch_event(
             PlatformInput::MouseUp(MouseUpEvent {
                 button: MouseButton::Left,
-                position: point(px(end.0), px(end.1)),
+                position: point(px(last.0), px(last.1)),
                 modifiers: Modifiers::default(),
                 click_count: 1,
             }),

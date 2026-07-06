@@ -341,7 +341,11 @@ impl StatusView {
                 if self.cancel_job(cx) {
                     return;
                 }
-                if self.selection.visual.take().is_some() || self.toast.message.take().is_some() {
+                let had_char = self.char_sel.take().is_some();
+                if self.selection.visual.take().is_some()
+                    || had_char
+                    || self.toast.message.take().is_some()
+                {
                     cx.notify();
                 }
                 return;
@@ -668,11 +672,14 @@ impl StatusView {
 
     /// Whether a visual (region) selection is active on the current screen — the
     /// flat-diff selection in a commit/diff view, or the status-list selection.
+    /// Whether an active selection (line-wise visual or a mouse char range) is
+    /// present, so evil's `y` yanks it immediately instead of starting a prefix.
     pub(crate) fn has_visual_selection(&self) -> bool {
-        if self.flat_diff().is_some() {
-            self.flat_diff().is_some_and(|fd| fd.visual.is_some())
+        if let Some(fd) = self.flat_diff() {
+            fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty())
         } else {
-            matches!(self.screen, Screen::Status) && self.selection.visual.is_some()
+            matches!(self.screen, Screen::Status)
+                && (self.selection.visual.is_some() || self.char_sel.is_some_and(|c| !c.is_empty()))
         }
     }
 
