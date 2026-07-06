@@ -267,10 +267,17 @@ pub(crate) enum TagAction {
 #[derive(Clone)]
 pub(crate) enum RemoteAction {
     AddName,
-    AddUrl { name: String, args: Vec<String> },
+    AddUrl {
+        name: String,
+        args: Vec<String>,
+    },
     RenameFrom,
-    RenameTo { old: String },
+    RenameTo {
+        old: String,
+    },
     Remove,
+    /// Pick a remote to open its config transient.
+    Configure,
 }
 
 /// A stash-transient operation carried out against a picked stash entry. The
@@ -367,6 +374,12 @@ pub(crate) enum PickerAction {
     RefsRename {
         old: String,
     },
+    /// Set a git-config variable (`variable`) from a Configure transient to the
+    /// typed value (empty unsets it), then reopen the transient.
+    SetVariable {
+        variable: String,
+        description: String,
+    },
 }
 
 impl PickerAction {
@@ -410,13 +423,15 @@ impl PickerAction {
                     TitleSpan::text(" to"),
                 ],
                 RemoteAction::Remove => transient::plain_title("Remove remote"),
+                RemoteAction::Configure => transient::plain_title("Configure remote"),
             },
             PickerAction::Stash(s) => transient::plain_title(match s {
                 StashAction::Apply => "Apply stash",
                 StashAction::Pop => "Pop stash",
                 StashAction::Drop => "Drop stash",
             }),
-            PickerAction::SetOption { description, .. } => {
+            PickerAction::SetOption { description, .. }
+            | PickerAction::SetVariable { description, .. } => {
                 transient::plain_title(description.clone())
             }
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
@@ -489,10 +504,11 @@ impl PickerAction {
                 "rename"
             }
             PickerAction::Remote(RemoteAction::Remove) => "remove",
+            PickerAction::Remote(RemoteAction::Configure) => "configure",
             PickerAction::Stash(StashAction::Apply) => "apply",
             PickerAction::Stash(StashAction::Pop) => "pop",
             PickerAction::Stash(StashAction::Drop) => "drop",
-            PickerAction::SetOption { .. } => "set",
+            PickerAction::SetOption { .. } | PickerAction::SetVariable { .. } => "set",
             PickerAction::LogRef { .. } => "log",
             PickerAction::DiffRange { .. } => "diff",
             PickerAction::DiffCommit { .. } => "show",
@@ -559,6 +575,7 @@ pub(crate) fn suffix_key(s: &Suffix) -> Option<&str> {
         Suffix::Action(a) => Some(a.key),
         Suffix::Option(o) => Some(o.key),
         Suffix::Custom(c) => Some(&c.key),
+        Suffix::Variable(v) => Some(&v.key),
         Suffix::Info(_) => None,
     }
 }
@@ -669,6 +686,18 @@ impl StatusView {
                                 self.transient_config_default(&repo, &key, branch.as_deref());
                         }
                     }
+                }
+            }
+            // Config-variable rows show their live values (and any fallback), read
+            // straight from git config when the transient opens.
+            for var in def.variables_mut() {
+                var.value = repo.config_get(&var.variable).ok().flatten();
+                if let transient::VariableKind::Choices {
+                    fallback: Some(fallback),
+                    ..
+                } = &var.kind
+                {
+                    var.fallback_value = repo.config_get(fallback).ok().flatten();
                 }
             }
         }
@@ -793,6 +822,80 @@ impl StatusView {
         value
     }
 
+    /// Invoke a config-variable row in the open transient: cycle its choices in
+    /// place (writing immediately), or open a prompt for a free-text value.
+    pub(crate) fn set_variable_at(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Copy out what we need so the popup borrow ends before we act.
+        let info = match &self.popup {
+            Some(Popup::Transient(state)) => state.def.variable_for(key).map(|var| {
+                (
+                    var.variable.clone(),
+                    var.description.clone(),
+                    var.value.clone(),
+                    var.kind.clone(),
+                )
+            }),
+            _ => None,
+        };
+        let Some((variable, description, value, kind)) = info else {
+            return;
+        };
+        match kind {
+            transient::VariableKind::Choices { choices, .. } => {
+                let next = cycle_choice(&choices, value.as_deref());
+                self.write_variable(key, &variable, next, cx);
+            }
+            transient::VariableKind::Value { completion } => {
+                if let Some(Popup::Transient(ts)) = self.popup.take() {
+                    self.open_variable_prompt(
+                        variable,
+                        description,
+                        completion,
+                        value.unwrap_or_default(),
+                        ts,
+                        window,
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Write (or unset, when `value` is `None`) a git-config variable, update the
+    /// open transient's row in place, and refresh — a config change can move the
+    /// title bar / status (e.g. `pushRemote`, `rebase`).
+    pub(crate) fn write_variable(
+        &mut self,
+        key: &str,
+        variable: &str,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let result = match &value {
+            Some(v) => repo.config_set(variable, v),
+            None => repo.config_unset(variable),
+        };
+        if let Err(e) = result {
+            self.set_status(e.to_string(), false, cx);
+            return;
+        }
+        if let Some(Popup::Transient(state)) = self.popup.as_mut() {
+            if let Some(var) = state.def.variable_for_mut(key) {
+                var.value = value;
+            }
+        }
+        self.refresh(cx);
+        cx.notify();
+    }
+
     pub(crate) fn handle_transient_key(
         &mut self,
         key: &str,
@@ -876,6 +979,14 @@ impl StatusView {
             return;
         }
 
+        // A config-variable row: cycle its choices in place, or prompt for a
+        // free-text value. Handled before the multi-key/action resolution since
+        // variables are always single-key.
+        if state.pending_key.is_empty() && state.def.variable_for(key).is_some() {
+            self.set_variable_at(key, window, cx);
+            return;
+        }
+
         // Multi-key suffixes (magit's `fu`/`pu` jump keys): accumulate the
         // keystrokes while they still prefix some suffix key; a full match
         // fires below like any single-key suffix.
@@ -925,6 +1036,18 @@ impl StatusView {
     }
 }
 
+/// The next value when cycling a choice variable (magit's
+/// `(cadr (member value choices))`): unset → first, each choice → the next, and
+/// the last choice → unset (`None`). A current value not among the choices
+/// (e.g. a stale remote) restarts at the first.
+pub(crate) fn cycle_choice(choices: &[String], current: Option<&str>) -> Option<String> {
+    match current.and_then(|c| choices.iter().position(|x| x == c)) {
+        Some(i) if i + 1 < choices.len() => Some(choices[i + 1].clone()),
+        Some(_) => None,
+        None => choices.first().cloned(),
+    }
+}
+
 /// The switch keys that must deactivate when the switch bound to `key`
 /// toggles on: every other switch declared mutually exclusive with it, in
 /// either direction (so one side's declaration suffices).
@@ -940,4 +1063,28 @@ pub(crate) fn conflicting_switch_keys(def: &Transient, key: &str) -> Vec<String>
         })
         .map(|other| other.key.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cycle_choice;
+
+    #[test]
+    fn cycle_choice_wraps_through_unset() {
+        let choices = vec!["true".to_string(), "false".to_string()];
+        // unset → first → second → unset → first …
+        assert_eq!(cycle_choice(&choices, None).as_deref(), Some("true"));
+        assert_eq!(
+            cycle_choice(&choices, Some("true")).as_deref(),
+            Some("false")
+        );
+        assert_eq!(cycle_choice(&choices, Some("false")), None);
+        // A value not among the choices (a stale remote) restarts at the first.
+        assert_eq!(
+            cycle_choice(&choices, Some("gone")).as_deref(),
+            Some("true")
+        );
+        // No choices → always unset.
+        assert_eq!(cycle_choice(&[], Some("x")), None);
+    }
 }

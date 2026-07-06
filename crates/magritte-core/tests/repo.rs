@@ -23,6 +23,26 @@ fn config_get_and_bool_read_repo_config() {
 }
 
 #[test]
+fn config_set_and_unset_roundtrip() {
+    let t = TestRepo::new();
+    let repo = open(&t);
+    repo.config_set("branch.main.description", "hello").unwrap();
+    assert_eq!(
+        repo.config_get("branch.main.description").unwrap().as_deref(),
+        Some("hello")
+    );
+    repo.config_set("branch.main.description", "changed").unwrap();
+    assert_eq!(
+        repo.config_get("branch.main.description").unwrap().as_deref(),
+        Some("changed")
+    );
+    repo.config_unset("branch.main.description").unwrap();
+    assert_eq!(repo.config_get("branch.main.description").unwrap(), None);
+    // Unsetting an already-absent key is a no-op, not an error.
+    repo.config_unset("branch.main.description").unwrap();
+}
+
+#[test]
 fn pull_rebase_default_honors_branch_then_repo_config() {
     let t = TestRepo::new();
     t.write("f", "x\n");

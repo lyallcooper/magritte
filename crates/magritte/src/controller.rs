@@ -94,6 +94,8 @@ impl StatusView {
             RemoteAdd | RemoteRename | RemoteRemove => {
                 self.dispatch_remote(command, args, window, cx)
             }
+            BranchConfigure => self.open_branch_configure(cx),
+            RemoteConfigure => self.open_remote_configure(window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
             }
@@ -363,6 +365,107 @@ impl StatusView {
                 .ok();
             })
             .detach();
+        }
+    }
+
+    /// Open the branch config transient (magit's `magit-branch-configure`) for
+    /// the current branch, seeded with the repo's remotes for the pushRemote
+    /// choice lists. A no-op on a detached HEAD (no branch to configure).
+    pub(crate) fn open_branch_configure(&mut self, cx: &mut Context<Self>) {
+        let Some(branch) = self.remote_targets().branch else {
+            self.set_status(
+                "Detached HEAD — no branch to configure".to_string(),
+                false,
+                cx,
+            );
+            return;
+        };
+        let remotes = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.remotes().ok())
+            .unwrap_or_default();
+        let def = transient::branch_configure_transient(&branch, remotes);
+        self.open_transient("branch-configure", def, self.remote_targets(), cx);
+    }
+
+    /// Open the remote config transient (magit's `magit-remote-configure`),
+    /// picking the remote first (the sole remote is used directly).
+    pub(crate) fn open_remote_configure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let remotes = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.remotes().ok())
+            .unwrap_or_default();
+        match remotes.as_slice() {
+            [] => self.set_status("No remotes configured".to_string(), false, cx),
+            [only] => self.open_remote_configure_for(only.clone(), cx),
+            _ => self.open_listed_picker(
+                PickerAction::Remote(RemoteAction::Configure),
+                CreateMode::None,
+                Vec::new(),
+                targets::remotes,
+                window,
+                cx,
+            ),
+        }
+    }
+
+    /// Open the remote config transient for a specific remote name.
+    pub(crate) fn open_remote_configure_for(&mut self, remote: String, cx: &mut Context<Self>) {
+        let def = transient::remote_configure_transient(&remote);
+        self.open_transient("remote-configure", def, self.remote_targets(), cx);
+    }
+
+    /// Prompt for a free-text config-variable value (from a Configure transient),
+    /// seeded with the current value, stashing `resume` so the transient reopens
+    /// with the new value applied (mirrors [`Self::open_option_prompt`]).
+    pub(crate) fn open_variable_prompt(
+        &mut self,
+        variable: String,
+        description: String,
+        completion: transient::Completion,
+        current: String,
+        resume: TransientState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let create = match completion {
+            transient::Completion::OneOf(_) => CreateMode::None,
+            _ => CreateMode::Value,
+        };
+        let initial: Vec<String> = match completion {
+            transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
+            _ => Vec::new(),
+        };
+        let gen = self.picker_gen.bump();
+        self.open_picker(
+            PickerAction::SetVariable {
+                variable,
+                description,
+            },
+            initial,
+            create,
+            Vec::new(),
+            window,
+            cx,
+        );
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.gen = gen;
+            p.resume = Some(Box::new(resume));
+            p.reserve_candidates = !matches!(completion, transient::Completion::None);
+        }
+        // Seed the input with the current value so it can be edited in place.
+        if !current.is_empty() {
+            let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+                p.list.set_query(&current);
+                Some(p.input.clone())
+            } else {
+                None
+            };
+            if let Some(input) = input {
+                input.update(cx, |s, cx| s.set_value(current, window, cx));
+            }
         }
     }
 
@@ -1959,6 +2062,23 @@ impl StatusView {
                         cx.notify();
                     }
                 }
+                // Write the git-config variable (empty unsets it), then reopen the
+                // Configure transient with the new value reflected.
+                PickerAction::SetVariable { variable, .. } => {
+                    if let Some(ts) = p.resume {
+                        let value = chosen.to_string();
+                        let value = (!value.trim().is_empty()).then_some(value);
+                        let key = ts
+                            .def
+                            .variables_ref()
+                            .find(|v| v.variable == variable)
+                            .map(|v| v.key.clone());
+                        self.popup = Some(Popup::Transient(*ts));
+                        if let Some(key) = key {
+                            self.write_variable(&key, &variable, value, cx);
+                        }
+                    }
+                }
                 PickerAction::LogRef {
                     flags,
                     paths,
@@ -2519,6 +2639,7 @@ impl StatusView {
                 move |repo| repo.remove_remote(&chosen),
                 cx,
             ),
+            RemoteAction::Configure => self.open_remote_configure_for(chosen, cx),
         }
     }
 

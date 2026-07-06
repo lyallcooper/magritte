@@ -200,10 +200,33 @@ fn suffix_cell_px(suffix: &Suffix) -> f32 {
         Suffix::Action(a) => (a.key.chars().count(), a.description.chars().count()),
         Suffix::Info(i) => (i.keys.chars().count(), i.description.chars().count()),
         Suffix::Custom(c) => (c.key.chars().count(), c.description.chars().count()),
+        Suffix::Variable(v) => (
+            v.key.chars().count(),
+            // description + the value/choices shown after it (rough).
+            v.description.chars().count() + variable_value_width(v),
+        ),
     };
     // Keycap: ~9px/char plus its border/padding. Description: ~7px/char at 13px,
     // plus the gap after the keycap and a little slack.
     (key as f32 * 9.0 + 16.0) + 8.0 + (text as f32 * 7.0) + 12.0
+}
+
+/// Rough char count of a config variable's rendered value/choices, so its cell
+/// width estimate covers what's shown after the description.
+fn variable_value_width(v: &transient::Variable) -> usize {
+    match &v.kind {
+        transient::VariableKind::Choices { choices, .. } => {
+            // "[a|b|…]" — the choices plus separators/brackets, plus a fallback.
+            choices.iter().map(|c| c.chars().count() + 1).sum::<usize>()
+                + v.fallback_value
+                    .as_ref()
+                    .map_or(0, |f| f.chars().count() + 2)
+                + 2
+        }
+        transient::VariableKind::Value { .. } => {
+            v.value.as_ref().map_or(6, |val| val.chars().count() + 2)
+        }
+    }
 }
 
 impl StatusView {
@@ -1063,6 +1086,93 @@ impl StatusView {
                     .on_click(move |_, window, cx: &mut App| {
                         view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
                     })
+                    .into_any_element()
+            }
+            // A git-config variable (magit's Configure rows): keycap, name, then
+            // the current value — cycling choices render `[a|b|fallback:x]` with
+            // the active one accented; free-text shows `(value)` or a dim `unset`.
+            Suffix::Variable(var) => {
+                let view = view.clone();
+                let key = SharedString::from(var.key.clone());
+                div()
+                    .id(key.clone())
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .group(KBD_ROW_GROUP)
+                    .child(track_target(key.clone()))
+                    .child(kbd::key_chip(
+                        &var.key,
+                        self.palette.dim,
+                        &self.font,
+                        &self.system_ui_font,
+                    ))
+                    .child(self.hover_label(&var.description, self.palette.fg))
+                    .child(self.render_variable_value(var))
+                    .on_click(move |_, window, cx: &mut App| {
+                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// The value cell of a config-variable row: the accented current value for a
+    /// free-text variable (or a dim `unset`), or a `[a|b|fallback:x]` choice
+    /// strip with the active choice accented.
+    fn render_variable_value(&self, var: &transient::Variable) -> AnyElement {
+        match &var.kind {
+            transient::VariableKind::Value { .. } => match &var.value {
+                Some(value) => div()
+                    .text_color(self.palette.modified)
+                    .child(SharedString::from(format!("({value})")))
+                    .into_any_element(),
+                None => div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("unset"))
+                    .into_any_element(),
+            },
+            transient::VariableKind::Choices {
+                choices, default, ..
+            } => {
+                let mut row = div().flex().items_center();
+                row = row.child(div().text_color(self.palette.dim).child("["));
+                for (i, choice) in choices.iter().enumerate() {
+                    if i > 0 {
+                        row = row.child(div().text_color(self.palette.dim).child("|"));
+                    }
+                    let active = var.value.as_deref() == Some(choice.as_str());
+                    let cell = if active {
+                        div()
+                            .text_color(self.palette.modified)
+                            .font_weight(FontWeight::BOLD)
+                    } else {
+                        div().text_color(self.palette.dim)
+                    };
+                    row = row.child(cell.child(SharedString::from(choice.clone())));
+                }
+                // When unset, show the inherited fallback value (or git's default)
+                // so the effective setting is visible, magit-style.
+                if var.value.is_none() {
+                    if let Some(fallback) = &var.fallback_value {
+                        row = row.child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(format!("|→{fallback}"))),
+                        );
+                    } else if let Some(default) = default {
+                        row = row.child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(format!("|default:{default}"))),
+                        );
+                    }
+                }
+                row.child(div().text_color(self.palette.dim).child("]"))
                     .into_any_element()
             }
         }

@@ -18,6 +18,11 @@ pub(crate) fn default_remote(repo: &Repo) -> String {
     }
 }
 
+/// The configured remotes — the candidate set for the remote-configure picker.
+pub(crate) fn remotes(repo: &Repo) -> magritte_core::Result<Vec<String>> {
+    repo.remotes()
+}
+
 /// Local + remote branch names — the candidate set shared by the branch, log,
 /// reset, merge, and rebase pickers.
 pub(crate) fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {

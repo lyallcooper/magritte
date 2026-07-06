@@ -782,6 +782,19 @@ impl Repo {
             .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
 
+    /// Set a git config value in the repository (local) config
+    /// (`git config <key> <value>`).
+    pub fn config_set(&self, key: &str, value: &str) -> Result<()> {
+        self.run(["config", key, value]).map(|_| ())
+    }
+
+    /// Remove a git config key from the repository (local) config
+    /// (`git config --unset <key>`). Unsetting an already-absent key is a no-op
+    /// (git exits 5), not an error.
+    pub fn config_unset(&self, key: &str) -> Result<()> {
+        self.run_optional(["config", "--unset", key]).map(|_| ())
+    }
+
     /// The nearest tag reachable from HEAD (with commits-since) and the nearest
     /// tag that *contains* HEAD (with commits-until) — magit's status "Tag/Tags"
     /// header (`magit-get-current-tag` / `magit-get-next-tag`). Either is `None`

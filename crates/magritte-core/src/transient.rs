@@ -77,6 +77,8 @@ pub enum Command {
     BranchRename,
     /// Delete a branch (prompts for the branch).
     BranchDelete,
+    /// Open the branch config transient (git-config variables for a branch).
+    BranchConfigure,
     /// Create a lightweight tag at point/HEAD (prompts for name).
     TagCreate,
     /// Create the next release tag on HEAD (proposes the name/message).
@@ -89,6 +91,8 @@ pub enum Command {
     RemoteRename,
     /// Remove a remote (prompts for name).
     RemoteRemove,
+    /// Open the remote config transient (git-config variables for a remote).
+    RemoteConfigure,
     /// Stash the working tree and index.
     StashPush,
     /// Stash including untracked files.
@@ -386,6 +390,109 @@ pub struct Custom {
     pub id: String,
 }
 
+/// How a git-config [`Variable`] is set when its transient row is invoked.
+#[derive(Debug, Clone)]
+pub enum VariableKind {
+    /// Cycle through a fixed set of values on each press, wrapping through
+    /// "unset" back to the first (magit's `magit--git-variable:choices`).
+    Choices {
+        choices: Vec<String>,
+        /// Another config key whose value stands in when this one is unset
+        /// (e.g. `branch.<b>.rebase` falls back to `pull.rebase`). Shown for
+        /// context; the frontend resolves it at open time.
+        fallback: Option<String>,
+        /// The value git assumes when this and the fallback are both unset.
+        default: Option<String>,
+    },
+    /// Prompt for a free-text value (magit's plain `magit--git-variable`).
+    Value { completion: Completion },
+}
+
+/// A git-config variable shown in a transient's "Configure" section (magit's
+/// `magit-branch-configure` / `magit-remote-configure`): its current value is
+/// displayed and set/cycled in place. Owned strings, since the config key has
+/// the branch/remote scope substituted at build time.
+#[derive(Debug, Clone)]
+pub struct Variable {
+    pub key: String,
+    /// The fully-resolved config key, scope already substituted (e.g.
+    /// `branch.main.rebase`).
+    pub variable: String,
+    pub description: String,
+    pub kind: VariableKind,
+    /// The current value read from git config when the transient opens; `None`
+    /// when unset. The frontend fills and updates this in place.
+    pub value: Option<String>,
+    /// The resolved value of a [`VariableKind::Choices`] `fallback` key, shown
+    /// when `value` is unset. Filled by the frontend at open time.
+    pub fallback_value: Option<String>,
+}
+
+impl Variable {
+    /// A cycling choice variable (magit's `[true|false]` rows).
+    pub fn choices(
+        key: impl Into<String>,
+        variable: impl Into<String>,
+        description: impl Into<String>,
+        choices: &[&str],
+        fallback: Option<&str>,
+        default: Option<&str>,
+    ) -> Suffix {
+        Suffix::Variable(Variable {
+            key: key.into(),
+            variable: variable.into(),
+            description: description.into(),
+            kind: VariableKind::Choices {
+                choices: choices.iter().map(|c| c.to_string()).collect(),
+                fallback: fallback.map(str::to_string),
+                default: default.map(str::to_string),
+            },
+            value: None,
+            fallback_value: None,
+        })
+    }
+
+    /// A cycling choice variable whose choices are computed at build time (e.g.
+    /// the repo's remotes for a `pushRemote`/`pushDefault` row).
+    pub fn choices_of(
+        key: impl Into<String>,
+        variable: impl Into<String>,
+        description: impl Into<String>,
+        choices: Vec<String>,
+        fallback: Option<&str>,
+    ) -> Suffix {
+        Suffix::Variable(Variable {
+            key: key.into(),
+            variable: variable.into(),
+            description: description.into(),
+            kind: VariableKind::Choices {
+                choices,
+                fallback: fallback.map(str::to_string),
+                default: None,
+            },
+            value: None,
+            fallback_value: None,
+        })
+    }
+
+    /// A free-text variable (prompt for the value).
+    pub fn value(
+        key: impl Into<String>,
+        variable: impl Into<String>,
+        description: impl Into<String>,
+        completion: Completion,
+    ) -> Suffix {
+        Suffix::Variable(Variable {
+            key: key.into(),
+            variable: variable.into(),
+            description: description.into(),
+            kind: VariableKind::Value { completion },
+            value: None,
+            fallback_value: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Suffix {
     Switch(Switch),
@@ -393,6 +500,7 @@ pub enum Suffix {
     Option(Opt),
     Info(Info),
     Custom(Custom),
+    Variable(Variable),
 }
 
 #[derive(Debug, Clone)]
@@ -476,6 +584,52 @@ impl Transient {
             .flat_map(|g| g.suffixes.iter())
             .find_map(|s| match s {
                 Suffix::Custom(c) if c.key == key => Some(c),
+                _ => None,
+            })
+    }
+
+    /// All git-config variables across all groups.
+    pub fn variables_ref(&self) -> impl Iterator<Item = &Variable> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .filter_map(|s| match s {
+                Suffix::Variable(v) => Some(v),
+                _ => None,
+            })
+    }
+
+    /// All git-config variables across all groups (mutable — the frontend fills
+    /// their current values at open time and updates them on set).
+    pub fn variables_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
+        self.groups
+            .iter_mut()
+            .flat_map(|g| g.suffixes.iter_mut())
+            .filter_map(|s| match s {
+                Suffix::Variable(v) => Some(v),
+                _ => None,
+            })
+    }
+
+    /// The config variable bound to `key`, if any.
+    pub fn variable_for(&self, key: &str) -> Option<&Variable> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.suffixes.iter())
+            .find_map(|s| match s {
+                Suffix::Variable(v) if v.key == key => Some(v),
+                _ => None,
+            })
+    }
+
+    /// The config variable bound to `key`, mutably (to update its value in place
+    /// after a set).
+    pub fn variable_for_mut(&mut self, key: &str) -> Option<&mut Variable> {
+        self.groups
+            .iter_mut()
+            .flat_map(|g| g.suffixes.iter_mut())
+            .find_map(|s| match s {
+                Suffix::Variable(v) if v.key == key => Some(v),
                 _ => None,
             })
     }
@@ -621,6 +775,69 @@ pub fn branch_transient(style: KeymapStyle) -> Transient {
                 suffixes: vec![
                     Action::suffix("m", "rename", Command::BranchRename),
                     Action::suffix(style.delete_key(), "delete", Command::BranchDelete),
+                    Action::suffix("C", "configure…", Command::BranchConfigure),
+                ],
+            },
+        ],
+    }
+}
+
+/// The branch config transient (magit's `magit-branch-configure`): git-config
+/// variables scoped to `branch`, plus repository-wide defaults. `remotes` seeds
+/// the push-remote choice lists. Values are filled by the frontend at open time.
+pub fn branch_configure_transient(branch: &str, remotes: Vec<String>) -> Transient {
+    let unset_and = |extra: &[&str]| {
+        let mut v: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+        v.extend(remotes.iter().cloned());
+        v
+    };
+    Transient {
+        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
+        groups: vec![
+            Group {
+                title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
+                suffixes: vec![
+                    Variable::value(
+                        "d",
+                        format!("branch.{branch}.description"),
+                        "description",
+                        Completion::None,
+                    ),
+                    Variable::choices(
+                        "r",
+                        format!("branch.{branch}.rebase"),
+                        "rebase",
+                        &["true", "false"],
+                        Some("pull.rebase"),
+                        Some("false"),
+                    ),
+                    Variable::choices_of(
+                        "p",
+                        format!("branch.{branch}.pushRemote"),
+                        "pushRemote",
+                        unset_and(&[]),
+                        Some("remote.pushDefault"),
+                    ),
+                ],
+            },
+            Group {
+                title: plain_title("Configure repository defaults"),
+                suffixes: vec![
+                    Variable::choices(
+                        "R",
+                        "pull.rebase",
+                        "pull.rebase",
+                        &["true", "false"],
+                        None,
+                        Some("false"),
+                    ),
+                    Variable::choices_of(
+                        "P",
+                        "remote.pushDefault",
+                        "remote.pushDefault",
+                        unset_and(&[]),
+                        None,
+                    ),
                 ],
             },
         ],
@@ -671,9 +888,44 @@ pub fn remote_transient(style: KeymapStyle) -> Transient {
                     Action::suffix("a", "add", Command::RemoteAdd),
                     Action::suffix("r", "rename", Command::RemoteRename),
                     Action::suffix(style.delete_key(), "remove", Command::RemoteRemove),
+                    Action::suffix("C", "configure…", Command::RemoteConfigure),
                 ],
             },
         ],
+    }
+}
+
+/// The remote config transient (magit's `magit-remote-configure`): git-config
+/// variables scoped to `remote`. Values are filled by the frontend at open time.
+pub fn remote_configure_transient(remote: &str) -> Transient {
+    Transient {
+        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
+        groups: vec![Group {
+            title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
+            suffixes: vec![
+                Variable::value("u", format!("remote.{remote}.url"), "url", Completion::None),
+                Variable::value(
+                    "U",
+                    format!("remote.{remote}.fetch"),
+                    "fetch refspec",
+                    Completion::None,
+                ),
+                Variable::value(
+                    "s",
+                    format!("remote.{remote}.pushurl"),
+                    "pushurl",
+                    Completion::None,
+                ),
+                Variable::choices(
+                    "O",
+                    format!("remote.{remote}.tagOpt"),
+                    "tag fetching",
+                    &["--no-tags", "--tags"],
+                    None,
+                    None,
+                ),
+            ],
+        }],
     }
 }
 
