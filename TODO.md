@@ -206,3 +206,4 @@
 - [x] Add (brief) mouseover tooltips for the various titlebar items describing what they are — done: the repo name, branch chip, push/upstream chunks, ahead/behind pills, tag, and dirty marker each get a hover tooltip (shared `titlebar_tip` helper + a `tip` on `titlebar_action`).
 - [x] Instead of our TG glyph to mark the tag in the title bar, pillify the tag text. Include the commits since tag count inside the pill in a nested, smaller pill, maybe styled as an outline pill only. — done: each tag renders as a tag-tinted pill holding the name with the commits-since count as a nested outline pill (new `outline_pill`); the `stacked_letters` "TG" glyph is gone.
 - [ ] Enter from the ref browser shouldn't try and checkout everything. Mirror magit's behavior here.
+- [ ] Commit details view should show the details by default, but as a collapsed by default. Its collapsed/expanded state should be saved (per-repo, not per commit)

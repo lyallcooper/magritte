@@ -1100,47 +1100,16 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
-    /// A small copy-to-clipboard icon button: copies `text` and flashes the
-    /// "Copied" confirmation; `tooltip` names what it copies.
-    pub(crate) fn copy_icon_button(
-        &self,
-        view: &Entity<Self>,
-        id: &'static str,
-        text: String,
-        tooltip: &'static str,
-    ) -> impl IntoElement {
-        let view = view.clone();
-        let tip_font = self.font.clone();
-        div()
-            .id(id)
-            .relative()
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .px(px(4.0))
-            .child(track_target(id))
-            .child(
-                Icon::new(IconName::Copy)
-                    .xsmall()
-                    .text_color(self.palette.fg),
-            )
-            .tooltip(move |window, cx| {
-                let font = tip_font.clone();
-                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tooltip))
-                    .build(window, cx)
-            })
-            .tooltip_show_delay(Duration::ZERO)
-            .on_click(move |_, _window, cx: &mut App| {
-                let text = text.clone();
-                view.update(cx, |v, vcx| v.copy_to_clipboard(text, vcx));
-            })
-    }
-
-    /// The title-bar branch as a divided pill sharing one highlight: the name
-    /// (click opens the branch transient) and a copy-name button.
-    pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> gpui::Div {
+    /// The title-bar branch as a chip (click opens the branch transient,
+    /// right-click copies the name).
+    pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> impl IntoElement {
         let branch_click = view.clone();
-        div()
+        let tip_font = self.font.clone();
+        // The branch name chip: click opens the branch transient; right-click
+        // copies the name (via the shared Copy menu).
+        let chip = div()
+            .id("titlebar-branch")
+            .relative()
             .flex()
             .items_center()
             .rounded(px(4.0))
@@ -1148,35 +1117,22 @@ impl StatusView {
             .text_color(self.palette.fg)
             .font_family(self.font.clone())
             .font_weight(FontWeight::MEDIUM)
-            .child({
-                let tip_font = self.font.clone();
-                div()
-                    .id("titlebar-branch")
-                    .relative()
-                    .cursor_pointer()
-                    .px(px(5.0))
-                    .child(track_target("titlebar-branch"))
-                    .child(SharedString::from(branch.to_string()))
-                    .tooltip(move |window, cx| {
-                        let font = tip_font.clone();
-                        Tooltip::element(move |_, _| {
-                            div().font_family(font.clone()).child("Current branch")
-                        })
-                        .build(window, cx)
-                    })
-                    .tooltip_show_delay(Duration::from_millis(400))
-                    .on_click(move |_, window, cx: &mut App| {
-                        branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
-                    })
+            .cursor_pointer()
+            .px(px(5.0))
+            .child(track_target("titlebar-branch"))
+            .child(SharedString::from(branch.to_string()))
+            .tooltip(move |window, cx| {
+                let font = tip_font.clone();
+                Tooltip::element(move |_, _| {
+                    div().font_family(font.clone()).child("Current branch")
+                })
+                .build(window, cx)
             })
-            // Divider between the two halves of the split chip.
-            .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
-            .child(self.copy_icon_button(
-                view,
-                "titlebar-branch-copy",
-                branch.to_string(),
-                "Copy branch name",
-            ))
+            .tooltip_show_delay(Duration::from_millis(400))
+            .on_click(move |_, window, cx: &mut App| {
+                branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
+            });
+        self.titlebar_copy("titlebar-branch-copy", branch.to_string(), view, chip)
     }
 
     /// The in-progress sequence banner (merge/rebase/cherry-pick/revert/am):
@@ -1424,28 +1380,34 @@ impl StatusView {
             .gap_1()
             .font_family(self.font.clone())
             // Glyph (dim) and ref name (magit's green branch-remote face) sit
-            // tight together; the ahead/behind chips follow with a gap.
+            // tight together; the ahead/behind chips follow with a gap. Right-
+            // click the name to copy the ref.
             .child(
-                self.titlebar_action(
+                self.titlebar_copy(
+                    format!("{key}-copy"),
+                    name.to_string(),
                     view,
-                    format!("{key}-name"),
-                    command,
-                    tip,
-                    div()
-                        .flex()
-                        .items_center()
-                        .when(!glyph.is_empty(), |d| {
-                            d.child(
+                    self.titlebar_action(
+                        view,
+                        format!("{key}-name"),
+                        command,
+                        tip,
+                        div()
+                            .flex()
+                            .items_center()
+                            .when(!glyph.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_color(self.palette.dim)
+                                        .child(SharedString::from(glyph.to_string())),
+                                )
+                            })
+                            .child(
                                 div()
-                                    .text_color(self.palette.dim)
-                                    .child(SharedString::from(glyph.to_string())),
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_color(self.palette.branch_remote)
-                                .child(SharedString::from(name.to_string())),
-                        ),
+                                    .text_color(self.palette.branch_remote)
+                                    .child(SharedString::from(name.to_string())),
+                            ),
+                    ),
                 ),
             );
         if ahead > 0 {
@@ -1475,6 +1437,46 @@ impl StatusView {
     /// tooltip signal it's actionable — the semantic text color is left intact
     /// (a hover recolor would fire only on items whose text has no explicit
     /// color, so it read inconsistently across the bar).
+    /// Wrap an element so a right-click copies `value` via the shared `Copy`
+    /// context menu — the replacement for the little copy buttons.
+    pub(crate) fn right_click_copy(
+        &self,
+        id: impl Into<SharedString>,
+        value: String,
+        view: &Entity<Self>,
+        child: impl IntoElement,
+    ) -> impl IntoElement {
+        let view = view.clone();
+        div()
+            .id(id.into())
+            .child(child)
+            .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+                let value = value.clone();
+                view.update(cx, |v, _| v.pending_copy = Some(value));
+            })
+            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+    }
+
+    /// Wrap a title-bar element so a right-click copies `value` immediately. The
+    /// custom title bar swallows the context-menu popup, so the atomic chrome
+    /// values (branch, ref, tag) copy directly on right-click instead.
+    pub(crate) fn titlebar_copy(
+        &self,
+        id: impl Into<SharedString>,
+        value: String,
+        view: &Entity<Self>,
+        child: impl IntoElement,
+    ) -> impl IntoElement {
+        let view = view.clone();
+        div().id(id.into()).child(child).on_mouse_down(
+            MouseButton::Right,
+            move |_, _window, cx: &mut App| {
+                let value = value.clone();
+                view.update(cx, |v, vcx| v.copy_to_clipboard(value, vcx));
+            },
+        )
+    }
+
     pub(crate) fn titlebar_action(
         &self,
         view: &Entity<Self>,
@@ -1625,12 +1627,17 @@ impl StatusView {
                         .bg(with_alpha(self.palette.tag, 0.15))
                         .text_size(px(11.0))
                         .text_color(self.palette.tag)
-                        .child(self.titlebar_action(
+                        .child(self.titlebar_copy(
+                            format!("titlebar-tag-{i}-copy"),
+                            name.clone(),
                             view,
-                            format!("titlebar-tag-{i}"),
-                            "tag",
-                            tip,
-                            div().px(px(5.0)).child(SharedString::from(name.clone())),
+                            self.titlebar_action(
+                                view,
+                                format!("titlebar-tag-{i}"),
+                                "tag",
+                                tip,
+                                div().px(px(5.0)).child(SharedString::from(name.clone())),
+                            ),
                         ));
                     if *count > 0 {
                         pill = pill
@@ -3047,6 +3054,8 @@ impl StatusView {
                     let offset = offset_at(&right_layout, ev.position);
                     let word = word_range(&row_text, offset);
                     v_right.update(cx, |this, vcx| {
+                        // This row's Copy uses the selection, not a chrome value.
+                        this.pending_copy = None;
                         if let Some(log) = this.log_mut() {
                             // Keep the selection when right-clicking inside it (the
                             // menu copies it); elsewhere clear it and select the word.
@@ -3292,29 +3301,20 @@ impl StatusView {
         self.screen_scaffold()
             .child(
                 self.view_header(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        // The hash and its copy button share one highlight as a
-                        // divided pill, mirroring the title-bar branch chip.
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.0))
-                                .bg(self.palette.selection)
-                                .text_color(self.palette.fg)
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(div().px(px(5.0)).child(cv.short.clone()))
-                                .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
-                                .child(self.copy_icon_button(
-                                    view,
-                                    "commit-sha-copy",
-                                    cv.rev.clone(),
-                                    "Copy commit hash",
-                                )),
-                        ),
+                    // The short hash as a chip; right-click copies the full hash
+                    // (via the shared Copy menu).
+                    self.right_click_copy(
+                        "commit-sha-copy",
+                        cv.rev.clone(),
+                        view,
+                        div()
+                            .rounded(px(4.0))
+                            .bg(self.palette.selection)
+                            .text_color(self.palette.fg)
+                            .font_weight(FontWeight::MEDIUM)
+                            .px(px(5.0))
+                            .child(cv.short.clone()),
+                    ),
                     // The subject isn't repeated here — it's the first (selectable)
                     // line of the message body below.
                     "close",
@@ -3877,6 +3877,8 @@ impl StatusView {
                         if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                             return;
                         }
+                        // This row's Copy uses the selection, not a chrome value.
+                        v.pending_copy = None;
                         // Right-clicking *inside* the current selection keeps it (the
                         // menu copies it); clicking elsewhere clears it and selects
                         // the word at the click.
@@ -4094,21 +4096,7 @@ impl StatusView {
                     .child(SharedString::from(msg)),
             );
         }
-        // A copy confirmation renders the copied value emphasized — accent
-        // color, monospace, italic — so a path or hash reads as a literal.
-        Some(match self.toast.copied.clone() {
-            Some(value) if msg == COPIED_LABEL => bar
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .child(SharedString::from(COPIED_LABEL))
-                .child(
-                    div()
-                        .font_family(self.font.clone())
-                        .italic()
-                        .text_color(self.palette.section)
-                        .child(value),
-                ),
+        Some(match () {
             // While a mutating job runs, hint that C-g/Esc cancels it.
             _ if self.job_cancel.is_some() => bar
                 .flex()
@@ -4336,7 +4324,14 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxTakeTheirs, _window, cx| {
                 this.resolve_at_point(ConflictSide::Theirs, cx)
             }))
-            .on_action(cx.listener(|this, _: &CtxCopy, _window, cx| this.copy_at_point(cx)))
+            .on_action(cx.listener(|this, _: &CtxCopy, _window, cx| {
+                // A right-clicked chrome value (title-bar ref, detail hash) wins;
+                // otherwise copy the row selection at point.
+                match this.pending_copy.take() {
+                    Some(value) => this.copy_to_clipboard(value, cx),
+                    None => this.copy_at_point(cx),
+                }
+            }))
             // Settings "Open config file" dropdown actions.
             .on_action(
                 cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),

@@ -21,10 +21,6 @@ use crate::*;
 pub(crate) struct StatusToast {
     /// Last operation result / progress, shown in the bottom bar.
     pub(crate) message: Option<String>,
-    /// For a copy confirmation, the copied value. Set by `copy_to_clipboard`;
-    /// shown only when the message is exactly the Copied label, so writes that
-    /// don't clear it can't accidentally trail a stale value.
-    pub(crate) copied: Option<SharedString>,
     /// A keystroke to render as keycap(s) before the message (e.g. the unbound
     /// `g x` in "g x is unbound"). Cleared by every status post; set right
     /// after by the few messages that lead with a key.
@@ -2247,14 +2243,7 @@ impl StatusView {
     /// echoes a short single-line value (a path, a hash) but stays generic for
     /// multi-line or long copies.
     pub(crate) fn copy_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-        // Echo a short single-line value (a path, a hash) emphasized after the
-        // label; stay generic for multi-line or long copies.
-        let value =
-            (!text.contains('\n') && text.chars().count() <= 40).then(|| SharedString::from(text));
-        // Set the value before the message: `set_status` notifies, and the
-        // render reads both, so the toast paints with the value present.
-        self.toast.copied = value;
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.set_status(COPIED_LABEL.to_string(), true, cx);
     }
 

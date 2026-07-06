@@ -483,6 +483,10 @@ struct StatusView {
     /// plain drag that stayed on its row) — see [`CharSelection`]. Mutually
     /// exclusive with a spanning [`Selection::visual`].
     char_sel: Option<CharSelection>,
+    /// A value staged by right-clicking an atomic chrome element (a title-bar
+    /// ref, the commit-detail hash): the `Copy` context-menu item copies this
+    /// rather than the row selection. Set fresh on each such right-click.
+    pending_copy: Option<String>,
     generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
@@ -717,6 +721,7 @@ impl StatusView {
             selected: 0,
             selection: Selection::default(),
             char_sel: None,
+            pending_copy: None,
             generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
