@@ -677,11 +677,14 @@ impl StatusView {
 
     /// Copy the full hash of the commit selected in the log.
     pub(crate) fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
-        // A mouse char selection (within a row's subject) wins over the hash.
-        let selected = self.log().and_then(|l| {
-            let sel = l.char_sel.filter(|c| !c.is_empty())?;
-            let entry = l.entries.get(sel.row)?;
-            Some(sel.slice(&entry.subject).to_string())
+        // A mouse char selection (within a row's text) wins over the hash.
+        let selected = self.log().and_then(|l| l.char_sel).and_then(|sel| {
+            if sel.is_empty() {
+                return None;
+            }
+            let entry = self.log()?.entries.get(sel.row)?;
+            let (text, _) = self.log_row_text(entry);
+            Some(sel.slice(&text).to_string())
         });
         if let Some(text) = selected {
             if let Some(log) = self.log_mut() {

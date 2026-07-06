@@ -20,9 +20,36 @@ use magritte_core::transient::{Group, Suffix, TitleSpan, Transient};
 use magritte_core::{RebaseAction, Sequence};
 use std::ops::Range;
 
-/// Per-range text colors over a string: `(byte range, color)` pairs, the shape
+/// Per-range styling over a string: `(byte range, HighlightStyle)` runs (color,
+/// and — for ref tags — a background + weight), the shape
 /// [`StatusView::selectable_text`] and the row-text helpers pass around.
-type ColorRuns = Vec<(Range<usize>, Hsla)>;
+type StyleRuns = Vec<(Range<usize>, HighlightStyle)>;
+
+/// A plain color run (the common case: just a foreground color over a range).
+fn color_run(range: Range<usize>, color: Hsla) -> (Range<usize>, HighlightStyle) {
+    (
+        range,
+        HighlightStyle {
+            color: Some(color),
+            ..Default::default()
+        },
+    )
+}
+
+/// Append `s` to `text` and push a color run covering it, so the runs tile the
+/// string contiguously (a continuous selection background needs no gaps).
+fn push_run(text: &mut String, runs: &mut StyleRuns, s: &str, color: Hsla) {
+    let start = text.len();
+    text.push_str(s);
+    runs.push(color_run(start..text.len(), color));
+}
+
+/// Like [`push_run`] but with a full [`HighlightStyle`] (e.g. a styled ref tag).
+fn push_styled(text: &mut String, runs: &mut StyleRuns, s: &str, style: HighlightStyle) {
+    let start = text.len();
+    text.push_str(s);
+    runs.push((start..text.len(), style));
+}
 
 use crate::*;
 
@@ -74,7 +101,7 @@ fn picker_ref_style(action: &PickerAction) -> Option<PickerRefStyle> {
 /// (a single-colored row), only the selection range is emitted (background
 /// over the inherited color).
 fn merge_highlights(
-    runs: &[(Range<usize>, Hsla)],
+    runs: &[(Range<usize>, HighlightStyle)],
     sel: Option<Range<usize>>,
     sel_bg: Hsla,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
@@ -93,7 +120,7 @@ fn merge_highlights(
             .unwrap_or_default();
     }
     let mut out = Vec::new();
-    for (run, color) in runs {
+    for (run, base) in runs {
         let mut cuts = vec![run.start, run.end];
         if let Some(s) = &sel {
             if s.start > run.start && s.start < run.end {
@@ -107,10 +134,8 @@ fn merge_highlights(
         cuts.dedup();
         for pair in cuts.windows(2) {
             let (start, end) = (pair[0], pair[1]);
-            let mut style = HighlightStyle {
-                color: Some(*color),
-                ..Default::default()
-            };
+            let mut style = *base;
+            // The selection background wins over a run's own (e.g. a ref tag's).
             if sel
                 .as_ref()
                 .is_some_and(|s| start >= s.start && end <= s.end)
@@ -210,7 +235,7 @@ impl StatusView {
     fn selectable_text(
         &self,
         text: impl Into<SharedString>,
-        runs: ColorRuns,
+        runs: StyleRuns,
         sel: Option<Range<usize>>,
     ) -> (StyledText, TextLayout) {
         let highlights = merge_highlights(&runs, sel, self.palette.selection);
@@ -219,28 +244,67 @@ impl StatusView {
         (styled, layout)
     }
 
-    /// A status row's selectable (copyable) text and its color runs — the
-    /// trailing text element of every git-output row (file path, commit subject,
-    /// stash message, hunk header, diff line, plain notice). `None` for a section
-    /// header (chrome, not git output). Used by both [`render_row`] (to build the
-    /// row's [`StyledText`]) and the copy path, so offsets and copied text agree.
+    /// The run style for a ref name embedded in a row's text — the same look
+    /// refs always had (color-coded by kind: local blue, remote green, tag
+    /// yellow, current branch bold), now as a selectable text run.
+    fn ref_style(&self, kind: RefKind) -> HighlightStyle {
+        let (color, bold) = match kind {
+            RefKind::Tag => (self.palette.tag, false),
+            RefKind::Head => (self.palette.branch_local, true),
+            RefKind::Local => (self.palette.branch_local, false),
+            RefKind::Remote | RefKind::SyncedHead => (self.palette.branch_remote, false),
+        };
+        HighlightStyle {
+            color: Some(color),
+            font_weight: bold.then_some(FontWeight::BOLD),
+            ..Default::default()
+        }
+    }
+
+    /// A status row's full selectable text and its style runs — every fragment
+    /// (short hash, ref tags, subject / path / message) as one string so the
+    /// whole row is char-selectable. `None` for a section header (chrome). Used
+    /// by both [`render_row`] and the copy path, so offsets and copied text agree.
     ///
     /// [`render_row`]: Self::render_row
-    pub(crate) fn selectable_row_text(&self, row: &Row) -> Option<(SharedString, ColorRuns)> {
+    pub(crate) fn selectable_row_text(&self, row: &Row) -> Option<(SharedString, StyleRuns)> {
         let one = |text: &str, color: Hsla| {
             (
                 SharedString::from(text.to_string()),
-                vec![(0..text.len(), color)],
+                vec![color_run(0..text.len(), color)],
             )
         };
         match &row.kind {
             RowKind::Plain { text, color } => Some(one(text, *color)),
             RowKind::File { label, .. } => Some(one(label, self.palette.fg)),
             RowKind::HunkHeader { text, .. } => Some(one(text, self.palette.hunk)),
-            RowKind::Commit { subject, .. } => Some(one(subject, self.palette.fg)),
-            RowKind::Stash { message, .. } => Some(one(message, self.palette.fg)),
             RowKind::Diff { spans, .. } => {
                 let (text, runs) = Self::spans_text_runs(spans);
+                Some((SharedString::from(text), runs))
+            }
+            // `<hash> <refs…> <subject>`, the refs as styled tag runs.
+            RowKind::Commit {
+                short_hash,
+                subject,
+                refs,
+                ..
+            } => {
+                let (mut text, mut runs) = (String::new(), StyleRuns::new());
+                push_run(&mut text, &mut runs, short_hash, self.palette.dim);
+                for (label, kind) in refs {
+                    push_run(&mut text, &mut runs, " ", self.palette.fg);
+                    push_styled(&mut text, &mut runs, label, self.ref_style(*kind));
+                }
+                push_run(&mut text, &mut runs, " ", self.palette.fg);
+                push_run(&mut text, &mut runs, subject, self.palette.fg);
+                Some((SharedString::from(text), runs))
+            }
+            // `<reference> <message>`.
+            RowKind::Stash { reference, message } => {
+                let (mut text, mut runs) = (String::new(), StyleRuns::new());
+                push_run(&mut text, &mut runs, reference, self.palette.dim);
+                push_run(&mut text, &mut runs, " ", self.palette.fg);
+                push_run(&mut text, &mut runs, message, self.palette.fg);
                 Some((SharedString::from(text), runs))
             }
             RowKind::Section { .. } => None,
@@ -250,13 +314,11 @@ impl StatusView {
     /// The concatenated text of `spans` and the per-span color runs over it —
     /// the input shape [`selectable_text`](Self::selectable_text) wants for a
     /// diff line's colored segments.
-    pub(crate) fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, ColorRuns) {
+    pub(crate) fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, StyleRuns) {
         let mut text = String::new();
         let mut runs = Vec::with_capacity(spans.len());
         for (segment, color) in spans {
-            let start = text.len();
-            text.push_str(segment);
-            runs.push((start..text.len(), *color));
+            push_run(&mut text, &mut runs, segment, *color);
         }
         (text, runs)
     }
@@ -1952,23 +2014,33 @@ impl StatusView {
             )
         };
         match row {
-            // The metadata "Refs:" line renders its decorations as colored ref
-            // chips (like the commit/log rows); other detail lines stay dim.
+            // The metadata "Refs:" line: dim text with the ref names styled as
+            // runs (color-coded by kind), so it's one selectable string.
             CommitDiffRow::Detail(text) if text.starts_with("Refs:") => {
-                let decoration = text["Refs:".len()..].trim();
                 let upstream = self
                     .status
                     .as_ref()
                     .and_then(|s| s.head.upstream.as_deref());
-                let mut row = base.gap_2().child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from("Refs:")),
-                );
-                for (label, kind) in parse_refs(decoration, upstream) {
-                    row = row.child(self.ref_chip(&label, kind));
+                let prefix_end = "Refs:".len();
+                let mut runs = StyleRuns::new();
+                let mut cursor = 0;
+                let mut search_from = prefix_end;
+                for (label, kind) in parse_refs(text[prefix_end..].trim(), upstream) {
+                    if let Some(rel) = text[search_from..].find(label.as_str()) {
+                        let start = search_from + rel;
+                        if cursor < start {
+                            runs.push(color_run(cursor..start, self.palette.dim));
+                        }
+                        runs.push((start..start + label.len(), self.ref_style(kind)));
+                        cursor = start + label.len();
+                        search_from = cursor;
+                    }
                 }
-                (row.into_any_element(), None)
+                if cursor < text.len() {
+                    runs.push(color_run(cursor..text.len(), self.palette.dim));
+                }
+                let (styled, layout) = self.selectable_text(text.clone(), runs, sel);
+                (base.child(styled).into_any_element(), Some(layout))
             }
             CommitDiffRow::Detail(text) => {
                 let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
@@ -2002,11 +2074,13 @@ impl StatusView {
                 let total = (added + removed).to_string();
                 let (bar_plus, bar_minus) = ("+".repeat(plus), "-".repeat(minus));
                 let text = format!("{path} {total} {bar_plus}{bar_minus}");
-                let mut runs = vec![(0..path.len(), self.palette.fg)];
                 let mid_end = path.len() + 1 + total.len() + 1; // " {total} "
-                runs.push((path.len()..mid_end, self.palette.dim));
-                runs.push((mid_end..mid_end + bar_plus.len(), self.palette.added));
-                runs.push((mid_end + bar_plus.len()..text.len(), self.palette.removed));
+                let runs = vec![
+                    color_run(0..path.len(), self.palette.fg),
+                    color_run(path.len()..mid_end, self.palette.dim),
+                    color_run(mid_end..mid_end + bar_plus.len(), self.palette.added),
+                    color_run(mid_end + bar_plus.len()..text.len(), self.palette.removed),
+                ];
                 let (styled, layout) = self.selectable_text(text, runs, sel);
                 (base.child(styled).into_any_element(), Some(layout))
             }
@@ -2015,15 +2089,18 @@ impl StatusView {
             CommitDiffRow::File { change, path } => {
                 let word = status_label::change_word(*change);
                 let (text, runs) = if word.is_empty() {
-                    (path.clone(), vec![(0..path.len(), self.palette.fg)])
+                    (
+                        path.clone(),
+                        vec![color_run(0..path.len(), self.palette.fg)],
+                    )
                 } else {
                     let text = format!("{word} {path}");
                     let runs = vec![
-                        (
+                        color_run(
                             0..word.len(),
                             status_label::change_color(*change, &self.palette),
                         ),
-                        (word.len()..text.len(), self.palette.fg),
+                        color_run(word.len()..text.len(), self.palette.fg),
                     ];
                     (text, runs)
                 };
@@ -2363,14 +2440,6 @@ impl StatusView {
         // Note when the listing is capped (against the *current* limit, which
         // `+`/`-` adjust), rather than pretending it's complete.
         let capped = count >= log.limit;
-        let hash_width = log
-            .entries
-            .iter()
-            .map(|e| e.short_hash.chars().count())
-            .max()
-            .unwrap_or(7)
-            .max(7) as f32
-            * 8.5;
 
         let note = |text: String, color: Hsla| {
             div()
@@ -2390,13 +2459,7 @@ impl StatusView {
                         Some(log) => range
                             .filter_map(|ix| log.entries.get(ix).map(|e| (ix, e)))
                             .map(|(ix, entry)| {
-                                this.render_log_row(
-                                    ix,
-                                    entry,
-                                    ix == log.selected,
-                                    hash_width,
-                                    &view,
-                                )
+                                this.render_log_row(ix, entry, ix == log.selected, &view)
                             })
                             .collect::<Vec<_>>(),
                         None => Vec::new(),
@@ -2779,14 +2842,40 @@ impl StatusView {
         }
     }
 
-    /// One commit row: short hash, ref decorations, and subject; highlighted
-    /// when current, clickable to open its diff.
+    /// A log row's full selectable text — `<hash> <refs…> <subject>` as one
+    /// string with the refs as styled tag runs — used by both the renderer and
+    /// the copy path so offsets and copied text agree.
+    pub(crate) fn log_row_text(
+        &self,
+        entry: &magritte_core::LogEntry,
+    ) -> (SharedString, StyleRuns) {
+        let upstream = self
+            .status
+            .as_ref()
+            .and_then(|s| s.head.upstream.as_deref());
+        let (mut text, mut runs) = (String::new(), StyleRuns::new());
+        push_run(
+            &mut text,
+            &mut runs,
+            &entry.short_hash,
+            self.palette.modified,
+        );
+        for (label, kind) in parse_refs(&entry.refs, upstream) {
+            push_run(&mut text, &mut runs, " ", self.palette.fg);
+            push_styled(&mut text, &mut runs, &label, self.ref_style(kind));
+        }
+        push_run(&mut text, &mut runs, " ", self.palette.fg);
+        push_run(&mut text, &mut runs, &entry.subject, self.palette.fg);
+        (SharedString::from(text), runs)
+    }
+
+    /// One commit row: short hash, ref tags, and subject as one selectable
+    /// string; highlighted when current, clickable to open its diff.
     pub(crate) fn render_log_row(
         &self,
         ix: usize,
         entry: &magritte_core::LogEntry,
         selected: bool,
-        hash_width: f32,
         view: &Entity<Self>,
     ) -> AnyElement {
         // The char selection within this row's subject, if it owns one.
@@ -2812,34 +2901,16 @@ impl StatusView {
         } else if !owns_char {
             row = row.hover(|s| s.bg(self.palette.hover));
         }
-        row = row.child(
-            div()
-                .w(px(hash_width))
-                .flex_shrink_0()
-                .text_color(self.palette.modified)
-                .child(SharedString::from(entry.short_hash.clone())),
-        );
-        // Ref decorations, classified and colored like the status commit rows
-        // (local blue, remote green, tag yellow, current branch bold) rather
-        // than a single flat blob.
-        let upstream = self
-            .status
-            .as_ref()
-            .and_then(|s| s.head.upstream.as_deref());
-        for (label, kind) in parse_refs(&entry.refs, upstream) {
-            row = row.child(self.ref_chip(&label, kind));
-        }
-        // The subject as a selectable StyledText; its layout drives hit-testing.
-        let (subject, layout) = self.selectable_text(
-            entry.subject.clone(),
-            vec![(0..entry.subject.len(), self.palette.fg)],
-            sel,
-        );
+        // The whole `hash refs subject` as one selectable StyledText (refs as
+        // styled runs); its layout drives hit-testing. The date trails, right-
+        // aligned, as its own element.
+        let (text, runs) = self.log_row_text(entry);
+        let (line, layout) = self.selectable_text(text, runs, sel);
+        row = row.child(line);
         let (down_layout, move_layout) = (layout.clone(), layout);
         let (v_down, v_move, v_up, v_open) =
             (view.clone(), view.clone(), view.clone(), view.clone());
-        row.child(subject)
-            .child(div().flex_grow(1.0))
+        row.child(div().flex_grow(1.0))
             .child(
                 div()
                     .flex_shrink_0()
@@ -3529,32 +3600,12 @@ impl StatusView {
                         .child(SharedString::from(sign.to_string())),
                 )
             }
-            // Commit/stash rows: a lead spacer to align under the section's
-            // chevron, then a dim short hash / reference; the subject / message
-            // is appended below.
-            RowKind::Commit {
-                short_hash, refs, ..
-            } => {
-                let mut el = el.child(div().w(px(14.0)).flex_shrink_0()).child(
-                    div()
-                        .flex_shrink_0()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(short_hash.clone())),
-                );
-                // Ref decorations, colored by kind (see `ref_chip`): local blue,
-                // remote green, tag yellow, current branch bold. Parsed at
-                // row-build time (see RowKind::Commit).
-                for (label, kind) in refs {
-                    el = el.child(self.ref_chip(label, *kind));
-                }
-                el
+            // Commit/stash rows: only a lead spacer to align under the section's
+            // chevron. The hash, ref tags, and subject/message are the row's
+            // selectable text (appended below, refs as styled runs).
+            RowKind::Commit { .. } | RowKind::Stash { .. } => {
+                el.child(div().w(px(14.0)).flex_shrink_0())
             }
-            RowKind::Stash { reference, .. } => el.child(div().w(px(14.0)).flex_shrink_0()).child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(reference.clone())),
-            ),
         };
         // Append the row's selectable text as one StyledText (with the char
         // selection painted when this row owns it), capturing its layout for the
