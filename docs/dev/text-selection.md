@@ -1,21 +1,29 @@
 # Mouse text selection: char-wise within a line, line-wise across lines
 
-Status: implemented for the status view and the flattened-diff views (commit
-detail and the `d` diff buffer); the design below is the original plan. Done:
-every git-output text row renders as a `StyledText` and is char-selectable —
-status file paths, commit subjects, stash messages, hunk headers, diff lines,
-and the flat-diff `File`/`StatLine`/`Stats` rows (each a single StyledText with
-per-part color runs). `CharSelection` state; the one-drag/two-granularity
-gesture (char-wise on the anchor row, line-wise across rows — sharing the
-status view's staging region, and collapsing back to the anchor line on a
-drag-back); and copy via `y`/Cmd-C (a char range wins over the line-wise / row
-value), with no copy-on-drag. Cleared on Esc, a plain click (which, on a row
-with a selection, clears rather than acting — the next click acts), or keyboard
-motion.
+Status: implemented across the status view, the flattened-diff views (commit
+detail and the `d` diff buffer), and the log view; the design below is the
+original plan. Done: every git-output text row renders as a `StyledText` and is
+char-selectable — status file paths, commit subjects, stash messages, hunk
+headers, diff lines, the flat-diff `File`/`StatLine`/`Stats` rows, the commit
+detail's message (including its summary line), and log subjects. `CharSelection`
+state; the one-drag/two-granularity gesture (char-wise on the anchor row,
+line-wise across rows — sharing the status view's staging region, and collapsing
+back to the anchor line on a drag-back); copy via `y`/Cmd-C (a char range wins
+over the line-wise / row value), with no copy-on-drag. Cleared on Esc, a plain
+click (which, on a row with a selection, clears rather than acting — the next
+click acts), or keyboard motion. A lone click positions the cursor / folds; a
+real double-click opens (enter).
 
-Still open: the short commit SHA in a status row (a decoration between the
-spacer and refs — not char-selectable; `y` copies the full hash instead), and
-the log view and `$` command-log / blame pagers (separate render paths).
+Still open — each is either a decoration handle or a separate render surface:
+
+- The short commit SHA (status/log rows) and the log date: these rows hold
+  several texts (hash · refs · subject · date), but only the primary content
+  (the subject / path) is char-selectable; the short SHA is an abbreviated
+  handle (`y` copies the full hash). Selecting *every* sub-element of a row
+  would need a per-segment selection model (a row carrying multiple
+  `CharSelection` targets) — deferred.
+- Section headers (navigation chrome) and ref chips (styled pills).
+- The `$` command-log and blame pagers (their own render paths).
 
 ## Goal
 
