@@ -1104,10 +1104,13 @@ impl StatusView {
     /// right-click copies the name).
     pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> impl IntoElement {
         let branch_click = view.clone();
+        let branch_copy = view.clone();
+        let value = branch.to_string();
         let tip_font = self.font.clone();
-        // The branch name chip: click opens the branch transient; right-click
-        // copies the name (via the shared Copy menu).
-        let chip = div()
+        // The branch name chip: left-click opens the branch transient; right-click
+        // copies the name via the shared Copy menu. The right-down + context menu
+        // sit on this same interactive element so its hitbox isn't occluded.
+        div()
             .id("titlebar-branch")
             .relative()
             .flex()
@@ -1131,8 +1134,12 @@ impl StatusView {
             .tooltip_show_delay(Duration::from_millis(400))
             .on_click(move |_, window, cx: &mut App| {
                 branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
-            });
-        self.titlebar_copy("titlebar-branch-copy", branch.to_string(), view, chip)
+            })
+            .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+                let value = value.clone();
+                branch_copy.update(cx, |v, _| v.pending_copy = Some(value));
+            })
+            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
     }
 
     /// The in-progress sequence banner (merge/rebase/cherry-pick/revert/am):
@@ -1383,31 +1390,27 @@ impl StatusView {
             // tight together; the ahead/behind chips follow with a gap. Right-
             // click the name to copy the ref.
             .child(
-                self.titlebar_copy(
-                    format!("{key}-copy"),
-                    name.to_string(),
+                self.titlebar_action(
                     view,
-                    self.titlebar_action(
-                        view,
-                        format!("{key}-name"),
-                        command,
-                        tip,
-                        div()
-                            .flex()
-                            .items_center()
-                            .when(!glyph.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .text_color(self.palette.dim)
-                                        .child(SharedString::from(glyph.to_string())),
-                                )
-                            })
-                            .child(
+                    format!("{key}-name"),
+                    command,
+                    tip,
+                    Some(name.to_string()),
+                    div()
+                        .flex()
+                        .items_center()
+                        .when(!glyph.is_empty(), |d| {
+                            d.child(
                                 div()
-                                    .text_color(self.palette.branch_remote)
-                                    .child(SharedString::from(name.to_string())),
-                            ),
-                    ),
+                                    .text_color(self.palette.dim)
+                                    .child(SharedString::from(glyph.to_string())),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_color(self.palette.branch_remote)
+                                .child(SharedString::from(name.to_string())),
+                        ),
                 ),
             );
         if ahead > 0 {
@@ -1416,6 +1419,7 @@ impl StatusView {
                 format!("{key}-ahead"),
                 "push",
                 "Unpushed commits",
+                None,
                 self.count_pill(format!("↑{ahead}"), self.palette.branch_remote),
             ));
         }
@@ -1425,18 +1429,13 @@ impl StatusView {
                 format!("{key}-behind"),
                 "pull",
                 "Unpulled commits",
+                None,
                 self.count_pill(format!("↓{behind}"), self.palette.branch_remote),
             ));
         }
         chunk
     }
 
-    /// A clickable title-bar element that runs the registry command `command`
-    /// (the branch chip → "branch", an ahead count → "push", a behind count →
-    /// "pull"), with a hover tooltip describing it. The pointer cursor and
-    /// tooltip signal it's actionable — the semantic text color is left intact
-    /// (a hover recolor would fire only on items whose text has no explicit
-    /// color, so it read inconsistently across the bar).
     /// Wrap an element so a right-click copies `value` via the shared `Copy`
     /// context menu — the replacement for the little copy buttons.
     pub(crate) fn right_click_copy(
@@ -1457,39 +1456,28 @@ impl StatusView {
             .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
     }
 
-    /// Wrap a title-bar element so a right-click copies `value` immediately. The
-    /// custom title bar swallows the context-menu popup, so the atomic chrome
-    /// values (branch, ref, tag) copy directly on right-click instead.
-    pub(crate) fn titlebar_copy(
-        &self,
-        id: impl Into<SharedString>,
-        value: String,
-        view: &Entity<Self>,
-        child: impl IntoElement,
-    ) -> impl IntoElement {
-        let view = view.clone();
-        div().id(id.into()).child(child).on_mouse_down(
-            MouseButton::Right,
-            move |_, _window, cx: &mut App| {
-                let value = value.clone();
-                view.update(cx, |v, vcx| v.copy_to_clipboard(value, vcx));
-            },
-        )
-    }
-
+    /// A clickable title-bar element that runs the registry command `command`
+    /// (the branch chip → "branch", an ahead count → "push", a behind count →
+    /// "pull"), with a hover tooltip describing it. The pointer cursor and
+    /// tooltip signal it's actionable — the semantic text color is left intact
+    /// (a hover recolor would fire only on items whose text has no explicit
+    /// color, so it read inconsistently across the bar). When `copy` is set,
+    /// right-clicking offers a `Copy` context menu for that value.
     pub(crate) fn titlebar_action(
         &self,
         view: &Entity<Self>,
         id: impl Into<SharedString>,
         command: &'static str,
         tip: impl Into<SharedString>,
+        copy: Option<String>,
         child: impl IntoElement,
     ) -> impl IntoElement {
         let view = view.clone();
+        let copy_view = view.clone();
         let id = id.into();
         let font = self.font.clone();
         let tip = tip.into();
-        div()
+        let base = div()
             .id(id.clone())
             .relative()
             .cursor_pointer()
@@ -1503,7 +1491,21 @@ impl StatusView {
             .tooltip_show_delay(Duration::from_millis(400))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
-            })
+            });
+        // When `copy` is set, right-click copies the value via the shared Copy
+        // menu. The handlers sit on this same interactive element so its hitbox
+        // isn't occluded by a wrapper — the custom title bar otherwise swallows
+        // the menu (`context_menu` changes the type, so we branch here).
+        match copy {
+            Some(value) => base
+                .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+                    let value = value.clone();
+                    copy_view.update(cx, |v, _| v.pending_copy = Some(value));
+                })
+                .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+                .into_any_element(),
+            None => base.into_any_element(),
+        }
     }
 
     /// The custom window title bar: the repo name, the current branch as a chip,
@@ -1542,6 +1544,7 @@ impl StatusView {
                         "titlebar-branch",
                         "branch",
                         "Detached HEAD",
+                        None,
                         self.branch_chip("detached"),
                     )
                     .into_any_element(),
@@ -1627,17 +1630,13 @@ impl StatusView {
                         .bg(with_alpha(self.palette.tag, 0.15))
                         .text_size(px(11.0))
                         .text_color(self.palette.tag)
-                        .child(self.titlebar_copy(
-                            format!("titlebar-tag-{i}-copy"),
-                            name.clone(),
+                        .child(self.titlebar_action(
                             view,
-                            self.titlebar_action(
-                                view,
-                                format!("titlebar-tag-{i}"),
-                                "tag",
-                                tip,
-                                div().px(px(5.0)).child(SharedString::from(name.clone())),
-                            ),
+                            format!("titlebar-tag-{i}"),
+                            "tag",
+                            tip,
+                            Some(name.clone()),
+                            div().px(px(5.0)).child(SharedString::from(name.clone())),
                         ));
                     if *count > 0 {
                         pill = pill
