@@ -2878,13 +2878,18 @@ impl StatusView {
         selected: bool,
         view: &Entity<Self>,
     ) -> AnyElement {
-        // The char selection within this row's subject, if it owns one.
+        // The char selection within this row's text, if it owns one.
         let sel = self
             .log()
             .and_then(|l| l.char_sel)
             .filter(|c| c.row == ix && !c.is_empty())
             .map(|c| c.range());
         let owns_char = sel.is_some();
+        // Whether this row is in the line-wise region (a drag that spanned rows).
+        let in_region = self
+            .log()
+            .and_then(|l| l.visual.map(|a| (a.min(l.selected), a.max(l.selected))))
+            .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
         let mut row = div()
             .id(SharedString::from(format!("log-row-{ix}")))
             .flex()
@@ -2895,8 +2900,10 @@ impl StatusView {
             .px_2()
             .cursor_pointer();
         // A row mid-char-selection keeps the char background visible (no full-row
-        // wash / hover over it).
-        if selected && !owns_char {
+        // wash / hover over it); a line-wise region uses the region color.
+        if in_region {
+            row = row.bg(self.palette.visual);
+        } else if selected && !owns_char {
             row = row.bg(self.palette.selection);
         } else if !owns_char {
             row = row.hover(|s| s.bg(self.palette.hover));
@@ -2944,18 +2951,32 @@ impl StatusView {
                         let (Some(anchor), Some(a)) = (log.drag_anchor, log.char_anchor) else {
                             return;
                         };
-                        // A drag onto another row can't char-select there (single
-                        // row); keep the selection anchored on its origin row.
-                        if anchor != ix {
-                            return;
-                        }
-                        let candidate = CharSelection {
-                            row: anchor,
-                            anchor: a,
-                            cursor: offset,
-                        };
-                        if log.char_sel != Some(candidate) {
+                        if anchor == ix {
+                            // On the anchor row → char-wise (returning here from a
+                            // line-wise span re-engages char selection).
+                            let candidate = CharSelection {
+                                row: anchor,
+                                anchor: a,
+                                cursor: offset,
+                            };
+                            if log.char_sel == Some(candidate) && log.visual.is_none() {
+                                return;
+                            }
+                            log.visual = None;
                             log.char_sel = Some(candidate);
+                            log.selected = anchor;
+                            vcx.notify();
+                        } else {
+                            // Spanned rows → line-wise region.
+                            if log.selected == ix
+                                && log.visual == Some(anchor)
+                                && log.char_sel.is_none()
+                            {
+                                return;
+                            }
+                            log.char_sel = None;
+                            log.visual = Some(anchor);
+                            log.selected = ix;
                             vcx.notify();
                         }
                     }
@@ -2983,9 +3004,11 @@ impl StatusView {
                 v_open.update(cx, |this, vcx| {
                     if let Some(log) = this.log_mut() {
                         // A click on a row that had a selection just clears it.
-                        if log.char_click {
+                        if log.char_click || log.visual.is_some() {
                             log.char_click = false;
                             log.char_sel = None;
+                            log.visual = None;
+                            log.selected = ix;
                             vcx.notify();
                             return;
                         }
@@ -3130,9 +3153,9 @@ impl StatusView {
                                                     }
                                                     return;
                                                 }
-                                                // Spanned rows → line-wise; the drag has left
-                                                // the anchor, so a return won't re-char-select.
-                                                fd.char_anchor = None;
+                                                // Spanned rows → line-wise region. Keep the
+                                                // char anchor so returning to the origin row
+                                                // re-engages char-wise selection.
                                                 if fd.selected == ix
                                                     && fd.visual == Some(anchor)
                                                     && fd.char_sel.is_none()
@@ -3750,9 +3773,8 @@ impl StatusView {
                                 return;
                             }
                             // Spanned rows → line-wise region (the staging selection).
-                            // The drag has left the anchor, so drop the char anchor:
-                            // returning to it collapses rather than re-char-selecting.
-                            v.selection.char_anchor = None;
+                            // Keep the char anchor so returning to the origin row
+                            // re-engages char-wise selection.
                             if v.selected == ix
                                 && v.selection.visual == Some(anchor)
                                 && v.char_sel.is_none()

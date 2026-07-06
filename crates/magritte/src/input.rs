@@ -517,13 +517,14 @@ impl StatusView {
             cx.notify();
             return;
         }
-        // Esc first clears a log char selection, then (next Esc) closes.
+        // Esc first clears a log selection (char or line-wise), then closes.
         if self
             .log()
-            .is_some_and(|l| l.char_sel.is_some_and(|c| !c.is_empty()))
+            .is_some_and(|l| l.char_sel.is_some_and(|c| !c.is_empty()) || l.visual.is_some())
         {
             if let Some(log) = self.log_mut() {
                 log.char_sel = None;
+                log.visual = None;
             }
             cx.notify();
             return;
@@ -689,7 +690,7 @@ impl StatusView {
         if let Some(fd) = self.flat_diff() {
             fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty())
         } else if let Some(log) = self.log() {
-            log.char_sel.is_some_and(|c| !c.is_empty())
+            log.visual.is_some() || log.char_sel.is_some_and(|c| !c.is_empty())
         } else {
             matches!(self.screen, Screen::Status)
                 && (self.selection.visual.is_some() || self.char_sel.is_some_and(|c| !c.is_empty()))

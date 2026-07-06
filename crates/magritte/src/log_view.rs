@@ -86,11 +86,14 @@ pub(crate) struct LogState {
     /// keys). Left empty for the select modes, which don't re-limit.
     pub(crate) args: Vec<String>,
     pub(crate) limit: usize,
-    /// The active mouse char-range selection within a row's subject (a drag) —
-    /// see [`CharSelection`]. The log's rows aren't line-selectable, so this is
-    /// the only selection here.
+    /// The active mouse char-range selection within a single row (a drag that
+    /// stayed on its row) — see [`CharSelection`].
     pub(crate) char_sel: Option<CharSelection>,
-    /// Row a left-drag began on / its byte offset within the subject, while the
+    /// Anchor row of a line-wise (whole-row) region when a drag spans rows;
+    /// `None` when the selection is char-wise or absent. The region is
+    /// `min(anchor, selected)..=max(...)`.
+    pub(crate) visual: Option<usize>,
+    /// Row a left-drag began on / its byte offset within the row, while the
     /// button is held; and whether the press landed on a live selection (so the
     /// following click clears it rather than opening the commit).
     pub(crate) drag_anchor: Option<usize>,
@@ -551,6 +554,7 @@ impl StatusView {
             args: Vec::new(),
             limit: Self::LOG_LIMIT,
             char_sel: None,
+            visual: None,
             drag_anchor: None,
             char_anchor: None,
             char_click: false,
@@ -593,6 +597,7 @@ impl StatusView {
     pub(crate) fn log_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         if let Some(log) = self.log_mut() {
             log.char_sel = None;
+            log.visual = None;
             if log.entries.is_empty() {
                 return;
             }
@@ -678,7 +683,7 @@ impl StatusView {
     /// Copy the full hash of the commit selected in the log.
     pub(crate) fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
         // A mouse char selection (within a row's text) wins over the hash.
-        let selected = self.log().and_then(|l| l.char_sel).and_then(|sel| {
+        let char_text = self.log().and_then(|l| l.char_sel).and_then(|sel| {
             if sel.is_empty() {
                 return None;
             }
@@ -686,9 +691,28 @@ impl StatusView {
             let (text, _) = self.log_row_text(entry);
             Some(sel.slice(&text).to_string())
         });
-        if let Some(text) = selected {
+        if let Some(text) = char_text {
             if let Some(log) = self.log_mut() {
                 log.char_sel = None;
+            }
+            self.copy_to_clipboard(text, cx);
+            return;
+        }
+        // A line-wise region copies each spanned row's full text, joined.
+        let region_text = self.log().and_then(|l| {
+            let anchor = l.visual?;
+            let (lo, hi) = (anchor.min(l.selected), anchor.max(l.selected));
+            Some(
+                l.entries[lo..=hi.min(l.entries.len().saturating_sub(1))]
+                    .iter()
+                    .map(|e| self.log_row_text(e).0.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        });
+        if let Some(text) = region_text {
+            if let Some(log) = self.log_mut() {
+                log.visual = None;
             }
             self.copy_to_clipboard(text, cx);
             return;
