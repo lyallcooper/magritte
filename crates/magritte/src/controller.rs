@@ -2269,6 +2269,9 @@ impl StatusView {
             self.copy_flat_diff_selection(cx);
         } else if self.log().is_some() {
             self.copy_log_commit(cx);
+        } else if self.char_sel.is_some_and(|c| !c.is_empty()) {
+            // A mouse char selection wins over the row's commit/stash value.
+            self.copy_selection(cx);
         } else if let Some(name) = self
             .refs_view()
             .and_then(RefsView::selected_row)

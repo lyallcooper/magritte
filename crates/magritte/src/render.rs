@@ -20,6 +20,10 @@ use magritte_core::transient::{Group, Suffix, TitleSpan, Transient};
 use magritte_core::{RebaseAction, Sequence};
 use std::ops::Range;
 
+/// Per-range text colors over a string: `(byte range, color)` pairs, the shape
+/// [`StatusView::selectable_text`] and the row-text helpers pass around.
+type ColorRuns = Vec<(Range<usize>, Hsla)>;
+
 use crate::*;
 
 /// A title-bar remote-tracking chunk (the upstream or a distinct push target):
@@ -206,7 +210,7 @@ impl StatusView {
     fn selectable_text(
         &self,
         text: impl Into<SharedString>,
-        runs: Vec<(Range<usize>, Hsla)>,
+        runs: ColorRuns,
         sel: Option<Range<usize>>,
     ) -> (StyledText, TextLayout) {
         let highlights = merge_highlights(&runs, sel, self.palette.selection);
@@ -215,10 +219,38 @@ impl StatusView {
         (styled, layout)
     }
 
+    /// A status row's selectable (copyable) text and its color runs — the
+    /// trailing text element of every git-output row (file path, commit subject,
+    /// stash message, hunk header, diff line, plain notice). `None` for a section
+    /// header (chrome, not git output). Used by both [`render_row`] (to build the
+    /// row's [`StyledText`]) and the copy path, so offsets and copied text agree.
+    ///
+    /// [`render_row`]: Self::render_row
+    pub(crate) fn selectable_row_text(&self, row: &Row) -> Option<(SharedString, ColorRuns)> {
+        let one = |text: &str, color: Hsla| {
+            (
+                SharedString::from(text.to_string()),
+                vec![(0..text.len(), color)],
+            )
+        };
+        match &row.kind {
+            RowKind::Plain { text, color } => Some(one(text, *color)),
+            RowKind::File { label, .. } => Some(one(label, self.palette.fg)),
+            RowKind::HunkHeader { text, .. } => Some(one(text, self.palette.hunk)),
+            RowKind::Commit { subject, .. } => Some(one(subject, self.palette.fg)),
+            RowKind::Stash { message, .. } => Some(one(message, self.palette.fg)),
+            RowKind::Diff { spans, .. } => {
+                let (text, runs) = Self::spans_text_runs(spans);
+                Some((SharedString::from(text), runs))
+            }
+            RowKind::Section { .. } => None,
+        }
+    }
+
     /// The concatenated text of `spans` and the per-span color runs over it —
     /// the input shape [`selectable_text`](Self::selectable_text) wants for a
     /// diff line's colored segments.
-    pub(crate) fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, Vec<(Range<usize>, Hsla)>) {
+    pub(crate) fn spans_text_runs(spans: &[(String, Hsla)]) -> (String, ColorRuns) {
         let mut text = String::new();
         let mut runs = Vec::with_capacity(spans.len());
         for (segment, color) in spans {
@@ -1964,68 +1996,58 @@ impl StatusView {
                 added,
                 removed,
             } => {
-                let total = added + removed;
+                // One StyledText — `path N +++---` — with per-part colors, so the
+                // whole line is char-selectable and copies as `commit_row_text`.
                 let (plus, minus) = stat_bar(*added, *removed);
-                (
-                    base.gap_2()
-                        .text_color(self.palette.dim)
-                        .child(
-                            div()
-                                .text_color(self.palette.fg)
-                                .child(SharedString::from(path.clone())),
-                        )
-                        .child(div().child(SharedString::from(total.to_string())))
-                        .child(
-                            div()
-                                .text_color(self.palette.added)
-                                .child(SharedString::from("+".repeat(plus))),
-                        )
-                        .child(
-                            div()
-                                .text_color(self.palette.removed)
-                                .child(SharedString::from("-".repeat(minus))),
-                        )
-                        .into_any_element(),
-                    None,
-                )
+                let total = (added + removed).to_string();
+                let (bar_plus, bar_minus) = ("+".repeat(plus), "-".repeat(minus));
+                let text = format!("{path} {total} {bar_plus}{bar_minus}");
+                let mut runs = vec![(0..path.len(), self.palette.fg)];
+                let mid_end = path.len() + 1 + total.len() + 1; // " {total} "
+                runs.push((path.len()..mid_end, self.palette.dim));
+                runs.push((mid_end..mid_end + bar_plus.len(), self.palette.added));
+                runs.push((mid_end + bar_plus.len()..text.len(), self.palette.removed));
+                let (styled, layout) = self.selectable_text(text, runs, sel);
+                (base.child(styled).into_any_element(), Some(layout))
             }
-            // Status-style file header: a colored change word ("modified") + path.
-            // The per-file counts live in the diffstat block above, not here.
+            // Status-style file header: a colored change word ("modified") + path,
+            // as one StyledText so the path is char-selectable.
             CommitDiffRow::File { change, path } => {
                 let word = status_label::change_word(*change);
-                let mut row = fold_marker(base.gap_2());
-                if !word.is_empty() {
-                    row = row.child(
-                        div()
-                            .text_color(status_label::change_color(*change, &self.palette))
-                            .child(SharedString::from(word)),
-                    );
-                }
+                let (text, runs) = if word.is_empty() {
+                    (path.clone(), vec![(0..path.len(), self.palette.fg)])
+                } else {
+                    let text = format!("{word} {path}");
+                    let runs = vec![
+                        (
+                            0..word.len(),
+                            status_label::change_color(*change, &self.palette),
+                        ),
+                        (word.len()..text.len(), self.palette.fg),
+                    ];
+                    (text, runs)
+                };
+                let (styled, layout) = self.selectable_text(text, runs, sel);
                 (
-                    row.child(
-                        div()
-                            .text_color(self.palette.fg)
-                            .child(SharedString::from(path.clone())),
-                    )
-                    .into_any_element(),
-                    None,
+                    fold_marker(base.gap_2()).child(styled).into_any_element(),
+                    Some(layout),
                 )
             }
             CommitDiffRow::Stats {
                 files,
                 insertions,
                 deletions,
-            } => (
-                fold_marker(base.gap_2())
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(diffstat_text(
-                        *files,
-                        *insertions,
-                        *deletions,
-                    )))
-                    .into_any_element(),
-                None,
-            ),
+            } => {
+                let text = diffstat_text(*files, *insertions, *deletions);
+                let (styled, layout) = self.selectable_text(text, Vec::new(), sel);
+                (
+                    fold_marker(base.gap_2())
+                        .text_color(self.palette.dim)
+                        .child(styled)
+                        .into_any_element(),
+                    Some(layout),
+                )
+            }
             CommitDiffRow::Hunk(text) => {
                 let (styled, layout) = self.selectable_text(text.clone(), Vec::new(), sel);
                 (
@@ -3341,9 +3363,8 @@ impl StatusView {
         // drag handlers); `None` for every other row kind.
         let mut diff_layout: Option<TextLayout> = None;
         let content = match &row.kind {
-            RowKind::Plain { text, color } => el
-                .text_color(*color)
-                .child(SharedString::from(text.clone())),
+            // Plain rows carry only their text (appended below).
+            RowKind::Plain { .. } => el,
             RowKind::Section {
                 title,
                 count,
@@ -3372,11 +3393,14 @@ impl StatusView {
                 .when(*refreshing && self.busy, |el| {
                     el.child(Spinner::new().xsmall().color(self.palette.dim))
                 }),
+            // The rows below build only their leading decorations; the row's
+            // selectable text is appended uniformly after the match (from
+            // `selectable_row_text`), so every git-output row is char-selectable.
             RowKind::File {
                 status,
                 status_color,
-                label,
                 expanded,
+                ..
             } => {
                 let lead = match expanded {
                     Some(e) => chevron(*e, self.palette.dim).into_any_element(),
@@ -3394,20 +3418,24 @@ impl StatusView {
                             .child(SharedString::from(status.clone())),
                     );
                 }
-                el.child(SharedString::from(label.clone()))
+                el
             }
-            RowKind::HunkHeader { text, expanded } => {
-                el.child(chevron(*expanded, self.palette.dim)).child(
-                    div()
-                        .text_color(self.palette.hunk)
-                        .child(SharedString::from(text.clone())),
-                )
-            }
-            RowKind::Diff { kind, spans } => {
-                let (sign, sign_color, tint) = match kind {
-                    LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
-                    LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
-                    _ => (' ', self.palette.dim, None),
+            RowKind::HunkHeader { expanded, .. } => el.child(chevron(*expanded, self.palette.dim)),
+            RowKind::Diff { kind, .. } => {
+                let tint = match kind {
+                    LineKind::Added => Some(self.palette.added_bg),
+                    LineKind::Removed => Some(self.palette.removed_bg),
+                    _ => None,
+                };
+                let sign_color = match kind {
+                    LineKind::Added => self.palette.added,
+                    LineKind::Removed => self.palette.removed,
+                    _ => self.palette.dim,
+                };
+                let sign = match kind {
+                    LineKind::Added => '+',
+                    LineKind::Removed => '-',
+                    _ => ' ',
                 };
                 // Add/remove background tint, unless the row wears the cursor wash
                 // or is in a line region (a char-selecting row keeps its tint).
@@ -3416,23 +3444,17 @@ impl StatusView {
                         el = el.bg(t);
                     }
                 }
-                let (text, runs) = Self::spans_text_runs(spans);
-                let (styled, layout) = self.selectable_text(text, runs, char_range);
-                diff_layout = Some(layout);
                 el.child(
                     div()
                         .text_color(sign_color)
                         .child(SharedString::from(sign.to_string())),
                 )
-                .child(styled)
             }
             // Commit/stash rows: a lead spacer to align under the section's
-            // chevron, then a dim short hash / reference and the subject / message.
+            // chevron, then a dim short hash / reference; the subject / message
+            // is appended below.
             RowKind::Commit {
-                short_hash,
-                subject,
-                refs,
-                ..
+                short_hash, refs, ..
             } => {
                 let mut el = el.child(div().w(px(14.0)).flex_shrink_0()).child(
                     div()
@@ -3446,17 +3468,25 @@ impl StatusView {
                 for (label, kind) in refs {
                     el = el.child(self.ref_chip(label, *kind));
                 }
-                el.child(SharedString::from(subject.clone()))
+                el
             }
-            RowKind::Stash { reference, message } => el
-                .child(div().w(px(14.0)).flex_shrink_0())
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(reference.clone())),
-                )
-                .child(SharedString::from(message.clone())),
+            RowKind::Stash { reference, .. } => el.child(div().w(px(14.0)).flex_shrink_0()).child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from(reference.clone())),
+            ),
+        };
+        // Append the row's selectable text as one StyledText (with the char
+        // selection painted when this row owns it), capturing its layout for the
+        // drag handlers. Section headers have none.
+        let content = match self.selectable_row_text(row) {
+            Some((text, runs)) => {
+                let (styled, layout) = self.selectable_text(text, runs, char_range);
+                diff_layout = Some(layout);
+                content.child(styled)
+            }
+            None => content,
         };
         if clickable {
             let (down_layout, move_layout) = (diff_layout.clone(), diff_layout);

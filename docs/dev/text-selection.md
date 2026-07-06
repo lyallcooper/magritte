@@ -1,14 +1,21 @@
 # Mouse text selection: char-wise within a line, line-wise across lines
 
-Status: implemented for the flattened-diff views (commit detail and the `d`
-diff buffer) and the **status view** diff lines; the design below is the
-original plan. Done: the `StyledText` migration of the diff/text rows (`Line`,
-`Message`, `Detail`, `Note`, `Hunk`), `CharSelection` state, the one-drag/two-
-granularity gesture (char-wise on the anchor row, line-wise across rows —
-sharing the status view's staging region), and copy (mouse-up + `y`/Cmd-C
-precedence, cleared on Esc / plain click / keyboard motion). Still open: the
-multi-color rows (`File`/`StatLine`/`Stats`), and the `$` command-log / blame
-pagers.
+Status: implemented for the status view and the flattened-diff views (commit
+detail and the `d` diff buffer); the design below is the original plan. Done:
+every git-output text row renders as a `StyledText` and is char-selectable —
+status file paths, commit subjects, stash messages, hunk headers, diff lines,
+and the flat-diff `File`/`StatLine`/`Stats` rows (each a single StyledText with
+per-part color runs). `CharSelection` state; the one-drag/two-granularity
+gesture (char-wise on the anchor row, line-wise across rows — sharing the
+status view's staging region, and collapsing back to the anchor line on a
+drag-back); and copy via `y`/Cmd-C (a char range wins over the line-wise / row
+value), with no copy-on-drag. Cleared on Esc, a plain click (which, on a row
+with a selection, clears rather than acting — the next click acts), or keyboard
+motion.
+
+Still open: the short commit SHA in a status row (a decoration between the
+spacer and refs — not char-selectable; `y` copies the full hash instead), and
+the log view and `$` command-log / blame pagers (separate render paths).
 
 ## Goal
 
