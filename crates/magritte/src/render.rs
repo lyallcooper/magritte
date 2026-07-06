@@ -3048,15 +3048,20 @@ impl StatusView {
                     let word = word_range(&row_text, offset);
                     v_right.update(cx, |this, vcx| {
                         if let Some(log) = this.log_mut() {
-                            log.visual = None;
-                            log.char_click = false;
-                            log.char_sel = (!word.is_empty()).then_some(CharSelection {
-                                row: ix,
-                                anchor: word.start,
-                                cursor: word.end,
-                            });
-                            log.selected = ix;
-                            vcx.notify();
+                            // Keep an existing selection (the menu copies it);
+                            // else select the word under the cursor.
+                            let has_selection =
+                                log.visual.is_some() || log.char_sel.is_some_and(|c| !c.is_empty());
+                            if !has_selection {
+                                log.char_click = false;
+                                log.char_sel = (!word.is_empty()).then_some(CharSelection {
+                                    row: ix,
+                                    anchor: word.start,
+                                    cursor: word.end,
+                                });
+                                log.selected = ix;
+                                vcx.notify();
+                            }
                         }
                     });
                 },
@@ -3861,15 +3866,19 @@ impl StatusView {
                         if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                             return;
                         }
-                        if v.selection.visual.is_none() {
+                        // Right-clicking with a selection already present keeps it
+                        // (the menu copies it); otherwise select the word at point.
+                        let has_selection = v.selection.visual.is_some()
+                            || v.char_sel.is_some_and(|c| !c.is_empty());
+                        if !has_selection {
                             v.selected = ix;
                             v.char_sel = word.filter(|w| !w.is_empty()).map(|w| CharSelection {
                                 row: ix,
                                 anchor: w.start,
                                 cursor: w.end,
                             });
+                            vcx.notify();
                         }
-                        vcx.notify();
                     });
                 },
             );
