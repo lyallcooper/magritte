@@ -36,6 +36,21 @@ fn color_run(range: Range<usize>, color: Hsla) -> (Range<usize>, HighlightStyle)
     )
 }
 
+/// The whitespace-delimited word (token) of `text` containing byte `offset` —
+/// used by right-click to select the sha/ref/word under the cursor.
+fn word_range(text: &str, offset: usize) -> Range<usize> {
+    let offset = offset.min(text.len());
+    let start = text[..offset]
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let end = text[offset..]
+        .find(char::is_whitespace)
+        .map(|i| offset + i)
+        .unwrap_or(text.len());
+    start..end
+}
+
 /// Append `s` to `text` and push a color run covering it, so the runs tile the
 /// string contiguously (a continuous selection background needs no gaps).
 fn push_run(text: &mut String, runs: &mut StyleRuns, s: &str, color: Hsla) {
@@ -2912,11 +2927,17 @@ impl StatusView {
         // styled runs); its layout drives hit-testing. The date trails, right-
         // aligned, as its own element.
         let (text, runs) = self.log_row_text(entry);
+        let row_text = text.clone();
         let (line, layout) = self.selectable_text(text, runs, sel);
         row = row.child(line);
-        let (down_layout, move_layout) = (layout.clone(), layout);
-        let (v_down, v_move, v_up, v_open) =
-            (view.clone(), view.clone(), view.clone(), view.clone());
+        let (down_layout, move_layout, right_layout) = (layout.clone(), layout.clone(), layout);
+        let (v_down, v_move, v_up, v_open, v_right) = (
+            view.clone(),
+            view.clone(),
+            view.clone(),
+            view.clone(),
+            view.clone(),
+        );
         row.child(div().flex_grow(1.0))
             .child(
                 div()
@@ -3018,6 +3039,29 @@ impl StatusView {
                     this.open_commit_view(vcx);
                 });
             })
+            // Right-click selects the word (sha / ref / token) under the cursor;
+            // the context menu then offers to copy it.
+            .on_mouse_down(
+                MouseButton::Right,
+                move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                    let offset = offset_at(&right_layout, ev.position);
+                    let word = word_range(&row_text, offset);
+                    v_right.update(cx, |this, vcx| {
+                        if let Some(log) = this.log_mut() {
+                            log.visual = None;
+                            log.char_click = false;
+                            log.char_sel = (!word.is_empty()).then_some(CharSelection {
+                                row: ix,
+                                anchor: word.start,
+                                cursor: word.end,
+                            });
+                            log.selected = ix;
+                            vcx.notify();
+                        }
+                    });
+                },
+            )
+            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
             .into_any_element()
     }
 
@@ -3642,6 +3686,9 @@ impl StatusView {
             None => content,
         };
         if clickable {
+            // A right-click's word-select uses the row's layout + canonical text.
+            let right_layout = diff_layout.clone();
+            let right_text = self.selectable_row_text(row).map(|(t, _)| t);
             let (down_layout, move_layout) = (diff_layout.clone(), diff_layout);
             let el = content
                 .relative()
@@ -3799,26 +3846,39 @@ impl StatusView {
                         });
                     }
                 });
-            // Right-click on a stageable row: select it (unless a visual
-            // selection is in progress) and show a menu of the staging verbs
-            // that apply. The actions act on the row at point / the selection.
+            // Right-click selects the word (sha / ref / path token) under the
+            // cursor — unless a line-wise region is in progress — then shows a
+            // menu: the staging verbs that apply to the row, plus Copy.
+            let view_r = view.clone();
+            let el = el.on_mouse_down(
+                MouseButton::Right,
+                move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                    let word = right_layout
+                        .as_ref()
+                        .zip(right_text.as_ref())
+                        .map(|(layout, text)| word_range(text, offset_at(layout, ev.position)));
+                    view_r.update(cx, |v, vcx| {
+                        if !v.rows.get(ix).is_some_and(|r| r.selectable) {
+                            return;
+                        }
+                        if v.selection.visual.is_none() {
+                            v.selected = ix;
+                            v.char_sel = word.filter(|w| !w.is_empty()).map(|w| CharSelection {
+                                row: ix,
+                                anchor: w.start,
+                                cursor: w.end,
+                            });
+                        }
+                        vcx.notify();
+                    });
+                },
+            );
             match &row.target {
                 Some(target) => {
                     let (can_stage, can_unstage, can_discard) = target_ops(target);
                     let conflicted = self.is_conflicted(target_path(target));
                     let (ours_label, theirs_label) = self.conflict_side_labels();
-                    let view = view.clone();
-                    el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
-                        view.update(cx, |v, vcx| {
-                            if v.selection.visual.is_none()
-                                && v.rows.get(ix).is_some_and(|r| r.selectable)
-                            {
-                                v.selected = ix;
-                                vcx.notify();
-                            }
-                        });
-                    })
-                    .context_menu(move |mut menu, _window, _cx| {
+                    el.context_menu(move |mut menu, _window, _cx| {
                         // A conflicted file resolves by taking a whole side.
                         if conflicted {
                             menu = menu
@@ -3839,7 +3899,10 @@ impl StatusView {
                     })
                     .into_any_element()
                 }
-                None => el.into_any_element(),
+                // Commits, stashes, plain rows: just Copy the selected word.
+                None => el
+                    .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+                    .into_any_element(),
             }
         } else {
             content.into_any_element()
@@ -4239,7 +4302,7 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxTakeTheirs, _window, cx| {
                 this.resolve_at_point(ConflictSide::Theirs, cx)
             }))
-            .on_action(cx.listener(|this, _: &CtxCopy, _window, cx| this.copy_selection(cx)))
+            .on_action(cx.listener(|this, _: &CtxCopy, _window, cx| this.copy_at_point(cx)))
             // Settings "Open config file" dropdown actions.
             .on_action(
                 cx.listener(|this, _: &CopyConfigPath, _window, cx| this.copy_config_path(cx)),

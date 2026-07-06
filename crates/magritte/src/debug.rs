@@ -170,6 +170,19 @@ async fn run_command(
             dispatch_move(handle, x, y, cx)?;
             Ok(None)
         }
+        "rclick" => {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("rclick needs: x y")?;
+            let y: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("rclick needs: x y")?;
+            dispatch_right_click(handle, x, y, cx)?;
+            Ok(None)
+        }
         "dblclick" => {
             let mut parts = rest.split_whitespace();
             let x: f32 = parts
@@ -308,6 +321,48 @@ fn click_modifiers(verb: &str) -> Modifiers {
     } else {
         Modifiers::default()
     }
+}
+
+/// Dispatch a right click (move → right down → right up) at a point, e.g. to
+/// open a context menu.
+fn dispatch_right_click(
+    handle: AnyWindowHandle,
+    x: f32,
+    y: f32,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let pos = point(px(x), px(y));
+    let m = Modifiers::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: pos,
+                pressed_button: None,
+                modifiers: m,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position: pos,
+                modifiers: m,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Right,
+                position: pos,
+                modifiers: m,
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Dispatch a left double-click at a window-relative point: two down/up pairs,
