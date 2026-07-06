@@ -3048,11 +3048,18 @@ impl StatusView {
                     let word = word_range(&row_text, offset);
                     v_right.update(cx, |this, vcx| {
                         if let Some(log) = this.log_mut() {
-                            // Keep an existing selection (the menu copies it);
-                            // else select the word under the cursor.
-                            let has_selection =
-                                log.visual.is_some() || log.char_sel.is_some_and(|c| !c.is_empty());
-                            if !has_selection {
+                            // Keep the selection when right-clicking inside it (the
+                            // menu copies it); elsewhere clear it and select the word.
+                            let inside = if let Some(anchor) = log.visual {
+                                let (lo, hi) = (anchor.min(log.selected), anchor.max(log.selected));
+                                ix >= lo && ix <= hi
+                            } else if let Some(c) = log.char_sel.filter(|c| !c.is_empty()) {
+                                let r = c.range();
+                                c.row == ix && offset >= r.start && offset <= r.end
+                            } else {
+                                false
+                            };
+                            if !inside {
                                 log.char_click = false;
                                 log.char_sel = (!word.is_empty()).then_some(CharSelection {
                                     row: ix,
@@ -3858,24 +3865,42 @@ impl StatusView {
             let el = el.on_mouse_down(
                 MouseButton::Right,
                 move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                    let word = right_layout
-                        .as_ref()
-                        .zip(right_text.as_ref())
-                        .map(|(layout, text)| word_range(text, offset_at(layout, ev.position)));
+                    let hit =
+                        right_layout
+                            .as_ref()
+                            .zip(right_text.as_ref())
+                            .map(|(layout, text)| {
+                                let offset = offset_at(layout, ev.position);
+                                (word_range(text, offset), offset)
+                            });
                     view_r.update(cx, |v, vcx| {
                         if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                             return;
                         }
-                        // Right-clicking with a selection already present keeps it
-                        // (the menu copies it); otherwise select the word at point.
-                        let has_selection = v.selection.visual.is_some()
-                            || v.char_sel.is_some_and(|c| !c.is_empty());
-                        if !has_selection {
+                        // Right-clicking *inside* the current selection keeps it (the
+                        // menu copies it); clicking elsewhere clears it and selects
+                        // the word at the click.
+                        let inside = if let Some(anchor) = v.selection.visual {
+                            let (lo, hi) = (anchor.min(v.selected), anchor.max(v.selected));
+                            ix >= lo && ix <= hi
+                        } else if let Some(c) = v.char_sel.filter(|c| !c.is_empty()) {
+                            let r = c.range();
+                            c.row == ix
+                                && hit
+                                    .as_ref()
+                                    .is_some_and(|(_, o)| *o >= r.start && *o <= r.end)
+                        } else {
+                            false
+                        };
+                        if !inside {
+                            v.selection.visual = None;
                             v.selected = ix;
-                            v.char_sel = word.filter(|w| !w.is_empty()).map(|w| CharSelection {
-                                row: ix,
-                                anchor: w.start,
-                                cursor: w.end,
+                            v.char_sel = hit.and_then(|(w, _)| {
+                                (!w.is_empty()).then_some(CharSelection {
+                                    row: ix,
+                                    anchor: w.start,
+                                    cursor: w.end,
+                                })
                             });
                             vcx.notify();
                         }
