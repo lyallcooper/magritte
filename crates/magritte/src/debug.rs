@@ -170,6 +170,19 @@ async fn run_command(
             dispatch_move(handle, x, y, cx)?;
             Ok(None)
         }
+        "dblclick" => {
+            let mut parts = rest.split_whitespace();
+            let x: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("dblclick needs: x y")?;
+            let y: f32 = parts
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or("dblclick needs: x y")?;
+            dispatch_double_click(handle, x, y, cx)?;
+            Ok(None)
+        }
         "drag" => {
             let coords: Vec<f32> = rest
                 .split_whitespace()
@@ -295,6 +308,43 @@ fn click_modifiers(verb: &str) -> Modifiers {
     } else {
         Modifiers::default()
     }
+}
+
+/// Dispatch a left double-click at a window-relative point: two down/up pairs,
+/// the second carrying `click_count = 2` (as the platform would), so handlers
+/// that distinguish double-clicks from lone clicks fire correctly.
+fn dispatch_double_click(
+    handle: AnyWindowHandle,
+    x: f32,
+    y: f32,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let pos = point(px(x), px(y));
+    let m = Modifiers::default();
+    cx.update_window(handle, |_, window, cx| {
+        for count in [1, 2] {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: pos,
+                    modifiers: m,
+                    click_count: count,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: pos,
+                    modifiers: m,
+                    click_count: count,
+                }),
+                cx,
+            );
+        }
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Dispatch a left click (move → down → up) at a window-relative point, with

@@ -184,8 +184,6 @@ pub(crate) struct CommitView {
     pub(crate) rev: String,
     /// The abbreviated hash, shown in the header next to the copy button.
     pub(crate) short: SharedString,
-    /// The commit subject, shown after the hash in the header.
-    pub(crate) subject: SharedString,
     pub(crate) details: Vec<String>,
     pub(crate) show_details: bool,
     pub(crate) body: FlatDiff,
@@ -338,14 +336,27 @@ impl StatusView {
         // Carry the screen we came from so closing returns there (log or status).
         let back = Box::new(std::mem::take(&mut self.screen));
         let rev = hash.clone();
+        // Seed the body with the subject (summary) so it's visible immediately —
+        // the async load replaces it with the full message once it lands.
+        let body = {
+            let mut rows = Vec::new();
+            if !subject.is_empty() {
+                rows.push(CommitDiffRow::Message(subject));
+                rows.push(CommitDiffRow::Note(String::new()));
+            }
+            rows.push(CommitDiffRow::Note("Loading…".to_string()));
+            FlatDiff {
+                rows,
+                ..FlatDiff::loading()
+            }
+        };
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
                 short: SharedString::from(short),
-                subject: SharedString::from(subject),
                 details: Vec::new(),
                 show_details: false,
-                body: FlatDiff::loading(),
+                body,
                 files: Vec::new(),
             },
             back,
@@ -515,16 +526,23 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) -> Vec<CommitDiffRow> {
         let mut rows = Vec::new();
-        let mut body = message.lines().skip(1);
-        if matches!(body.clone().next(), Some("")) {
+        let mut lines = message.lines();
+        // The subject (summary) as the first selectable line, so it can be
+        // selected/copied like the rest of the message (it's the header title
+        // too, but that's chrome — the buffer text is what you select).
+        if let Some(subject) = lines.next() {
+            rows.push(CommitDiffRow::Message(subject.to_string()));
+        }
+        // The body, after an optional blank line separating it from the subject.
+        let mut body = lines.peekable();
+        if matches!(body.peek(), Some(&"")) {
             body.next();
         }
-        let mut body = body.peekable();
         if body.peek().is_some() {
             rows.push(CommitDiffRow::Note(String::new()));
-        }
-        for line in body {
-            rows.push(CommitDiffRow::Message(line.to_string()));
+            for line in body {
+                rows.push(CommitDiffRow::Message(line.to_string()));
+            }
         }
         if !rows.is_empty() {
             rows.push(CommitDiffRow::Note(String::new()));

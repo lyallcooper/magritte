@@ -3081,13 +3081,9 @@ impl StatusView {
                                     cv.rev.clone(),
                                     "Copy commit hash",
                                 )),
-                        )
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(self.palette.fg)
-                                .child(cv.subject.clone()),
                         ),
+                    // The subject isn't repeated here — it's the first (selectable)
+                    // line of the message body below.
                     "close",
                     view,
                 ),
@@ -3508,7 +3504,7 @@ impl StatusView {
                         let double = ev.click_count() >= 2;
                         view.update(cx, |v, cx| {
                             // A click on a row that had a char selection only clears
-                            // it — the next click (with none) fires Enter as usual.
+                            // it — the next click acts as usual.
                             if v.selection.char_click {
                                 v.selection.char_click = false;
                                 v.char_sel = None;
@@ -3516,12 +3512,10 @@ impl StatusView {
                                 return;
                             }
                             v.char_sel = None;
-                            // Enter fires on a double-click or a click of the
-                            // already-selected row — the two are equivalent (a
-                            // double-click's second press lands on the selection).
-                            let enter = double || v.selection.reclick;
-                            v.selection.reclick = false;
-                            if enter {
+                            // A lone click positions the cursor / toggles a fold; only
+                            // a real double-click fires Enter (open) — so clicking a
+                            // selected foldable row still expands/collapses it.
+                            if double {
                                 v.selected = ix;
                                 if let Some(id) = v.resolve_binding("enter") {
                                     v.invoke_command(&id, window, cx);
@@ -3556,19 +3550,13 @@ impl StatusView {
                                 v.selection.char_anchor = None;
                                 v.char_sel = None;
                                 v.selection.shift_click = true;
-                                v.selection.reclick = false;
                                 v.selection.char_click = false;
                             } else {
                                 // A press on a live char selection means the coming
-                                // click just clears it (not Enter).
+                                // click just clears it (not the click action).
                                 let had_char =
                                     v.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
                                 v.selection.char_click = had_char;
-                                // Clicking the row that's already the sole selection
-                                // arms Enter — but not when there's a selection to
-                                // clear first.
-                                v.selection.reclick =
-                                    !had_char && v.selected == ix && v.selection.visual.is_none();
                                 v.selection.drag_anchor = Some(ix);
                                 v.selection.char_anchor = offset;
                                 // A new drag clears any prior char selection; a move
