@@ -207,8 +207,8 @@
 - [x] Instead of our TG glyph to mark the tag in the title bar, pillify the tag text. Include the commits since tag count inside the pill in a nested, smaller pill, maybe styled as an outline pill only. — done: each tag renders as a tag-tinted pill holding the name with the commits-since count as a nested outline pill (new `outline_pill`); the `stacked_letters` "TG" glyph is gone.
 - [ ] Enter from the ref browser shouldn't try and checkout everything. Mirror magit's behavior here.
 - [ ] Commit details view should show the details by default, but as a collapsed by default. Its collapsed/expanded state should be saved (per-repo, not per commit)
-- [ ] Commit details view should say Commit <sha>
-- [ ] Commit details view sha should be char-wise selectable
-- [ ] Clicking anywhere should dismiss the current selectino, not just when other selectable text is clicked
+- [x] Commit details view should say Commit <sha> — done: the commit view's body now leads with a selectable "Commit <full-sha>" head line (magit's revision buffer); the redundant short-hash header chip is gone.
+- [x] Commit details view sha should be char-wise selectable — done: the head line is a normal selectable row, so the sha drag-selects and copies like any other text.
+- [x] Clicking anywhere should dismiss the current selection, not just when other selectable text is clicked — done: a root bubble-phase handler clears the active char/visual selection on any left click that didn't land on a selectable row (empty space, chrome, a section header).
 - [ ] Add config support a la magit's branch at remote (and whatever other) transients
 - [ ] Gracefully handle when git is not installed and provide a brief but helpful error message

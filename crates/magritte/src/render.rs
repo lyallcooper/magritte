@@ -1465,26 +1465,6 @@ impl StatusView {
         chunk
     }
 
-    /// Wrap an element so a right-click copies `value` via the shared `Copy`
-    /// context menu — the replacement for the little copy buttons.
-    pub(crate) fn right_click_copy(
-        &self,
-        id: impl Into<SharedString>,
-        value: String,
-        view: &Entity<Self>,
-        child: impl IntoElement,
-    ) -> impl IntoElement {
-        let view = view.clone();
-        div()
-            .id(id.into())
-            .child(child)
-            .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
-                let value = value.clone();
-                view.update(cx, |v, _| v.pending_copy = Some(value));
-            })
-            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
-    }
-
     /// A clickable title-bar element that runs the registry command `command`
     /// (the branch chip → "branch", an ahead count → "push", a behind count →
     /// "pull"), with a hover tooltip describing it. The pointer cursor and
@@ -2078,6 +2058,18 @@ impl StatusView {
             )
         };
         match row {
+            // The "Commit <full-sha>" header line: the "Commit" keyword dim, the
+            // hash in the foreground, as one selectable string.
+            CommitDiffRow::Head(rev) => {
+                let text = format!("Commit {rev}");
+                let label = "Commit".len();
+                let runs = vec![
+                    color_run(0..label, self.palette.dim),
+                    color_run(label..text.len(), self.palette.fg),
+                ];
+                let (styled, layout) = self.selectable_text(text, runs, sel);
+                (base.child(styled).into_any_element(), Some(layout))
+            }
             // The metadata "Refs:" line: dim text with the ref names styled as
             // runs (color-coded by kind), so it's one selectable string.
             CommitDiffRow::Detail(text) if text.starts_with("Refs:") => {
@@ -2999,6 +2991,9 @@ impl StatusView {
                 move |ev: &MouseDownEvent, _window, cx: &mut App| {
                     let offset = offset_at(&down_layout, ev.position);
                     v_down.update(cx, |this, vcx| {
+                        // This press is on a log row (which manages its own
+                        // selection), not a click-to-dismiss off the content.
+                        this.click_hit_selectable = true;
                         if let Some(log) = this.log_mut() {
                             log.char_click =
                                 log.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
@@ -3195,6 +3190,10 @@ impl StatusView {
                                                 if view.popup.is_some() {
                                                     return;
                                                 }
+                                                // This press is on a diff row (which
+                                                // manages its own selection), not a
+                                                // click-to-dismiss off the content.
+                                                view.click_hit_selectable = true;
                                                 if let Some(fd) = view.flat_diff_mut() {
                                                     // A press on a live char selection means
                                                     // the coming click just clears it.
@@ -3342,26 +3341,9 @@ impl StatusView {
 
         self.screen_scaffold()
             .child(
-                self.view_header(
-                    // The short hash as a chip; right-click copies the full hash
-                    // (via the shared Copy menu).
-                    self.right_click_copy(
-                        "commit-sha-copy",
-                        cv.rev.clone(),
-                        view,
-                        div()
-                            .rounded(px(4.0))
-                            .bg(self.palette.selection)
-                            .text_color(self.palette.fg)
-                            .font_weight(FontWeight::MEDIUM)
-                            .px(px(5.0))
-                            .child(cv.short.clone()),
-                    ),
-                    // The subject isn't repeated here — it's the first (selectable)
-                    // line of the message body below.
-                    "close",
-                    view,
-                ),
+                // The identity lives in the body's first line ("Commit <sha>",
+                // selectable/copyable); the header just carries the close action.
+                self.view_header(div(), "close", view),
             )
             .child(body)
     }
@@ -3800,6 +3782,9 @@ impl StatusView {
                             if !v.rows.get(ix).is_some_and(|r| r.selectable) {
                                 return;
                             }
+                            // This press is on selectable text; the root's bubble
+                            // handler must not treat it as a click-to-dismiss.
+                            v.click_hit_selectable = true;
                             if ev.modifiers.shift {
                                 let anchor = v.selection.visual.unwrap_or(v.selected);
                                 v.selection.visual = (ix != anchor).then_some(anchor);
@@ -4312,6 +4297,9 @@ impl Render for StatusView {
                 // here in the capture phase (root-first), so the opening
                 // right-click's bubble-phase handler can re-set it afterward.
                 this.ctx_menu_open = false;
+                // Reset per-press: a selectable row's own mouse-down sets this,
+                // so the root's bubble handler can tell a click landed on text.
+                this.click_hit_selectable = false;
                 if ev.first_mouse {
                     cx.stop_propagation();
                     return;
@@ -4322,6 +4310,17 @@ impl Render for StatusView {
                     cx.notify();
                 }
             }))
+            // Bubble phase (fires after any row's own mouse-down): a left click
+            // that didn't land on selectable text dismisses the active selection,
+            // so clicking empty space, chrome, or a section header clears it too.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
+                    if !this.click_hit_selectable && this.clear_point_selection() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
                 // Tab is delivered as an action (gpui's Root binds it for
                 // focus-nav, which we override here), but its *effect* routes

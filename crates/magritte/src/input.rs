@@ -697,6 +697,19 @@ impl StatusView {
         }
     }
 
+    /// Clear the mouse char selection and line-wise visual selection of the
+    /// active view (flat-diff, log, or status). Returns whether anything was
+    /// cleared. Used by Esc and by a click that lands off any selectable text.
+    pub(crate) fn clear_point_selection(&mut self) -> bool {
+        if let Some(fd) = self.flat_diff_mut() {
+            return fd.visual.take().is_some() | fd.char_sel.take().is_some();
+        }
+        if let Some(log) = self.log_mut() {
+            return log.visual.take().is_some() | log.char_sel.take().is_some();
+        }
+        self.selection.visual.take().is_some() | self.char_sel.take().is_some()
+    }
+
     /// Begin (or extend) a sequence: remember the keys typed so far and show the
     /// lightweight bottom strip. The sequence then waits indefinitely for the
     /// next key; after `which_key_delay_ms` the strip expands into the which-key
@@ -838,12 +851,12 @@ impl StatusView {
     /// to the same row. Returns whether there was something to preview. Once the
     /// view is open, `SPC` there scrolls it (the normal paging motion).
     fn preview_at_point(&mut self, cx: &mut Context<Self>) -> bool {
-        if let Some((hash, short, subject)) = self.point_commit() {
-            self.open_commit(hash, short, subject, cx);
+        if let Some((hash, _, subject)) = self.point_commit() {
+            self.open_commit(hash, subject, cx);
             return true;
         }
         if let Some((reference, message)) = self.point_stash() {
-            self.open_commit(reference.clone(), reference, message, cx);
+            self.open_commit(reference, message, cx);
             return true;
         }
         false

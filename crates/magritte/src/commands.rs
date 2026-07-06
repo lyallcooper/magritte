@@ -1127,8 +1127,8 @@ pub(crate) fn commands() -> &'static [Command] {
             "enter",
             |t| t.point_commit().is_some(),
             |t, _w, cx| {
-                if let Some((hash, short, subject)) = t.point_commit() {
-                    t.open_commit(hash, short, subject, cx);
+                if let Some((hash, _, subject)) = t.point_commit() {
+                    t.open_commit(hash, subject, cx);
                 }
             }
         ),
@@ -1181,7 +1181,7 @@ pub(crate) fn commands() -> &'static [Command] {
             |t| t.point_stash().is_some(),
             |t, _w, cx| {
                 if let Some((reference, message)) = t.point_stash() {
-                    t.open_commit(reference.clone(), reference, message, cx);
+                    t.open_commit(reference, message, cx);
                 }
             }
         ),

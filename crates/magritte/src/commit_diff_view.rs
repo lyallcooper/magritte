@@ -179,11 +179,9 @@ fn line_region_scope(rows: &[CommitDiffRow], lo: usize, hi: usize) -> Option<App
 /// A single commit's detail (opened from the log): its header and diff, as the
 /// same flattened rows the commit editor renders.
 pub(crate) struct CommitView {
-    /// The commit's full hash — passed to `diff_commit` and copied by the
-    /// header's copy button.
+    /// The commit's full hash — passed to `diff_commit` and shown in the body's
+    /// "Commit <sha>" head line.
     pub(crate) rev: String,
-    /// The abbreviated hash, shown in the header next to the copy button.
-    pub(crate) short: SharedString,
     pub(crate) details: Vec<String>,
     pub(crate) show_details: bool,
     pub(crate) body: FlatDiff,
@@ -288,37 +286,29 @@ impl StatusView {
         let Some(entry) = self.log().and_then(|l| l.entries.get(l.selected).cloned()) else {
             return;
         };
-        self.open_commit(entry.hash, entry.short_hash, entry.subject, cx);
+        self.open_commit(entry.hash, entry.subject, cx);
     }
 
     pub(crate) fn open_commit_with_args(
         &mut self,
         hash: String,
-        short: String,
         subject: String,
         args: Vec<String>,
         paths: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        self.open_commit_inner(hash, short, subject, args, paths, cx);
+        self.open_commit_inner(hash, subject, args, paths, cx);
     }
 
     /// Open a commit's diff detail, overlaying the current screen (restored on
     /// close). Shared by the log view and status commit rows.
-    pub(crate) fn open_commit(
-        &mut self,
-        hash: String,
-        short: String,
-        subject: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_commit_inner(hash, short, subject, Vec::new(), Vec::new(), cx);
+    pub(crate) fn open_commit(&mut self, hash: String, subject: String, cx: &mut Context<Self>) {
+        self.open_commit_inner(hash, subject, Vec::new(), Vec::new(), cx);
     }
 
     pub(crate) fn open_commit_inner(
         &mut self,
         hash: String,
-        short: String,
         subject: String,
         args: Vec<String>,
         paths: Vec<String>,
@@ -336,10 +326,14 @@ impl StatusView {
         // Carry the screen we came from so closing returns there (log or status).
         let back = Box::new(std::mem::take(&mut self.screen));
         let rev = hash.clone();
-        // Seed the body with the subject (summary) so it's visible immediately —
-        // the async load replaces it with the full message once it lands.
+        // Seed the body with the head line + subject so they're visible
+        // immediately — the async load replaces the body with the full message
+        // and diff once it lands.
         let body = {
-            let mut rows = Vec::new();
+            let mut rows = vec![
+                CommitDiffRow::Head(rev.clone()),
+                CommitDiffRow::Note(String::new()),
+            ];
             if !subject.is_empty() {
                 rows.push(CommitDiffRow::Message(subject));
                 rows.push(CommitDiffRow::Note(String::new()));
@@ -353,7 +347,6 @@ impl StatusView {
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
-                short: SharedString::from(short),
                 details: Vec::new(),
                 show_details: false,
                 body,
@@ -424,8 +417,12 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let details = commit_metadata_lines(&entry.metadata);
+        let rev = self
+            .commit_view()
+            .map(|cv| cv.rev.clone())
+            .unwrap_or_default();
         let show_details = self.commit_view().is_some_and(|cv| cv.show_details);
-        let mut rows = self.commit_detail_rows(&entry.message, &entry.files, cx);
+        let mut rows = self.commit_detail_rows(&rev, &entry.message, &entry.files, cx);
         if show_details {
             prepend_commit_details(&mut rows, &details);
         }
@@ -521,15 +518,21 @@ impl StatusView {
 
     pub(crate) fn commit_detail_rows(
         &self,
+        rev: &str,
         message: &str,
         files: &[(FileDiff, Option<&'static str>)],
         cx: &mut Context<Self>,
     ) -> Vec<CommitDiffRow> {
-        let mut rows = Vec::new();
+        // The "Commit <sha>" header line, then a blank separating it from the
+        // subject (magit's revision buffer). Details, when shown, slot between
+        // the head line and this blank.
+        let mut rows = vec![
+            CommitDiffRow::Head(rev.to_string()),
+            CommitDiffRow::Note(String::new()),
+        ];
         let mut lines = message.lines();
-        // The subject (summary) as the first selectable line, so it can be
-        // selected/copied like the rest of the message (it's the header title
-        // too, but that's chrome — the buffer text is what you select).
+        // The subject (summary) as the first selectable message line, so it can
+        // be selected/copied like the rest of the message.
         if let Some(subject) = lines.next() {
             rows.push(CommitDiffRow::Message(subject.to_string()));
         }

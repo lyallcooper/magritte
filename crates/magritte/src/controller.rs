@@ -743,8 +743,8 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((hash, short, subject)) = self.point_commit() {
-            return self.open_commit_with_args(hash, short, subject, args, paths, cx);
+        if let Some((hash, _, subject)) = self.point_commit() {
+            return self.open_commit_with_args(hash, subject, args, paths, cx);
         }
         if let Some(source) = self.diff_source_at_point() {
             let request = match source {
@@ -1984,7 +1984,7 @@ impl StatusView {
                         .next()
                         .unwrap_or(&chosen)
                         .to_string();
-                    self.open_commit_with_args(rev.clone(), rev, String::new(), args, paths, cx);
+                    self.open_commit_with_args(rev, String::new(), args, paths, cx);
                 }
                 // Resolve the chosen title back to its command (built-in or a
                 // user `[[command]]`) and run it through the shared dispatch.

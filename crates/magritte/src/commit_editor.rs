@@ -59,6 +59,9 @@ pub(crate) enum CommitAfterSubmit {
 
 /// One flattened row of the commit editor's staged-diff preview.
 pub(crate) enum CommitDiffRow {
+    /// The commit-detail header line ("Commit <full-sha>"), always shown at the
+    /// top of a commit view. Carries the full hash; selectable like any row.
+    Head(String),
     /// Extra commit metadata toggled in the commit detail view.
     Detail(String),
     /// A line from the commit's full message, shown above the diff in commit view.

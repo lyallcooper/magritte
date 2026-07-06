@@ -492,6 +492,12 @@ struct StatusView {
     /// Set on the opening right-click; cleared by the root's capture-phase
     /// mouse-down handler on the next click (which also dismisses the menu).
     ctx_menu_open: bool,
+    /// Set by a selectable row's mouse-down (which manages its own selection);
+    /// the root's bubble-phase handler reads it to decide whether a click landed
+    /// on selectable text. A click that didn't (empty space, chrome, a section
+    /// header) dismisses the active selection. Reset each click in the capture
+    /// phase, so it reflects only the current press.
+    click_hit_selectable: bool,
     generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
@@ -728,6 +734,7 @@ impl StatusView {
             char_sel: None,
             pending_copy: None,
             ctx_menu_open: false,
+            click_hit_selectable: false,
             generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
@@ -2003,6 +2010,30 @@ mod tests {
             matches!(bodyless.as_slice(), [CommitDiffRow::File { .. }]),
             "hiding details on a bodyless commit should leave just the file"
         );
+    }
+
+    #[test]
+    fn commit_details_slot_below_the_head_line() {
+        // Details must appear under the "Commit <sha>" head line, not above it.
+        let details = vec!["Author:    A".to_string()];
+        let mut rows = vec![
+            CommitDiffRow::Head("deadbeef".to_string()),
+            CommitDiffRow::Note(String::new()),
+            CommitDiffRow::Message("subject".to_string()),
+        ];
+        prepend_commit_details(&mut rows, &details);
+        assert!(matches!(rows.first(), Some(CommitDiffRow::Head(_))));
+        assert!(matches!(rows.get(1), Some(CommitDiffRow::Detail(_))));
+        // Hiding restores the exact original order (head line still first).
+        rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
+        assert!(matches!(
+            rows.as_slice(),
+            [
+                CommitDiffRow::Head(_),
+                CommitDiffRow::Note(_),
+                CommitDiffRow::Message(_)
+            ]
+        ));
     }
 
     #[test]
