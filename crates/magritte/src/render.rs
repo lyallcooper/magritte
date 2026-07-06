@@ -1124,20 +1124,26 @@ impl StatusView {
             .px(px(5.0))
             .child(track_target("titlebar-branch"))
             .child(SharedString::from(branch.to_string()))
-            .tooltip(move |window, cx| {
-                let font = tip_font.clone();
-                Tooltip::element(move |_, _| {
-                    div().font_family(font.clone()).child("Current branch")
+            .when(!self.ctx_menu_open, |d| {
+                d.tooltip(move |window, cx| {
+                    let font = tip_font.clone();
+                    Tooltip::element(move |_, _| {
+                        div().font_family(font.clone()).child("Current branch")
+                    })
+                    .build(window, cx)
                 })
-                .build(window, cx)
+                .tooltip_show_delay(Duration::from_millis(400))
             })
-            .tooltip_show_delay(Duration::from_millis(400))
             .on_click(move |_, window, cx: &mut App| {
                 branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
             })
             .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                 let value = value.clone();
-                branch_copy.update(cx, |v, _| v.pending_copy = Some(value));
+                branch_copy.update(cx, |v, vcx| {
+                    v.pending_copy = Some(value);
+                    v.ctx_menu_open = true;
+                    vcx.notify();
+                });
             })
             .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
     }
@@ -1355,21 +1361,44 @@ impl StatusView {
     /// bar's glyphs and counts are terse). Needs a stable `id` for the hitbox.
     pub(crate) fn titlebar_tip(
         &self,
+        view: &Entity<Self>,
         id: impl Into<SharedString>,
         tip: impl Into<SharedString>,
+        copy: Option<String>,
         child: impl IntoElement,
     ) -> impl IntoElement {
+        let copy_view = view.clone();
         let font = self.font.clone();
         let tip = tip.into();
-        div()
+        let base = div()
             .id(id.into())
             .child(child)
-            .tooltip(move |window, cx| {
-                let (font, tip) = (font.clone(), tip.clone());
-                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
-                    .build(window, cx)
-            })
-            .tooltip_show_delay(Duration::from_millis(400))
+            // Suppress the tooltip while a Copy menu is open so it can't paint
+            // over the menu.
+            .when(!self.ctx_menu_open, |d| {
+                d.tooltip(move |window, cx| {
+                    let (font, tip) = (font.clone(), tip.clone());
+                    Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
+                        .build(window, cx)
+                })
+                .tooltip_show_delay(Duration::from_millis(400))
+            });
+        // When `copy` is set, right-click offers a Copy context menu for the
+        // value (on this same element so its hitbox isn't occluded).
+        match copy {
+            Some(value) => base
+                .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+                    let value = value.clone();
+                    copy_view.update(cx, |v, vcx| {
+                        v.pending_copy = Some(value);
+                        v.ctx_menu_open = true;
+                        vcx.notify();
+                    });
+                })
+                .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+                .into_any_element(),
+            None => base.into_any_element(),
+        }
     }
 
     pub(crate) fn track_chunk(&self, view: &Entity<Self>, r: TrackRef) -> gpui::Div {
@@ -1483,12 +1512,16 @@ impl StatusView {
             .cursor_pointer()
             .child(track_target(id))
             .child(child)
-            .tooltip(move |window, cx| {
-                let (font, tip) = (font.clone(), tip.clone());
-                Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
-                    .build(window, cx)
+            // Suppress the tooltip while a Copy menu is open so it can't paint
+            // over the menu.
+            .when(!self.ctx_menu_open, |d| {
+                d.tooltip(move |window, cx| {
+                    let (font, tip) = (font.clone(), tip.clone());
+                    Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
+                        .build(window, cx)
+                })
+                .tooltip_show_delay(Duration::from_millis(400))
             })
-            .tooltip_show_delay(Duration::from_millis(400))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
             });
@@ -1500,7 +1533,11 @@ impl StatusView {
             Some(value) => base
                 .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
                     let value = value.clone();
-                    copy_view.update(cx, |v, _| v.pending_copy = Some(value));
+                    copy_view.update(cx, |v, vcx| {
+                        v.pending_copy = Some(value);
+                        v.ctx_menu_open = true;
+                        vcx.notify();
+                    });
                 })
                 .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
                 .into_any_element(),
@@ -1524,8 +1561,10 @@ impl StatusView {
 
         let mut info = div().flex().items_center().gap_2().child(
             self.titlebar_tip(
+                view,
                 "titlebar-repo",
                 "Repository",
+                Some(repo_name.clone()),
                 div()
                     .font_weight(FontWeight::MEDIUM)
                     .child(SharedString::from(repo_name)),
@@ -1648,8 +1687,10 @@ impl StatusView {
                             )
                             .child(
                                 self.titlebar_tip(
+                                    view,
                                     format!("titlebar-tag-{i}-count"),
                                     count_tip,
+                                    None,
                                     div()
                                         .px(px(4.0))
                                         .child(SharedString::from(count.to_string())),
@@ -1664,8 +1705,10 @@ impl StatusView {
             if !status.is_clean() {
                 // Marks uncommitted changes in the working tree.
                 info = info.child(self.titlebar_tip(
+                    view,
                     "titlebar-dirty",
                     "Working tree dirty",
+                    None,
                     div().text_color(self.palette.modified).child("○"),
                 ));
             }
@@ -4265,6 +4308,10 @@ impl Render for StatusView {
             // focus it, not fire the row/button under the cursor. Swallow that
             // one click in the capture phase, before any element arms its click.
             .capture_any_mouse_down(cx.listener(|this, ev: &gpui::MouseDownEvent, _window, cx| {
+                // Any click dismisses an open chrome Copy menu; clear the flag
+                // here in the capture phase (root-first), so the opening
+                // right-click's bubble-phase handler can re-set it afterward.
+                this.ctx_menu_open = false;
                 if ev.first_mouse {
                     cx.stop_propagation();
                     return;

@@ -211,3 +211,4 @@
 - [ ] Commit details view sha should be char-wise selectable
 - [ ] Clicking anywhere should dismiss the current selectino, not just when other selectable text is clicked
 - [ ] Add config support a la magit's branch at remote (and whatever other) transients
+- [ ] Gracefully handle when git is not installed and provide a brief but helpful error message

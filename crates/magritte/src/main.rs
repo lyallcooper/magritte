@@ -487,6 +487,11 @@ struct StatusView {
     /// ref, the commit-detail hash): the `Copy` context-menu item copies this
     /// rather than the row selection. Set fresh on each such right-click.
     pending_copy: Option<String>,
+    /// True while a chrome `Copy` context menu is open. Title-bar items suppress
+    /// their hover tooltip while set, so the tooltip can't paint over the menu.
+    /// Set on the opening right-click; cleared by the root's capture-phase
+    /// mouse-down handler on the next click (which also dismisses the menu).
+    ctx_menu_open: bool,
     generation: Generation,
     /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
     /// generation. `refresh` flips this and installs a fresh flag, so the
@@ -722,6 +727,7 @@ impl StatusView {
             selection: Selection::default(),
             char_sel: None,
             pending_copy: None,
+            ctx_menu_open: false,
             generation: Generation::default(),
             read_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: None,
