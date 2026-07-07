@@ -1149,18 +1149,9 @@ pub fn diff_transient() -> Transient {
                         ]),
                         pathspec: false,
                     }),
-                    Suffix::Option(Opt {
-                        key: "-X",
-                        arg: "--diff-merges=",
-                        description: "Diff merges",
-                        completion: Completion::OneOf(&[
-                            "off",
-                            "first-parent",
-                            "combined",
-                            "dense-combined",
-                        ]),
-                        pathspec: false,
-                    }),
+                    // magit's `-X --diff-merges=` is omitted: every diff here is
+                    // a two-endpoint `git diff`, where git accepts the flag but
+                    // ignores it — the row could never do anything.
                     Suffix::Switch(Switch::new("-M", "-M", "Detect renames")),
                     Suffix::Switch(Switch::new("-C", "-C", "Detect copies")),
                     Suffix::Switch(Switch::new("-R", "-R", "Reverse sides")),

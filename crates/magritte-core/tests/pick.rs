@@ -28,7 +28,7 @@ fn head_subject(t: &TestRepo) -> String {
 #[test]
 fn cherry_pick_creates_a_commit() {
     let (t, rev) = repo_with_feature_commit();
-    open(&t).cherry_pick(&rev).unwrap();
+    open(&t).cherry_pick_with_args(&rev, &[]).unwrap();
     assert_eq!(head_subject(&t), "add feature");
     assert!(t.path().join("feature.txt").exists());
     assert!(
@@ -52,7 +52,9 @@ fn revert_creates_an_inverse_commit() {
     let (t, _) = repo_with_feature_commit();
     t.write("f", "changed\n");
     t.commit_all("second");
-    open(&t).revert("HEAD").unwrap();
+    open(&t)
+        .revert_with_args("HEAD", &["--no-edit".to_string()])
+        .unwrap();
     assert!(head_subject(&t).starts_with("Revert"));
     assert_eq!(
         std::fs::read_to_string(t.path().join("f")).unwrap(),

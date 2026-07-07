@@ -318,18 +318,6 @@ impl Repo {
         })
     }
 
-    /// Construct a `Repo` for an already-known working-tree root without probing.
-    pub fn at(workdir: impl Into<PathBuf>) -> Repo {
-        Repo {
-            workdir: workdir.into(),
-            log: Arc::new(Mutex::new(VecDeque::new())),
-            log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            cancel: None,
-            timeout: None,
-            diff_context: None,
-        }
-    }
-
     /// A clone of this repo whose invocations are cancellable, paired with the
     /// flag that cancels them. Hand the `Repo` to a background job and keep the
     /// flag; setting it kills the in-flight git child. The clone shares the

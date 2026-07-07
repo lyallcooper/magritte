@@ -1022,7 +1022,7 @@ impl StatusView {
                 }
                 return;
             }
-            cx.notify();
+            self.report_unbound_suffix(&full, cx);
             return;
         }
         if key == "-" {
@@ -1055,7 +1055,7 @@ impl StatusView {
             if candidate != key {
                 // An accumulated sequence that resolves to nothing: swallow it
                 // rather than firing the lone final key.
-                cx.notify();
+                self.report_unbound_suffix(&candidate, cx);
                 return;
             }
         }
@@ -1085,7 +1085,21 @@ impl StatusView {
         } else if let Some(custom) = custom {
             self.popup = None;
             self.invoke_command(&custom.id, window, cx);
+        } else {
+            self.report_unbound_suffix(&candidate, cx);
         }
+    }
+
+    /// Feedback for a key that means nothing in the open transient (magit
+    /// echoes similarly). Modifier chords are ignored — they're usually an
+    /// OS/app shortcut, matching the main keymap's convention.
+    fn report_unbound_suffix(&mut self, key: &str, cx: &mut Context<Self>) {
+        let plain = !["cmd-", "ctrl-", "alt-"].iter().any(|m| key.contains(m));
+        if plain {
+            self.set_status("is unbound in this menu".to_string(), true, cx);
+            self.toast.keys = Some(key.to_string());
+        }
+        cx.notify();
     }
 }
 

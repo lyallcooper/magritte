@@ -115,10 +115,4 @@ impl Repo {
     pub fn worktree_move(&self, from: &str, to: &str) -> Result<String> {
         Ok(self.run(["worktree", "move", "--", from, to])?.report())
     }
-
-    /// `git worktree prune` — drop administrative entries for worktrees whose
-    /// directories were deleted out from under git.
-    pub fn worktree_prune(&self) -> Result<String> {
-        Ok(self.run(["worktree", "prune"])?.report())
-    }
 }

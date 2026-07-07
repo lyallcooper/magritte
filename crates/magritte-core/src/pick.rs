@@ -6,13 +6,8 @@ use crate::error::Result;
 use crate::repo::{git_args, Repo};
 
 impl Repo {
-    /// `git cherry-pick <rev>` — apply `rev`'s change onto HEAD, keeping its
-    /// original message (no editor).
-    pub fn cherry_pick(&self, rev: &str) -> Result<String> {
-        self.cherry_pick_with_args(rev, &[])
-    }
-
-    /// `git cherry-pick [args] <rev>` — the transient-driven form.
+    /// `git cherry-pick [args] <rev>` — apply `rev`'s change onto HEAD, keeping
+    /// its original message (no editor). `args` carries the transient switches.
     pub fn cherry_pick_with_args(&self, rev: &str, args: &[String]) -> Result<String> {
         Ok(self
             .run(git_args(&["cherry-pick"], args, &[rev]))?
@@ -32,13 +27,8 @@ impl Repo {
             .status_line())
     }
 
-    /// `git revert --no-edit <rev>` — commit the inverse of `rev`, taking the
-    /// default "Revert …" message (no editor).
-    pub fn revert(&self, rev: &str) -> Result<String> {
-        self.revert_with_args(rev, &["--no-edit".to_string()])
-    }
-
-    /// `git revert [args] <rev>` — the transient-driven form.
+    /// `git revert [args] <rev>` — commit the inverse of `rev`. Pass
+    /// `--no-edit` to take the default "Revert …" message without an editor.
     pub fn revert_with_args(&self, rev: &str, args: &[String]) -> Result<String> {
         Ok(self.run(git_args(&["revert"], args, &[rev]))?.status_line())
     }

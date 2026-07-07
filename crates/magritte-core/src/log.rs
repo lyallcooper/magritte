@@ -50,35 +50,10 @@ impl Repo {
         Ok(parse_log(&out.stdout))
     }
 
-    /// Commits on `HEAD` not yet on its upstream (`@{upstream}..HEAD`). `Err`
-    /// when there's no upstream — callers treat that as an empty list.
-    pub fn unpushed(&self) -> Result<Vec<LogEntry>> {
-        self.log_with(&["@{upstream}..HEAD".to_string()])
-    }
-
-    /// Commits on the upstream not yet on `HEAD` (`HEAD..@{upstream}`). `Err`
-    /// when there's no upstream — callers treat that as an empty list.
-    pub fn unpulled(&self) -> Result<Vec<LogEntry>> {
-        self.log_with(&["HEAD..@{upstream}".to_string()])
-    }
-
     /// Commits unique to `HEAD` (unpushed) and to its upstream (unpulled), each
     /// capped at [`SECTION_COMMIT_CAP`].
     pub fn upstream_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
         self.divergence("HEAD", "@{upstream}")
-    }
-
-    /// Commits on `HEAD` not yet on the push target (`@{push}..HEAD`) — the
-    /// triangular-workflow counterpart of [`unpushed`](Self::unpushed). `Err`
-    /// when there's no distinct push target.
-    pub fn unpushed_to_push(&self) -> Result<Vec<LogEntry>> {
-        self.log_with(&["@{push}..HEAD".to_string()])
-    }
-
-    /// Commits on the push target not yet on `HEAD` (`HEAD..@{push}`). `Err`
-    /// when there's no distinct push target.
-    pub fn unpulled_from_push(&self) -> Result<Vec<LogEntry>> {
-        self.log_with(&["HEAD..@{push}".to_string()])
     }
 
     /// Commits unique to `HEAD` (unpushed-to-push) and to its push target

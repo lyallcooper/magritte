@@ -114,8 +114,13 @@ impl StatusView {
             return;
         }
 
-        // A pending discard confirmation captures the next key.
+        // A pending discard confirmation captures the next key. Modifier
+        // chords pass over it (cmd-C copying the prompt text must not read as
+        // "no"); any plain key other than `y` declines.
         if self.confirm.is_some() {
+            if cmd || alt || ctrl {
+                return;
+            }
             if key == "y" {
                 self.confirm_yes(window, cx);
             } else {

@@ -246,6 +246,10 @@ impl StatusView {
         .detach();
     }
 
+    /// How long an unattended auto-fetch may run before its subprocess is
+    /// killed — generous for a slow link, far below "wedged forever".
+    const AUTO_FETCH_TIMEOUT_SECS: u64 = 120;
+
     /// Run one background `git fetch`, then refresh so the unpushed/unpulled
     /// counts update. Skipped while another job is running, and silent — the
     /// user didn't initiate it, so no progress banner, and failures (offline,
@@ -258,6 +262,12 @@ impl StatusView {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        // Unattended, so give it a hard time bound: nobody is watching to
+        // C-g a wedged remote, and an unbounded hang would occupy the busy
+        // spinner (and this loop's slot) until restart.
+        let repo = repo.with_timeout(std::time::Duration::from_secs(
+            Self::AUTO_FETCH_TIMEOUT_SECS,
+        ));
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
             let ok = cx

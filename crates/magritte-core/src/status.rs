@@ -193,10 +193,6 @@ impl Repo {
     /// The priority read for one UI refresh: parsed status plus any in-progress
     /// sequence state. Resolve the git dir once and share it with the sequence
     /// reader instead of letting each frontend path shell out independently.
-    pub fn refresh_snapshot(&self) -> Result<RefreshSnapshot> {
-        self.refresh_snapshot_with(RefreshNeeds::default())
-    }
-
     pub fn refresh_snapshot_with(&self, needs: RefreshNeeds) -> Result<RefreshSnapshot> {
         let mut status = self.status()?;
         self.enrich_status(&mut status, needs);
@@ -210,12 +206,8 @@ impl Repo {
         })
     }
 
-    /// Like [`refresh_snapshot`](Self::refresh_snapshot), but reuses a git-dir
-    /// path the caller already resolved while opening the repository.
-    pub fn refresh_snapshot_in_dir(&self, git_dir: &Path) -> Result<RefreshSnapshot> {
-        self.refresh_snapshot_in_dir_with(git_dir, RefreshNeeds::default())
-    }
-
+    /// Like [`refresh_snapshot_with`](Self::refresh_snapshot_with), but reuses
+    /// a git-dir path the caller already resolved while opening the repository.
     pub fn refresh_snapshot_in_dir_with(
         &self,
         git_dir: &Path,
