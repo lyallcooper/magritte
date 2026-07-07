@@ -311,26 +311,7 @@ pub(crate) fn commands() -> &'static [Command] {
             "b",
             &[],
             STATUS,
-            |t, _w, cx| {
-                // Show the current branch's git-config variables inline (magit's
-                // direct-configure) when a branch is checked out. The branch
-                // itself is the already-loaded status head — no extra git call —
-                // and the remotes seed the pushRemote choices.
-                let branch = t.status.as_ref().and_then(|s| s.head.branch.clone());
-                let remotes = t
-                    .repo
-                    .as_ref()
-                    .and_then(|r| r.remotes().ok())
-                    .unwrap_or_default();
-                let style = t.config.keymap_preset.transient_style();
-                let configure = branch.as_deref().map(|b| (b, remotes));
-                t.open_transient(
-                    "branch",
-                    transient::branch_transient(style, configure),
-                    RemoteTargets::default(),
-                    cx,
-                )
-            }
+            |t, _w, cx| t.open_branch_transient(cx)
         ),
         top!("tag", "Tag", Category::Commands, "t", |t, _w, cx| {
             t.open_transient(
@@ -341,20 +322,7 @@ pub(crate) fn commands() -> &'static [Command] {
             )
         }),
         top!("remote", "Remote", Category::Commands, "M", |t, _w, cx| {
-            // Inline the current remote's git-config variables (magit's
-            // direct-configure) when the repo has a remote.
-            let branch = t.status.as_ref().and_then(|s| s.head.branch.clone());
-            let remote = t
-                .repo
-                .as_ref()
-                .and_then(|r| targets::current_remote(r, branch.as_deref()));
-            let style = t.config.keymap_preset.transient_style();
-            t.open_transient(
-                "remote",
-                transient::remote_transient(style, remote.as_deref()),
-                RemoteTargets::default(),
-                cx,
-            )
+            t.open_remote_transient(cx)
         }),
         top!("stash", "Stash", Category::Commands, "Z", |t, _w, cx| {
             t.open_transient(

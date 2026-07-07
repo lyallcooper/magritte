@@ -368,6 +368,44 @@ impl StatusView {
         }
     }
 
+    /// Open the branch transient (`b`), inlining the current branch's git-config
+    /// variables (magit's direct-configure) when a branch is checked out. Shared
+    /// by the command and by popping back from the branch-configure sub-transient.
+    pub(crate) fn open_branch_transient(&mut self, cx: &mut Context<Self>) {
+        let branch = self.status.as_ref().and_then(|s| s.head.branch.clone());
+        let remotes = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.remotes().ok())
+            .unwrap_or_default();
+        let style = self.config.keymap_preset.transient_style();
+        let configure = branch.as_deref().map(|b| (b, remotes));
+        self.open_transient(
+            "branch",
+            transient::branch_transient(style, configure),
+            RemoteTargets::default(),
+            cx,
+        );
+    }
+
+    /// Open the remote transient (`M`), inlining the current remote's git-config
+    /// variables when the repo has one. Shared by the command and by popping back
+    /// from the remote-configure sub-transient.
+    pub(crate) fn open_remote_transient(&mut self, cx: &mut Context<Self>) {
+        let branch = self.status.as_ref().and_then(|s| s.head.branch.clone());
+        let remote = self
+            .repo
+            .as_ref()
+            .and_then(|r| targets::current_remote(r, branch.as_deref()));
+        let style = self.config.keymap_preset.transient_style();
+        self.open_transient(
+            "remote",
+            transient::remote_transient(style, remote.as_deref()),
+            RemoteTargets::default(),
+            cx,
+        );
+    }
+
     /// Open the branch config transient (magit's `magit-branch-configure`).
     /// Prompts for which branch to configure only when there's more than one
     /// local branch; a sole branch is configured directly.

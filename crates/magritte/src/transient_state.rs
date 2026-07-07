@@ -924,8 +924,20 @@ impl StatusView {
             return;
         }
         if key == "escape" || key == "q" {
-            self.popup = None;
-            cx.notify();
+            // A Configure sub-transient (reached via `b C` / `M C`) pops back to
+            // its parent transient rather than closing outright.
+            match self.popup {
+                Some(Popup::Transient(ref s)) if s.id == "branch-configure" => {
+                    self.open_branch_transient(cx)
+                }
+                Some(Popup::Transient(ref s)) if s.id == "remote-configure" => {
+                    self.open_remote_transient(cx)
+                }
+                _ => {
+                    self.popup = None;
+                    cx.notify();
+                }
+            }
             return;
         }
         // The save key (`C-s`) begins a two-step save (magit's `transient-save`):
