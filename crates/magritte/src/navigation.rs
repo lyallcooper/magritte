@@ -989,6 +989,38 @@ fn scroll_top_index(handle: &UniformListScrollHandle) -> usize {
     }
 }
 
+/// Where a held drag has gone once it leaves a `uniform_list`'s row area —
+/// clamped to the first/last row — or `None` while it's still over rows
+/// (whose own handlers track it precisely, including char offsets). The
+/// same overshoot problem the commit header fixes: gpui delivers
+/// `on_mouse_move` only inside an element's hitbox, so a fast drag past the
+/// list's ends would otherwise freeze the selection at the last row the
+/// pointer actually crossed. Attach at the list's container, feeding the
+/// result to the surface's [`DragState`] with no char offset.
+pub(crate) fn drag_row_beyond_list(
+    handle: &UniformListScrollHandle,
+    len: usize,
+    position: gpui::Point<gpui::Pixels>,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let (bounds, top_ix, top_offset) = {
+        let state = handle.0.borrow();
+        let (ix, offset) = state.base_handle.logical_scroll_top();
+        (state.base_handle.bounds(), ix, offset)
+    };
+    let y = f32::from(position.y - bounds.top()) + f32::from(top_offset);
+    let raw = top_ix as isize + (y / ROW_HEIGHT).floor() as isize;
+    let inside_rows = position.y >= bounds.top()
+        && position.y < bounds.bottom()
+        && (0..len as isize).contains(&raw);
+    if inside_rows {
+        return None;
+    }
+    Some(raw.clamp(0, len as isize - 1) as usize)
+}
+
 pub(crate) fn apply_scroll_key(
     handle: &UniformListScrollHandle,
     top: &mut usize,

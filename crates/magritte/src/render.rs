@@ -1299,7 +1299,42 @@ impl Render for StatusView {
                     .track_scroll(&self.scroll)
                     .size_full()
                     .py_2()
-                    .px_2(),
+                    .px_2()
+                    // A drag that overshoots the list's ends clamps to the
+                    // first/last selectable row instead of freezing wherever
+                    // the pointer last crossed a row (see drag_row_beyond_list).
+                    .on_mouse_move({
+                        let view = view.clone();
+                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                            if ev.pressed_button != Some(MouseButton::Left) {
+                                return;
+                            }
+                            view.update(cx, |v, vcx| {
+                                let Some(anchor) = v.selection.drag_anchor else {
+                                    return;
+                                };
+                                let Some(ix) =
+                                    drag_row_beyond_list(&v.scroll, v.rows.len(), ev.position)
+                                else {
+                                    return;
+                                };
+                                // Snap to a selectable row (headers/spacers pad
+                                // the list's ends), and leave the anchor row's
+                                // precise char state alone.
+                                let ix = if ix >= anchor {
+                                    (0..=ix).rev().find(|&i| v.rows[i].selectable)
+                                } else {
+                                    (ix..v.rows.len()).find(|&i| v.rows[i].selectable)
+                                };
+                                let Some(ix) = ix.filter(|&i| i != anchor) else {
+                                    return;
+                                };
+                                if v.status_drag().mouse_move(ix, None) {
+                                    vcx.notify();
+                                }
+                            });
+                        }
+                    }),
                 )
                 .vertical_scrollbar(&self.scroll),
         );

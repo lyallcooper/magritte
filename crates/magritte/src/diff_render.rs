@@ -566,6 +566,39 @@ impl StatusView {
         })
         .track_scroll(&fd.scroll)
         .flex_grow(1.0)
+        // A drag past the list's ends clamps to the first/last visible row
+        // instead of freezing (see drag_row_beyond_list). Indices map through
+        // the fold projection, like the row handlers.
+        .on_mouse_move({
+            let view = view.clone();
+            let scroll = fd.scroll.clone();
+            move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                view.update(cx, |v, vcx| {
+                    let Some(fd) = v.flat_diff_mut() else {
+                        return;
+                    };
+                    let Some(anchor) = fd.drag_anchor else {
+                        return;
+                    };
+                    let vis = fd.visible_rows();
+                    let Some(pos) = drag_row_beyond_list(&scroll, vis.len(), ev.position) else {
+                        return;
+                    };
+                    let Some(&ix) = vis.get(pos) else {
+                        return;
+                    };
+                    if ix == anchor {
+                        return;
+                    }
+                    if fd.drag().mouse_move(ix, None) {
+                        vcx.notify();
+                    }
+                });
+            }
+        })
     }
 
     /// Render a commit's diff detail (opened from the log): a header with the
@@ -609,17 +642,39 @@ impl StatusView {
                     });
                 }
             })
+            .on_mouse_down(gpui::MouseButton::Right, {
+                let view = view.clone();
+                move |_, _window, cx: &mut gpui::App| {
+                    let value = rev.clone();
+                    view.update(cx, |v, vcx| {
+                        v.pending_copy = Some(value);
+                        v.ctx_menu_open = true;
+                        vcx.notify();
+                    });
+                }
+            })
+            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)));
+
+        // The drag's move/up handlers live on the whole scaffold, not the
+        // title: a fast drag overshoots the (text-sized) title's hitbox in a
+        // few pixels, and gpui only delivers `on_mouse_move` inside the
+        // element — pinned to the title, the selection would freeze at the
+        // last in-bounds offset. Positions off the line clamp to its start/
+        // end (`index_for_position`), so overshooting keeps selecting.
+        self.screen_scaffold()
+            .child(self.view_header(title, "close", view))
+            .child(body)
             .on_mouse_move({
                 move |ev: &gpui::MouseMoveEvent, _window, cx: &mut gpui::App| {
                     if ev.pressed_button != Some(gpui::MouseButton::Left) {
                         return;
                     }
-                    let offset = offset_at(&move_layout, ev.position);
                     v_move.update(cx, |v, vcx| {
                         if let Some(cv) = v.commit_view_mut() {
                             let Some(anchor) = cv.header_drag else {
                                 return;
                             };
+                            let offset = offset_at(&move_layout, ev.position);
                             let sel = CharSelection {
                                 row: 0,
                                 anchor,
@@ -642,22 +697,6 @@ impl StatusView {
                     });
                 }
             })
-            .on_mouse_down(gpui::MouseButton::Right, {
-                let view = view.clone();
-                move |_, _window, cx: &mut gpui::App| {
-                    let value = rev.clone();
-                    view.update(cx, |v, vcx| {
-                        v.pending_copy = Some(value);
-                        v.ctx_menu_open = true;
-                        vcx.notify();
-                    });
-                }
-            })
-            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)));
-
-        self.screen_scaffold()
-            .child(self.view_header(title, "close", view))
-            .child(body)
     }
 
     /// Render a standalone diff buffer opened from the `d` diff transient.

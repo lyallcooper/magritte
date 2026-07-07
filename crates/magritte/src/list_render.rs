@@ -328,6 +328,36 @@ impl StatusView {
             })
             .track_scroll(&log.scroll)
             .flex_grow(1.0)
+            // A drag past the list's ends clamps to the first/last commit
+            // instead of freezing (see drag_row_beyond_list).
+            .on_mouse_move({
+                let view = view.clone();
+                let scroll = log.scroll.clone();
+                move |ev: &gpui::MouseMoveEvent, _window, cx| {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        return;
+                    }
+                    view.update(cx, |v, vcx| {
+                        let Some(log) = v.log_mut() else {
+                            return;
+                        };
+                        let Some(anchor) = log.drag_anchor else {
+                            return;
+                        };
+                        let Some(ix) =
+                            drag_row_beyond_list(&scroll, log.entries.len(), ev.position)
+                        else {
+                            return;
+                        };
+                        if ix == anchor {
+                            return;
+                        }
+                        if log.drag().mouse_move(ix, None) {
+                            vcx.notify();
+                        }
+                    });
+                }
+            })
             .into_any_element(),
         };
 
