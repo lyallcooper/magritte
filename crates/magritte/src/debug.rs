@@ -63,18 +63,18 @@ pub fn init(handle: AnyWindowHandle, cx: &mut gpui::App) {
     };
     let _ = fs::create_dir_all(&dir);
     // The control channel can inject keys/clicks and trigger destructive git
-    // actions, so the control dir must be private. Lock it to 0700 and refuse
-    // to start if it stays group/world-accessible (e.g. owned by someone else).
+    // actions, so the control dir must be private: owned by us and 0700.
+    // Refuse to start otherwise (e.g. a pre-planted dir owned by someone else).
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
         let private = fs::metadata(&dir)
-            .map(|m| m.permissions().mode() & 0o077 == 0)
+            .map(|m| m.permissions().mode() & 0o077 == 0 && m.uid() == unsafe { libc::geteuid() })
             .unwrap_or(false);
         if !private {
             eprintln!(
-                "magritte debug: refusing control dir {} (not private; chmod 700 it)",
+                "magritte debug: refusing control dir {} (not private; chown/chmod 700 it)",
                 dir.display()
             );
             return;

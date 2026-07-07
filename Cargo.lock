@@ -3673,6 +3673,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "image",
+ "libc",
  "magritte-core",
  "notify",
  "objc",

@@ -20,13 +20,27 @@
 #   scripts/dbg.sh sleep <ms>         pause (let a frame paint)
 #   scripts/dbg.sh help               show this help
 #
-# Override the control dir with MAGRITTE_DEBUG_DIR (default /tmp/magritte-debug).
+# Override the control dir with MAGRITTE_DEBUG_DIR (default: a per-user
+# magritte-debug dir under $TMPDIR). Each dir controls its own instance, so
+# several can run side by side.
 set -euo pipefail
 
-DIR="${MAGRITTE_DEBUG_DIR:-/tmp/magritte-debug}"
+DIR="${MAGRITTE_DEBUG_DIR:-${TMPDIR:-/tmp}/magritte-debug}"
+DIR="${DIR%/}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$ROOT/target/debug/magritte"
-LOG="/tmp/magritte-debug.log"
+# The log lives inside the control dir: no fixed world-writable /tmp path to
+# symlink-hijack, and `up` on one instance can't clobber another's log.
+LOG="$DIR/magritte.log"
+
+# Kill the instance this control dir owns (recorded in $DIR/pid), if any —
+# never other debug instances, which have their own dirs.
+kill_instance() {
+  if [ -f "$DIR/pid" ]; then
+    pid="$(cat "$DIR/pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  fi
+}
 
 # Print the header comment block (everything between the shebang and `set -…`)
 # as the usage text, so the docs above are the single source of truth.
@@ -43,9 +57,12 @@ case "$cmd" in
 
   up)
     repo="${1:-$PWD}"
-    pkill -f "target/debug/magritte" 2>/dev/null || true
+    kill_instance
     sleep 0.3
-    rm -rf "$DIR"; mkdir -p "$DIR"; chmod 700 "$DIR"
+    rm -rf "$DIR"; mkdir "$DIR"; chmod 700 "$DIR"
+    # mkdir (not -p) fails if something reappeared at the path, so a symlink
+    # planted between rm and mkdir can't redirect the control dir.
+    [ -d "$DIR" ] && [ ! -L "$DIR" ] || { echo "refusing odd control dir: $DIR"; exit 1; }
     # Build with `debug-capture` so `shot` can grab the window via offscreen
     # render (works while the app is backgrounded/occluded). Dev-only feature.
     ( cd "$ROOT" && cargo build --features debug-capture ) || { echo "build failed"; exit 1; }
@@ -54,6 +71,7 @@ case "$cmd" in
     # detaches into the background.
     MAGRITTE_DEBUG_DIR="$DIR" MAGRITTE_FOREGROUND=1 "$BIN" "$repo" >"$LOG" 2>&1 &
     pid=$!
+    echo "$pid" > "$DIR/pid"
     for _ in $(seq 1 60); do
       grep -q "debug: watching" "$LOG" 2>/dev/null && break
       sleep 0.1
@@ -62,7 +80,8 @@ case "$cmd" in
     ;;
 
   down)
-    pkill -f "target/debug/magritte" 2>/dev/null || true
+    kill_instance
+    rm -f "$DIR/pid"
     echo "magritte down"
     ;;
 

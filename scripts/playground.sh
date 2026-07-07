@@ -65,6 +65,12 @@ commit() { g commit --no-gpg-sign -q -m "$1"; }
 edit() { printf '%b' "$2" > "$W/$1"; g add "$1"; commit "$3"; }
 
 echo "Building $SCENARIO playground in $DIR"
+# Refuse to wipe a directory that doesn't look like a previous playground
+# (`origin.git` is its sentinel) — a mistyped path must not become `rm -rf ~`.
+if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ] && [ ! -d "$DIR/origin.git" ]; then
+  echo "playground.sh: $DIR exists, is not empty, and doesn't look like a playground; refusing to delete it" >&2
+  exit 1
+fi
 rm -rf "$DIR"
 mkdir -p "$DIR"
 cd "$DIR"

@@ -14,7 +14,7 @@ path = "src/main.rs"
 # The debug control channel (key/click injection, screenshots, etc.). Dev-only
 # — it lets any process that can write the control dir drive the app, so it is
 # compiled out of release builds entirely.
-debug = []
+debug = ["dep:libc"]
 # Adds offscreen window capture (`Window::render_to_image`) to the debug
 # channel so `shot` can grab the window while the app is backgrounded. Implies
 # `debug`; additionally pulls in gpui's `test-support` machinery (proptest,
@@ -52,6 +52,8 @@ tree-sitter-proto = "0.2.0"
 tree-sitter-swift = "0.7.3"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+# Only used by the `debug` feature (control-dir ownership check).
+libc = { version = "0.2", optional = true }
 
 # macOS-only: window-id lookup for screenshots, and CoreText font traits for
 # robust monospace-font detection (vs. glyph-width heuristics).
