@@ -452,20 +452,30 @@ pub fn load_reporting() -> (Config, Option<String>) {
 /// file is reported and skipped rather than failing the whole load.
 pub fn load_merged(repo_config: Option<&Path>) -> (Config, Option<String>) {
     let mut warnings: Vec<String> = Vec::new();
-    let mut merged = path()
+    let global = path()
         .map(|p| read_config_value(&p, &mut warnings))
         .unwrap_or_else(empty_table);
+    let mut merged = global.clone();
+    let mut overlaid = false;
     if let Some(p) = repo_config {
         if p.exists() {
             let overlay = read_config_value(p, &mut warnings);
             deep_merge(&mut merged, overlay);
+            overlaid = true;
         }
     }
-    let parsed: Result<Config, _> = merged.try_into();
-    let config = parsed.unwrap_or_else(|e| {
-        warnings.push(format!("Ignoring invalid config: {e}"));
-        Config::default()
-    });
+    // A type error (serde) fails the whole struct, unlike a semantically-bad
+    // value (unknown theme, bad keystroke) which degrades per-field later. When
+    // the failure only appears with the repo overlay merged in, fall back to
+    // the user's valid global config rather than throwing it all away.
+    let config = match merged.try_into() {
+        Ok(config) => config,
+        Err(e) => {
+            warnings.push(format!("Ignoring invalid config: {e}"));
+            let global_alone = overlaid.then(|| global.try_into().ok()).flatten();
+            global_alone.unwrap_or_default()
+        }
+    };
     let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     (config, warning)
 }
@@ -698,13 +708,15 @@ pub fn ensure_file() -> Option<PathBuf> {
 /// the rest of the user's TOML (comments, ordering, custom command tables,
 /// transient/keymap sections, etc.). Defaults are removed just like the serde
 /// `skip_serializing_if` rules, but unrelated syntax is left untouched.
-pub fn save_settings(config: &Config) {
+/// A failure (typically an on-disk file that no longer parses) is returned for
+/// the caller to surface — the GUI runs with detached stdio, so stderr is
+/// invisible and a silent no-op save would look like it worked.
+pub fn save_settings(config: &Config) -> Result<(), String> {
     let Some(path) = path() else {
-        return;
+        return Err("Could not save config: no config directory".to_string());
     };
-    if let Err(e) = save_settings_at(&path, config) {
-        eprintln!("magritte: could not save config: {e}");
-    }
+    save_settings_at(&path, config)
+        .map_err(|e| format!("Could not save config ({}): {e}", path.display()))
 }
 
 fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {

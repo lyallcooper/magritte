@@ -303,14 +303,14 @@ impl StatusView {
                 },
             ),
             #[cfg(target_os = "macos")]
-            Self::on_select_confirm(&editor, window, cx, |this, name, _cx| {
+            Self::on_select_confirm(&editor, window, cx, |this, name, cx| {
                 let val = if name.as_ref() == editors::EDITOR_OS_DEFAULT_LABEL {
                     String::new()
                 } else {
                     name.to_string()
                 };
                 this.edit_global(|c| c.editor = val.clone());
-                config::save_settings(&this.config_global);
+                this.save_global_config(cx);
             }),
             #[cfg(not(target_os = "macos"))]
             cx.subscribe_in(&editor, window, |this, input, ev: &InputEvent, _w, cx| {
@@ -403,7 +403,7 @@ impl StatusView {
         label: &'static str,
         copy_action: Box<dyn gpui::Action>,
         view: &Entity<Self>,
-        open: fn(&mut Self),
+        open: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
         let focus = self.focus.clone();
         let main = Button::new(SharedString::from(format!("{id}-main")))
@@ -413,8 +413,8 @@ impl StatusView {
             .icon(IconName::ExternalLink)
             .on_click({
                 let view = view.clone();
-                move |_, _window, cx| {
-                    view.update(cx, |this, _| open(this));
+                move |_, window, cx| {
+                    view.update(cx, |this, cx| open(this, window, cx));
                 }
             });
         DropdownButton::new(id)
@@ -433,7 +433,7 @@ impl StatusView {
             "Open global config",
             Box::new(CopyConfigPath),
             view,
-            |this| this.open_config_file(),
+            |this, _window, _cx| this.open_config_file(),
         )
     }
 
@@ -445,7 +445,7 @@ impl StatusView {
             "Open repo config",
             Box::new(CopyRepoConfigPath),
             view,
-            |this| this.open_repo_config_file(),
+            |this, window, cx| this.open_repo_config_file(window, cx),
         )
     }
 
@@ -459,7 +459,7 @@ impl StatusView {
 
     /// Open the repo-scoped config (`.git/magritte/config.toml`), creating an
     /// empty file (and its dir) first so the editor has something to open.
-    pub(crate) fn open_repo_config_file(&self) {
+    pub(crate) fn open_repo_config_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self.repo_scope_dir.clone() else {
             return;
         };
@@ -467,6 +467,10 @@ impl StatusView {
         if !path.exists() {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(&path, "");
+            // The scope dir may not have existed until now, in which case the
+            // startup watcher couldn't cover it — re-install so edits to the
+            // file we're about to open live-reload in this session.
+            self.install_config_watcher(window, cx);
         }
         self.launch_editor(&path, None);
     }
@@ -500,7 +504,7 @@ impl StatusView {
                     // overlay into the global file.
                     set(&mut this.config, on);
                     set(&mut this.config_global, on);
-                    config::save_settings(&this.config_global);
+                    this.save_global_config(cx);
                     if refetch {
                         this.refresh(cx);
                     } else {
@@ -529,7 +533,7 @@ impl StatusView {
                     let on = *on;
                     view.update(cx, |this, cx| {
                         this.edit_global(|c| c.check_for_updates = on);
-                        config::save_settings(&this.config_global);
+                        this.save_global_config(cx);
                         this.start_update_checks(cx);
                         cx.notify();
                     });
@@ -559,7 +563,16 @@ impl StatusView {
     /// Re-apply the theme for the current config and persist the global config.
     pub(crate) fn apply_and_save(&mut self, cx: &mut Context<Self>) {
         self.reapply_theme(cx);
-        config::save_settings(&self.config_global);
+        self.save_global_config(cx);
+    }
+
+    /// Persist the global config, surfacing a failed save — an unparseable
+    /// on-disk file would otherwise silently drop the change while the live
+    /// state shows it applied.
+    pub(crate) fn save_global_config(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = config::save_settings(&self.config_global) {
+            self.set_status(e, false, cx);
+        }
     }
 
     /// Tab moves focus to the next settings control, cycling through every one
@@ -609,7 +622,7 @@ impl StatusView {
         if self.settings_save_pending {
             self.settings_save_gen.bump(); // cancel the outstanding timer
             self.settings_save_pending = false;
-            config::save_settings(&self.config_global);
+            self.save_global_config(cx);
         }
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
@@ -627,10 +640,10 @@ impl StatusView {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(400))
                 .await;
-            this.update(cx, |this, _cx| {
+            this.update(cx, |this, cx| {
                 if this.settings_save_gen.is_current(gen) {
                     this.settings_save_pending = false;
-                    config::save_settings(&this.config_global);
+                    this.save_global_config(cx);
                 }
             })
             .ok();

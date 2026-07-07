@@ -73,6 +73,10 @@ pub(crate) fn start_server(tx: Sender<PathBuf>) -> bool {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
+            // Connections are served serially; without a deadline one client
+            // that connects and never closes its write half would park this
+            // thread forever, wedging single-instance handoff for good.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
             let mut request = String::new();
             if stream.read_to_string(&mut request).is_err() {
                 continue;

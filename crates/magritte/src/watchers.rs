@@ -66,6 +66,15 @@ impl StatusView {
         }));
         save_window_state(self.worktree_scope_dir.as_deref(), window, cx);
 
+        self.install_config_watcher(window, cx);
+    }
+
+    /// Watch the global config dir — and the repo scope dir when it exists —
+    /// re-resolving the merged config / argument defaults on change. Re-run
+    /// this when the repo scope dir is created mid-session ("Open repo config"),
+    /// since a dir can't be watched before it exists; installing the new
+    /// watcher into `_config_watcher` drops the old one.
+    pub(crate) fn install_config_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Config file: watch its directory (so atomic save-via-rename, which
         // swaps the inode, still fires), forward matching events over a channel,
         // and re-apply on the UI thread. Watching the dir lets us pick up the
