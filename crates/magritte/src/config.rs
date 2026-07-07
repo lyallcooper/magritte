@@ -71,9 +71,9 @@ pub struct Config {
     /// use the monospace `font` everywhere, as before.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub ui_font: String,
-    /// The app icon variant (macOS Dock/switcher icon): `pipe`, `golconda`, or
-    /// `son-of-man`. Empty = the default (`pipe`). macOS only, and it sets the
-    /// running Dock icon, not the bundle's Finder icon.
+    /// The app icon variant (macOS Dock/switcher icon) — see
+    /// [`crate::app_icon`] for the variants and default. macOS only, and it
+    /// sets the running Dock icon, not the bundle's Finder icon.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub app_icon: String,
     /// Highlight commit-summary characters past 50 columns in the editor.

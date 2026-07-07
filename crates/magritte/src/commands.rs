@@ -65,7 +65,7 @@ impl Category {
 
 /// A user-invokable command: a stable identity decoupled from the key that
 /// triggers it. This is the single source of truth for *what a command does* —
-/// the keymap (`on_key` via [`StatusView::run_command`], the `?` dispatch menu,
+/// the keymap (via [`StatusView::invoke_command`]), the `?` dispatch menu,
 /// and the `:` command palette all resolve to one of these and call `run`.
 /// Argument-taking commands (commit, branch, …) open their own picker/transient
 /// from `run`; the registry deliberately doesn't model arguments.
@@ -1994,10 +1994,6 @@ pub(crate) const TRANSIENT_IDS: &[&str] = &[
     "diff", "push", "pull", "fetch",
 ];
 
-/// The keystroke sequence to reach the command with this palette title, as
-/// space-separated keys: a top-level command's own key (e.g. `p`), or a leaf's
-/// full prefix-then-suffix path (e.g. `c c` for "Create commit"). `None` if it
-/// has no binding. Lets the `:` palette double as a keymap reference.
 /// The command id for a palette title — built-in or user `[[command]]`. Shown in
 /// the palette so a user can discover the id to bind in `[keymap]`.
 pub(crate) fn command_id_for_title(config: &config::Config, title: &str) -> Option<String> {

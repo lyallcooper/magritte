@@ -255,8 +255,6 @@ impl StatusView {
             return;
         }
 
-        // A commit's diff detail (opened from the log) is topmost; esc/q returns
-        // to the log, and it scrolls with the usual vi/less keys.
         // The interactive-rebase todo editor: set an action, reorder, then start.
         if self.rebase_todo().is_some() {
             // While the "discard edits?" confirmation is up, capture y / n / esc.
@@ -431,13 +429,11 @@ impl StatusView {
         }
     }
 
-    /// Invoke a `?`-dispatch command (by key press or row click): close the
-    /// dispatch menu and run the command, like magit's dispatch transient.
     /// The single context-scoped dispatcher: resolve `chord` in the active
     /// screen's keymap and run its command (if applicable now), or enter a
-    /// prefix. Returns whether it consumed the key. Replaces the per-screen
-    /// `on_key` branches and `run_info_key` — every screen dispatches through
-    /// this one path, so a key means whatever the registry says for that screen.
+    /// prefix. Returns whether it consumed the key. Every screen dispatches
+    /// through this one path (`run_info_key` is the `?`-menu click shim over
+    /// it), so a key means whatever the registry says for that screen.
     pub(crate) fn dispatch_key(
         &mut self,
         chord: &str,
@@ -676,10 +672,10 @@ impl StatusView {
         matches!(self.classify_seq(key), KeyMatch::Prefix)
     }
 
-    /// Whether a visual (region) selection is active on the current screen — the
-    /// flat-diff selection in a commit/diff view, or the status-list selection.
     /// Whether an active selection (line-wise visual or a mouse char range) is
-    /// present, so evil's `y` yanks it immediately instead of starting a prefix.
+    /// present on the current screen — the flat-diff selection in a commit/diff
+    /// view, or the status-list selection — so evil's `y` yanks it immediately
+    /// instead of starting a prefix.
     pub(crate) fn has_visual_selection(&self) -> bool {
         if let Some(fd) = self.flat_diff() {
             fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty())

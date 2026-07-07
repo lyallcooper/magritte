@@ -2724,10 +2724,8 @@ impl StatusView {
         }
     }
 
-    /// Stash the working tree and index (`Z z` / `Z Z`), on the background
-    /// executor, then refresh.
     /// Prompt for an optional stash message (magit prompts too; empty keeps
-    /// git's default "WIP on …"), then stash.
+    /// git's default "WIP on …"), then stash (`Z z` / `Z Z`).
     pub(crate) fn prompt_stash_message(
         &mut self,
         include_untracked: bool,

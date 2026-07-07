@@ -25,7 +25,9 @@ pub(crate) struct SettingsCaches {
     /// All font families, for the UI-font picker.
     pub(crate) ui_fonts: Vec<SharedString>,
     /// Installed GUI editors, as (display name, .app path), for the settings
-    /// "Open config file" dropdown. Refreshed each time settings opens.
+    /// "Open config file" dropdown. Computed once (first use or the startup
+    /// prewarm) and kept for the session — a newly installed editor appears
+    /// after a relaunch.
     pub(crate) editors: Vec<(SharedString, SharedString)>,
 }
 

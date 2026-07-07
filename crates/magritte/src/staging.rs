@@ -298,9 +298,8 @@ pub(crate) enum Confirm {
 }
 
 impl StatusView {
-    /// The loaded diff for a file in a given section, if available.
-    /// The loaded diff for `file`, shared for embedding in an [`Action`] (an
-    /// `Arc` clone, not a deep copy).
+    /// The loaded diff for `file`, if available — shared for embedding in an
+    /// [`Action`] (an `Arc` clone, not a deep copy).
     pub(crate) fn diff_for(&self, file: &FileRef) -> Option<Arc<FileDiff>> {
         let source = section_source(file.section)?;
         match self.diff_cache.state(&(source, file.path.clone()))? {
