@@ -795,8 +795,7 @@ pub(crate) fn page_rows(window: &Window) -> usize {
 }
 
 /// Apply a vi-style scroll key to a `uniform_list`, updating the caller-tracked
-/// top-row index (`top`) and scrolling the handle to it. We track `top`
-/// ourselves because the handle's index getter is test-only. Returns whether
+/// top-row index (`top`) and scrolling the handle to it. Returns whether
 /// `key` was a recognized scroll command: `j`/`k` line, `Ctrl-d`/`Ctrl-u`
 /// half-page, `Ctrl-f`/`Ctrl-b`/`Space` full-page, and `g`/`G` to the ends.
 /// Half-page requires Ctrl so plain `d`/`u` stay free for future commands
@@ -835,6 +834,18 @@ pub(crate) fn scroll_target(
     Some(target.clamp(0, max_top) as usize)
 }
 
+/// The topmost visible row of a `uniform_list` — the handle's test-only
+/// `logical_scroll_top_index`, re-derived over its public state. A pending
+/// (not-yet-painted) scroll-to-top is honored so rapid keys within one frame
+/// compound; a pending Bottom pin is not (its index is the *last* row).
+fn scroll_top_index(handle: &UniformListScrollHandle) -> usize {
+    let state = handle.0.borrow();
+    match state.deferred_scroll_to_item.as_ref() {
+        Some(d) if matches!(d.strategy, gpui::ScrollStrategy::Top) => d.item_index,
+        _ => state.base_handle.logical_scroll_top().0,
+    }
+}
+
 pub(crate) fn apply_scroll_key(
     handle: &UniformListScrollHandle,
     top: &mut usize,
@@ -844,6 +855,10 @@ pub(crate) fn apply_scroll_key(
     ctrl: bool,
     page: usize,
 ) -> bool {
+    // The user may have wheel-scrolled since the last key: resync the tracked
+    // top from the handle first, so a key motion continues from what's on
+    // screen instead of snapping back to where the keyboard last left it.
+    *top = scroll_top_index(handle);
     let Some(new_top) = scroll_target(*top, len, key, shift, ctrl, page) else {
         return false;
     };
