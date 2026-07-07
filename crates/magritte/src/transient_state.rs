@@ -61,6 +61,18 @@ impl TransientState {
         }
     }
 
+    /// Toggle a switch by its full key (`-f`). Toggling on turns off any switch
+    /// declared incompatible with it (magit's `:incompatible`) — the one rule
+    /// both the keyboard and mouse toggle paths must share.
+    pub(crate) fn toggle_switch(&mut self, key: &str) {
+        if !self.active.remove(key) {
+            for conflicting in conflicting_switch_keys(&self.def, key) {
+                self.active.remove(&conflicting);
+            }
+            self.active.insert(key.to_string());
+        }
+    }
+
     /// The git flag arguments from the toggled switches and set options, in
     /// definition order (switches first, then options as `{arg}{value}`).
     /// Pathspec options are excluded — see [`Self::pathspecs`] — since they must
@@ -962,14 +974,7 @@ impl StatusView {
             state.pending_dash = false;
             let full = format!("-{key}");
             if state.def.switches().any(|s| s.key == full) {
-                if !state.active.remove(&full) {
-                    // Toggling on turns off any switch declared incompatible
-                    // with this one (magit's :incompatible).
-                    for key in conflicting_switch_keys(&state.def, &full) {
-                        state.active.remove(&key);
-                    }
-                    state.active.insert(full);
-                }
+                state.toggle_switch(&full);
                 cx.notify();
                 return;
             }

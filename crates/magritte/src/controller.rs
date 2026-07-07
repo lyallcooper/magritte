@@ -63,6 +63,9 @@ impl StatusView {
             limit,
         } = fired;
         self.popup = None;
+        // Repaint now: a dispatcher that early-returns (no repo, nothing at
+        // point) must still visibly close the popup.
+        cx.notify();
         use transient::Command::*;
         match command {
             CommitCreate => self.start_commit(args, window, cx),
@@ -1101,6 +1104,11 @@ impl StatusView {
     /// the editor, then refresh — a pause (an `edit`, or a conflict) surfaces in
     /// the in-progress banner for continue/skip/abort.
     pub(crate) fn run_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Guard on the repo before mutating anything, so a missing repo can't
+        // close the editor and leave phantom pending rewords behind.
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
         let Some(rt) = self.take_rebase_todo() else {
             return;
         };
@@ -1116,11 +1124,8 @@ impl StatusView {
                 .filter(|s| s.action == RebaseAction::Reword)
                 .map(|s| s.oid.clone()),
         );
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
         let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
+        self.job_cancel = Some(cancel.clone());
         if !has_pending_reword {
             self.set_progress(progress.to_string(), cx);
             self.begin_activity(cx);
@@ -1145,7 +1150,7 @@ impl StatusView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let (result, stopped) = outcome;
-                this.job_cancel = None;
+                this.clear_job_cancel(&cancel);
                 if result.is_ok() {
                     if let Some(stopped) = stopped {
                         if this.open_pending_rebase_reword(stopped, window, cx) {
@@ -2330,7 +2335,7 @@ impl StatusView {
             return;
         };
         let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
+        self.job_cancel = Some(cancel.clone());
         self.set_progress(progress, cx);
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
@@ -2339,7 +2344,7 @@ impl StatusView {
                 .spawn(async move { op(repo) })
                 .await;
             this.update(cx, |this, cx| {
-                this.job_cancel = None;
+                this.clear_job_cancel(&cancel);
                 finish(this, result, cx);
                 this.end_activity(cx);
             })
@@ -2401,6 +2406,20 @@ impl StatusView {
             },
             cx,
         );
+    }
+
+    /// Clear the active job's cancel flag — but only if it's still *this* job's
+    /// flag. A job that started while another was running installs its own; the
+    /// first job's finish must not clobber it (which would strand the newer job
+    /// un-cancellable and hide its "running" indicator).
+    pub(crate) fn clear_job_cancel(&mut self, cancel: &Arc<AtomicBool>) {
+        if self
+            .job_cancel
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, cancel))
+        {
+            self.job_cancel = None;
+        }
     }
 
     /// Cancel the active mutating job, if any — killing its git subprocess.
@@ -2796,7 +2815,9 @@ impl StatusView {
             return;
         };
         let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
+        self.job_cancel = Some(cancel.clone());
+        self.set_progress("Rebasing…".to_string(), cx);
+        self.begin_activity(cx);
         cx.spawn_in(window, async move |this, cx| {
             let outcome = cx
                 .background_executor()
@@ -2827,7 +2848,8 @@ impl StatusView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let (result, stopped) = outcome;
-                this.job_cancel = None;
+                this.clear_job_cancel(&cancel);
+                this.end_activity(cx);
                 match result {
                     Ok(oid) => {
                         this.pending_rebase_rewords.insert(oid);
@@ -2917,7 +2939,9 @@ impl StatusView {
             return;
         };
         let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel);
+        self.job_cancel = Some(cancel.clone());
+        self.set_progress("Continuing rebase…".to_string(), cx);
+        self.begin_activity(cx);
         cx.spawn_in(window, async move |this, cx| {
             let stopped_for_result = stopped_sha.clone();
             let outcome = cx
@@ -2937,7 +2961,8 @@ impl StatusView {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 let (result, stopped, committed) = outcome;
-                this.job_cancel = None;
+                this.clear_job_cancel(&cancel);
+                this.end_activity(cx);
                 if committed {
                     this.pending_rebase_rewords.remove(&stopped_for_result);
                 }

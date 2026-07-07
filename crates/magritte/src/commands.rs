@@ -174,6 +174,26 @@ pub(crate) fn commands() -> &'static [Command] {
             }
         };
     }
+    // A status-screen diff-context command (`+`/`-`/`0`): keyed and remappable,
+    // in the palette, but out of the `?` menu like the motions.
+    macro_rules! diff_context {
+        ($id:literal, $title:literal, $key:literal, $run:expr) => {
+            Command {
+                id: $id,
+                title: $title,
+                aliases: &["context lines"],
+                contexts: STATUS,
+                category: Category::Essential,
+                key: Some($key),
+                menu: false,
+                palette: true,
+                enabled: ALWAYS,
+                at_point: false,
+                leaf: None,
+                run: $run,
+            }
+        };
+    }
     // A fold operation reached through a key sequence (evil's `z` family) and
     // the palette: keyless in the registry, kept out of the `?` menu like the
     // motions, but palette-reachable (and remappable) since it has no top key.
@@ -1066,6 +1086,27 @@ pub(crate) fn commands() -> &'static [Command] {
             &["collapse", "expand", "toggle"],
             |t, _w, cx| { t.toggle_fold(cx) }
         ),
+        // Diff context width (magit's `+`/`-`/`0`): ordinary keymap entries so
+        // they're remappable and palette-reachable, but kept out of the `?`
+        // menu like the motions (magit's dispatch doesn't list them either).
+        diff_context!(
+            "diff-more-context",
+            "More diff context",
+            "+",
+            |t, _w, cx| { t.diff_context_more(cx) }
+        ),
+        diff_context!(
+            "diff-less-context",
+            "Less diff context",
+            "-",
+            |t, _w, cx| { t.diff_context_less(cx) }
+        ),
+        diff_context!(
+            "diff-default-context",
+            "Default diff context",
+            "0",
+            |t, _w, cx| t.diff_context_default(cx)
+        ),
         top!(
             "refresh",
             "Refresh",
@@ -1642,6 +1683,11 @@ fn shifted_char(key: &str) -> Option<String> {
         "`" => "~",
         _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
             return Some(key.to_uppercase())
+        }
+        // An already-shifted symbol (a platform that reports `+` rather than
+        // `shift-=`): Shift was how it was typed, so it folds away.
+        _ if key.len() == 1 && !key.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            return Some(key.to_string())
         }
         _ => return None,
     };

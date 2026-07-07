@@ -124,7 +124,10 @@ impl StatusView {
             return;
         }
 
-        if let Some(kind) = self.sequence_kind() {
+        // Plain keys only: `cased` has modifiers stripped, so without this
+        // guard cmd-R/ctrl-R during a paused rebase would be swallowed here
+        // instead of reaching the OS/app shortcut it belongs to.
+        if let Some(kind) = self.sequence_kind().filter(|_| !(ctrl || alt || cmd)) {
             let sequence_prefix = match kind {
                 SequenceKind::Rebase => "r",
                 SequenceKind::Merge => "m",
@@ -350,11 +353,10 @@ impl StatusView {
                 }
                 return;
             }
-            // Modifier/popup shortcuts that aren't ordinary commands: Cmd-C yanks
-            // before any `c` binding; M-x and an unbound `:`/`;`+shift open the
-            // palette; `?`/`/`+shift open Help. Bound symbol keys (`!`, `|`, `$`,
-            // vanilla `:`) fall through to the effective keymap below.
-            "c" if cmd => return self.invoke_command("yank", window, cx),
+            // Modifier/popup shortcuts that aren't ordinary commands: M-x and an
+            // unbound `:`/`;`+shift open the palette; `?`/`/`+shift open Help.
+            // Bound symbol keys (`!`, `|`, `$`, vanilla `:`, and Cmd-C's yank
+            // binding) fall through to the effective keymap below.
             "x" if alt => return self.open_command_palette(window, cx),
             ":" | ";" if key == ":" || shift => {
                 if Self::is_dispatch_key(self.screen_bindings(), &cased) {
@@ -362,11 +364,6 @@ impl StatusView {
                 }
                 return self.open_command_palette(window, cx);
             }
-            // Diff context: show more / fewer / the default number of context
-            // lines around hunks (magit's `+`/`-`/`0`), status view only.
-            "+" if matches!(self.screen, Screen::Status) => self.diff_context_more(cx),
-            "-" if matches!(self.screen, Screen::Status) => self.diff_context_less(cx),
-            "0" if matches!(self.screen, Screen::Status) => self.diff_context_default(cx),
             // Everything else resolves through the effective keymap (the
             // shift-cased keystroke → command id), so remap/unbind take effect.
             // The plain command keys (`c`, `s`/`S`, `O`, `F`, `enter`, `v`, …)
@@ -404,10 +401,7 @@ impl StatusView {
     ) {
         if is_switch {
             if let Some(Popup::Transient(state)) = self.popup.as_mut() {
-                let k = key.to_string();
-                if !state.active.remove(&k) {
-                    state.active.insert(k);
-                }
+                state.toggle_switch(key.as_ref());
                 cx.notify();
             }
         } else {

@@ -1834,14 +1834,17 @@ mod tests {
             "%", "B", "W", // commands
             "s", "u", "S", "U", "x", "X", // applying changes (X = evil untrack)
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
+            "+", "-", "0", // diff context
             "j", "k", "g g", "G", "g j", "g k", // navigation / motions
             "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", // half/full page motions
         ];
-        // Keys allowed to be on only one side of the check. Cursor motions
-        // dispatch but are intentionally hidden from the `?` menu (standard
-        // vim/emacs conventions — see the `nav!` block in commands.rs).
+        // Keys allowed to be on only one side of the check. Cursor motions and
+        // the diff-context keys dispatch but are intentionally hidden from the
+        // `?` menu (standard vim/emacs conventions — see the `nav!` and
+        // `diff_context!` blocks in commands.rs).
         const OVERRIDES: &[&str] = &[
-            "j", "k", "g g", "G", "g j", "g k", "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b",
+            "j", "k", "g g", "G", "g j", "g k", "ctrl-d", "ctrl-u", "ctrl-f", "ctrl-b", "+", "-",
+            "0",
             // The evil yank family (`yy` copy, `yr` show-refs) shows in the menu
             // but resolves through the prefix machinery, not `run_dispatch`.
             "y y", "y r",
