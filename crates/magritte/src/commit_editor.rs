@@ -412,9 +412,19 @@ impl StatusView {
             &state,
             window,
             |this, _state, ev: &InputEvent, window, cx| match ev {
+                // By the time this event arrives, the Input has already
+                // inserted the submit keystroke's newline *at the cursor*
+                // (submit_on_enter(false) treats Return as text, and the
+                // cmd chord is consumed by the input's own binding — it never
+                // reaches a key listener, so it can't be intercepted earlier).
+                // Remove that newline wherever the cursor is before
+                // submitting: mid-message, it would split the message there.
                 InputEvent::PressEnter {
                     secondary: true, ..
-                } => this.submit_editor(window, cx),
+                } => {
+                    this.strip_submit_newline(window, cx);
+                    this.submit_editor(window, cx);
+                }
                 // Re-wrap the body and refresh the summary-length warning as the
                 // message is edited.
                 InputEvent::Change => this.on_editor_changed(window, cx),
@@ -768,6 +778,30 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Undo the newline the submit keystroke just inserted at the cursor —
+    /// see the `PressEnter` subscription. No-op when the char before the
+    /// cursor isn't a newline (e.g. the clickable commit button's path).
+    fn strip_submit_newline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.editor().map(|e| e.state.clone()) else {
+            return;
+        };
+        state.update(cx, |s, cx| {
+            let cursor = s.cursor();
+            let value = s.value().to_string();
+            if cursor == 0 || value.as_bytes().get(cursor - 1) != Some(&b'\n') {
+                return;
+            }
+            let mut fixed = value;
+            fixed.remove(cursor - 1);
+            s.set_value(fixed.clone(), window, cx);
+            s.set_cursor_position(
+                commit_text::byte_offset_to_position(&fixed, cursor - 1),
+                window,
+                cx,
+            );
+        });
+    }
+
     pub(crate) fn submit_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editor() else {
             return;
@@ -779,7 +813,8 @@ impl StatusView {
         }
         let ed = self.take_editor().unwrap();
         self.focus.focus(window, cx);
-        // Drop the trailing newline the submit keystroke inserted.
+        // Trailing-whitespace hygiene; the submit keystroke's own newline was
+        // already stripped at the cursor (see strip_submit_newline).
         let message = text.trim_end().to_string();
         match ed.after_submit {
             CommitAfterSubmit::Commit => self.run_commit(message, ed.mode, ed.args, cx),
