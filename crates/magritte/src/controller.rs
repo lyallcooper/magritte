@@ -94,7 +94,7 @@ impl StatusView {
             RemoteAdd | RemoteRename | RemoteRemove => {
                 self.dispatch_remote(command, args, window, cx)
             }
-            BranchConfigure => self.open_branch_configure(cx),
+            BranchConfigure => self.open_branch_configure(window, cx),
             RemoteConfigure => self.open_remote_configure(window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
                 self.dispatch_reset(command, window, cx)
@@ -368,18 +368,32 @@ impl StatusView {
         }
     }
 
-    /// Open the branch config transient (magit's `magit-branch-configure`) for
-    /// the current branch, seeded with the repo's remotes for the pushRemote
-    /// choice lists. A no-op on a detached HEAD (no branch to configure).
-    pub(crate) fn open_branch_configure(&mut self, cx: &mut Context<Self>) {
-        let Some(branch) = self.remote_targets().branch else {
-            self.set_status(
-                "Detached HEAD — no branch to configure".to_string(),
-                false,
+    /// Open the branch config transient (magit's `magit-branch-configure`).
+    /// Prompts for which branch to configure only when there's more than one
+    /// local branch; a sole branch is configured directly.
+    pub(crate) fn open_branch_configure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let branches = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.local_branches().ok())
+            .unwrap_or_default();
+        match branches.as_slice() {
+            [] => self.set_status("No branch to configure".to_string(), false, cx),
+            [only] => self.open_branch_configure_for(only.clone(), cx),
+            _ => self.open_listed_picker(
+                PickerAction::Branch(BranchAction::Configure),
+                CreateMode::None,
+                Vec::new(),
+                Repo::local_branches,
+                window,
                 cx,
-            );
-            return;
-        };
+            ),
+        }
+    }
+
+    /// Open the branch config transient for a specific branch, seeded with the
+    /// repo's remotes for the pushRemote choice lists.
+    pub(crate) fn open_branch_configure_for(&mut self, branch: String, cx: &mut Context<Self>) {
         let remotes = self
             .repo
             .as_ref()
@@ -2495,13 +2509,18 @@ impl StatusView {
             );
             return;
         }
+        // Configure opens the chosen branch's config transient, not a git job.
+        if let BranchAction::Configure = action {
+            self.open_branch_configure_for(chosen, cx);
+            return;
+        }
 
         let (verb, done) = match &action {
             BranchAction::Checkout => ("Checking out", "Checked out"),
             BranchAction::Create { .. } => ("Creating branch", "Created branch"),
             BranchAction::RenameTo { .. } => ("Renaming branch", "Renamed branch"),
             BranchAction::Delete => ("Deleting branch", "Deleted branch"),
-            BranchAction::RenameFrom => unreachable!("handled above"),
+            BranchAction::RenameFrom | BranchAction::Configure => unreachable!("handled above"),
         };
         self.run_job(
             &format!("{verb}…"),
@@ -2512,7 +2531,9 @@ impl StatusView {
                 BranchAction::Create { checkout: false } => repo.create_branch(&chosen, None),
                 BranchAction::RenameTo { old } => repo.rename_branch(&old, &chosen),
                 BranchAction::Delete => repo.delete_branch(&chosen, false),
-                BranchAction::RenameFrom => unreachable!("handled above"),
+                BranchAction::RenameFrom | BranchAction::Configure => {
+                    unreachable!("handled above")
+                }
             },
             cx,
         );

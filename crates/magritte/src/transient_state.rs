@@ -253,6 +253,8 @@ pub(crate) enum BranchAction {
     RenameTo { old: String },
     /// Delete the chosen branch.
     Delete,
+    /// Open the chosen branch's config transient.
+    Configure,
 }
 
 /// A tag-transient operation carried out against a typed tag name or picked tag.
@@ -400,6 +402,7 @@ impl PickerAction {
                     TitleSpan::text(" to"),
                 ],
                 BranchAction::Delete => transient::plain_title("Delete branch"),
+                BranchAction::Configure => transient::plain_title("Configure branch"),
             },
             PickerAction::Tag(TagAction::Create { annotated: true }) => {
                 transient::plain_title("Create annotated tag")
@@ -496,6 +499,7 @@ impl PickerAction {
                 "rename"
             }
             PickerAction::Branch(BranchAction::Delete) => "delete",
+            PickerAction::Branch(BranchAction::Configure) => "configure",
             PickerAction::Tag(TagAction::Create { .. }) => "tag",
             PickerAction::Tag(TagAction::Release { .. }) => "release",
             PickerAction::Tag(TagAction::Delete) => "delete",

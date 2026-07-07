@@ -849,7 +849,9 @@ impl StatusView {
                         .child(SharedString::from("save these arguments as the default")),
                 )
             })
-            .child(self.render_title(&def.title, self.palette.section))
+            .when(!def.title.is_empty(), |el| {
+                el.child(self.render_title(&def.title, self.palette.section))
+            })
             .child(body)
     }
 

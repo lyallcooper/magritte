@@ -847,10 +847,11 @@ pub fn branch_transient(style: KeymapStyle, configure: Option<(&str, Vec<String>
 }
 
 /// The branch config sub-transient (magit's `magit-branch-configure`): the same
-/// git-config variables the branch transient can show inline, on their own.
+/// git-config variables the branch transient can show inline, on their own. No
+/// panel title — the leading group header already reads "Configure <branch>".
 pub fn branch_configure_transient(branch: &str, remotes: Vec<String>) -> Transient {
     Transient {
-        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
+        title: Vec::new(),
         groups: branch_config_groups(branch, remotes),
     }
 }
@@ -947,10 +948,11 @@ pub fn remote_transient(style: KeymapStyle, configure: Option<&str>) -> Transien
 }
 
 /// The remote config sub-transient (magit's `magit-remote-configure`): the same
-/// git-config variables the remote transient can show inline, on their own.
+/// git-config variables the remote transient can show inline, on their own. No
+/// panel title — the group header already reads "Configure <remote>".
 pub fn remote_configure_transient(remote: &str) -> Transient {
     Transient {
-        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
+        title: Vec::new(),
         groups: vec![remote_config_group(remote)],
     }
 }
