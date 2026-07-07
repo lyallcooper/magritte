@@ -109,13 +109,11 @@ impl StatusView {
     /// Move the cursor in the rebase-todo editor.
     pub(crate) fn rebase_todo_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         if let Some(rt) = self.rebase_todo_mut() {
-            let n = rt.steps.len();
-            if n == 0 {
+            let Some(ix) = list_move(rt.selected, rt.steps.len(), delta, |_| true) else {
                 return;
-            }
-            rt.selected = (rt.selected as isize + delta).clamp(0, n as isize - 1) as usize;
-            rt.scroll
-                .scroll_to_item(rt.selected, gpui::ScrollStrategy::Top);
+            };
+            rt.selected = ix;
+            rt.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top);
             cx.notify();
         }
     }

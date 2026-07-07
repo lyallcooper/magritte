@@ -109,13 +109,11 @@ impl StatusView {
         let Some(view) = self.worktree_view_mut() else {
             return;
         };
-        if view.worktrees.is_empty() {
+        let Some(ix) = list_move(view.selected, view.worktrees.len(), delta, |_| true) else {
             return;
-        }
-        let last = view.worktrees.len() as isize - 1;
-        view.selected = (view.selected as isize + delta).clamp(0, last) as usize;
-        view.scroll
-            .scroll_to_item(view.selected, gpui::ScrollStrategy::Top);
+        };
+        view.selected = ix;
+        view.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top);
         cx.notify();
     }
 

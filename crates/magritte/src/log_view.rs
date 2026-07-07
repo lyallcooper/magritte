@@ -622,13 +622,11 @@ impl StatusView {
         if let Some(log) = self.log_mut() {
             log.char_sel = None;
             log.visual = None;
-            if log.entries.is_empty() {
+            let Some(ix) = list_move(log.selected, log.entries.len(), delta, |_| true) else {
                 return;
-            }
-            let last = log.entries.len() - 1;
-            log.selected = (log.selected as isize + delta).clamp(0, last as isize) as usize;
-            log.scroll
-                .scroll_to_item(log.selected, gpui::ScrollStrategy::Top);
+            };
+            log.selected = ix;
+            log.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top);
             cx.notify();
         }
     }

@@ -1260,6 +1260,7 @@ impl StatusView {
             reserve_candidates: has_candidates,
             resume: None,
             _sub: sub,
+            hints: Default::default(),
         }));
         cx.notify();
     }

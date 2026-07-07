@@ -613,7 +613,16 @@ pub(crate) struct PickerState {
     pub(crate) resume: Option<Box<TransientState>>,
     /// Kept alive so the input-change subscription stays active.
     pub(crate) _sub: Subscription,
+    /// Per-label `(key hint, command id)` for the `:` palette's rows, resolved
+    /// once per picker: `command_keys` walks the transient definitions to find
+    /// a leaf's path, which is too heavy to repeat per row per frame. RefCell
+    /// because render fills it with `&self`.
+    pub(crate) hints: std::cell::RefCell<PaletteHints>,
 }
+
+/// Cached palette-row metadata by label — see [`PickerState::hints`].
+pub(crate) type PaletteHints =
+    std::collections::HashMap<SharedString, (Option<SharedString>, Option<SharedString>)>;
 
 /// The key a transient suffix is invoked by, for matching `[transient]`
 /// `"key" = "unbound"` removals. `None` for `Info` rows (no toggle key).

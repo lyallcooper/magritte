@@ -81,20 +81,33 @@ impl StatusView {
                         range
                             .map(|ix| match p.list.row(ix) {
                                 Some(r) => {
-                                    let hint = palette
-                                        .then(|| {
-                                            let v = view.read(cx);
-                                            command_keys(v.screen_bindings(), &v.config, &r.label)
-                                        })
-                                        .flatten()
-                                        .map(SharedString::from);
-                                    let id = palette
-                                        .then(|| {
-                                            let v = view.read(cx);
-                                            commands::command_id_for_title(&v.config, &r.label)
-                                        })
-                                        .flatten()
-                                        .map(SharedString::from);
+                                    // Resolved once per label per picker (see
+                                    // `PickerState::hints`), not per frame.
+                                    let (hint, id) = if palette {
+                                        let mut hints = p.hints.borrow_mut();
+                                        match hints.get(&r.label) {
+                                            Some(pair) => pair.clone(),
+                                            None => {
+                                                let v = view.read(cx);
+                                                let pair = (
+                                                    command_keys(
+                                                        v.screen_bindings(),
+                                                        &v.config,
+                                                        &r.label,
+                                                    )
+                                                    .map(SharedString::from),
+                                                    commands::command_id_for_title(
+                                                        &v.config, &r.label,
+                                                    )
+                                                    .map(SharedString::from),
+                                                );
+                                                hints.insert(r.label.clone(), pair.clone());
+                                                pair
+                                            }
+                                        }
+                                    } else {
+                                        (None, None)
+                                    };
                                     view.read(cx).render_picker_row(
                                         ix,
                                         r.label,

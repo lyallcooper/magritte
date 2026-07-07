@@ -894,6 +894,37 @@ fn section_depth(row: &Row) -> Option<u8> {
     }
 }
 
+/// Clamped cursor movement for the simple list screens (log, refs, worktrees,
+/// rebase todo): step `selected` by `delta` within `len`, skipping rows
+/// `selectable` rejects — past them in the travel direction first, then back
+/// the other way (how the refs list hops section headers). `None` when the
+/// list is empty or no selectable row is reachable; each screen applies the
+/// result to its own cursor + scroll handle.
+pub(crate) fn list_move(
+    selected: usize,
+    len: usize,
+    delta: isize,
+    selectable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let last = len as isize - 1;
+    let target = (selected as isize + delta).clamp(0, last);
+    let step = if delta >= 0 { 1 } else { -1 };
+    let mut ix = target;
+    while (0..=last).contains(&ix) && !selectable(ix as usize) {
+        ix += step;
+    }
+    if !(0..=last).contains(&ix) || !selectable(ix as usize) {
+        ix = target;
+        while (0..=last).contains(&ix) && !selectable(ix as usize) {
+            ix -= step;
+        }
+    }
+    ((0..=last).contains(&ix) && selectable(ix as usize)).then_some(ix as usize)
+}
+
 // --- Scroll math for the read-only list views ------------------------------
 
 /// The viewport height in rows — a "page" for the scroll/paging keys.

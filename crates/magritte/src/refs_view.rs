@@ -187,29 +187,15 @@ impl StatusView {
         let Some(refs) = self.refs_view_mut() else {
             return;
         };
-        if refs.rows.is_empty() {
+        let rows = &refs.rows;
+        let Some(ix) = list_move(refs.selected, rows.len(), delta, |i| {
+            rows[i].is_selectable()
+        }) else {
             return;
-        }
-        let last = refs.rows.len() as isize - 1;
-        let mut ix = (refs.selected as isize + delta).clamp(0, last);
-        // Step past headers in the direction of travel; if that runs off the
-        // end, fall back toward a selectable row the other way.
-        let step = if delta >= 0 { 1 } else { -1 };
-        while (0..=last).contains(&ix) && !refs.rows[ix as usize].is_selectable() {
-            ix += step;
-        }
-        if !(0..=last).contains(&ix) || !refs.rows[ix as usize].is_selectable() {
-            ix = (refs.selected as isize + delta).clamp(0, last);
-            while (0..=last).contains(&ix) && !refs.rows[ix as usize].is_selectable() {
-                ix -= step;
-            }
-        }
-        if (0..=last).contains(&ix) && refs.rows[ix as usize].is_selectable() {
-            refs.selected = ix as usize;
-            refs.scroll
-                .scroll_to_item(refs.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
-        }
+        };
+        refs.selected = ix;
+        refs.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top);
+        cx.notify();
     }
 
     /// Check out the ref at point (magit's `magit-visit-ref` / the section-map
