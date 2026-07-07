@@ -589,6 +589,11 @@ impl Repo {
         });
 
         let start = Instant::now();
+        // Poll with backoff: most git calls finish in a few ms, so a fixed
+        // 15ms sleep would tax every cancellable invocation ~7ms on average —
+        // several sequential calls per refresh. Start at 1ms and grow toward
+        // 15ms so short calls return promptly and long ones stay cheap to poll.
+        let mut poll = Duration::from_millis(1);
         let status = loop {
             if let Some(status) = child.try_wait().map_err(|source| Error::Spawn { source })? {
                 break status;
@@ -614,7 +619,8 @@ impl Repo {
                     Error::TimedOut
                 });
             }
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(poll);
+            poll = (poll * 2).min(Duration::from_millis(15));
         };
         let stdout = out_reader.join().unwrap_or_default();
         let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).into_owned();

@@ -61,7 +61,7 @@ impl StatusView {
         state: Option<&TransientState>,
         window: &Window,
         view: &Entity<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::Stateful<gpui::Div> {
         let pending_dash = state.is_some_and(|s| s.pending_dash);
         // Cap the argument band's columns to what fits the window width, so a
         // wide group (e.g. the log arguments) fans into more rows instead of
@@ -225,7 +225,14 @@ impl StatusView {
         });
         let has_repo = self.repo_scope_dir.is_some();
 
+        // The band-cap heuristic keeps normal transients compact, but a short
+        // window (or a huge user-extended menu) can still exceed the viewport;
+        // cap the panel and let it scroll rather than clipping off-screen.
+        let max_h = f32::from(window.viewport_size().height) * 0.8;
         self.bottom_panel()
+            .id("transient-panel")
+            .max_h(px(max_h))
+            .overflow_y_scroll()
             .gap_2()
             .when(saving, |el| {
                 let mut row = div()

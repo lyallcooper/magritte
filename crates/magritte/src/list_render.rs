@@ -75,9 +75,25 @@ impl StatusView {
             move |range, _window, cx| {
                 let this = view.read(cx);
                 match &this.screen {
-                    Screen::Blame { rows, .. } => range
-                        .filter_map(|ix| rows.get(ix).map(|r| this.render_blame_row(r)))
-                        .collect::<Vec<_>>(),
+                    Screen::Blame { rows, .. } => {
+                        // Size the line-number gutter to the file's widest
+                        // number (a fixed width clipped at 5+ digits). Line
+                        // numbers ascend, so the last Line row carries the max.
+                        let digits = rows
+                            .iter()
+                            .rev()
+                            .find_map(|r| match r {
+                                blame_view::BlameRow::Line { line_no, .. } => Some(*line_no),
+                                _ => None,
+                            })
+                            .unwrap_or(0)
+                            .to_string()
+                            .len();
+                        let gutter = px(digits.max(4) as f32 * 8.0 + 6.0);
+                        range
+                            .filter_map(|ix| rows.get(ix).map(|r| this.render_blame_row(r, gutter)))
+                            .collect::<Vec<_>>()
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -99,7 +115,7 @@ impl StatusView {
             .child(body)
     }
 
-    fn render_blame_row(&self, row: &blame_view::BlameRow) -> AnyElement {
+    fn render_blame_row(&self, row: &blame_view::BlameRow, gutter: gpui::Pixels) -> AnyElement {
         let base = div()
             .h(px(ROW_HEIGHT))
             .w_full()
@@ -126,7 +142,7 @@ impl StatusView {
             blame_view::BlameRow::Line { line_no, text } => base
                 .child(
                     div()
-                        .w(px(40.0))
+                        .w(gutter)
                         .flex_shrink_0()
                         .text_color(self.palette.dim)
                         .child(SharedString::from(line_no.to_string())),

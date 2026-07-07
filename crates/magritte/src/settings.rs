@@ -586,10 +586,13 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The commit-editor input renders only when commit_in_editor is on;
+        // keep it out of the ring otherwise (a hidden control is a dead stop).
+        let ring = if self.config.commit_in_editor { 8 } else { 7 };
         let Some(s) = self.settings_mut() else {
             return;
         };
-        s.focus_ix = (s.focus_ix + if forward { 1 } else { 7 }) % 8;
+        s.focus_ix = (s.focus_ix + if forward { 1 } else { ring - 1 }) % ring;
         match s.focus_ix {
             0 => s
                 .appearance

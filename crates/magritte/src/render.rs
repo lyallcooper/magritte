@@ -982,11 +982,13 @@ impl StatusView {
     ) -> gpui::Div {
         if let Some(popup) = &self.popup {
             root = root.child(match popup {
-                Popup::Transient(state) => {
-                    self.render_transient(&state.def, Some(state), window, view)
-                }
-                Popup::Dispatch(def) => self.render_transient(def, None, window, view),
-                Popup::Picker(state) => self.render_picker(state, view),
+                Popup::Transient(state) => self
+                    .render_transient(&state.def, Some(state), window, view)
+                    .into_any_element(),
+                Popup::Dispatch(def) => self
+                    .render_transient(def, None, window, view)
+                    .into_any_element(),
+                Popup::Picker(state) => self.render_picker(state, view).into_any_element(),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(

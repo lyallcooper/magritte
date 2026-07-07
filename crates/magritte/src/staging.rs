@@ -683,9 +683,7 @@ impl StatusView {
         // First try `editor` as a command: program + optional flags, then the
         // file. This is how CLI launchers are written (`code -w`, `zed`,
         // `subl -n`, `/abs/path/to/bin`).
-        let mut parts = editor.split_whitespace();
-        let program = parts.next().unwrap_or(editor);
-        let args: Vec<&str> = parts.collect();
+        let (program, args) = editor_launch::split_command(editor);
         if std::process::Command::new(program)
             .args(args)
             .arg(path)

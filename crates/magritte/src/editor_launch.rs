@@ -2,6 +2,17 @@
 //! Pure of any UI state — it only maps an editor command/app name to the right
 //! `(program, args)` for its goto convention.
 
+/// Split an editor command into `(program, args)` with shell-style quoting, so
+/// a quoted argument survives (`code --user-data-dir "/pa th"`). Malformed
+/// quoting falls back to plain whitespace splitting.
+pub(crate) fn split_command(editor: &str) -> (String, Vec<String>) {
+    let words = shell_words::split(editor)
+        .unwrap_or_else(|_| editor.split_whitespace().map(String::from).collect());
+    let mut words = words.into_iter();
+    let program = words.next().unwrap_or_else(|| editor.to_string());
+    (program, words.collect())
+}
+
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
@@ -12,12 +23,8 @@ use std::path::PathBuf;
 /// `file:line` (Zed/Sublime/Helix). On macOS an app *name* (e.g. "Zed") is
 /// resolved to the matching CLI inside its bundle.
 pub(crate) fn editor_goto(editor: &str, path: &str, line: u32) -> Option<(String, Vec<String>)> {
-    let first = editor.split_whitespace().next().unwrap_or(editor);
-    let extra: Vec<String> = editor
-        .split_whitespace()
-        .skip(1)
-        .map(String::from)
-        .collect();
+    let (first, extra) = split_command(editor);
+    let first = first.as_str();
     let stem = std::path::Path::new(first)
         .file_stem()
         .and_then(|s| s.to_str())

@@ -28,14 +28,20 @@ pub(crate) fn detach_into_background(args: &[String]) -> bool {
 }
 
 pub(crate) fn repo_window_key(start_dir: Option<&Path>) -> PathBuf {
-    let root = start_dir
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let root = start_root(start_dir);
     Repo::discover(&root)
         .map(|repo| repo.workdir().to_path_buf())
         .or_else(|_| std::fs::canonicalize(&root))
         .unwrap_or(root)
+}
+
+/// The directory a window request starts from: the given path, else the cwd,
+/// else `.` — the shared preamble of the discovery helpers here.
+fn start_root(start_dir: Option<&Path>) -> PathBuf {
+    start_dir
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub(crate) fn status_window_options(
@@ -200,10 +206,7 @@ pub(crate) fn window_state_from_window(window: &mut Window, cx: &mut App) -> sta
 }
 
 pub(crate) fn discover_worktree_scope_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
-    let root = start_dir
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let root = start_root(start_dir);
     Repo::discover(&root)
         .ok()
         .and_then(|repo| repo.git_dir().ok())
