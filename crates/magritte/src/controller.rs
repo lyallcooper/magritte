@@ -1,10 +1,11 @@
-//! The controller layer: command dispatch (the registry `run` closures and the
-//! transient `fire_action`), the git-execution `run_*` jobs, picker
-//! orchestration, and the status/report/job plumbing they share. Split out of
-//! the main view file so command handling reads as one concern. It stays
-//! `impl StatusView` because a GPUI view owns its state and behavior together;
-//! a separate non-view controller would mean message-passing ceremony for no
-//! gain in a single-Entity app (see the FB5 disposition in FEEDBACK.md).
+//! Command dispatch: `fire_action` routing a transient/palette command to its
+//! per-family dispatcher (branch, tag, stash, remote, diff, reset, merge, …)
+//! and the picker orchestration those prompts share. The job runners and toast
+//! plumbing live in `jobs`, push/pull/fetch in `transfer`, and the rebase
+//! flows in `rebase_flow`. It stays `impl StatusView` because a GPUI view owns
+//! its state and behavior together; a separate non-view controller would mean
+//! message-passing ceremony for no gain in a single-Entity app (see the FB5
+//! disposition in FEEDBACK.md).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -12,38 +13,6 @@ use gpui::prelude::*;
 use gpui::{Context, SharedString, UniformListScrollHandle, Window};
 
 use crate::*;
-
-/// The bottom-bar status toast — one logical value whose parts move together:
-/// the message, an optional emphasized copied value (rendered only while the
-/// message is the Copied label), optional leading keycaps, and the sequence
-/// stamp that keeps a stale fade timer from clearing a newer message.
-#[derive(Default)]
-pub(crate) struct StatusToast {
-    /// Last operation result / progress, shown in the bottom bar.
-    pub(crate) message: Option<String>,
-    /// A keystroke to render as keycap(s) before the message (e.g. the unbound
-    /// `g x` in "g x is unbound"). Cleared by every status post; set right
-    /// after by the few messages that lead with a key.
-    pub(crate) keys: Option<String>,
-    /// Whether the current message is a one-shot notice (e.g. "… is unbound"),
-    /// which the next keypress dismisses — not a job's progress or a sticky
-    /// condition, which stay until they resolve or are dismissed explicitly.
-    pub(crate) transient: bool,
-    /// Bumped each time the message changes, so an auto-dismiss timer only
-    /// clears the message it was scheduled for (not a newer one).
-    pub(crate) seq: Generation,
-}
-
-/// How a status-bar message behaves once shown. Every kind advances the status
-/// sequence; only a `Notice` schedules its own fade.
-pub(crate) enum StatusKind {
-    /// A success notice — fades on its own after a moment.
-    Notice,
-    /// Work in progress ("Pushing…") — stays until the job reports.
-    Progress,
-    /// An error or condition — stays until dismissed (Esc / click).
-    Sticky,
-}
 
 impl StatusView {
     /// Fire a leaf command (a transient suffix) with already-gathered arguments.
@@ -157,134 +126,6 @@ impl StatusView {
         );
     }
 
-    /// (Re)start the background auto-fetch loop. Bumping the generation retires
-    /// any loop already running; a fresh one spawns only when `[fetch].auto` is
-    /// on and there's a repo. Called at startup and whenever `[fetch]` changes.
-    pub(crate) fn start_auto_fetch(&mut self, cx: &mut Context<Self>) {
-        let gen = self.auto_fetch_gen.bump();
-        if !self.config.fetch.auto || self.repo.is_none() {
-            return;
-        }
-        let interval =
-            std::time::Duration::from_secs(self.config.fetch.interval_minutes.max(1) * 60);
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(interval).await;
-                // Stop if the view is gone, this loop was superseded by a newer
-                // one, or auto-fetch was turned off.
-                let alive = this
-                    .update(cx, |this, _| {
-                        this.auto_fetch_gen.is_current(gen) && this.config.fetch.auto
-                    })
-                    .unwrap_or(false);
-                if !alive {
-                    break;
-                }
-                this.update(cx, |this, cx| this.run_auto_fetch(cx)).ok();
-            }
-        })
-        .detach();
-    }
-
-    /// Periodically check for a newer published release. Failures are silent;
-    /// only an available update is surfaced, so offline/API-rate-limit cases do
-    /// not nag the user.
-    pub(crate) fn start_update_checks(&mut self, cx: &mut Context<Self>) {
-        let gen = self.update_check_gen.bump();
-        if !self.config.check_for_updates {
-            return;
-        }
-        const FIRST_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
-        const UPDATE_CHECK_INTERVAL: std::time::Duration =
-            std::time::Duration::from_secs(24 * 60 * 60);
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FIRST_CHECK_DELAY).await;
-            loop {
-                let alive = this
-                    .update(cx, |this, _| {
-                        this.update_check_gen.is_current(gen) && this.config.check_for_updates
-                    })
-                    .unwrap_or(false);
-                if !alive {
-                    break;
-                }
-                this.update(cx, |this, cx| this.run_silent_update_check(cx))
-                    .ok();
-                cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
-            }
-        })
-        .detach();
-    }
-
-    fn run_silent_update_check(&mut self, cx: &mut Context<Self>) {
-        let task = cx
-            .background_executor()
-            .spawn(async { latest_release_version() });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                let Ok(latest) = result else { return };
-                let Some(current_version) = parse_release_version(CURRENT_VERSION) else {
-                    return;
-                };
-                let Some(latest_version) = parse_release_version(&latest) else {
-                    return;
-                };
-                if current_version < latest_version
-                    && this.notified_update_version.as_deref() != Some(latest.as_str())
-                {
-                    this.notified_update_version = Some(latest.clone());
-                    this.set_status(
-                        format!("Magritte {latest} is available — run `brew upgrade magritte`"),
-                        true,
-                        cx,
-                    );
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// How long an unattended auto-fetch may run before its subprocess is
-    /// killed — generous for a slow link, far below "wedged forever".
-    const AUTO_FETCH_TIMEOUT_SECS: u64 = 120;
-
-    /// Run one background `git fetch`, then refresh so the unpushed/unpulled
-    /// counts update. Skipped while another job is running, and silent — the
-    /// user didn't initiate it, so no progress banner, and failures (offline,
-    /// etc.) are ignored until the next tick. Uses a plain repo clone (not the
-    /// read-cancel scope) so a routine refresh doesn't abort the fetch.
-    fn run_auto_fetch(&mut self, cx: &mut Context<Self>) {
-        if self.job_cancel.is_some() {
-            return;
-        }
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        // Unattended, so give it a hard time bound: nobody is watching to
-        // C-g a wedged remote, and an unbounded hang would occupy the busy
-        // spinner (and this loop's slot) until restart.
-        let repo = repo.with_timeout(std::time::Duration::from_secs(
-            Self::AUTO_FETCH_TIMEOUT_SECS,
-        ));
-        self.begin_activity(cx);
-        cx.spawn(async move |this, cx| {
-            let ok = cx
-                .background_executor()
-                .spawn(async move { repo.fetch_default(&[]).is_ok() })
-                .await;
-            this.update(cx, |this, cx| {
-                if ok {
-                    this.refresh(cx);
-                }
-                this.end_activity(cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Open the stash picker for an apply/pop/drop command.
     pub(crate) fn dispatch_stash(
         &mut self,
@@ -309,6 +150,42 @@ impl StatusView {
         );
     }
 
+    /// The shared body of the option/variable value prompts: derive the create
+    /// mode and synchronous candidates from `completion` (a fixed value set is
+    /// selection-only; everything else is value entry with the candidates as
+    /// mere suggestions), open the picker with `resume` stashed so the
+    /// transient reopens, and return the picker's generation stamp for async
+    /// candidate loads.
+    fn open_completion_prompt(
+        &mut self,
+        action: PickerAction,
+        completion: &transient::Completion,
+        resume: TransientState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        let create = match completion {
+            transient::Completion::OneOf(_) => CreateMode::None,
+            _ => CreateMode::Value,
+        };
+        // Candidates available synchronously (a fixed set); git-backed sources
+        // load off the UI thread, so opening stays instant in big repos.
+        let initial: Vec<String> = match completion {
+            transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
+            _ => Vec::new(),
+        };
+        let gen = self.picker_gen.bump();
+        self.open_picker(action, initial, create, Vec::new(), window, cx);
+        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.gen = gen;
+            p.resume = Some(Box::new(resume));
+            // A free-text value with no completion candidates (e.g. `-n`) has no
+            // candidate list — collapse it to just the input + hints.
+            p.reserve_candidates = !matches!(completion, transient::Completion::None);
+        }
+        gen
+    }
+
     /// Prompt for a transient option's value (free text, with completion
     /// candidates), stashing `resume` so the transient reopens with the value
     /// applied (or unchanged on cancel).
@@ -321,34 +198,13 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A fixed value set is selection-only; everything else is value entry
-        // (free text, candidates are mere suggestions).
-        let create = match completion {
-            transient::Completion::OneOf(_) => CreateMode::None,
-            _ => CreateMode::Value,
-        };
-        // Candidates available synchronously (a fixed set); git-backed sources
-        // load below, off the UI thread, so opening stays instant in big repos.
-        let initial: Vec<String> = match completion {
-            transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
-            _ => Vec::new(),
-        };
-        let gen = self.picker_gen.bump();
-        self.open_picker(
+        let gen = self.open_completion_prompt(
             PickerAction::SetOption { key, description },
-            initial,
-            create,
-            Vec::new(),
+            &completion,
+            resume,
             window,
             cx,
         );
-        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.gen = gen;
-            p.resume = Some(Box::new(resume));
-            // A free-text value with no completion candidates (e.g. `-n`) has no
-            // candidate list — collapse it to just the input + hints.
-            p.reserve_candidates = !matches!(completion, transient::Completion::None);
-        }
 
         // Load git-backed candidates (authors, tracked files) asynchronously and
         // drop them into the open picker — `git ls-files` can be large/slow.
@@ -419,27 +275,42 @@ impl StatusView {
         );
     }
 
+    /// The shared shell of the branch/remote Configure entry points: report
+    /// when there's nothing to configure, configure a sole candidate directly,
+    /// and open the picker only when there's a real choice.
+    fn open_configure_picker(
+        &mut self,
+        list: fn(&Repo) -> magritte_core::Result<Vec<String>>,
+        empty_message: &str,
+        action: PickerAction,
+        configure: fn(&mut Self, String, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let candidates = self
+            .repo
+            .as_ref()
+            .and_then(|r| list(r).ok())
+            .unwrap_or_default();
+        match candidates.as_slice() {
+            [] => self.set_status(empty_message.to_string(), false, cx),
+            [only] => configure(self, only.clone(), cx),
+            _ => self.open_listed_picker(action, CreateMode::None, Vec::new(), list, window, cx),
+        }
+    }
+
     /// Open the branch config transient (magit's `magit-branch-configure`).
     /// Prompts for which branch to configure only when there's more than one
     /// local branch; a sole branch is configured directly.
     pub(crate) fn open_branch_configure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let branches = self
-            .repo
-            .as_ref()
-            .and_then(|r| r.local_branches().ok())
-            .unwrap_or_default();
-        match branches.as_slice() {
-            [] => self.set_status("No branch to configure".to_string(), false, cx),
-            [only] => self.open_branch_configure_for(only.clone(), cx),
-            _ => self.open_listed_picker(
-                PickerAction::Branch(BranchAction::Configure),
-                CreateMode::None,
-                Vec::new(),
-                Repo::local_branches,
-                window,
-                cx,
-            ),
-        }
+        self.open_configure_picker(
+            Repo::local_branches,
+            "No branch to configure",
+            PickerAction::Branch(BranchAction::Configure),
+            Self::open_branch_configure_for,
+            window,
+            cx,
+        );
     }
 
     /// Open the branch config transient for a specific branch, seeded with the
@@ -457,23 +328,14 @@ impl StatusView {
     /// Open the remote config transient (magit's `magit-remote-configure`),
     /// picking the remote first (the sole remote is used directly).
     pub(crate) fn open_remote_configure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let remotes = self
-            .repo
-            .as_ref()
-            .and_then(|r| r.remotes().ok())
-            .unwrap_or_default();
-        match remotes.as_slice() {
-            [] => self.set_status("No remotes configured".to_string(), false, cx),
-            [only] => self.open_remote_configure_for(only.clone(), cx),
-            _ => self.open_listed_picker(
-                PickerAction::Remote(RemoteAction::Configure),
-                CreateMode::None,
-                Vec::new(),
-                targets::remotes,
-                window,
-                cx,
-            ),
-        }
+        self.open_configure_picker(
+            targets::remotes,
+            "No remotes configured",
+            PickerAction::Remote(RemoteAction::Configure),
+            Self::open_remote_configure_for,
+            window,
+            cx,
+        );
     }
 
     /// Open the remote config transient for a specific remote name.
@@ -495,43 +357,18 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let create = match completion {
-            transient::Completion::OneOf(_) => CreateMode::None,
-            _ => CreateMode::Value,
-        };
-        let initial: Vec<String> = match completion {
-            transient::Completion::OneOf(values) => values.iter().map(|v| v.to_string()).collect(),
-            _ => Vec::new(),
-        };
-        let gen = self.picker_gen.bump();
-        self.open_picker(
+        self.open_completion_prompt(
             PickerAction::SetVariable {
                 variable,
                 description,
             },
-            initial,
-            create,
-            Vec::new(),
+            &completion,
+            resume,
             window,
             cx,
         );
-        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.gen = gen;
-            p.resume = Some(Box::new(resume));
-            p.reserve_candidates = !matches!(completion, transient::Completion::None);
-        }
         // Seed the input with the current value so it can be edited in place.
-        if !current.is_empty() {
-            let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-                p.list.set_query(&current);
-                Some(p.input.clone())
-            } else {
-                None
-            };
-            if let Some(input) = input {
-                input.update(cx, |s, cx| s.set_value(current, window, cx));
-            }
-        }
+        self.seed_picker_input(&current, window, cx);
     }
 
     /// Prompt for a ref to log (`l o`), carrying the gathered flags, pathspecs,
@@ -849,17 +686,8 @@ impl StatusView {
             window,
             cx,
         );
-        // Seed the prompt with the default pattern — set both the picker's query
-        // (what confirm reads) and the visible input (set_value emits no Change).
-        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.list.set_query(&default);
-            Some(p.input.clone())
-        } else {
-            None
-        };
-        if let Some(input) = input {
-            input.update(cx, |s, cx| s.set_value(default, window, cx));
-        }
+        // Seed the prompt with the default pattern.
+        self.seed_picker_input(&default, window, cx);
     }
 
     pub(crate) fn dispatch_diff(
@@ -974,231 +802,6 @@ impl StatusView {
         );
     }
 
-    /// Open the interactive-rebase todo editor for `base..HEAD`: load the
-    /// default todo (all `pick`, oldest first) off the UI thread, then show the
-    /// editor — or report when the range is empty / the load fails.
-    pub(crate) fn open_rebase_todo(
-        &mut self,
-        base: String,
-        args: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.next_screen_gen();
-        self.set_progress("Loading commits…".to_string(), cx);
-        cx.spawn(async move |this, cx| {
-            let for_load = base.clone();
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { repo.rebase_todo(&for_load) })
-                .await;
-            this.update(cx, |this, cx| {
-                // Drop a load a newer screen request superseded.
-                if !this.screen_gen.is_current(gen) {
-                    return;
-                }
-                match loaded {
-                    Ok(steps) if steps.is_empty() => {
-                        this.set_status("No commits to rebase".to_string(), true, cx);
-                    }
-                    Ok(steps) => {
-                        this.screen = Screen::RebaseTodo(RebaseTodoView {
-                            base,
-                            args,
-                            initial: steps.clone(),
-                            steps,
-                            selected: 0,
-                            scroll: UniformListScrollHandle::new(),
-                            mode: RebaseTodoMode::Start,
-                            confirming_cancel: false,
-                        });
-                        this.clear_status(cx);
-                    }
-                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Open the todo editor on an in-progress rebase's remaining steps
-    /// (`r e` → `git rebase --edit-todo`). Reads the current todo off the UI
-    /// thread; an empty plan (nothing left to reorder) just says so.
-    pub(crate) fn open_rebase_edit_todo(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.next_screen_gen();
-        self.set_progress("Loading rebase todo…".to_string(), cx);
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { repo.rebase_current_todo() })
-                .await;
-            this.update(cx, |this, cx| {
-                if !this.screen_gen.is_current(gen) {
-                    return;
-                }
-                match loaded {
-                    Ok(steps) if steps.is_empty() => {
-                        this.set_status("No remaining steps to edit".to_string(), true, cx);
-                    }
-                    Ok(mut steps) => {
-                        for step in &mut steps {
-                            if this.pending_rebase_reword_matches(&step.oid) {
-                                step.action = RebaseAction::Reword;
-                            }
-                        }
-                        this.screen = Screen::RebaseTodo(RebaseTodoView {
-                            base: String::new(),
-                            args: Vec::new(),
-                            initial: steps.clone(),
-                            steps,
-                            selected: 0,
-                            scroll: UniformListScrollHandle::new(),
-                            mode: RebaseTodoMode::Edit,
-                            confirming_cancel: false,
-                        });
-                        this.clear_status(cx);
-                    }
-                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Move the cursor in the rebase-todo editor.
-    pub(crate) fn rebase_todo_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo_mut() {
-            let n = rt.steps.len();
-            if n == 0 {
-                return;
-            }
-            rt.selected = (rt.selected as isize + delta).clamp(0, n as isize - 1) as usize;
-            rt.scroll
-                .scroll_to_item(rt.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
-        }
-    }
-
-    /// Set the action of the step at the cursor.
-    pub(crate) fn rebase_todo_set_action(&mut self, action: RebaseAction, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo_mut() {
-            if let Some(step) = rt.steps.get_mut(rt.selected) {
-                step.action = action;
-                cx.notify();
-            }
-        }
-    }
-
-    /// Move the step at the cursor up/down (reorder), following it with the
-    /// cursor so successive moves keep acting on the same commit.
-    pub(crate) fn rebase_todo_reorder(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if let Some(rt) = self.rebase_todo_mut() {
-            let n = rt.steps.len();
-            if n < 2 {
-                return;
-            }
-            let from = rt.selected;
-            let to = (from as isize + delta).clamp(0, n as isize - 1) as usize;
-            if to != from {
-                rt.steps.swap(from, to);
-                rt.selected = to;
-                rt.scroll.scroll_to_item(to, gpui::ScrollStrategy::Top);
-                cx.notify();
-            }
-        }
-    }
-
-    /// Run the edited todo as one interactive rebase (off the UI thread), close
-    /// the editor, then refresh — a pause (an `edit`, or a conflict) surfaces in
-    /// the in-progress banner for continue/skip/abort.
-    pub(crate) fn run_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Guard on the repo before mutating anything, so a missing repo can't
-        // close the editor and leave phantom pending rewords behind.
-        if self.repo.is_none() {
-            return;
-        }
-        let Some(rt) = self.take_rebase_todo() else {
-            return;
-        };
-        self.focus.focus(window, cx);
-        let (progress, done): (&str, &'static str) = match rt.mode {
-            RebaseTodoMode::Start => ("Rebasing…", "Rebased"),
-            RebaseTodoMode::Edit => ("Updating todo…", "Todo updated"),
-        };
-        let has_pending_reword = rt.steps.iter().any(|s| s.action == RebaseAction::Reword);
-        self.pending_rebase_rewords.extend(
-            rt.steps
-                .iter()
-                .filter(|s| s.action == RebaseAction::Reword)
-                .map(|s| s.oid.clone()),
-        );
-        // No progress notice when a reword is queued — the message editor opens
-        // next, so a flashed "Rebasing…" would just be noise under it.
-        let progress = (!has_pending_reword).then(|| progress.to_string());
-        self.run_rebase_job(
-            progress,
-            move |repo| match rt.mode {
-                RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
-                RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
-            },
-            move |this, result, stopped, window, cx| {
-                if result.is_ok() {
-                    if let Some(stopped) = stopped {
-                        if this.open_pending_rebase_reword(stopped, window, cx) {
-                            return;
-                        }
-                    }
-                }
-                this.report(done, result, cx);
-                this.refresh(cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// Cancel the rebase-todo editor — but if the plan has unsaved edits, ask
-    /// first rather than silently dropping them (like the commit editor).
-    pub(crate) fn close_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dirty = self
-            .rebase_todo()
-            .is_some_and(|rt| !rt.confirming_cancel && rt.steps != rt.initial);
-        if dirty {
-            if let Some(rt) = self.rebase_todo_mut() {
-                rt.confirming_cancel = true;
-            }
-            cx.notify();
-        } else {
-            self.discard_rebase_todo(window, cx);
-        }
-    }
-
-    /// Close the editor, discarding any edits to the plan.
-    pub(crate) fn discard_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen = Screen::Status;
-        self.focus.focus(window, cx);
-        cx.notify();
-    }
-
-    /// Dismiss the discard confirmation and keep editing the plan.
-    pub(crate) fn keep_editing_rebase_todo(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(rt) = self.rebase_todo_mut() {
-            rt.confirming_cancel = false;
-        }
-        cx.notify();
-    }
-
     /// Rebase transient suffix: resolve the target to rebase onto (the upstream
     /// or push-remote when known, else prompt), then rebase.
     pub(crate) fn dispatch_rebase(
@@ -1303,19 +906,8 @@ impl StatusView {
             window,
             cx,
         );
-        // Seed both the picker's query (what confirm reads) and the visible
-        // input. The triggering key's focus is deferred a frame (see
-        // `open_picker`), so this prefill isn't clobbered by that keystroke.
-        let seed = "git ".to_string();
-        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.list.set_query(&seed);
-            Some(p.input.clone())
-        } else {
-            None
-        };
-        if let Some(input) = input {
-            input.update(cx, |s, cx| s.set_value(seed, window, cx));
-        }
+        // Prefill with the `git ` prefix; delete it to run any command.
+        self.seed_picker_input("git ", window, cx);
     }
 
     /// Run a user-typed command from the `!` prompt on the background executor,
@@ -1375,19 +967,7 @@ impl StatusView {
             window,
             cx,
         );
-        if seed.is_empty() {
-            return;
-        }
-        let seed = seed.to_string();
-        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.list.set_query(&seed);
-            Some(p.input.clone())
-        } else {
-            None
-        };
-        if let Some(input) = input {
-            input.update(cx, |s, cx| s.set_value(seed, window, cx));
-        }
+        self.seed_picker_input(seed, window, cx);
     }
 
     /// Apply a typed patch file to the worktree (`git apply`).
@@ -1516,120 +1096,6 @@ impl StatusView {
         }
     }
 
-    // --- In-progress sequence (merge/rebase/cherry-pick/revert/am) -------
-
-    pub(crate) fn sequence_kind(&self) -> Option<SequenceKind> {
-        self.sequence.as_ref().map(|s| s.kind)
-    }
-
-    /// Continue past a resolved stop.
-    pub(crate) fn sequence_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sequence_control_blocked(cx) {
-            return;
-        }
-        if let Some(kind) = self.sequence_kind() {
-            if kind == SequenceKind::Rebase && self.repo.is_some() {
-                // Probe for an app-managed reword stop first (off the UI
-                // thread — the probe resolves the git dir); the whole probe
-                // + continue runs as one job so a key bounce can't fire two.
-                self.run_rebase_job(
-                    None,
-                    |_repo| Ok(()),
-                    move |this, _result, stopped, window, cx| {
-                        if let Some(stopped) = stopped {
-                            if this.open_pending_rebase_reword(stopped, window, cx) {
-                                return;
-                            }
-                        }
-                        this.run_sequence(SeqOp::Continue, kind, cx);
-                    },
-                    window,
-                    cx,
-                );
-                return;
-            }
-            self.run_sequence(SeqOp::Continue, kind, cx);
-        }
-    }
-
-    /// Skip the current step.
-    pub(crate) fn sequence_skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sequence_control_blocked(cx) {
-            return;
-        }
-        if let Some(kind) = self.sequence_kind() {
-            if kind == SequenceKind::Rebase && self.repo.is_some() {
-                // A skipped stop's pending reword no longer applies. Async like
-                // continue — the sibling probe used to run on the UI thread.
-                self.run_rebase_job(
-                    None,
-                    |_repo| Ok(()),
-                    move |this, _result, stopped, _window, cx| {
-                        if let Some(stopped) = stopped {
-                            this.pending_rebase_rewords.retain(|oid| {
-                                !(stopped.starts_with(oid) || oid.starts_with(&stopped))
-                            });
-                        }
-                        this.run_sequence(SeqOp::Skip, kind, cx);
-                    },
-                    window,
-                    cx,
-                );
-                return;
-            }
-            self.run_sequence(SeqOp::Skip, kind, cx);
-        }
-    }
-
-    /// Whether a sequence control must wait: another mutating job is running
-    /// (continuing mid-push, or a bounced double-press, would race it — git
-    /// would hit the index lock anyway). Reports why, so the keypress isn't
-    /// silently ignored.
-    fn sequence_control_blocked(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.job_cancel.is_some() {
-            self.set_status(
-                "Another operation is running (Esc cancels it)".to_string(),
-                false,
-                cx,
-            );
-            return true;
-        }
-        false
-    }
-
-    /// Abort — discards the operation's progress, so confirm first (like magit).
-    pub(crate) fn sequence_abort(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(kind) = self.sequence_kind() {
-            self.confirm = Some((
-                format!("Abort {}?", kind.label()),
-                Confirm::AbortSequence(kind),
-            ));
-            cx.notify();
-        }
-    }
-
-    /// Run a sequence control on the background executor, then refresh.
-    pub(crate) fn run_sequence(&mut self, op: SeqOp, kind: SequenceKind, cx: &mut Context<Self>) {
-        if matches!(op, SeqOp::Abort) {
-            self.pending_rebase_rewords.clear();
-        }
-        let (verb, done) = match op {
-            SeqOp::Continue => ("Continuing", "Continued"),
-            SeqOp::Skip => ("Skipping", "Skipped"),
-            SeqOp::Abort => ("Aborting", "Aborted"),
-        };
-        self.run_job(
-            &format!("{verb}…"),
-            done,
-            move |repo| match op {
-                SeqOp::Continue => repo.sequence_continue(kind),
-                SeqOp::Skip => repo.sequence_skip(kind),
-                SeqOp::Abort => repo.sequence_abort(kind),
-            },
-            cx,
-        );
-    }
-
     /// Mark the checked-out bisect commit good/bad/skip and let git advance. The
     /// "Bisecting: N revisions left" line git prints is surfaced as the toast.
     pub(crate) fn run_bisect_mark(&mut self, mark: BisectMark, cx: &mut Context<Self>) {
@@ -1682,208 +1148,6 @@ impl StatusView {
         self.run_bisect_reset(cx);
     }
 
-    // --- Push / pull / fetch --------------------------------------------
-
-    /// Resolve a push/pull/fetch command to a concrete remote and run it: use
-    /// the configured push-remote/upstream when present, otherwise pick a remote
-    /// (prompting only when there's a real choice) — setting the relevant config
-    /// for first push, like magit.
-    pub(crate) fn dispatch_transfer(
-        &mut self,
-        command: transient::Command,
-        targets: &RemoteTargets,
-        switches: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use transient::Command::*;
-        // Push/pull need the current branch; fetch doesn't.
-        let needs_branch = !matches!(
-            command,
-            FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere
-        );
-        if needs_branch && targets.branch.is_none() {
-            self.set_status(
-                "HEAD is detached — can't push/pull a branch".to_string(),
-                false,
-                cx,
-            );
-            return;
-        }
-        let branch = targets.branch.clone().unwrap_or_default();
-        match command {
-            PushPushRemote => {
-                let t = Transfer::Push {
-                    branch,
-                    set_upstream: false,
-                    save_push_remote: targets.push_remote.is_none(),
-                };
-                self.resolve_remote(t, targets.push_remote.clone(), switches, window, cx);
-            }
-            PushUpstream => {
-                let t = Transfer::Push {
-                    branch,
-                    set_upstream: targets.upstream.is_none(),
-                    save_push_remote: false,
-                };
-                let remote = targets.upstream.as_ref().map(|u| u.remote.clone());
-                self.resolve_remote(t, remote, switches, window, cx);
-            }
-            PushElsewhere => {
-                // Choose (or type a new) remote branch to push the current
-                // branch to.
-                self.prompt_branch(Transfer::PushRef { branch }, true, switches, window, cx);
-            }
-            PullPushRemote => self.resolve_remote(
-                Transfer::Pull { branch },
-                targets.push_remote.clone(),
-                switches,
-                window,
-                cx,
-            ),
-            PullUpstream => match &targets.upstream {
-                Some(u) => self.run_transfer(
-                    Transfer::Pull {
-                        branch: u.branch.clone(),
-                    },
-                    u.remote.clone(),
-                    switches,
-                    cx,
-                ),
-                None => self.resolve_remote(Transfer::Pull { branch }, None, switches, window, cx),
-            },
-            // Pull an existing remote branch (no create — can't pull a new one).
-            PullElsewhere => self.prompt_branch(Transfer::PullRef, false, switches, window, cx),
-            FetchPushRemote => self.resolve_remote(
-                Transfer::Fetch,
-                targets.push_remote.clone(),
-                switches,
-                window,
-                cx,
-            ),
-            FetchUpstream => {
-                let remote = targets.upstream.as_ref().map(|u| u.remote.clone());
-                self.resolve_remote(Transfer::Fetch, remote, switches, window, cx);
-            }
-            FetchAll => self.run_fetch_all(switches, cx),
-            FetchElsewhere => self.prompt_remote(Transfer::Fetch, switches, window, cx),
-            _ => {}
-        }
-    }
-
-    /// Run `transfer` against `remote` if known; otherwise pick one — using the
-    /// sole remote directly, prompting only when several exist.
-    pub(crate) fn resolve_remote(
-        &mut self,
-        transfer: Transfer,
-        remote: Option<String>,
-        switches: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(remote) = remote {
-            self.run_transfer(transfer, remote, switches, cx);
-            return;
-        }
-        let mut remotes = self
-            .repo
-            .as_ref()
-            .and_then(|r| r.remotes().ok())
-            .unwrap_or_default();
-        match remotes.len() {
-            0 => {
-                self.set_status("No remotes configured".to_string(), false, cx);
-            }
-            1 => self.run_transfer(transfer, remotes.into_iter().next().unwrap(), switches, cx),
-            _ => {
-                remotes.sort_by_key(|r| r != "origin");
-                self.open_picker(
-                    PickerAction::Transfer(transfer),
-                    remotes,
-                    CreateMode::None,
-                    switches,
-                    window,
-                    cx,
-                )
-            }
-        }
-    }
-
-    /// Always show the picker for a pending transfer (the "elsewhere"
-    /// fetch, where the point is to choose) — even with a single remote.
-    pub(crate) fn prompt_remote(
-        &mut self,
-        transfer: Transfer,
-        switches: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let mut remotes = self
-            .repo
-            .as_ref()
-            .and_then(|r| r.remotes().ok())
-            .unwrap_or_default();
-        if remotes.is_empty() {
-            self.set_status("No remotes configured".to_string(), false, cx);
-            return;
-        }
-        remotes.sort_by_key(|r| r != "origin");
-        self.open_picker(
-            PickerAction::Transfer(transfer),
-            remotes,
-            CreateMode::None,
-            switches,
-            window,
-            cx,
-        );
-    }
-
-    /// Show the remote-*branch* picker for a push/pull "elsewhere" (magit's
-    /// ref-level target). `create` allows pushing to a freshly-typed branch.
-    pub(crate) fn prompt_branch(
-        &mut self,
-        transfer: Transfer,
-        create: bool,
-        switches: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let create_mode = if create {
-            CreateMode::RemoteBranch
-        } else {
-            CreateMode::None
-        };
-        // The full remote-branch listing scales with the remotes' ref count, so
-        // it loads into the picker asynchronously (like the branch/tag pickers)
-        // rather than stalling the keypress on a big repo.
-        let transfer_for_list = transfer.clone();
-        self.open_listed_picker(
-            PickerAction::Transfer(transfer),
-            create_mode,
-            switches,
-            move |repo| {
-                let remotes = repo.remotes().unwrap_or_default();
-                if remotes.is_empty() {
-                    // Empty + selection-only closes with "No remotes configured".
-                    return Ok(Vec::new());
-                }
-                let existing = repo.remote_branches().unwrap_or_default();
-                // Pull lists only existing branches (you can't pull one that
-                // doesn't exist). Push seeds the same-named target on every
-                // remote — like magit — so `origin/<current>` is always a
-                // normal candidate, existing or not.
-                Ok(match &transfer_for_list {
-                    Transfer::PushRef { branch } if create => {
-                        targets::seed_push_branches(repo, &remotes, branch, existing)
-                    }
-                    _ => existing,
-                })
-            },
-            window,
-            cx,
-        );
-    }
-
     /// Open the vertico-style picker for a pending action. The query input is
     /// focused on appear, so it's type-to-filter immediately; the model re-ranks
     /// on every change.
@@ -1910,15 +1174,27 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         self.open_picker(action, Vec::new(), CreateMode::Any, switches, window, cx);
+        self.seed_picker_input(&seed, window, cx);
+    }
+
+    /// Seed the just-opened picker's prompt with `seed` (empty leaves it
+    /// blank): set both the picker's query (what confirm reads) and the
+    /// visible input (`set_value` emits no Change, so the query must be set by
+    /// hand). The triggering key's focus is deferred a frame (see
+    /// [`Self::open_picker`]), so the prefill isn't clobbered by that keystroke.
+    fn seed_picker_input(&mut self, seed: &str, window: &mut Window, cx: &mut Context<Self>) {
         if seed.is_empty() {
             return;
         }
-        if let Some(Popup::Picker(p)) = self.popup.as_ref() {
-            let input = p.input.clone();
-            input.update(cx, |s, cx| s.set_value(seed.clone(), window, cx));
-        }
-        if let Some(Popup::Picker(p)) = self.popup.as_mut() {
-            p.list.set_query(&seed);
+        let input = if let Some(Popup::Picker(p)) = self.popup.as_mut() {
+            p.list.set_query(seed);
+            Some(p.input.clone())
+        } else {
+            None
+        };
+        if let Some(input) = input {
+            let seed = seed.to_string();
+            input.update(cx, |s, cx| s.set_value(seed, window, cx));
         }
     }
 
@@ -2224,264 +1500,6 @@ impl StatusView {
         }
     }
 
-    /// Post a status-bar message of a given `kind`. Every post advances
-    /// `status_seq`, which is what an auto-dismiss timer checks before clearing:
-    /// so a newer message of any kind always invalidates an older notice's
-    /// pending fade. Only a `Notice` schedules its own fade; `Progress` stays
-    /// until the job reports, `Sticky` until dismissed (Esc / click).
-    pub(crate) fn status(&mut self, msg: String, kind: StatusKind, cx: &mut Context<Self>) {
-        let seq = self.toast.seq.bump();
-        self.toast.message = Some(msg);
-        // Most messages have no leading keycap; the few that do set it right
-        // after this call.
-        self.toast.keys = None;
-        self.toast.transient = matches!(kind, StatusKind::Notice);
-        cx.notify();
-        if matches!(kind, StatusKind::Notice) {
-            cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(STATUS_FADE_SECS))
-                    .await;
-                this.update(cx, |this, cx| {
-                    // Only clear if no newer message has replaced it.
-                    if this.toast.seq.is_current(seq) {
-                        this.toast.message = None;
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
-        }
-    }
-
-    /// A success notice that fades on its own (`transient`) or a sticky
-    /// condition that stays until dismissed.
-    pub(crate) fn set_status(&mut self, msg: String, transient: bool, cx: &mut Context<Self>) {
-        let kind = if transient {
-            StatusKind::Notice
-        } else {
-            StatusKind::Sticky
-        };
-        self.status(msg, kind, cx);
-    }
-
-    /// Show an in-progress message ("Pushing…") that stays until the job
-    /// reports. Advances the sequence so a stale notice's timer can't clear it.
-    pub(crate) fn set_progress(&mut self, msg: String, cx: &mut Context<Self>) {
-        self.status(msg, StatusKind::Progress, cx);
-    }
-
-    /// Check the latest GitHub release tag and report whether this build is current.
-    pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        self.set_progress("Checking for updates…".to_string(), cx);
-        let task = cx
-            .background_executor()
-            .spawn(async { latest_release_version() });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| match result {
-                Ok(latest) => {
-                    this.set_status(version_status_message(CURRENT_VERSION, &latest), false, cx)
-                }
-                Err(e) => this.set_status(format!("Update check failed: {e}"), false, cx),
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Clear the status bar (advancing the sequence so no pending timer fires).
-    pub(crate) fn clear_status(&mut self, cx: &mut Context<Self>) {
-        self.toast.seq.bump();
-        self.toast.message = None;
-        self.toast.keys = None;
-        self.toast.transient = false;
-        cx.notify();
-    }
-
-    /// Surface a failed git operation: cancel/timeout get their own short
-    /// notices, everything else the error text. Always sticky.
-    pub(crate) fn report_error(&mut self, e: magritte_core::Error, cx: &mut Context<Self>) {
-        let msg = match e {
-            magritte_core::Error::Cancelled => "Cancelled".to_string(),
-            magritte_core::Error::TimedOut => "Timed out".to_string(),
-            e => format!("error: {e}"),
-        };
-        self.set_status(msg, false, cx);
-    }
-
-    /// Report a git operation's outcome: on success a brief `success` notice
-    /// that auto-dismisses (we don't echo git's stderr); on failure the error,
-    /// which sticks until dismissed.
-    pub(crate) fn report(
-        &mut self,
-        success: &str,
-        result: magritte_core::Result<String>,
-        cx: &mut Context<Self>,
-    ) {
-        match result {
-            Ok(_) => self.set_status(success.to_string(), true, cx),
-            Err(e) => self.report_error(e, cx),
-        }
-    }
-
-    /// Run a git operation off the UI thread, then `finish` with its result and
-    /// refresh — the shape almost every mutating command shares. `progress`
-    /// shows immediately; the git work runs on the background executor (so the
-    /// UI never blocks); a cancel flag lives on `self` for its duration so
-    /// `C-g`/Esc can kill it. The `run_job` wrapper covers the common
-    /// fixed-notice shape; this core is for anything bespoke.
-    pub(crate) fn run_job_with<F, G>(
-        &mut self,
-        progress: String,
-        op: F,
-        finish: G,
-        cx: &mut Context<Self>,
-    ) where
-        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
-        G: FnOnce(&mut Self, magritte_core::Result<String>, &mut Context<Self>) + 'static,
-    {
-        self.run_job_core(
-            progress,
-            op,
-            move |this, result, cx| {
-                finish(this, result, cx);
-                this.refresh(cx);
-            },
-            cx,
-        );
-    }
-
-    /// The bare cancellable-job shell every runner shares: show `progress`, tag
-    /// the job's git calls with a cancel flag so `C-g`/Esc can kill a hung
-    /// subprocess (stored on `self` for the key handler; cleared when the job
-    /// finishes), count activity for the busy spinner, run `op` on the
-    /// background executor, then `finish` on the UI thread.
-    fn run_job_core<T, F, G>(&mut self, progress: String, op: F, finish: G, cx: &mut Context<Self>)
-    where
-        T: Send + 'static,
-        F: FnOnce(Repo) -> T + Send + 'static,
-        G: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
-    {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        self.set_progress(progress, cx);
-        self.begin_activity(cx);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { op(repo) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.clear_job_cancel(&cancel);
-                finish(this, result, cx);
-                this.end_activity(cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Run a git operation, then post a fixed past-tense `done` notice on
-    /// success (or the error on failure) and refresh.
-    pub(crate) fn run_job<F>(
-        &mut self,
-        progress: &str,
-        done: &'static str,
-        op: F,
-        cx: &mut Context<Self>,
-    ) where
-        F: FnOnce(Repo) -> magritte_core::Result<String> + Send + 'static,
-    {
-        self.run_job_with(
-            progress.to_string(),
-            op,
-            move |this, result, cx| this.report(done, result, cx),
-            cx,
-        );
-    }
-
-    /// Run a user command (the `!` prompt or a `[[command]]`) on the background
-    /// path, then show its full output as a toast and refresh (unless opted
-    /// out). A failure's output stays up (sticky); success fades. Output isn't a
-    /// one-liner and we don't jump to the `$` log — the command behaves like any
-    /// other action, just with its output surfaced.
-    pub(crate) fn run_command_job<F>(
-        &mut self,
-        progress: String,
-        refresh: bool,
-        run: F,
-        cx: &mut Context<Self>,
-    ) where
-        F: FnOnce(Repo) -> magritte_core::Result<magritte_core::CommandRun> + Send + 'static,
-    {
-        self.run_job_core(
-            progress,
-            run,
-            move |this, result, cx| {
-                match result {
-                    Ok(run) => {
-                        // Cap the toast, pointing to the `$` log (with its
-                        // current key) for the rest when the output is long.
-                        let log_key = current_key(this.screen_bindings(), "command-log", Some("$"));
-                        let toast = command_toast(&run, log_key.as_deref());
-                        this.set_status(toast, run.ok, cx);
-                    }
-                    Err(e) => this.report_error(e, cx),
-                }
-                if refresh {
-                    this.refresh(cx);
-                }
-            },
-            cx,
-        );
-    }
-
-    /// Clear the active job's cancel flag — but only if it's still *this* job's
-    /// flag. A job that started while another was running installs its own; the
-    /// first job's finish must not clobber it (which would strand the newer job
-    /// un-cancellable and hide its "running" indicator).
-    pub(crate) fn clear_job_cancel(&mut self, cancel: &Arc<AtomicBool>) {
-        if self
-            .job_cancel
-            .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, cancel))
-        {
-            self.job_cancel = None;
-        }
-    }
-
-    /// Whether a fire-and-forget probe's continuation may still open a prompt:
-    /// the user hasn't switched screens or opened a popup/confirmation since
-    /// it started. When this is false the user has moved on — drop the result
-    /// (they can re-run the command) instead of interrupting the new context.
-    pub(crate) fn ui_idle_for_prompt(&self) -> bool {
-        matches!(self.screen, Screen::Status) && self.popup.is_none() && self.confirm.is_none()
-    }
-
-    /// Cancel the active mutating job, if any — killing its git subprocess.
-    /// Returns whether a job was running (so the key handler can swallow the key).
-    pub(crate) fn cancel_job(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(cancel) = self.job_cancel.take() else {
-            return false;
-        };
-        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.set_progress("Cancelling…".to_string(), cx);
-        true
-    }
-
-    /// Copy `text` to the clipboard and flash a brief confirmation. The notice
-    /// echoes a short single-line value (a path, a hash) but stays generic for
-    /// multi-line or long copies.
-    pub(crate) fn copy_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.set_status(COPIED_LABEL.to_string(), true, cx);
-    }
-
     /// The screen-aware "Copy" (evil `yy`/`ys`, magit's `C-w`, and `Cmd-C`):
     /// copy the value at point for the active view — the selected diff text in a
     /// commit/diff buffer, the commit hash in the log, the ref at point in the
@@ -2525,66 +1543,6 @@ impl StatusView {
             Some(rev) => self.copy_to_clipboard(rev, cx),
             None => self.set_status("No revision to copy".to_string(), true, cx),
         }
-    }
-
-    /// Run a resolved push/pull/fetch on the background executor, then refresh.
-    /// `chosen` is a remote name for the remote-level transfers, or a
-    /// `remote/branch` ref (possibly newly typed) for the `*Ref` ones.
-    pub(crate) fn run_transfer(
-        &mut self,
-        transfer: Transfer,
-        chosen: String,
-        switches: Vec<String>,
-        cx: &mut Context<Self>,
-    ) {
-        let progress = format!("{}…", transfer.verb());
-        let done = match &transfer {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushed",
-            Transfer::Pull { .. } | Transfer::PullRef => "Pulled",
-            Transfer::Fetch => "Fetched",
-        };
-        self.run_job(
-            &progress,
-            done,
-            move |repo| match transfer {
-                Transfer::Push {
-                    branch,
-                    set_upstream,
-                    save_push_remote,
-                } => {
-                    // Save the push remote only after the push lands, so a
-                    // rejected/offline push doesn't leave config pointing at a
-                    // remote we never pushed to. A failure to record it surfaces
-                    // rather than being swallowed.
-                    let pushed = repo.push_to(&chosen, &branch, set_upstream, &switches);
-                    if pushed.is_ok() && save_push_remote {
-                        repo.set_push_remote(&branch, &chosen)?;
-                    }
-                    pushed
-                }
-                Transfer::PushRef { branch } => {
-                    let (remote, target) = targets::split_ref(&repo, &chosen);
-                    repo.push_ref(&remote, &branch, &target, &switches)
-                }
-                Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
-                Transfer::PullRef => {
-                    let (remote, branch) = targets::split_ref(&repo, &chosen);
-                    repo.pull_from(&remote, &branch, &switches)
-                }
-                Transfer::Fetch => repo.fetch_from(&chosen, &switches),
-            },
-            cx,
-        );
-    }
-
-    /// `git fetch --all` (no remote needed).
-    pub(crate) fn run_fetch_all(&mut self, switches: Vec<String>, cx: &mut Context<Self>) {
-        self.run_job(
-            "Fetching…",
-            "Fetched",
-            move |repo| repo.fetch_all(&switches),
-            cx,
-        );
     }
 
     /// Carry out a branch-transient action against the chosen branch/name.
@@ -2837,211 +1795,5 @@ impl StatusView {
             },
             cx,
         );
-    }
-}
-
-// --- Mid-rebase reword (the rebase flow that pauses to edit a message) ----
-//
-// Moved next to the rest of the rebase/sequence dispatch so the whole rebase
-// state machine lives in one file.
-
-impl StatusView {
-    pub(crate) fn run_rebase_reword_from_rev(
-        &mut self,
-        rev: String,
-        args: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_rebase_job(
-            Some("Rebasing…".to_string()),
-            move |repo| {
-                let base = format!("{rev}^");
-                let mut steps = repo.rebase_todo(&base)?;
-                let step = steps
-                    .iter_mut()
-                    .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
-                    .ok_or_else(|| {
-                        magritte_core::Error::Message(
-                            "selected commit is not in the rebase range".to_string(),
-                        )
-                    })?;
-                let oid = step.oid.clone();
-                step.action = RebaseAction::Reword;
-                repo.rebase_interactive(&base, &steps, &args)?;
-                Ok(oid)
-            },
-            move |this, result, stopped, window, cx| match result {
-                Ok(oid) => {
-                    this.pending_rebase_rewords.insert(oid);
-                    if let Some(stopped) = stopped {
-                        if this.open_pending_rebase_reword(stopped, window, cx) {
-                            return;
-                        }
-                    }
-                    this.report("Rebased", Ok(String::new()), cx);
-                    this.refresh(cx);
-                }
-                Err(e) => {
-                    this.report("Rebased", Err(e), cx);
-                    this.refresh(cx);
-                }
-            },
-            window,
-            cx,
-        );
-    }
-
-    pub(crate) fn pending_rebase_reword_matches(&self, stopped_sha: &str) -> bool {
-        self.pending_rebase_rewords
-            .iter()
-            .any(|oid| stopped_sha.starts_with(oid) || oid.starts_with(stopped_sha))
-    }
-
-    pub(crate) fn open_pending_rebase_reword(
-        &mut self,
-        stopped_sha: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.pending_rebase_reword_matches(&stopped_sha) {
-            return false;
-        }
-        if let Some(git_editor) = self.external_commit_editor() {
-            self.run_rebase_reword_with_external_editor(stopped_sha, git_editor, window, cx);
-            return true;
-        }
-        self.clear_status(cx);
-        self.open_editor_after(
-            CommitMode::Reword,
-            Vec::new(),
-            CommitAfterSubmit::ContinueRebase { stopped_sha },
-            window,
-            cx,
-        );
-        true
-    }
-
-    pub(crate) fn run_rebase_reword_commit(
-        &mut self,
-        message: String,
-        stopped_sha: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_rebase_reword_after_commit(stopped_sha, window, cx, move |repo| {
-            repo.commit(&message, CommitMode::Reword, &[])
-        });
-    }
-
-    pub(crate) fn run_rebase_reword_with_external_editor(
-        &mut self,
-        stopped_sha: String,
-        git_editor: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_rebase_reword_after_commit(stopped_sha, window, cx, move |repo| {
-            repo.commit_with_editor(CommitMode::Reword, &[], &git_editor)
-        });
-    }
-
-    pub(crate) fn run_rebase_reword_after_commit<F>(
-        &mut self,
-        stopped_sha: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        commit: F,
-    ) where
-        F: FnOnce(&Repo) -> magritte_core::Result<String> + Send + 'static,
-    {
-        let stopped_for_result = stopped_sha;
-        self.run_rebase_job(
-            Some("Continuing rebase…".to_string()),
-            move |repo| {
-                let commit_result = commit(repo);
-                let committed = commit_result.is_ok();
-                let result =
-                    commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
-                Ok((committed, result))
-            },
-            move |this, outcome, stopped, window, cx| {
-                let (committed, result) = outcome.unwrap_or_else(|e| (false, Err(e)));
-                if committed {
-                    this.pending_rebase_rewords.remove(&stopped_for_result);
-                }
-                if result.is_ok() {
-                    if let Some(stopped) = stopped {
-                        if this.open_pending_rebase_reword(stopped, window, cx) {
-                            return;
-                        }
-                    }
-                }
-                this.report("Reworded", result, cx);
-                this.refresh(cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// The shared shell of every rebase-driving job: run `op` with a cancel
-    /// flag (and optional progress + spinner), probe git's stopped-sha on
-    /// success, and hand both to `finish` on the UI thread — which typically
-    /// routes a pending reword stop into the in-app editor before reporting.
-    /// `spawn_in`, because opening that editor needs a `Window` (the plain
-    /// `run_job` family doesn't carry one).
-    fn run_rebase_job<T, F, G>(
-        &mut self,
-        progress: Option<String>,
-        op: F,
-        finish: G,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) where
-        T: Send + 'static,
-        F: FnOnce(&Repo) -> magritte_core::Result<T> + Send + 'static,
-        G: FnOnce(
-                &mut Self,
-                magritte_core::Result<T>,
-                Option<String>,
-                &mut Window,
-                &mut Context<Self>,
-            ) + 'static,
-    {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        let show_activity = progress.is_some();
-        if let Some(progress) = progress {
-            self.set_progress(progress, cx);
-            self.begin_activity(cx);
-        }
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let result = op(&repo);
-                    let stopped = if result.is_ok() {
-                        repo.rebase_stopped_sha()
-                    } else {
-                        None
-                    };
-                    (result, stopped)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let (result, stopped) = outcome;
-                this.clear_job_cancel(&cancel);
-                if show_activity {
-                    this.end_activity(cx);
-                }
-                finish(this, result, stopped, window, cx);
-            })
-            .ok();
-        })
-        .detach();
     }
 }
