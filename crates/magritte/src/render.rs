@@ -659,16 +659,21 @@ impl StatusView {
         // Create/Edit/… columns), the log transient (Arguments band over the Log
         // command row), and the `?` dispatch (all command groups → one packed
         // row), without a per-transient layout spec.
+        // Git-config variable groups (magit's Configure section) lead the panel on
+        // their own row, above the arguments and command groups.
+        let has_config = |g: &&Group| g.suffixes.iter().any(|s| matches!(s, Suffix::Variable(_)));
         let has_args = |g: &&Group| {
-            g.suffixes
-                .iter()
-                .any(|s| matches!(s, Suffix::Switch(_) | Suffix::Option(_)))
+            !has_config(g)
+                && g.suffixes
+                    .iter()
+                    .any(|s| matches!(s, Suffix::Switch(_) | Suffix::Option(_)))
         };
+        let config_groups = def.groups.iter().filter(has_config).collect::<Vec<_>>();
         let arg_groups = def.groups.iter().filter(has_args).collect::<Vec<_>>();
         let command_groups = def
             .groups
             .iter()
-            .filter(|g| !has_args(g))
+            .filter(|g| !has_config(g) && !has_args(g))
             .collect::<Vec<_>>();
         let group_rows = |group: &Group, cap: usize| {
             let n = group.suffixes.len();
@@ -691,7 +696,12 @@ impl StatusView {
                 .map(|g| group_rows(g, cap))
                 .max()
                 .unwrap_or(0);
-            arg_height + command_height
+            let config_height = config_groups
+                .iter()
+                .map(|g| group_rows(g, cap))
+                .max()
+                .unwrap_or(0);
+            config_height + arg_height + command_height
         };
         let band_cap = if estimate_height(7) < 10 {
             7
@@ -702,6 +712,23 @@ impl StatusView {
         };
 
         let mut body = div().flex().flex_col().items_start().gap_3();
+        // The Configure (git-config variable) groups lead, on their own row —
+        // side by side among themselves, above the arguments and commands.
+        if !config_groups.is_empty() {
+            let mut config_row = div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_start()
+                .gap_x_8()
+                .gap_y_3();
+            for group in &config_groups {
+                let k = group.suffixes.len().div_ceil(band_cap).max(1);
+                config_row =
+                    config_row.child(self.render_group(group, k, state, pending_dash, view));
+            }
+            body = body.child(config_row);
+        }
         if arg_groups.len() == 1 {
             let group = arg_groups[0];
             let k = group

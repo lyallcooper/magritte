@@ -755,92 +755,103 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
     }
 }
 
-pub fn branch_transient(style: KeymapStyle) -> Transient {
+/// The git-config variable groups scoped to `branch` (its own settings plus the
+/// repository-wide defaults), shared by the branch transient's inline Configure
+/// section and the `magit-branch-configure` sub-transient. `remotes` seeds the
+/// push-remote choice lists.
+fn branch_config_groups(branch: &str, remotes: Vec<String>) -> Vec<Group> {
+    vec![
+        Group {
+            title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
+            suffixes: vec![
+                Variable::value(
+                    "d",
+                    format!("branch.{branch}.description"),
+                    "description",
+                    Completion::None,
+                ),
+                Variable::choices(
+                    "r",
+                    format!("branch.{branch}.rebase"),
+                    "rebase",
+                    &["true", "false"],
+                    Some("pull.rebase"),
+                    Some("false"),
+                ),
+                Variable::choices_of(
+                    "p",
+                    format!("branch.{branch}.pushRemote"),
+                    "pushRemote",
+                    remotes.clone(),
+                    Some("remote.pushDefault"),
+                ),
+            ],
+        },
+        Group {
+            title: plain_title("Configure repository defaults"),
+            suffixes: vec![
+                Variable::choices(
+                    "R",
+                    "pull.rebase",
+                    "pull.rebase",
+                    &["true", "false"],
+                    None,
+                    Some("false"),
+                ),
+                Variable::choices_of(
+                    "P",
+                    "remote.pushDefault",
+                    "remote.pushDefault",
+                    remotes,
+                    None,
+                ),
+            ],
+        },
+    ]
+}
+
+/// The branch transient. When `configure` is `Some((branch, remotes))` — i.e. a
+/// branch is checked out — its git-config variables are shown inline above the
+/// actions (magit's `magit-branch-direct-configure`); the `C` sub-transient is
+/// always available regardless.
+pub fn branch_transient(style: KeymapStyle, configure: Option<(&str, Vec<String>)>) -> Transient {
+    let mut groups = Vec::new();
+    if let Some((branch, remotes)) = configure {
+        groups.extend(branch_config_groups(branch, remotes));
+    }
+    groups.extend([
+        Group {
+            title: plain_title("Checkout"),
+            suffixes: vec![
+                Action::suffix("b", "branch/revision", Command::BranchCheckout),
+                Action::suffix("c", "new branch", Command::BranchCreateCheckout),
+            ],
+        },
+        Group {
+            title: plain_title("Create"),
+            suffixes: vec![Action::suffix("n", "new branch", Command::BranchCreate)],
+        },
+        Group {
+            title: plain_title("Do"),
+            suffixes: vec![
+                Action::suffix("m", "rename", Command::BranchRename),
+                Action::suffix(style.delete_key(), "delete", Command::BranchDelete),
+                Action::suffix("C", "configure…", Command::BranchConfigure),
+            ],
+        },
+    ]);
     Transient {
         title: plain_title("Branch"),
-        groups: vec![
-            Group {
-                title: plain_title("Checkout"),
-                suffixes: vec![
-                    Action::suffix("b", "branch/revision", Command::BranchCheckout),
-                    Action::suffix("c", "new branch", Command::BranchCreateCheckout),
-                ],
-            },
-            Group {
-                title: plain_title("Create"),
-                suffixes: vec![Action::suffix("n", "new branch", Command::BranchCreate)],
-            },
-            Group {
-                title: plain_title("Do"),
-                suffixes: vec![
-                    Action::suffix("m", "rename", Command::BranchRename),
-                    Action::suffix(style.delete_key(), "delete", Command::BranchDelete),
-                    Action::suffix("C", "configure…", Command::BranchConfigure),
-                ],
-            },
-        ],
+        groups,
     }
 }
 
-/// The branch config transient (magit's `magit-branch-configure`): git-config
-/// variables scoped to `branch`, plus repository-wide defaults. `remotes` seeds
-/// the push-remote choice lists. Values are filled by the frontend at open time.
+/// The branch config sub-transient (magit's `magit-branch-configure`): the same
+/// git-config variables the branch transient can show inline, on their own.
 pub fn branch_configure_transient(branch: &str, remotes: Vec<String>) -> Transient {
-    let unset_and = |extra: &[&str]| {
-        let mut v: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
-        v.extend(remotes.iter().cloned());
-        v
-    };
     Transient {
         title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
-        groups: vec![
-            Group {
-                title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
-                suffixes: vec![
-                    Variable::value(
-                        "d",
-                        format!("branch.{branch}.description"),
-                        "description",
-                        Completion::None,
-                    ),
-                    Variable::choices(
-                        "r",
-                        format!("branch.{branch}.rebase"),
-                        "rebase",
-                        &["true", "false"],
-                        Some("pull.rebase"),
-                        Some("false"),
-                    ),
-                    Variable::choices_of(
-                        "p",
-                        format!("branch.{branch}.pushRemote"),
-                        "pushRemote",
-                        unset_and(&[]),
-                        Some("remote.pushDefault"),
-                    ),
-                ],
-            },
-            Group {
-                title: plain_title("Configure repository defaults"),
-                suffixes: vec![
-                    Variable::choices(
-                        "R",
-                        "pull.rebase",
-                        "pull.rebase",
-                        &["true", "false"],
-                        None,
-                        Some("false"),
-                    ),
-                    Variable::choices_of(
-                        "P",
-                        "remote.pushDefault",
-                        "remote.pushDefault",
-                        unset_and(&[]),
-                        None,
-                    ),
-                ],
-            },
-        ],
+        groups: branch_config_groups(branch, remotes),
     }
 }
 
@@ -874,58 +885,73 @@ pub fn tag_transient(style: KeymapStyle) -> Transient {
     }
 }
 
-pub fn remote_transient(style: KeymapStyle) -> Transient {
-    Transient {
-        title: plain_title("Remote"),
-        groups: vec![
-            Group {
-                title: plain_title("Arguments for add"),
-                suffixes: vec![Suffix::Switch(Switch::on("-f", "-f", "Fetch after add"))],
-            },
-            Group {
-                title: plain_title("Actions"),
-                suffixes: vec![
-                    Action::suffix("a", "add", Command::RemoteAdd),
-                    Action::suffix("r", "rename", Command::RemoteRename),
-                    Action::suffix(style.delete_key(), "remove", Command::RemoteRemove),
-                    Action::suffix("C", "configure…", Command::RemoteConfigure),
-                ],
-            },
+/// The git-config variable group scoped to `remote`, shared by the remote
+/// transient's inline Configure section and the `magit-remote-configure`
+/// sub-transient.
+fn remote_config_group(remote: &str) -> Group {
+    Group {
+        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
+        suffixes: vec![
+            Variable::value("u", format!("remote.{remote}.url"), "url", Completion::None),
+            Variable::value(
+                "U",
+                format!("remote.{remote}.fetch"),
+                "fetch refspec",
+                Completion::None,
+            ),
+            Variable::value(
+                "s",
+                format!("remote.{remote}.pushurl"),
+                "pushurl",
+                Completion::None,
+            ),
+            Variable::choices(
+                "O",
+                format!("remote.{remote}.tagOpt"),
+                "tag fetching",
+                &["--no-tags", "--tags"],
+                None,
+                None,
+            ),
         ],
     }
 }
 
-/// The remote config transient (magit's `magit-remote-configure`): git-config
-/// variables scoped to `remote`. Values are filled by the frontend at open time.
+/// The remote transient. When `configure` names a remote (the current one) its
+/// git-config variables show inline above the actions (magit's
+/// `magit-remote-direct-configure`); the `C` sub-transient is always available.
+pub fn remote_transient(style: KeymapStyle, configure: Option<&str>) -> Transient {
+    let mut groups = Vec::new();
+    if let Some(remote) = configure {
+        groups.push(remote_config_group(remote));
+    }
+    groups.extend([
+        Group {
+            title: plain_title("Arguments for add"),
+            suffixes: vec![Suffix::Switch(Switch::on("-f", "-f", "Fetch after add"))],
+        },
+        Group {
+            title: plain_title("Actions"),
+            suffixes: vec![
+                Action::suffix("a", "add", Command::RemoteAdd),
+                Action::suffix("r", "rename", Command::RemoteRename),
+                Action::suffix(style.delete_key(), "remove", Command::RemoteRemove),
+                Action::suffix("C", "configure…", Command::RemoteConfigure),
+            ],
+        },
+    ]);
+    Transient {
+        title: plain_title("Remote"),
+        groups,
+    }
+}
+
+/// The remote config sub-transient (magit's `magit-remote-configure`): the same
+/// git-config variables the remote transient can show inline, on their own.
 pub fn remote_configure_transient(remote: &str) -> Transient {
     Transient {
         title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
-        groups: vec![Group {
-            title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
-            suffixes: vec![
-                Variable::value("u", format!("remote.{remote}.url"), "url", Completion::None),
-                Variable::value(
-                    "U",
-                    format!("remote.{remote}.fetch"),
-                    "fetch refspec",
-                    Completion::None,
-                ),
-                Variable::value(
-                    "s",
-                    format!("remote.{remote}.pushurl"),
-                    "pushurl",
-                    Completion::None,
-                ),
-                Variable::choices(
-                    "O",
-                    format!("remote.{remote}.tagOpt"),
-                    "tag fetching",
-                    &["--no-tags", "--tags"],
-                    None,
-                    None,
-                ),
-            ],
-        }],
+        groups: vec![remote_config_group(remote)],
     }
 }
 

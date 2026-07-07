@@ -312,11 +312,21 @@ pub(crate) fn commands() -> &'static [Command] {
             &[],
             STATUS,
             |t, _w, cx| {
-                // The branch transient (checkout/create/rename/delete) doesn't use
-                // remote targets, so don't resolve them just to open it.
+                // Show the current branch's git-config variables inline (magit's
+                // direct-configure) when a branch is checked out. The branch
+                // itself is the already-loaded status head — no extra git call —
+                // and the remotes seed the pushRemote choices.
+                let branch = t.status.as_ref().and_then(|s| s.head.branch.clone());
+                let remotes = t
+                    .repo
+                    .as_ref()
+                    .and_then(|r| r.remotes().ok())
+                    .unwrap_or_default();
+                let style = t.config.keymap_preset.transient_style();
+                let configure = branch.as_deref().map(|b| (b, remotes));
                 t.open_transient(
                     "branch",
-                    transient::branch_transient(t.config.keymap_preset.transient_style()),
+                    transient::branch_transient(style, configure),
                     RemoteTargets::default(),
                     cx,
                 )
@@ -331,9 +341,17 @@ pub(crate) fn commands() -> &'static [Command] {
             )
         }),
         top!("remote", "Remote", Category::Commands, "M", |t, _w, cx| {
+            // Inline the current remote's git-config variables (magit's
+            // direct-configure) when the repo has a remote.
+            let branch = t.status.as_ref().and_then(|s| s.head.branch.clone());
+            let remote = t
+                .repo
+                .as_ref()
+                .and_then(|r| targets::current_remote(r, branch.as_deref()));
+            let style = t.config.keymap_preset.transient_style();
             t.open_transient(
                 "remote",
-                transient::remote_transient(t.config.keymap_preset.transient_style()),
+                transient::remote_transient(style, remote.as_deref()),
                 RemoteTargets::default(),
                 cx,
             )
@@ -2086,9 +2104,11 @@ pub(crate) fn transient_for(id: &str, style: transient::KeymapStyle) -> Option<T
     let rt = RemoteTargets::default();
     Some(match id {
         "commit" => transient::commit_transient(),
-        "branch" => transient::branch_transient(style),
+        // The inline Configure variables are scope-dependent and never carry
+        // action commands, so key-hint resolution builds these scopeless.
+        "branch" => transient::branch_transient(style, None),
         "tag" => transient::tag_transient(style),
-        "remote" => transient::remote_transient(style),
+        "remote" => transient::remote_transient(style, None),
         "stash" => transient::stash_transient(),
         "reset" => transient::reset_transient(),
         "rebase" => transient::rebase_transient(&rt),

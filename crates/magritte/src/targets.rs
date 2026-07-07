@@ -23,6 +23,31 @@ pub(crate) fn remotes(repo: &Repo) -> magritte_core::Result<Vec<String>> {
     repo.remotes()
 }
 
+/// The "current" remote to show inline in the remote transient (magit's
+/// `magit-get-current-remote`): the current branch's configured remote
+/// (`branch.<b>.remote`) if it still exists, else `origin` when present, else
+/// the first remote. `None` when the repo has no remotes.
+pub(crate) fn current_remote(repo: &Repo, branch: Option<&str>) -> Option<String> {
+    let remotes = repo.remotes().unwrap_or_default();
+    if remotes.is_empty() {
+        return None;
+    }
+    branch
+        .and_then(|b| {
+            repo.config_get(&format!("branch.{b}.remote"))
+                .ok()
+                .flatten()
+        })
+        .filter(|r| remotes.contains(r))
+        .or_else(|| {
+            remotes
+                .iter()
+                .find(|r| *r == "origin")
+                .cloned()
+                .or_else(|| remotes.into_iter().next())
+        })
+}
+
 /// Local + remote branch names — the candidate set shared by the branch, log,
 /// reset, merge, and rebase pickers.
 pub(crate) fn all_branches(repo: &Repo) -> magritte_core::Result<Vec<String>> {

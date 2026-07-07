@@ -28,12 +28,17 @@ fn config_set_and_unset_roundtrip() {
     let repo = open(&t);
     repo.config_set("branch.main.description", "hello").unwrap();
     assert_eq!(
-        repo.config_get("branch.main.description").unwrap().as_deref(),
+        repo.config_get("branch.main.description")
+            .unwrap()
+            .as_deref(),
         Some("hello")
     );
-    repo.config_set("branch.main.description", "changed").unwrap();
+    repo.config_set("branch.main.description", "changed")
+        .unwrap();
     assert_eq!(
-        repo.config_get("branch.main.description").unwrap().as_deref(),
+        repo.config_get("branch.main.description")
+            .unwrap()
+            .as_deref(),
         Some("changed")
     );
     repo.config_unset("branch.main.description").unwrap();
