@@ -155,7 +155,7 @@ impl Repo {
                 "--symbolic-full-name",
                 &format!("{b}@{{upstream}}"),
             ])?
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .map(|o| o.stdout_text())
             .filter(|s| !s.is_empty())
             .and_then(|s| parse_upstream(&s));
         let sole_remote = match self.remotes()?.as_slice() {

@@ -273,20 +273,44 @@ fn parse_todo(text: &str) -> Vec<SequenceStep> {
 /// Split one git-todo line into `(verb, abbreviated oid, subject)`, or `None`
 /// for a blank/comment line. Shared by the sequence and rebase todo parsers:
 /// oids are abbreviated for display, and git may write the oneline as a
-/// trailing comment ("# subject"), which is stripped.
+/// trailing comment ("# subject"), which is stripped. Verbs that take no
+/// commit (`exec`, `label`, `reset`, `merge`, `break`, …) keep their whole
+/// argument as the subject rather than misreading its first word as an oid.
 pub(crate) fn parse_todo_line(line: &str) -> Option<(&str, Option<String>, String)> {
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let mut parts = line.splitn(3, ' ');
+    let mut parts = line.splitn(2, ' ');
     let action = parts.next()?;
-    let oid = parts.next().map(short);
-    let subject = parts
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("# ")
-        .to_string();
-    Some((action, oid, subject))
+    let rest = parts.next().unwrap_or("");
+    let takes_oid = matches!(
+        action,
+        "pick"
+            | "p"
+            | "revert"
+            | "reword"
+            | "r"
+            | "edit"
+            | "e"
+            | "squash"
+            | "s"
+            | "fixup"
+            | "f"
+            | "drop"
+            | "d"
+    );
+    if !takes_oid || rest.is_empty() {
+        return Some((action, None, rest.to_string()));
+    }
+    let (oid, subject) = match rest.split_once(' ') {
+        Some((oid, subject)) => (oid, subject),
+        None => (rest, ""),
+    };
+    Some((
+        action,
+        Some(short(oid)),
+        subject.trim_start_matches("# ").to_string(),
+    ))
 }
 
 /// Abbreviate a full oid for display (git resolves the prefix on write).
@@ -299,4 +323,30 @@ fn read_trim(path: PathBuf) -> Option<String> {
         .ok()
         .map(|s| s.trim_end().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_todo_line;
+
+    #[test]
+    fn todo_lines_only_carry_an_oid_for_commit_verbs() {
+        let (verb, oid, subject) = parse_todo_line("pick 1234567890abcdef subject here").unwrap();
+        assert_eq!((verb, oid.as_deref()), ("pick", Some("1234567")));
+        assert_eq!(subject, "subject here");
+
+        // Non-commit verbs keep their whole argument as the subject — `make`
+        // is not an oid.
+        let (verb, oid, subject) = parse_todo_line("exec make test").unwrap();
+        assert_eq!((verb, oid), ("exec", None));
+        assert_eq!(subject, "make test");
+        let (_, oid, _) = parse_todo_line("label onto").unwrap();
+        assert_eq!(oid, None);
+        let (_, oid, _) = parse_todo_line("merge -C abc topic").unwrap();
+        assert_eq!(oid, None);
+
+        // Blanks and comments are skipped.
+        assert!(parse_todo_line("").is_none());
+        assert!(parse_todo_line("# comment").is_none());
+    }
 }

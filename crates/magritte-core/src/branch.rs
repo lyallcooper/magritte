@@ -22,7 +22,7 @@ impl Repo {
         // None rather than an error.
         Ok(self
             .run_optional(["symbolic-ref", "--short", "-q", "HEAD"])?
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .map(|out| out.stdout_text())
             .filter(|name| !name.is_empty()))
     }
 

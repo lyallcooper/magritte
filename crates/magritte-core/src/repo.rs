@@ -115,7 +115,7 @@ impl GitCommand {
         match self.args.first().map(String::as_str) {
             Some(
                 "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref"
-                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base",
+                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base" | "blame",
             ) => true,
             // Config *reads* (e.g. resolving the push-remote) are queries; a
             // config write (setting one) is a user action, so keep it visible.
@@ -130,6 +130,12 @@ impl GitCommand {
             // `git worktree list` is the worktree browser's listing; the
             // mutating verbs (add/remove/move/prune) stay visible.
             Some("worktree") => self.args.get(1).map(String::as_str) == Some("list"),
+            // `git tag -n`/`--list` is the release listing; creating or
+            // deleting a tag stays visible.
+            Some("tag") => self
+                .args
+                .iter()
+                .any(|a| a == "-n" || a.starts_with("-n") || a == "--list" || a == "-l"),
             _ => false,
         }
     }
@@ -224,8 +230,9 @@ fn terminate(child: &mut std::process::Child) {
 }
 
 impl GitOutput {
-    /// Trimmed stdout as text (lossy UTF-8).
-    fn stdout_text(&self) -> String {
+    /// Trimmed stdout as text (lossy UTF-8) — the shape of every single-value
+    /// query (a ref name, a config value, a count).
+    pub(crate) fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).trim().to_string()
     }
 
@@ -768,7 +775,7 @@ impl Repo {
     /// unset.
     pub fn config_get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.run_optional(["config", "--get", key])?.and_then(|o| {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let v = o.stdout_text();
             (!v.is_empty()).then_some(v)
         }))
     }
@@ -779,7 +786,7 @@ impl Repo {
         self.run_optional(["config", "--type=bool", "--get", key])
             .ok()
             .flatten()
-            .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+            .is_some_and(|o| o.stdout_text() == "true")
     }
 
     /// Set a git config value in the repository (local) config
@@ -811,7 +818,7 @@ impl Repo {
             .run_optional(["describe", "--long", "--tags"])
             .ok()
             .flatten()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let s = out.stdout_text();
         // "<tag>-<count>-g<hash>": strip the "-g<hash>", then split the count.
         let without_hash = s.rsplit_once("-g")?.0;
         let (tag, count) = without_hash.rsplit_once('-')?;
@@ -825,7 +832,7 @@ impl Repo {
             .run_optional(["describe", "--contains", "HEAD"])
             .ok()
             .flatten()?;
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let s = out.stdout_text();
         // "<tag>" possibly suffixed with `~N` / `^N`.
         let tag = s.split(['~', '^']).next().unwrap_or("").to_string();
         if tag.is_empty() || Some(tag.as_str()) == current {
@@ -835,7 +842,7 @@ impl Repo {
             .run_optional(["rev-list", "--count", &format!("HEAD..{tag}")])
             .ok()
             .flatten()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+            .and_then(|o| o.stdout_text().parse().ok())
             .unwrap_or(0);
         Some((tag, count))
     }
@@ -859,10 +866,10 @@ impl Repo {
 
     /// The repository's common git directory (`git rev-parse --git-common-dir`),
     /// as an absolute path. It's shared across linked worktrees, so per-repo
-    /// state keyed off it lands in one place for the whole repo. `None` on error.
+    /// state keyed off it lands in one place for the whole repo.
     pub fn git_common_dir(&self) -> Result<PathBuf> {
         let out = self.run(["rev-parse", "--git-common-dir"])?;
-        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let raw = out.stdout_text();
         if raw.is_empty() {
             return Err(Error::Message("git reported no common dir".to_string()));
         }

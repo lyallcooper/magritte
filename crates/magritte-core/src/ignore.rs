@@ -50,7 +50,7 @@ impl Repo {
         append_line(&path, rule)?;
         if stage {
             let path = path.to_string_lossy().into_owned();
-            self.run(["add", path.as_str()])?;
+            self.run(["add", "--", path.as_str()])?;
         }
         Ok(())
     }

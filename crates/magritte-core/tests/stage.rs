@@ -9,7 +9,7 @@ fn open(repo: &TestRepo) -> Repo {
 }
 
 fn find(repo: &Repo, source: DiffSource, path: &str) -> Option<magritte_core::FileDiff> {
-    repo.diff_path(source, path).unwrap()
+    repo.diff_path(source, path, None).unwrap()
 }
 
 /// Index of the first line in the hunk matching `(kind, content)`.

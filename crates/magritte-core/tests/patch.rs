@@ -15,7 +15,9 @@ fn format_apply_and_am_roundtrip() {
     let repo = Repo::discover(t.path()).unwrap();
 
     // Create a patch for the last commit.
-    let created = repo.format_patch("-1 HEAD").unwrap();
+    let created = repo
+        .format_patch(&["-1".to_string(), "HEAD".to_string()])
+        .unwrap();
     assert!(created.contains(".patch"), "got: {created}");
     let patch = created.split(',').next().unwrap().trim().to_string();
 

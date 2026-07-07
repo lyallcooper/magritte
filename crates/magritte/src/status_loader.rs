@@ -396,6 +396,14 @@ impl StatusView {
         if !self.diff_cache.contains(&key) {
             self.diff_cache.set_state(key.clone(), DiffState::Loading);
         }
+        // A rename's diff needs the original path in the pathspec — the new
+        // path alone would come back as a whole-file addition.
+        let orig = self.status.as_ref().and_then(|s| {
+            s.entries
+                .iter()
+                .find(|e| e.path == path)
+                .and_then(|e| e.orig_path.clone())
+        });
         let generation = self.generation.current();
         self.begin_activity(cx);
 
@@ -405,7 +413,7 @@ impl StatusView {
             let (loaded, lang) = cx
                 .background_executor()
                 .spawn(async move {
-                    let diff = repo.diff_path(source, &path);
+                    let diff = repo.diff_path(source, &path, orig.as_deref());
                     let (head, tail) = file_head_tail(&repo.workdir().join(&path));
                     let lang = highlight::detect_language(&path, &head, &tail);
                     (diff, lang)

@@ -27,9 +27,10 @@ pub struct BlameLine {
 }
 
 impl Repo {
-    /// Blame `path` at `HEAD`, returning one entry per line. Uses the porcelain
-    /// format so author/date metadata is unambiguous and shared across a commit's
-    /// line runs.
+    /// Blame the working-tree contents of `path` (like plain `git blame`, no
+    /// revision — uncommitted lines annotate as "Not Committed Yet"), returning
+    /// one entry per line. Uses the porcelain format so author/date metadata is
+    /// unambiguous and shared across a commit's line runs.
     pub fn blame(&self, path: &str) -> Result<Vec<BlameLine>> {
         let out = self.run(["blame", "--porcelain", "--", path])?;
         Ok(parse_blame(&String::from_utf8_lossy(&out.stdout)))
@@ -53,6 +54,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
     let mut sha = String::new();
     let mut line_no = 0u32;
     let mut author_time: Option<i64> = None;
+    let mut group_start = false;
 
     for line in text.lines() {
         if let Some(content) = line.strip_prefix('\t') {
@@ -61,7 +63,6 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
             if let Some(t) = author_time.take() {
                 cur.date = ymd(t);
             }
-            let group_start = !commits.contains_key(&sha);
             let commit = commits.entry(sha.clone()).or_insert_with(|| cur.clone());
             lines.push(BlameLine {
                 short: sha.chars().take(7).collect(),
@@ -70,7 +71,7 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
                 summary: commit.summary.clone(),
                 line_no,
                 text: content.to_string(),
-                group_start,
+                group_start: std::mem::take(&mut group_start),
             });
             continue;
         }
@@ -80,11 +81,15 @@ fn parse_blame(text: &str) -> Vec<BlameLine> {
                 sha = maybe_sha.to_string();
                 cur = commits.get(&sha).cloned().unwrap_or_default();
                 // The final line number is the second field of the header.
-                line_no = rest
-                    .split(' ')
+                let mut fields = rest.split(' ');
+                line_no = fields
                     .nth(1)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(line_no);
+                // The num-lines field is present only on the header that opens
+                // a contiguous group — a commit whose lines appear in several
+                // separate runs opens a group for each run.
+                group_start = fields.next().is_some();
                 author_time = None;
                 continue;
             }
@@ -115,4 +120,39 @@ fn ymd(secs: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_blame;
+
+    #[test]
+    fn a_commit_with_separated_runs_starts_a_group_per_run() {
+        // Commit A owns lines 1 and 3, commit B line 2. The porcelain header
+        // carries a num-lines field only at the start of each contiguous run,
+        // so A's second run must open a new group (get its own gutter) even
+        // though A's metadata was already seen.
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let text = format!(
+            "{a} 1 1 1\nauthor Alice\nauthor-time 0\nsummary first\n\tline one\n\
+             {b} 2 2 1\nauthor Bob\nauthor-time 0\nsummary second\n\tline two\n\
+             {a} 3 3 1\n\tline three\n"
+        );
+        let lines = parse_blame(&text);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.group_start), "three one-line runs");
+        assert_eq!(lines[2].author, "Alice", "metadata reused from the cache");
+
+        // A two-line run: only its first line starts the group.
+        let text = format!(
+            "{a} 1 1 2\nauthor Alice\nauthor-time 0\nsummary first\n\tone\n\
+             {a} 2 2\n\ttwo\n"
+        );
+        let lines = parse_blame(&text);
+        assert_eq!(
+            lines.iter().map(|l| l.group_start).collect::<Vec<_>>(),
+            [true, false]
+        );
+    }
 }

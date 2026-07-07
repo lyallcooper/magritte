@@ -16,7 +16,7 @@ fn unstaged_modification_produces_hunk() {
     t.write("file.txt", "a\nB\nc\n");
 
     let diff = open(&t)
-        .diff_path(DiffSource::Unstaged, "file.txt")
+        .diff_path(DiffSource::Unstaged, "file.txt", None)
         .unwrap()
         .expect("a diff");
     assert_eq!(diff.new_path, "file.txt");
@@ -55,11 +55,11 @@ fn staged_and_unstaged_are_distinct() {
 
     let repo = open(&t);
     let staged = repo
-        .diff_path(DiffSource::Staged, "file.txt")
+        .diff_path(DiffSource::Staged, "file.txt", None)
         .unwrap()
         .expect("staged diff");
     let unstaged = repo
-        .diff_path(DiffSource::Unstaged, "file.txt")
+        .diff_path(DiffSource::Unstaged, "file.txt", None)
         .unwrap()
         .expect("unstaged diff");
 
@@ -86,7 +86,7 @@ fn unchanged_path_has_no_diff() {
     t.commit_all("initial");
 
     let diff = open(&t)
-        .diff_path(DiffSource::Unstaged, "file.txt")
+        .diff_path(DiffSource::Unstaged, "file.txt", None)
         .unwrap();
     assert!(diff.is_none());
 }
@@ -100,7 +100,7 @@ fn staged_new_file_is_flagged() {
     t.git(["add", "added.txt"]);
 
     let diff = open(&t)
-        .diff_path(DiffSource::Staged, "added.txt")
+        .diff_path(DiffSource::Staged, "added.txt", None)
         .unwrap()
         .expect("diff for new file");
     assert!(diff.is_new);
@@ -270,4 +270,98 @@ fn tracked_vs_head_on_unborn_branch_shows_staged() {
         .expect("unborn branch must not error");
     assert_eq!(diff.len(), 1);
     assert_eq!(diff[0].new_path, "file.txt");
+}
+
+#[test]
+fn staged_rename_with_orig_path_diffs_as_rename() {
+    // With only the new path in the pathspec, git reports the rename as a
+    // whole-file addition; including the original path restores the rename
+    // diff (the display and hunk-level unstage both depend on it).
+    let t = TestRepo::new();
+    t.write("old.txt", "one\ntwo\nthree\n");
+    t.commit_all("initial");
+    t.git(["mv", "old.txt", "new.txt"]);
+    t.write("new.txt", "one\nTWO\nthree\n");
+    t.git(["add", "new.txt"]);
+
+    let diff = open(&t)
+        .diff_path(DiffSource::Staged, "new.txt", Some("old.txt"))
+        .unwrap()
+        .expect("a diff");
+    assert_eq!(diff.old_path, "old.txt");
+    assert_eq!(diff.new_path, "new.txt");
+    assert!(!diff.is_new, "a rename is not a new file");
+    let changed: Vec<_> = diff.hunks[0]
+        .lines
+        .iter()
+        .filter(|l| l.kind != LineKind::Context)
+        .map(|l| l.content.as_str())
+        .collect();
+    assert_eq!(changed, ["two", "TWO"], "only the edit, not the whole file");
+}
+
+#[test]
+fn parse_diff_skips_combined_cc_records() {
+    // A conflicted merge emits `diff --cc` records with `@@@` hunks; they must
+    // be skipped as a unit, not fed to the ordinary hunk parser (which would
+    // fail the whole parse), and must not swallow a following ordinary record.
+    let text = "\
+diff --cc conflicted.txt
+index 1111111,2222222..0000000
+--- a/conflicted.txt
++++ b/conflicted.txt
+@@@ -1,3 -1,3 +1,7 @@@
+++<<<<<<< HEAD
+ +ours
+++=======
++ theirs
+++>>>>>>> branch
+diff --git a/plain.txt b/plain.txt
+index 3333333..4444444 100644
+--- a/plain.txt
++++ b/plain.txt
+@@ -1 +1 @@
+-a
++b
+";
+    let files = parse_diff(text.as_bytes()).expect("cc record must not fail the parse");
+    assert_eq!(files.len(), 1, "only the ordinary record is modeled");
+    assert_eq!(files[0].new_path, "plain.txt");
+    assert_eq!(files[0].hunks.len(), 1);
+}
+
+#[test]
+fn parse_diff_unquotes_c_quoted_paths() {
+    // Even with core.quotepath=false git C-quotes paths containing quotes,
+    // backslashes, or control characters on the header lines. The quoted form
+    // of `we<TAB>ird"name.txt` is `"we\tird\"name.txt"`.
+    let text = r#"diff --git "a/we\tird\"name.txt" "b/we\tird\"name.txt"
+index 1111111..2222222 100644
+--- "a/we\tird\"name.txt"
++++ "b/we\tird\"name.txt"
+@@ -1 +1 @@
+-a
++b
+"#;
+    let files = parse_diff(text.as_bytes()).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].new_path, "we\tird\"name.txt");
+    assert_eq!(files[0].old_path, files[0].new_path);
+}
+
+#[test]
+fn diff_path_survives_a_path_with_spaces() {
+    // git appends a trailing tab to `---`/`+++` paths containing spaces; only
+    // that tab may be stripped (not all whitespace, which can be part of a
+    // filename).
+    let t = TestRepo::new();
+    t.write("has space.txt", "a\n");
+    t.commit_all("initial");
+    t.write("has space.txt", "b\n");
+
+    let diff = open(&t)
+        .diff_path(DiffSource::Unstaged, "has space.txt", None)
+        .unwrap()
+        .expect("a diff");
+    assert_eq!(diff.new_path, "has space.txt");
 }

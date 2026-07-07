@@ -46,8 +46,6 @@ pub struct Hunk {
     pub new_count: u32,
     /// Text after the closing `@@` (the function/section heading), trimmed.
     pub section_heading: String,
-    /// The verbatim `@@ ... @@` header line, needed to rebuild patches.
-    pub header: String,
     pub lines: Vec<DiffLine>,
 }
 
@@ -72,8 +70,6 @@ pub struct FileDiff {
     pub is_new: bool,
     pub is_deleted: bool,
     pub is_binary: bool,
-    pub old_mode: Option<String>,
-    pub new_mode: Option<String>,
     /// Header lines from `diff --git` up to (not including) the first hunk.
     /// Preserved verbatim so patches can be reconstructed for staging.
     pub header_lines: Vec<String>,
@@ -131,10 +127,20 @@ impl Repo {
         args
     }
 
-    /// Diff a single path against the index or HEAD. Returns `None` when there
-    /// is no diff (e.g. the path is unchanged for that source).
-    pub fn diff_path(&self, source: DiffSource, path: &str) -> Result<Option<FileDiff>> {
-        let mut diffs = self.diff_with(self.diff_source_args(source), &[path.to_string()])?;
+    /// Diff a single path against the index or HEAD. For a rename/copy the
+    /// caller must pass the original path too (`orig`): a pathspec of the new
+    /// path alone excludes the old one, so git reports a whole-file addition
+    /// instead of the rename diff. Returns `None` when there is no diff (e.g.
+    /// the path is unchanged for that source).
+    pub fn diff_path(
+        &self,
+        source: DiffSource,
+        path: &str,
+        orig: Option<&str>,
+    ) -> Result<Option<FileDiff>> {
+        let mut paths = vec![path.to_string()];
+        paths.extend(orig.map(str::to_string));
+        let mut diffs = self.diff_with(self.diff_source_args(source), &paths)?;
         Ok(if diffs.is_empty() {
             None
         } else {
@@ -253,7 +259,7 @@ impl Repo {
                 continue; // a rename form; let it load on demand
             }
             let total = added.parse::<u32>().unwrap_or(0) + removed.parse::<u32>().unwrap_or(0);
-            counts.push((path.to_string(), total));
+            counts.push((unquote_path(path), total));
         }
         Ok(counts)
     }
@@ -274,11 +280,19 @@ pub fn parse_diff(bytes: &[u8]) -> Result<Vec<FileDiff>> {
         if line.starts_with("diff --git ") {
             files.push(parse_file(&mut lines)?);
         } else {
-            // Skip anything before the first file header (should be nothing).
+            // Skip anything that isn't an ordinary file record — including a
+            // whole `diff --cc` (combined, conflicted-merge) record, whose
+            // `@@@` hunks this parser doesn't model.
             lines.next();
         }
     }
     Ok(files)
+}
+
+/// Whether `line` starts the next file record (ordinary or combined) — the
+/// boundary every per-file/per-hunk loop stops at.
+fn is_file_boundary(line: &str) -> bool {
+    line.starts_with("diff --git ") || line.starts_with("diff --cc ")
 }
 
 fn parse_file<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<FileDiff>
@@ -297,26 +311,20 @@ where
 
     // Extended header lines, until the first hunk or the next file.
     while let Some(&line) = lines.peek() {
-        if line.starts_with("@@") || line.starts_with("diff --git ") {
+        if line.starts_with("@@") || is_file_boundary(line) {
             break;
         }
         let line = lines.next().unwrap();
         file.header_lines.push(line.to_string());
 
-        if let Some(mode) = line.strip_prefix("new file mode ") {
+        if line.starts_with("new file mode ") {
             file.is_new = true;
-            file.new_mode = Some(mode.trim().to_string());
-        } else if let Some(mode) = line.strip_prefix("deleted file mode ") {
+        } else if line.starts_with("deleted file mode ") {
             file.is_deleted = true;
-            file.old_mode = Some(mode.trim().to_string());
-        } else if let Some(mode) = line.strip_prefix("old mode ") {
-            file.old_mode = Some(mode.trim().to_string());
-        } else if let Some(mode) = line.strip_prefix("new mode ") {
-            file.new_mode = Some(mode.trim().to_string());
         } else if let Some(path) = line.strip_prefix("rename from ") {
-            file.old_path = path.to_string();
+            file.old_path = unquote_path(path);
         } else if let Some(path) = line.strip_prefix("rename to ") {
-            file.new_path = path.to_string();
+            file.new_path = unquote_path(path);
         } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
             file.is_binary = true;
         } else if let Some(path) = line.strip_prefix("--- ") {
@@ -332,10 +340,10 @@ where
 
     // Hunks.
     while let Some(&line) = lines.peek() {
-        if line.starts_with("@@") {
-            file.hunks.push(parse_hunk(lines)?);
-        } else if line.starts_with("diff --git ") {
+        if is_file_boundary(line) {
             break;
+        } else if line.starts_with("@@") {
+            file.hunks.push(parse_hunk(lines)?);
         } else {
             // Stray line between hunks (shouldn't happen); skip defensively.
             lines.next();
@@ -358,7 +366,6 @@ where
         new_start,
         new_count,
         section_heading,
-        header: header.to_string(),
         lines: Vec::new(),
     };
 
@@ -367,7 +374,7 @@ where
 
     while let Some(&line) = lines.peek() {
         // A hunk ends at the next hunk, the next file, or end of input.
-        if line.starts_with("@@") || line.starts_with("diff --git ") {
+        if line.starts_with("@@") || is_file_boundary(line) {
             break;
         }
         let line = lines.next().unwrap();
@@ -460,6 +467,13 @@ fn parse_range(s: &str) -> Result<(u32, u32)> {
 /// authoritative source and override this.
 fn split_diff_git_paths(line: &str) -> Option<(String, String)> {
     let rest = line.strip_prefix("diff --git ")?;
+    // A path with quote/backslash/control characters is C-quoted whole
+    // (`"a/we\tird"`), which is unambiguous — parse the two quoted strings.
+    if rest.starts_with('"') {
+        let (old, rest) = take_c_quoted(rest)?;
+        let (new, _) = take_c_quoted(rest.trim_start())?;
+        return Some((strip_prefix_dir(&old), strip_prefix_dir(&new)));
+    }
     let a_pos = rest.find("a/")?;
     let b_pos = rest.rfind(" b/")?;
     let old = &rest[a_pos + 2..b_pos];
@@ -470,16 +484,77 @@ fn split_diff_git_paths(line: &str) -> Option<(String, String)> {
 /// Strip the `a/` or `b/` prefix from a `---`/`+++` path, mapping `/dev/null`
 /// to an empty string.
 fn strip_diff_path(path: &str) -> Option<String> {
-    let path = path.trim();
+    // git appends a tab after a path containing spaces (never other trailing
+    // whitespace, which can legitimately be part of a filename).
+    let path = path.strip_suffix('\t').unwrap_or(path);
     if path == "/dev/null" {
         return Some(String::new());
     }
-    // Paths are normally `a/<p>` or `b/<p>`. Tolerate git's mnemonic prefixes
-    // (`i/`,`w/`,`c/`,`o/` from diff.mnemonicPrefix) in case a caller diffs
-    // without --default-prefix.
-    let stripped = ["a/", "b/", "i/", "w/", "c/", "o/"]
+    Some(strip_prefix_dir(&unquote_path(path)))
+}
+
+/// Strip a diff prefix directory (`a/<p>`, `b/<p>`; tolerate git's mnemonic
+/// `i/`,`w/`,`c/`,`o/` in case a caller diffs without --default-prefix).
+fn strip_prefix_dir(path: &str) -> String {
+    ["a/", "b/", "i/", "w/", "c/", "o/"]
         .iter()
         .find_map(|p| path.strip_prefix(p))
-        .unwrap_or(path);
-    Some(stripped.to_string())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Undo git's C-style quoting if `path` is quoted, else return it as-is. Even
+/// with `core.quotepath=false` (which stops quoting of non-ASCII), git still
+/// quotes paths containing quotes, backslashes, or control characters on the
+/// `diff --git`, `---`/`+++`, and `rename from/to` lines.
+fn unquote_path(path: &str) -> String {
+    match take_c_quoted(path) {
+        Some((unquoted, _)) => unquoted,
+        None => path.to_string(),
+    }
+}
+
+/// Parse one C-quoted string at the start of `s`, returning it unescaped plus
+/// the remainder after the closing quote. `None` if `s` isn't quoted (or the
+/// quoting is malformed).
+fn take_c_quoted(s: &str) -> Option<(String, &str)> {
+    let inner = s.strip_prefix('"')?;
+    let mut bytes = Vec::new();
+    let mut chars = inner.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => {
+                let out = String::from_utf8_lossy(&bytes).into_owned();
+                return Some((out, &inner[i + 1..]));
+            }
+            '\\' => {
+                let (_, esc) = chars.next()?;
+                match esc {
+                    'n' => bytes.push(b'\n'),
+                    't' => bytes.push(b'\t'),
+                    'r' => bytes.push(b'\r'),
+                    'a' => bytes.push(0x07),
+                    'b' => bytes.push(0x08),
+                    'f' => bytes.push(0x0c),
+                    'v' => bytes.push(0x0b),
+                    '\\' | '"' => bytes.push(esc as u8),
+                    // Octal escape: exactly three digits per git's quoting.
+                    '0'..='7' => {
+                        let mut val = esc.to_digit(8)?;
+                        for _ in 0..2 {
+                            let (_, d) = chars.next()?;
+                            val = val * 8 + d.to_digit(8)?;
+                        }
+                        bytes.push(val as u8);
+                    }
+                    _ => return None,
+                }
+            }
+            _ => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    None
 }

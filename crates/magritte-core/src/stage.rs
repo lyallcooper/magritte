@@ -339,7 +339,7 @@ impl Repo {
 
     /// Reverse-apply the entire staged diff of a modified file.
     fn discard_staged_modified(&self, path: &str) -> Result<()> {
-        let Some(diff) = self.diff_path(DiffSource::Staged, path)? else {
+        let Some(diff) = self.diff_path(DiffSource::Staged, path, None)? else {
             return Ok(());
         };
         let selections: Vec<(usize, Vec<usize>)> = diff
@@ -466,6 +466,11 @@ fn file_header(file: &FileDiff) -> String {
 
 /// Build the `@@ ... @@` header and body for one hunk given the selected lines.
 fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
+    // Selected indices are usually already sorted (they're built by scanning
+    // the hunk); sort a copy so membership is a binary search, keeping a
+    // whole-hunk apply on a huge hunk linear rather than quadratic.
+    let mut selected = selected.to_vec();
+    selected.sort_unstable();
     let mut body = String::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
@@ -478,7 +483,7 @@ fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
     };
 
     for (i, line) in hunk.lines.iter().enumerate() {
-        let is_selected = selected.contains(&i);
+        let is_selected = selected.binary_search(&i).is_ok();
         match line.kind {
             LineKind::Context => {
                 emit(&mut body, ' ', &line.content);

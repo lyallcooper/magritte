@@ -88,11 +88,11 @@ impl FileEntry {
             && self.worktree == Change::Added
     }
 
-    /// Whether this entry has content staged for the next commit.
+    /// Whether this entry has content staged for the next commit. Note a rename
+    /// can be worktree-side only (`.R`, e.g. after an intent-to-add rename), so
+    /// the index column decides — not the record kind.
     pub fn is_staged(&self) -> bool {
-        matches!(self.kind, EntryKind::RenamedOrCopied)
-            || self.index.is_modified()
-            || self.is_intent_to_add()
+        self.index.is_modified() || self.is_intent_to_add()
     }
 
     /// Whether this entry has content in the working tree that isn't in the
@@ -254,13 +254,9 @@ impl Repo {
         // single destination") — exactly the case this reports. `pushRemote`
         // wins, else `remote.pushDefault`; without either, pushes follow the
         // upstream (already shown), so there is no distinct push target.
-        let config = |key: String| -> Option<String> {
-            let out = self.run_optional(["config", &key]).ok()??;
-            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (!val.is_empty()).then_some(val)
-        };
-        let Some(remote) = config(format!("branch.{branch}.pushRemote"))
-            .or_else(|| config("remote.pushDefault".to_string()))
+        let config = |key: &str| self.config_get(key).ok().flatten();
+        let Some(remote) =
+            config(&format!("branch.{branch}.pushRemote")).or_else(|| config("remote.pushDefault"))
         else {
             return;
         };
@@ -316,14 +312,16 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<Status> {
             }
             b'u' => status.entries.push(parse_unmerged(record)?),
             b'?' => status.entries.push(FileEntry {
-                path: lossy(&record[2..]),
+                path: lossy(pathless_record(record)?),
                 orig_path: None,
                 kind: EntryKind::Untracked,
                 index: Change::Unmodified,
+                // Synthesized: `?` records carry no XY columns, but "content in
+                // the worktree only" is what untracked means.
                 worktree: Change::Modified,
             }),
             b'!' => status.entries.push(FileEntry {
-                path: lossy(&record[2..]),
+                path: lossy(pathless_record(record)?),
                 orig_path: None,
                 kind: EntryKind::Ignored,
                 index: Change::Unmodified,
@@ -339,6 +337,15 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<Status> {
     }
 
     Ok(status)
+}
+
+/// The path of a `? <path>` / `! <path>` record (no metadata fields), erroring
+/// rather than panicking on a truncated record.
+fn pathless_record(record: &[u8]) -> Result<&[u8]> {
+    record.get(2..).ok_or_else(|| Error::Parse {
+        context: "truncated porcelain record",
+        line: lossy(record),
+    })
 }
 
 /// Iterator over NUL-terminated records that does not allocate per record.

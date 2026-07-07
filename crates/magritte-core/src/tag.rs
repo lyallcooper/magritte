@@ -91,8 +91,11 @@ impl Repo {
             .lines()
             .iter()
             .filter_map(|line| {
-                let idx = line.find(char::is_whitespace)?;
-                let (tag, message) = (&line[..idx], line[idx..].trim());
+                // A lightweight tag with no message is just the bare name.
+                let (tag, message) = match line.find(char::is_whitespace) {
+                    Some(idx) => (&line[..idx], line[idx..].trim()),
+                    None => (line.as_str(), ""),
+                };
                 let (prefix, version) = parse_release_tag(tag)?;
                 Some(Release {
                     key: version_key(&version),

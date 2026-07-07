@@ -197,3 +197,24 @@ fn upstream_merge_base_is_none_without_upstream() {
     t.commit_all("init");
     assert_eq!(open(&t).upstream_merge_base(), None);
 }
+
+#[test]
+fn autosquash_ignores_a_no_autosquash_switch() {
+    // The transient's negatable `-a` emits `--no-autosquash` when the user has
+    // `rebase.autoSquash = true` configured but the toggle off. Autosquash *is*
+    // this command, so the switch must not defeat it.
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    t.write("a.txt", "a");
+    t.commit_all("A");
+    let a = t.git(["rev-parse", "HEAD"]);
+    t.write("a.txt", "a fixed");
+    t.git(["add", "a.txt"]);
+    let repo = open(&t);
+    repo.commit_fixup(&a, &[]).unwrap();
+
+    repo.rebase_autosquash(&format!("{a}^"), &["--no-autosquash".to_string()])
+        .unwrap();
+    assert_eq!(subjects(&t), ["A", "base"], "fixup still folded into A");
+}

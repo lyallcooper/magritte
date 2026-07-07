@@ -82,7 +82,7 @@ impl Repo {
     /// branch in a new worktree (git DWIMs a remote branch into tracking, like
     /// checkout).
     pub fn worktree_add(&self, dir: &str, commit: &str) -> Result<String> {
-        Ok(self.run(["worktree", "add", dir, commit])?.report())
+        Ok(self.run(["worktree", "add", "--", dir, commit])?.report())
     }
 
     /// `git worktree add -b <branch> <dir> [start]` — create a new branch and
@@ -93,7 +93,7 @@ impl Repo {
         branch: &str,
         start: Option<&str>,
     ) -> Result<String> {
-        let mut args = vec!["worktree", "add", "-b", branch, dir];
+        let mut args = vec!["worktree", "add", "-b", branch, "--", dir];
         if let Some(start) = start {
             args.push(start);
         }
@@ -104,16 +104,16 @@ impl Repo {
     /// worktree has uncommitted changes or is locked.
     pub fn worktree_remove(&self, path: &str, force: bool) -> Result<String> {
         let args: &[&str] = if force {
-            &["worktree", "remove", "--force", path]
+            &["worktree", "remove", "--force", "--", path]
         } else {
-            &["worktree", "remove", path]
+            &["worktree", "remove", "--", path]
         };
         Ok(self.run(args)?.report())
     }
 
     /// `git worktree move <from> <to>`.
     pub fn worktree_move(&self, from: &str, to: &str) -> Result<String> {
-        Ok(self.run(["worktree", "move", from, to])?.report())
+        Ok(self.run(["worktree", "move", "--", from, to])?.report())
     }
 
     /// `git worktree prune` — drop administrative entries for worktrees whose

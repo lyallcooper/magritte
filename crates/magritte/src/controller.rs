@@ -1414,12 +1414,15 @@ impl StatusView {
         );
     }
 
-    /// Create patch files for a typed range (`git format-patch`).
+    /// Create patch files for a typed range (`git format-patch`). Shell-style
+    /// splitting so a quoted argument (`-o "some dir"`) survives.
     pub(crate) fn run_patch_create(&mut self, args: String, cx: &mut Context<Self>) {
+        let args = shell_words::split(args.trim())
+            .unwrap_or_else(|_| args.split_whitespace().map(str::to_string).collect());
         self.run_job(
             "Creating patch…",
             "Created",
-            move |repo| repo.format_patch(args.trim()),
+            move |repo| repo.format_patch(&args),
             cx,
         );
     }

@@ -218,3 +218,27 @@ fn parser_handles_rename_extra_nul_field() {
     assert_eq!(other.path, "other.txt");
     assert_eq!(other.worktree, Change::Modified);
 }
+
+#[test]
+fn truncated_untracked_record_errors_instead_of_panicking() {
+    // A bare `?` record (no space, no path) is malformed input; the public
+    // parser must report it, not slice out of bounds.
+    assert!(parse_porcelain_v2(b"?\0").is_err());
+    assert!(parse_porcelain_v2(b"!\0").is_err());
+}
+
+#[test]
+fn worktree_side_rename_is_not_staged() {
+    // A `2` record can be worktree-side only (`.R`); the index column decides
+    // whether anything is staged, not the record kind.
+    let record = b"2 .R N... 100644 100644 100644 1111111111111111111111111111111111111111 1111111111111111111111111111111111111111 R100 new.txt\0old.txt\0";
+    let status = parse_porcelain_v2(record).unwrap();
+    let entry = &status.entries[0];
+    assert!(!entry.is_staged());
+    assert!(entry.has_worktree_changes());
+
+    // A staged rename (`R.`) still counts as staged.
+    let record = b"2 R. N... 100644 100644 100644 1111111111111111111111111111111111111111 1111111111111111111111111111111111111111 R100 new.txt\0old.txt\0";
+    let status = parse_porcelain_v2(record).unwrap();
+    assert!(status.entries[0].is_staged());
+}

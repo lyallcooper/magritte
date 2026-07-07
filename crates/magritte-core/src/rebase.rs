@@ -168,7 +168,16 @@ impl Repo {
     pub fn rebase_autosquash(&self, base: &str, args: &[String]) -> Result<String> {
         // `-c sequence.editor=true` accepts git's auto-generated todo unedited;
         // GIT_EDITOR=true (via run_with_env) keeps a `squash!` from blocking on
-        // a message editor, taking the combined message instead.
+        // a message editor, taking the combined message instead. Autosquash *is*
+        // this command, so drop the transient's own `--[no-]autosquash` toggle —
+        // switches land after the lead args, and a `--no-autosquash` (emitted
+        // when `rebase.autoSquash` is configured on but toggled off) would win
+        // and silently turn the whole rebase into a no-op.
+        let switches: Vec<String> = args
+            .iter()
+            .filter(|a| *a != "--autosquash" && *a != "--no-autosquash")
+            .cloned()
+            .collect();
         let argv = git_args(
             &[
                 "-c",
@@ -178,7 +187,7 @@ impl Repo {
                 "--autosquash",
                 "--keep-empty",
             ],
-            args,
+            &switches,
             &[base],
         );
         Ok(self
@@ -194,7 +203,7 @@ impl Repo {
         let out = self
             .run_optional(["merge-base", "@{upstream}", "HEAD"])
             .ok()??;
-        let base = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let base = out.stdout_text();
         (!base.is_empty()).then_some(base)
     }
 
