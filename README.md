@@ -9,8 +9,9 @@ commands open transient popups. It's built on [GPUI](https://www.gpui.rs/) and
 designed from the start to stay responsive in very large repositories: git work
 runs off the UI thread, diffs are computed lazily, and rendering is virtualized.
 
-This is a work in progress, not yet a packaged app. See [PLAN.md](PLAN.md) for
-the goals, architecture, and milestones.
+This is a work in progress. It installs via Homebrew
+(`brew install lyallcooper/magritte/magritte`) or builds from source; see
+[PLAN.md](PLAN.md) for the goals, architecture, and milestones.
 
 ## Requirements
 
@@ -92,11 +93,12 @@ It is compiled out of normal release builds entirely.
 
 ## Current limitations
 
-- Not yet code-signed, notarized, or packaged as a `.app`.
+- Ad-hoc signed only — not notarized or developer-ID signed.
 - macOS only; non-UTF-8 paths are handled lossily.
-- Refresh is on-demand (`g r`), after our own commands, and on window focus
-  (opt-out via `refresh_on_focus`); there is no filesystem watcher (intentionally
-  — it's a large-repo hazard magit also avoids).
+- Refresh is on-demand (`g r`), after our own commands, on window focus
+  (opt-out via `refresh_on_focus`), and via the opt-in `[fetch]` background
+  auto-fetch; there is no filesystem watcher (intentionally — it's a
+  large-repo hazard magit also avoids).
 
 ## License
 

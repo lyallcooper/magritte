@@ -218,9 +218,9 @@ keymap_preset = "evil"
     popup (Emacs keyboard-quit).
   - `Tab` folds/unfolds. (You can bind another key to the `fold` command, but
     `Tab` itself stays fold.)
-  - `?` opens help, unbound `:` opens the command palette, `Alt-x` opens the
-    command palette, and `Cmd+C` yanks regardless of remaps. Bound symbols such
-    as `!`, `|`, `$`, and vanilla `:` still go through the effective keymap.
+  - `?` opens help, and unbound `:`, `Alt-x`, `Cmd-P`, and `Cmd-K` open the
+    command palette. Bound symbols such as `!`, `|`, `$`, vanilla `:`, and
+    `Cmd+C` go through the effective keymap.
   - On a commit or stash row, the act-at-point verbs (`Return`, and for a
     stash `a` apply / `A` pop / `x` drop) act on the item at point. The copy
     and revert keys follow the preset: copy is evil `yy`/`ys` (or `Cmd+C`) /
@@ -267,6 +267,9 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `untrack` | `K` (vanilla) / `X` (evil) | Untrack the file at point (`git rm --cached`) |
 | `open-file` | `Return` | Open file at point in `editor` |
 | `fold` | `Tab` | Fold / unfold |
+| `diff-more-context` | `+` | More diff context lines |
+| `diff-less-context` | `-` | Fewer diff context lines |
+| `diff-default-context` | `0` | Default diff context (3 lines) |
 | `refresh` | `g r` | Refresh status |
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |

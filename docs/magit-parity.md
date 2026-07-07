@@ -8,7 +8,7 @@ doesn't apply outside Emacs.
 
 Audited against the Magit 4.x sources in the local `.reference/magit/lisp/`
 checkout (plus `evil-collection-magit.el`); Magritte as of this document's
-last update (2026-07-03). Behavioral claims were verified against both
+last update (2026-07-07). Behavioral claims were verified against both
 sources, not just listed from memory.
 
 **Status legend**
@@ -30,10 +30,9 @@ vanilla presets differ, both are given.
 
 ## Executive summary
 
-**Whole areas missing:** bisect, blame, submodules,
-patch create/apply (and starting a `git am` —
-we can only drive one already in progress), clone/init, notes, subtree,
-sparse-checkout, bundle, cherry, wip. Within existing transients, the largest
+**Whole areas missing:** submodules, clone/init, notes, subtree,
+sparse-checkout, bundle, cherry, wip. (Bisect, blame, and patch
+create/apply/`git am` have since shipped.) Within existing transients, the largest
 gaps are magit's "push something other than the current branch" group, log's
 limiting/formatting flags, merge strategies, and stash's index/worktree/
 snapshot variants.
@@ -80,7 +79,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 |-----|---------|--------|
 | `A` | cherry-pick | ✓ |
 | `b` | branch | ✓ |
-| `B` | bisect | ✗ |
+| `B` | bisect | ✓ |
 | `c` | commit | ✓ |
 | `C` | clone | ✗ |
 | `d` | diff | ✓ |
@@ -102,8 +101,8 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `r` / `t` | rebase / tag | ✓ |
 | `T` | notes | ✗ |
 | `V` | revert | ✓ ours `_` (vanilla `V`) |
-| `w` | am (apply patches) | ∂ in-progress continue/skip/abort only |
-| `W` | patch (format patches) | ✗ |
+| `w` | am (apply patches) | ✓ (via the `W` patch transient) |
+| `W` | patch (format patches) | ✓ |
 | `X` | reset | ✓ ours `O` (vanilla `X`) |
 | `y` / `Y` | show-refs / cherry | ∂ show-refs (vanilla `y`; evil `yr`); `Y` cherry ✗ |
 | `z` | stash | ✓ ours `Z` (vanilla `z`) |
@@ -168,7 +167,7 @@ has no branch args).
 
 | Key | Command | Status |
 |-----|---------|--------|
-| — | Configure `<branch>` variables (`d` description, `u` merge/remote, `r` rebase, `p` pushRemote; `R`/`P`/`B` repo defaults) | ✗ |
+| — | Configure `<branch>` variables (`d` description, `u` merge/remote, `r` rebase, `p` pushRemote; `R`/`P`/`B` repo defaults) | ∂ description / rebase / pushRemote + repo defaults `pull.rebase`, `remote.pushDefault` via `C`; `u` merge/remote auto-setup ✗ |
 | `b` | checkout branch/revision | ✓ |
 | `l` | checkout local branch | ✗ |
 | `o` | orphan (level 6) | ✗ |
@@ -176,14 +175,15 @@ has no branch args).
 | `s` / `S` | spinoff / spinout | ✗ |
 | `w` / `W` | worktree-checkout / worktree-branch (level 5) | ✓ in the worktree browser (`b` / `c`) |
 | `n` | create | ✓ |
-| `C` | configure… | ✗ |
+| `C` | configure… | ✓ |
 | `m` | rename | ✓ |
 | `x` | branch-reset | ✗ — key conflict: our evil preset uses `x` for delete |
 | `k` | delete | ✓ ours `x` evil / `k` vanilla |
 | `h` / `H` | shelve / unshelve (level 7) | ✗ |
 
-`magit-branch-configure` (per-branch variables + `a m`/`a r` auto-setup): ✗
-entirely; no git-variable editing exists anywhere in Magritte.
+`magit-branch-configure`: ∂ — the `C` sub-transient edits description /
+rebase / pushRemote (+ the repo defaults); the `a m`/`a r` upstream auto-setup
+variables are still missing.
 
 ### Push (magit `P` / ours `p`, vanilla `P`)
 
@@ -234,7 +234,7 @@ falls back to `push remote, setting it`.
 **Actions**: `p`/`u`/`e` ✓ (same `p`/`u` collapse as push when the targets
 coincide); the optional "Fetch from"/"Fetch" groups (`:if
 magit-pull-or-fetch`, off by default upstream) ✗; `r` branch.rebase variable
-✗ (our config-seeded `-r` partially substitutes); `C` configure ✗.
+and `C` configure ✓ (the branch Configure sub-transient).
 
 Magit declares `--ff-only`/`--rebase` incompatible; if we add `--ff-only`,
 we need an incompatibility mechanism (see cherry-pick).
@@ -380,7 +380,7 @@ variants); `-a --all` (untracked + ignored) ✗.
 
 | Key | Command | Status |
 |-----|---------|--------|
-| `z` | both | ≈ ours runs `git stash push` with **no message prompt**; magit prompts |
+| `z` | both | ✓ (prompts for an optional message, like magit) |
 | `i` / `w` / `x` | index only / worktree only / keeping index | ✗ |
 | `P` | push… sub-transient (level 5; `--` file limiting, keep-index) | ∂ our `z` is `git stash push` but with no file limiting or keep-index |
 | `Z` / `I` / `W` | snapshots | ✗ (our `Z` key is taken by "both incl. untracked") |
@@ -406,10 +406,11 @@ multi-delete; `p` prune (local vs remote) ✗.
 
 **Arguments**: `-f` fetch-after-add ✓ (default on, both).
 
-**Actions**: `a`/`r`/`k` add/rename/remove ✓; the variables group
-(`u`/`U`/`s`/`S`/`O`/`h` for `remote.<name>.*`) ✗; `C` configure
-sub-transient ✗; `p` prune ✗; `P` prune-refspecs ✗; `z` unshallow (level 7)
-✗; `d u` update-default-branch ✗. (Tracked as TODO: remote variable parity.)
+**Actions**: `a`/`r`/`k` add/rename/remove ✓; the variables
+(`remote.<name>.url` / `fetch` / `pushurl` / `tagOpt`) and the `C` configure
+sub-transient ✓; `remote.<name>.push` / `followRemoteHEAD` ✗; `p` prune ✗;
+`P` prune-refspecs ✗; `z` unshallow (level 7) ✗; `d u` update-default-branch
+✗.
 
 ### Reset (magit `X` / ours `O` evil, `X` vanilla)
 
@@ -449,15 +450,14 @@ TODO: full `!` run transient.)
 
 ### Missing transients
 
-**Bisect (`B`)** ✗ — mark good/bad/skip until the culprit is found, optional
-run-script; magit adds bisect sections to status while active. Args:
-`--no-checkout`, `--first-parent`, term renames (level 6). Building it: an
-in-progress banner like our rebase banner plus a start flow; all plain
-`git bisect` subcommands.
+**Bisect (`B`)** ∂ — shipped: start (bad/good revision prompts),
+mark good/bad/skip, reset, and a banner showing the decisions while active.
+Remaining: the optional run-script, `--no-checkout`, `--first-parent`, and
+term renames (level 6).
 
-**Blame** ✗ — annotated file view (`git blame --porcelain`), chunk motion,
-re-blame at addition/removal, style cycling. The display machinery is the
-bulk; the git side is one command.
+**Blame** ∂ — shipped: the annotated file view (`git blame --porcelain`,
+inline commit annotations above each run, opened via `:blame`). Remaining:
+chunk motion, re-blame at addition/removal, style cycling.
 
 **Show-refs (`y`)** ∂ — the refs browser is in: branches (with an `↑ahead
 ↓behind` margin vs their upstream), remote-tracking refs, and tags in one
@@ -477,9 +477,11 @@ binds `Z`+`%` (magit's pair); evil binds `%` — its `Z` is stash, matching
 evil-collection's `use-z-for-folds` layout. Deviation: visit opens a window
 rather than a status buffer (the GUI-native equivalent).
 
-**Patch (`W`)** ✗ — format-patch (sub-transient with mail args, reroll,
-cover letters), apply plain patch (`--index`/`--cached`/`--3way`), save diff
-as patch, request-pull. Pairs with the am gap.
+**Patch (`W`)** ∂ — shipped: create (`format-patch` a range), apply a diff
+to the worktree, and apply a mailbox as commits (`git am`, pausing into the
+sequence banner on conflict). Remaining: the mail-args/reroll/cover-letter
+sub-transient, apply's `--index`/`--cached`/`--3way` switches, save-diff-as-
+patch, request-pull.
 
 **Clone (`C`) / Init (`I`)** ✗ — both need a "no repo yet" app state (URL/
 directory prompts, progress, open the result); the git side is simple.
@@ -514,8 +516,8 @@ trailer insertion (Acked-by/Reviewed-by/Co-authored-by…) would be a natural
 commit-editor helper; changelog insertion N/A.
 
 Two build-once dependencies recur across these: a **git-variable infix
-widget** (read/cycle/set `git config` values — branch-configure,
-remote-configure, notes, mergetool, pull's `r`) and a **no-repo app state**
+widget** (now built — `Suffix::Variable`, used by branch-configure and
+remote-configure; notes/mergetool can reuse it) and a **no-repo app state**
 (clone, init).
 
 ### Non-transient magit commands
@@ -744,7 +746,7 @@ Covered above per area; the residual key-level notes:
   and `k` kill-at-point; ours is a flat pager, but adds per-command timings
   with slow-command coloring and the hidden-queries toggle. Kill is global
   (`Esc`/`C-g` cancels the running job) rather than at-point.
-- **Blame / bisect**: ✗ (no screens).
+- **Blame / bisect**: ∂ — both shipped (a blame pager and a bisect banner); see Missing transients for the remaining depth.
 - **Rebase todo**: native structured editor (keycap actions, reorder,
   confirm-on-dirty-cancel) vs git-rebase-mode buffer; todo kinds beyond
   pick/reword/edit/squash/fixup/drop (exec, break, label, reset, merge) ✗;
@@ -810,18 +812,17 @@ Grouped by kind, roughly ordered within each group.
 - (Done: `K` untrack, `R` rename-at-point in the refs browser, and `x`
   reset-quickly in the log.)
 - Reset `b` (branch) and `f` (file checkout).
-- The git-variable widget → branch-configure + remote-configure (existing
-  TODO) + tag `-u`.
+- (Done: the git-variable widget → branch-configure + remote-configure;
+  remaining variable gaps are noted per transient. Tag `-u` still open.)
 
 **Whole missing features, ranked for a standalone client**
 
-1. Blame view.
-2. Bisect (banner-driven, like our sequence UI).
-3. Patch create/apply + starting `git am`.
-4. Clone/init (needs the no-repo app state).
-5. Conflict-resolution view beyond take-ours/theirs (the ediff analog),
+1. (Done: blame view, bisect, patch create/apply + `git am` — see their
+   entries for remaining depth.)
+2. Clone/init (needs the no-repo app state).
+3. Conflict-resolution view beyond take-ours/theirs (the ediff analog),
    and/or `git mergetool` launching.
-6. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
+4. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
 
 **Deliberate deviations to keep (document, don't "fix")**
 
