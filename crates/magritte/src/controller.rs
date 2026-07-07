@@ -659,6 +659,11 @@ impl StatusView {
                         .await;
                     let tag = seed.map(|s| s.tag).unwrap_or_default();
                     this.update_in(cx, |this, window, cx| {
+                        // Drop a stale seed if the user moved on (another
+                        // popup/screen) while the tag listing loaded.
+                        if !this.ui_idle_for_prompt() {
+                            return;
+                        }
                         this.open_picker_seeded(
                             PickerAction::Tag(TagAction::Release { annotated }),
                             tag,
@@ -1116,9 +1121,9 @@ impl StatusView {
     pub(crate) fn run_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Guard on the repo before mutating anything, so a missing repo can't
         // close the editor and leave phantom pending rewords behind.
-        let Some(repo) = self.repo.clone() else {
+        if self.repo.is_none() {
             return;
-        };
+        }
         let Some(rt) = self.take_rebase_todo() else {
             return;
         };
@@ -1134,52 +1139,29 @@ impl StatusView {
                 .filter(|s| s.action == RebaseAction::Reword)
                 .map(|s| s.oid.clone()),
         );
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        if !has_pending_reword {
-            self.set_progress(progress.to_string(), cx);
-            self.begin_activity(cx);
-        }
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let result = match rt.mode {
-                        RebaseTodoMode::Start => {
-                            repo.rebase_interactive(&rt.base, &rt.steps, &rt.args)
-                        }
-                        RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
-                    };
-                    let stopped = if result.is_ok() {
-                        repo.rebase_stopped_sha()
-                    } else {
-                        None
-                    };
-                    (result, stopped)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let (result, stopped) = outcome;
-                this.clear_job_cancel(&cancel);
+        // No progress notice when a reword is queued — the message editor opens
+        // next, so a flashed "Rebasing…" would just be noise under it.
+        let progress = (!has_pending_reword).then(|| progress.to_string());
+        self.run_rebase_job(
+            progress,
+            move |repo| match rt.mode {
+                RebaseTodoMode::Start => repo.rebase_interactive(&rt.base, &rt.steps, &rt.args),
+                RebaseTodoMode::Edit => repo.rebase_edit_todo(&rt.steps),
+            },
+            move |this, result, stopped, window, cx| {
                 if result.is_ok() {
                     if let Some(stopped) = stopped {
                         if this.open_pending_rebase_reword(stopped, window, cx) {
-                            if !has_pending_reword {
-                                this.end_activity(cx);
-                            }
                             return;
                         }
                     }
                 }
                 this.report(done, result, cx);
                 this.refresh(cx);
-                if !has_pending_reword {
-                    this.end_activity(cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
+            },
+            window,
+            cx,
+        );
     }
 
     /// Cancel the rebase-todo editor — but if the plan has unsaved edits, ask
@@ -1483,6 +1465,12 @@ impl StatusView {
                 .spawn(async move { repo.published_on("HEAD", &branches) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                // The probe raced user input: if another screen, popup, or
+                // confirmation took over meanwhile, drop the result rather
+                // than popping an editor/prompt over it.
+                if !this.ui_idle_for_prompt() {
+                    return;
+                }
                 let Some(target) = published else {
                     this.proceed_history_rewrite(command, switches, window, cx);
                     return;
@@ -1536,45 +1524,77 @@ impl StatusView {
 
     /// Continue past a resolved stop.
     pub(crate) fn sequence_continue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sequence_control_blocked(cx) {
+            return;
+        }
         if let Some(kind) = self.sequence_kind() {
-            if kind == SequenceKind::Rebase {
-                if let Some(repo) = self.repo.clone() {
-                    cx.spawn_in(window, async move |this, cx| {
-                        let stopped = cx
-                            .background_executor()
-                            .spawn(async move { repo.rebase_stopped_sha() })
-                            .await;
-                        this.update_in(cx, |this, window, cx| {
-                            if let Some(stopped) = stopped {
-                                if this.open_pending_rebase_reword(stopped, window, cx) {
-                                    return;
-                                }
+            if kind == SequenceKind::Rebase && self.repo.is_some() {
+                // Probe for an app-managed reword stop first (off the UI
+                // thread — the probe resolves the git dir); the whole probe
+                // + continue runs as one job so a key bounce can't fire two.
+                self.run_rebase_job(
+                    None,
+                    |_repo| Ok(()),
+                    move |this, _result, stopped, window, cx| {
+                        if let Some(stopped) = stopped {
+                            if this.open_pending_rebase_reword(stopped, window, cx) {
+                                return;
                             }
-                            this.run_sequence(SeqOp::Continue, kind, cx);
-                        })
-                        .ok();
-                    })
-                    .detach();
-                    return;
-                }
+                        }
+                        this.run_sequence(SeqOp::Continue, kind, cx);
+                    },
+                    window,
+                    cx,
+                );
+                return;
             }
             self.run_sequence(SeqOp::Continue, kind, cx);
         }
     }
 
     /// Skip the current step.
-    pub(crate) fn sequence_skip(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sequence_skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sequence_control_blocked(cx) {
+            return;
+        }
         if let Some(kind) = self.sequence_kind() {
-            if kind == SequenceKind::Rebase {
-                if let Some(repo) = self.repo.clone() {
-                    if let Some(stopped) = repo.rebase_stopped_sha() {
-                        self.pending_rebase_rewords
-                            .retain(|oid| !(stopped.starts_with(oid) || oid.starts_with(&stopped)));
-                    }
-                }
+            if kind == SequenceKind::Rebase && self.repo.is_some() {
+                // A skipped stop's pending reword no longer applies. Async like
+                // continue — the sibling probe used to run on the UI thread.
+                self.run_rebase_job(
+                    None,
+                    |_repo| Ok(()),
+                    move |this, _result, stopped, _window, cx| {
+                        if let Some(stopped) = stopped {
+                            this.pending_rebase_rewords.retain(|oid| {
+                                !(stopped.starts_with(oid) || oid.starts_with(&stopped))
+                            });
+                        }
+                        this.run_sequence(SeqOp::Skip, kind, cx);
+                    },
+                    window,
+                    cx,
+                );
+                return;
             }
             self.run_sequence(SeqOp::Skip, kind, cx);
         }
+    }
+
+    /// Whether a sequence control must wait: another mutating job is running
+    /// (continuing mid-push, or a bounced double-press, would race it — git
+    /// would hit the index lock anyway). Reports why, so the keypress isn't
+    /// silently ignored.
+    fn sequence_control_blocked(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.job_cancel.is_some() {
+            self.set_status(
+                "Another operation is running (Esc cancels it)".to_string(),
+                false,
+                cx,
+            );
+            return true;
+        }
+        false
     }
 
     /// Abort — discards the operation's progress, so confirm first (like magit).
@@ -1828,34 +1848,37 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.as_ref() else {
-            return;
-        };
-        let remotes = repo.remotes().unwrap_or_default();
-        if remotes.is_empty() {
-            self.set_status("No remotes configured".to_string(), false, cx);
-            return;
-        }
-        let existing = repo.remote_branches().unwrap_or_default();
-        // Pull lists only existing branches (you can't pull one that doesn't
-        // exist). Push seeds the same-named target on every remote — like magit —
-        // so `origin/<current>` is always a normal candidate, existing or not.
-        let choices = match &transfer {
-            Transfer::PushRef { branch } if create => {
-                targets::seed_push_branches(repo, &remotes, branch, existing)
-            }
-            _ => existing,
-        };
         let create_mode = if create {
             CreateMode::RemoteBranch
         } else {
             CreateMode::None
         };
-        self.open_picker(
+        // The full remote-branch listing scales with the remotes' ref count, so
+        // it loads into the picker asynchronously (like the branch/tag pickers)
+        // rather than stalling the keypress on a big repo.
+        let transfer_for_list = transfer.clone();
+        self.open_listed_picker(
             PickerAction::Transfer(transfer),
-            choices,
             create_mode,
             switches,
+            move |repo| {
+                let remotes = repo.remotes().unwrap_or_default();
+                if remotes.is_empty() {
+                    // Empty + selection-only closes with "No remotes configured".
+                    return Ok(Vec::new());
+                }
+                let existing = repo.remote_branches().unwrap_or_default();
+                // Pull lists only existing branches (you can't pull one that
+                // doesn't exist). Push seeds the same-named target on every
+                // remote — like magit — so `origin/<current>` is always a
+                // normal candidate, existing or not.
+                Ok(match &transfer_for_list {
+                    Transfer::PushRef { branch } if create => {
+                        targets::seed_push_branches(repo, &remotes, branch, existing)
+                    }
+                    _ => existing,
+                })
+            },
             window,
             cx,
         );
@@ -2432,6 +2455,14 @@ impl StatusView {
         }
     }
 
+    /// Whether a fire-and-forget probe's continuation may still open a prompt:
+    /// the user hasn't switched screens or opened a popup/confirmation since
+    /// it started. When this is false the user has moved on — drop the result
+    /// (they can re-run the command) instead of interrupting the new context.
+    pub(crate) fn ui_idle_for_prompt(&self) -> bool {
+        matches!(self.screen, Screen::Status) && self.popup.is_none() && self.confirm.is_none()
+    }
+
     /// Cancel the active mutating job, if any — killing its git subprocess.
     /// Returns whether a job was running (so the key handler can swallow the key).
     pub(crate) fn cancel_job(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2653,6 +2684,9 @@ impl StatusView {
                         .spawn(async move { repo.release_message(&tag).unwrap_or_default() })
                         .await;
                     this.update_in(cx, |this, window, cx| {
+                        if !this.ui_idle_for_prompt() {
+                            return;
+                        }
                         this.start_release_tag(chosen, target, force, message, window, cx);
                     })
                     .ok();
@@ -2819,65 +2853,43 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        self.set_progress("Rebasing…".to_string(), cx);
-        self.begin_activity(cx);
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let base = format!("{rev}^");
-                    let result = (|| {
-                        let mut steps = repo.rebase_todo(&base)?;
-                        let step = steps
-                            .iter_mut()
-                            .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
-                            .ok_or_else(|| {
-                                magritte_core::Error::Message(
-                                    "selected commit is not in the rebase range".to_string(),
-                                )
-                            })?;
-                        let oid = step.oid.clone();
-                        step.action = RebaseAction::Reword;
-                        repo.rebase_interactive(&base, &steps, &args)?;
-                        Ok::<_, magritte_core::Error>(oid)
-                    })();
-                    let stopped = if result.is_ok() {
-                        repo.rebase_stopped_sha()
-                    } else {
-                        None
-                    };
-                    (result, stopped)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let (result, stopped) = outcome;
-                this.clear_job_cancel(&cancel);
-                this.end_activity(cx);
-                match result {
-                    Ok(oid) => {
-                        this.pending_rebase_rewords.insert(oid);
-                        if let Some(stopped) = stopped {
-                            if this.open_pending_rebase_reword(stopped, window, cx) {
-                                return;
-                            }
+        self.run_rebase_job(
+            Some("Rebasing…".to_string()),
+            move |repo| {
+                let base = format!("{rev}^");
+                let mut steps = repo.rebase_todo(&base)?;
+                let step = steps
+                    .iter_mut()
+                    .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
+                    .ok_or_else(|| {
+                        magritte_core::Error::Message(
+                            "selected commit is not in the rebase range".to_string(),
+                        )
+                    })?;
+                let oid = step.oid.clone();
+                step.action = RebaseAction::Reword;
+                repo.rebase_interactive(&base, &steps, &args)?;
+                Ok(oid)
+            },
+            move |this, result, stopped, window, cx| match result {
+                Ok(oid) => {
+                    this.pending_rebase_rewords.insert(oid);
+                    if let Some(stopped) = stopped {
+                        if this.open_pending_rebase_reword(stopped, window, cx) {
+                            return;
                         }
-                        this.report("Rebased", Ok(String::new()), cx);
-                        this.refresh(cx);
                     }
-                    Err(e) => {
-                        this.report("Rebased", Err(e), cx);
-                        this.refresh(cx);
-                    }
+                    this.report("Rebased", Ok(String::new()), cx);
+                    this.refresh(cx);
                 }
-            })
-            .ok();
-        })
-        .detach();
+                Err(e) => {
+                    this.report("Rebased", Err(e), cx);
+                    this.refresh(cx);
+                }
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn pending_rebase_reword_matches(&self, stopped_sha: &str) -> bool {
@@ -2943,34 +2955,18 @@ impl StatusView {
     ) where
         F: FnOnce(&Repo) -> magritte_core::Result<String> + Send + 'static,
     {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        self.set_progress("Continuing rebase…".to_string(), cx);
-        self.begin_activity(cx);
-        cx.spawn_in(window, async move |this, cx| {
-            let stopped_for_result = stopped_sha.clone();
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let commit_result = commit(&repo);
-                    let committed = commit_result.is_ok();
-                    let result =
-                        commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
-                    let stopped = if result.is_ok() {
-                        repo.rebase_stopped_sha()
-                    } else {
-                        None
-                    };
-                    (result, stopped, committed)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let (result, stopped, committed) = outcome;
-                this.clear_job_cancel(&cancel);
-                this.end_activity(cx);
+        let stopped_for_result = stopped_sha;
+        self.run_rebase_job(
+            Some("Continuing rebase…".to_string()),
+            move |repo| {
+                let commit_result = commit(repo);
+                let committed = commit_result.is_ok();
+                let result =
+                    commit_result.and_then(|_| repo.sequence_continue(SequenceKind::Rebase));
+                Ok((committed, result))
+            },
+            move |this, outcome, stopped, window, cx| {
+                let (committed, result) = outcome.unwrap_or_else(|e| (false, Err(e)));
                 if committed {
                     this.pending_rebase_rewords.remove(&stopped_for_result);
                 }
@@ -2983,6 +2979,66 @@ impl StatusView {
                 }
                 this.report("Reworded", result, cx);
                 this.refresh(cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The shared shell of every rebase-driving job: run `op` with a cancel
+    /// flag (and optional progress + spinner), probe git's stopped-sha on
+    /// success, and hand both to `finish` on the UI thread — which typically
+    /// routes a pending reword stop into the in-app editor before reporting.
+    /// `spawn_in`, because opening that editor needs a `Window` (the plain
+    /// `run_job` family doesn't carry one).
+    fn run_rebase_job<T, F, G>(
+        &mut self,
+        progress: Option<String>,
+        op: F,
+        finish: G,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        T: Send + 'static,
+        F: FnOnce(&Repo) -> magritte_core::Result<T> + Send + 'static,
+        G: FnOnce(
+                &mut Self,
+                magritte_core::Result<T>,
+                Option<String>,
+                &mut Window,
+                &mut Context<Self>,
+            ) + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel.clone());
+        let show_activity = progress.is_some();
+        if let Some(progress) = progress {
+            self.set_progress(progress, cx);
+            self.begin_activity(cx);
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = op(&repo);
+                    let stopped = if result.is_ok() {
+                        repo.rebase_stopped_sha()
+                    } else {
+                        None
+                    };
+                    (result, stopped)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                let (result, stopped) = outcome;
+                this.clear_job_cancel(&cancel);
+                if show_activity {
+                    this.end_activity(cx);
+                }
+                finish(this, result, stopped, window, cx);
             })
             .ok();
         })

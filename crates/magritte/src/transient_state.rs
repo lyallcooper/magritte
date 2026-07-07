@@ -736,17 +736,62 @@ impl StatusView {
                     }
                 }
             }
-            // Config-variable rows show their live values (and any fallback), read
-            // straight from git config when the transient opens.
-            for var in def.variables_mut() {
-                var.value = repo.config_get(&var.variable).ok().flatten();
-                if let transient::VariableKind::Choices {
-                    fallback: Some(fallback),
-                    ..
-                } = &var.kind
-                {
-                    var.fallback_value = repo.config_get(fallback).ok().flatten();
-                }
+            // Config-variable rows show their live values (and any fallback).
+            // Read off the UI thread — the branch/remote Configure transients
+            // carry several variables, each a `git config` subprocess — and
+            // filled in place when the reads land (the popup opens instantly
+            // with the values popping in).
+            let var_keys: Vec<(String, Option<String>)> = def
+                .variables_mut()
+                .map(|v| {
+                    let fallback = match &v.kind {
+                        transient::VariableKind::Choices { fallback, .. } => {
+                            fallback.as_ref().map(|f| f.to_string())
+                        }
+                        _ => None,
+                    };
+                    (v.variable.clone(), fallback)
+                })
+                .collect();
+            if !var_keys.is_empty() {
+                let transient_id = id.to_string();
+                cx.spawn(async move |this, cx| {
+                    let values = cx
+                        .background_executor()
+                        .spawn(async move {
+                            var_keys
+                                .into_iter()
+                                .map(|(key, fallback)| {
+                                    let value = repo.config_get(&key).ok().flatten();
+                                    let fallback_value =
+                                        fallback.and_then(|f| repo.config_get(&f).ok().flatten());
+                                    (key, value, fallback_value)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        // Fill only if the same transient is still open — a
+                        // stale load must not write into a different popup.
+                        let Some(Popup::Transient(state)) = this.popup.as_mut() else {
+                            return;
+                        };
+                        if state.id != transient_id {
+                            return;
+                        }
+                        for var in state.def.variables_mut() {
+                            if let Some((_, value, fallback_value)) =
+                                values.iter().find(|(key, _, _)| *key == var.variable)
+                            {
+                                var.value = value.clone();
+                                var.fallback_value = fallback_value.clone();
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
             }
         }
         let mut state = TransientState::new(id, def, targets);
