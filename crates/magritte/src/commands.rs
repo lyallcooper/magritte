@@ -374,12 +374,8 @@ pub(crate) fn commands() -> &'static [Command] {
             "!",
             &["shell", "execute"],
             |t, _w, cx| {
-                t.open_transient(
-                    "run",
-                    transient::run_transient(),
-                    RemoteTargets::default(),
-                    cx,
-                )
+                let def = transient::run_transient(t.dir_at_point().as_deref());
+                t.open_transient("run", def, RemoteTargets::default(), cx)
             }
         ),
         top!(

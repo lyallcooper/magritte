@@ -218,8 +218,14 @@ fn line_region_scope(rows: &[CommitDiffRow], lo: usize, hi: usize) -> Option<App
 /// same flattened rows the commit editor renders.
 pub(crate) struct CommitView {
     /// The commit's full hash — passed to `diff_commit` and shown in the
-    /// view header's "Commit <sha>" line (right-click copies it).
+    /// view header's "Commit <sha>" line (drag-selectable; right-click copies).
     pub(crate) rev: String,
+    /// The active char selection within the header's "Commit <sha>" line, and
+    /// the byte the drag anchored at while the button is held. Its own tiny
+    /// state (not the body's [`CharSelection`] machinery) since the header is
+    /// one line of chrome, not a row.
+    pub(crate) header_sel: Option<CharSelection>,
+    pub(crate) header_drag: Option<usize>,
     pub(crate) body: FlatDiff,
     /// The commit's structured per-file diffs (same order as the rendered file
     /// sections), so the apply engine (`a`/`v`/`u`) can rebuild a patch for the
@@ -382,6 +388,8 @@ impl StatusView {
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
+                header_sel: None,
+                header_drag: None,
                 body,
                 files: Vec::new(),
             },
@@ -803,10 +811,19 @@ impl StatusView {
     /// Copy the open diff screen's visual selection (or the line at point),
     /// then exit visual mode — the counterpart to [`Self::copy_selection`].
     pub(crate) fn copy_flat_diff_selection(&mut self, cx: &mut Context<Self>) {
+        // The header's "Commit <sha>" selection wins, then a body char
+        // selection, then the line-wise selection.
+        if let Some(cv) = self.commit_view_mut() {
+            if let Some(sel) = cv.header_sel.filter(|c| !c.is_empty()) {
+                let text = sel.slice(&format!("Commit {}", cv.rev)).to_string();
+                cv.header_sel = None;
+                self.copy_to_clipboard(text, cx);
+                return;
+            }
+        }
         let Some(fd) = self.flat_diff_mut() else {
             return;
         };
-        // A mouse char selection takes precedence over the line-wise selection.
         let text = if let Some(sel) = fd.char_sel.filter(|c| !c.is_empty()) {
             let row_text = fd
                 .rows

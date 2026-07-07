@@ -758,63 +758,93 @@ impl StatusView {
                 }
             }
             // Config-variable rows show their live values (and any fallback).
-            // Read off the UI thread — the branch/remote Configure transients
-            // carry several variables, each a `git config` subprocess — and
-            // filled in place when the reads land (the popup opens instantly
-            // with the values popping in).
-            let var_keys: Vec<(String, Option<String>)> = def
+            // Each is a `git config` subprocess, so they're read off the UI
+            // thread *before* the popup opens (values popping into an already-
+            // open menu reads as flicker), cached per refresh generation so
+            // reopening the same transient is instant.
+            let var_keys: Vec<String> = def
                 .variables_mut()
-                .map(|v| {
+                .flat_map(|v| {
                     let fallback = match &v.kind {
                         transient::VariableKind::Choices { fallback, .. } => {
                             fallback.as_ref().map(|f| f.to_string())
                         }
                         _ => None,
                     };
-                    (v.variable.clone(), fallback)
+                    std::iter::once(v.variable.clone()).chain(fallback)
                 })
                 .collect();
-            if !var_keys.is_empty() {
-                let transient_id = id.to_string();
+            let missing: Vec<String> = var_keys
+                .iter()
+                .filter(|k| !self.transient_config_values.contains_key(*k))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                // Load the uncached values in the background, then open. The
+                // ~tens-of-ms delay reads as an instant open (magit reads the
+                // same config synchronously), and there's no pop-in.
+                let id = id.to_string();
                 cx.spawn(async move |this, cx| {
                     let values = cx
                         .background_executor()
                         .spawn(async move {
-                            var_keys
+                            missing
                                 .into_iter()
-                                .map(|(key, fallback)| {
+                                .map(|key| {
                                     let value = repo.config_get(&key).ok().flatten();
-                                    let fallback_value =
-                                        fallback.and_then(|f| repo.config_get(&f).ok().flatten());
-                                    (key, value, fallback_value)
+                                    (key, value)
                                 })
                                 .collect::<Vec<_>>()
                         })
                         .await;
                     this.update(cx, |this, cx| {
-                        // Fill only if the same transient is still open — a
-                        // stale load must not write into a different popup.
-                        let Some(Popup::Transient(state)) = this.popup.as_mut() else {
-                            return;
-                        };
-                        if state.id != transient_id {
-                            return;
-                        }
-                        for var in state.def.variables_mut() {
-                            if let Some((_, value, fallback_value)) =
-                                values.iter().find(|(key, _, _)| *key == var.variable)
-                            {
-                                var.value = value.clone();
-                                var.fallback_value = fallback_value.clone();
-                            }
-                        }
-                        cx.notify();
+                        this.transient_config_values.extend(values);
+                        this.fill_transient_variables(&mut def);
+                        this.finish_open_transient(&id, def, targets, cx);
                     })
                     .ok();
                 })
                 .detach();
+                return;
+            }
+            self.fill_transient_variables(&mut def);
+        }
+        self.finish_open_transient(id, def, targets, cx);
+    }
+
+    /// Resolve each config-variable row's value (and fallback) from the
+    /// per-refresh cache — see [`open_transient`](Self::open_transient).
+    fn fill_transient_variables(&self, def: &mut Transient) {
+        for var in def.variables_mut() {
+            var.value = self
+                .transient_config_values
+                .get(&var.variable)
+                .cloned()
+                .flatten();
+            if let transient::VariableKind::Choices {
+                fallback: Some(fallback),
+                ..
+            } = &var.kind
+            {
+                var.fallback_value = self
+                    .transient_config_values
+                    .get(fallback.as_str())
+                    .cloned()
+                    .flatten();
             }
         }
+    }
+
+    /// The tail of [`open_transient`](Self::open_transient): wrap the resolved
+    /// definition in its state (applying any saved argument defaults) and show
+    /// it. Split out so a variable-value load can finish the open on land.
+    fn finish_open_transient(
+        &mut self,
+        id: &str,
+        def: Transient,
+        targets: RemoteTargets,
+        cx: &mut Context<Self>,
+    ) {
         let mut state = TransientState::new(id, def, targets);
         // A saved argument set (magit's `transient-save`) overrides this
         // transient's defaults; that becomes the baseline, so the save hint only

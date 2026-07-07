@@ -482,6 +482,9 @@ impl StatusView {
                                                 // manages its own selection), not a
                                                 // click-to-dismiss off the content.
                                                 view.click_hit_selectable = true;
+                                                if let Some(cv) = view.commit_view_mut() {
+                                                    cv.header_sel = None;
+                                                }
                                                 if let Some(fd) = view.flat_diff_mut() {
                                                     fd.drag().mouse_down(ix, offset);
                                                     vcx.notify();
@@ -571,24 +574,74 @@ impl StatusView {
         let body = self.flat_diff_body("commit-view-rows", &cv.body, view);
 
         // The identity line, on the header row beside the close button: dim
-        // "Commit" + the full hash. Right-click copies the hash (the chrome
-        // Copy menu, like the title-bar refs); `y b` copies it too.
+        // "Commit" + the full hash, as one drag-selectable string (its own
+        // small selection state — see `CommitView::header_sel`). Right-click
+        // copies the whole hash; `y`/Cmd-C copy a drag selection.
         let rev = cv.rev.clone();
+        let text = format!("Commit {rev}");
+        let label = "Commit".len();
+        let runs = vec![
+            color_run(0..label, self.palette.dim),
+            color_run(label..text.len(), self.palette.fg),
+        ];
+        let sel = cv.header_sel.filter(|c| !c.is_empty()).map(|c| c.range());
+        let (styled, layout) = self.selectable_text(text, runs, sel);
+        let (down_layout, move_layout) = (layout.clone(), layout);
+        let (v_down, v_move, v_up) = (view.clone(), view.clone(), view.clone());
         let title = div()
             .id("commit-view-rev")
             .flex()
             .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from("Commit")),
-            )
-            .child(
-                div()
-                    .text_color(self.palette.fg)
-                    .child(SharedString::from(rev.clone())),
-            )
+            .child(styled)
+            .on_mouse_down(gpui::MouseButton::Left, {
+                move |ev: &gpui::MouseDownEvent, _window, cx: &mut gpui::App| {
+                    let offset = offset_at(&down_layout, ev.position);
+                    v_down.update(cx, |v, vcx| {
+                        if let Some(cv) = v.commit_view_mut() {
+                            // One active selection: a header drag replaces any
+                            // body selection.
+                            cv.body.char_sel = None;
+                            cv.body.visual = None;
+                            cv.header_sel = None;
+                            cv.header_drag = Some(offset);
+                            vcx.notify();
+                        }
+                    });
+                }
+            })
+            .on_mouse_move({
+                move |ev: &gpui::MouseMoveEvent, _window, cx: &mut gpui::App| {
+                    if ev.pressed_button != Some(gpui::MouseButton::Left) {
+                        return;
+                    }
+                    let offset = offset_at(&move_layout, ev.position);
+                    v_move.update(cx, |v, vcx| {
+                        if let Some(cv) = v.commit_view_mut() {
+                            let Some(anchor) = cv.header_drag else {
+                                return;
+                            };
+                            let sel = CharSelection {
+                                row: 0,
+                                anchor,
+                                cursor: offset,
+                            };
+                            if cv.header_sel != Some(sel) {
+                                cv.header_sel = Some(sel);
+                                vcx.notify();
+                            }
+                        }
+                    });
+                }
+            })
+            .on_mouse_up(gpui::MouseButton::Left, {
+                move |_, _window, cx: &mut gpui::App| {
+                    v_up.update(cx, |v, _| {
+                        if let Some(cv) = v.commit_view_mut() {
+                            cv.header_drag = None;
+                        }
+                    });
+                }
+            })
             .on_mouse_down(gpui::MouseButton::Right, {
                 let view = view.clone();
                 move |_, _window, cx: &mut gpui::App| {

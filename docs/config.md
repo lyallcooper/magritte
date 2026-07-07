@@ -258,7 +258,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |
-| `run` | `!` | Run… (transient: git or shell command, in the root or the file at point's directory) |
+| `run` | `!` | Run… (transient: git or shell command, in the root — or the file at point's directory, offered when there is one) |
 | `git-command` | `\|` (evil) / `:` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |

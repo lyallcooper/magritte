@@ -951,25 +951,43 @@ pub fn bisect_transient(bisecting: bool) -> Transient {
 /// The patch transient (magit's `W`): create patches for a range, apply a diff
 /// to the worktree, or apply a mailbox as commits (`git am`).
 /// magit's `!` run transient: a git subcommand or a raw shell command, in the
-/// repository root or the directory of the file at point. (magit's Launch
-/// group — gitk/git-gui — has no equivalent here.)
-pub fn run_transient() -> Transient {
+/// repository root — or, when the cursor is on a file in a subdirectory, in
+/// that directory (`workdir`; magit's buffer-local default-directory has no
+/// GUI equivalent, so the rows name the concrete directory and only appear
+/// when there is one). magit's Launch group — gitk/git-gui — doesn't apply.
+pub fn run_transient(workdir: Option<&str>) -> Transient {
+    let mut git = vec![Action::suffix(
+        "!",
+        "in repository root",
+        Command::RunGitTopdir,
+    )];
+    let mut shell = vec![Action::suffix(
+        "s",
+        "in repository root",
+        Command::RunShellTopdir,
+    )];
+    if let Some(dir) = workdir {
+        git.push(Action::suffix(
+            "p",
+            format!("in {dir}/ (file at point)"),
+            Command::RunGitWorkdir,
+        ));
+        shell.push(Action::suffix(
+            "S",
+            format!("in {dir}/ (file at point)"),
+            Command::RunShellWorkdir,
+        ));
+    }
     Transient {
         title: plain_title("Run"),
         groups: vec![
             Group {
                 title: plain_title("Run git subcommand"),
-                suffixes: vec![
-                    Action::suffix("!", "in repository root", Command::RunGitTopdir),
-                    Action::suffix("p", "in working directory", Command::RunGitWorkdir),
-                ],
+                suffixes: git,
             },
             Group {
                 title: plain_title("Run shell command"),
-                suffixes: vec![
-                    Action::suffix("s", "in repository root", Command::RunShellTopdir),
-                    Action::suffix("S", "in working directory", Command::RunShellWorkdir),
-                ],
+                suffixes: shell,
             },
         ],
     }

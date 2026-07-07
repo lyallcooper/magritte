@@ -463,6 +463,10 @@ struct StatusView {
     /// repository generation. Cleared on refresh so external git config changes
     /// are picked up without re-querying on every popup open.
     transient_config_defaults: HashMap<String, bool>,
+    /// Resolved git-config *values* for transient variable rows (the branch/
+    /// remote Configure entries), same lifetime: read off the UI thread before
+    /// the popup opens, cached until the next refresh so reopening is instant.
+    transient_config_values: HashMap<String, Option<String>>,
     rows: Vec<Row>,
     selected: usize,
     /// The active visual/drag/shift-click range selection — see [`Selection`].
@@ -728,6 +732,7 @@ impl StatusView {
             diff_cache: DiffCache::default(),
             commit_cache: CommitCache::default(),
             transient_config_defaults: HashMap::new(),
+            transient_config_values: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
             selection: Selection::default(),

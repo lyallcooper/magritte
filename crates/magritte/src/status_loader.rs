@@ -39,6 +39,7 @@ impl StatusView {
             .collect();
         self.diff_cache.retain(&expanded_diff_keys);
         self.transient_config_defaults.clear();
+        self.transient_config_values.clear();
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
         self.collapsed_hunks.clear();

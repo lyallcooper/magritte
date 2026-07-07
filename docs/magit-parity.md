@@ -442,7 +442,7 @@ vanilla's `:`) stay the direct git prompt, like evil-collection / magit.
 | Key | Command | Status |
 |-----|---------|--------|
 | `!` | git command in repo root | ✓ |
-| `p` / `S` | git / shell command in working directory | ✓ — the file at point's directory (the GUI reading of the buffer's directory) |
+| `p` / `S` | git / shell command in working directory | ✓ — labeled with the file at point's directory, shown only when there is one (the GUI reading of the buffer's directory) |
 | `s` | shell command in repo root | ✓ |
 | `k` `a` `b` `g` | gitk / git-gui launchers | N/A (Magritte is the GUI) |
 | `m` | `git mergetool --gui` | ✗ (meaningful standalone) |

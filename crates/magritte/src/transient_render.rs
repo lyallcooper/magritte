@@ -38,6 +38,27 @@ fn suffix_cell_px(suffix: &Suffix) -> f32 {
 
 /// Rough char count of a config variable's rendered value/choices, so its cell
 /// width estimate covers what's shown after the description.
+/// The longest a variable's displayed value may run before it's elided — an
+/// unbounded value (a long remote URL) would otherwise widen its column past
+/// the window and push the sibling variables off-screen entirely.
+const VARIABLE_VALUE_MAX: usize = 48;
+
+/// A variable's value, elided in the middle past [`VARIABLE_VALUE_MAX`] (the
+/// tail of a URL/refspec is usually the distinguishing part, so keep both ends).
+fn elide_value(value: &str) -> String {
+    let n = value.chars().count();
+    if n <= VARIABLE_VALUE_MAX {
+        return value.to_string();
+    }
+    let keep = (VARIABLE_VALUE_MAX - 1) / 2;
+    let head: String = value.chars().take(keep).collect();
+    let tail: String = value
+        .chars()
+        .skip(n - (VARIABLE_VALUE_MAX - 1 - keep))
+        .collect();
+    format!("{head}…{tail}")
+}
+
 fn variable_value_width(v: &transient::Variable) -> usize {
     match &v.kind {
         transient::VariableKind::Choices { choices, .. } => {
@@ -45,12 +66,13 @@ fn variable_value_width(v: &transient::Variable) -> usize {
             choices.iter().map(|c| c.chars().count() + 1).sum::<usize>()
                 + v.fallback_value
                     .as_ref()
-                    .map_or(0, |f| f.chars().count() + 2)
+                    .map_or(0, |f| f.chars().count().min(VARIABLE_VALUE_MAX) + 2)
                 + 2
         }
-        transient::VariableKind::Value { .. } => {
-            v.value.as_ref().map_or(6, |val| val.chars().count() + 2)
-        }
+        transient::VariableKind::Value { .. } => v
+            .value
+            .as_ref()
+            .map_or(6, |val| val.chars().count().min(VARIABLE_VALUE_MAX) + 2),
     }
 }
 
@@ -598,7 +620,7 @@ impl StatusView {
             transient::VariableKind::Value { .. } => match &var.value {
                 Some(value) => div()
                     .text_color(self.palette.modified)
-                    .child(SharedString::from(format!("({value})")))
+                    .child(SharedString::from(format!("({})", elide_value(value))))
                     .into_any_element(),
                 None => div()
                     .text_color(self.palette.dim)
@@ -631,7 +653,7 @@ impl StatusView {
                         row = row.child(
                             div()
                                 .text_color(self.palette.dim)
-                                .child(SharedString::from(format!("|→{fallback}"))),
+                                .child(SharedString::from(format!("|→{}", elide_value(fallback)))),
                         );
                     } else if let Some(default) = default {
                         row = row.child(
