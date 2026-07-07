@@ -200,7 +200,7 @@ pub(crate) fn parse_refs(refs: &str, upstream: Option<&str>) -> Vec<(String, Ref
 /// the `+`/`-` sigil).
 pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
     match row {
-        CommitDiffRow::Head(rev) => format!("Commit {rev}"),
+        CommitDiffRow::DetailsHeader => "Details".to_string(),
         CommitDiffRow::Detail(d) => d.clone(),
         CommitDiffRow::Message(m) => m.clone(),
         CommitDiffRow::Stats {
@@ -279,25 +279,6 @@ pub(crate) fn commit_metadata_lines(metadata: &CommitMetadata) -> Vec<String> {
         lines.push(format!("Refs:      {}", metadata.refs));
     }
     lines
-}
-
-pub(crate) fn prepend_commit_details(rows: &mut Vec<CommitDiffRow>, details: &[String]) {
-    if details.is_empty()
-        || rows
-            .iter()
-            .any(|row| matches!(row, CommitDiffRow::Detail(_)))
-    {
-        return;
-    }
-    // Insert the detail lines just below the "Commit <sha>" head line (magit's
-    // order), or at the very top if there's none. No separator of our own, and
-    // don't strip the base's leading blank — that makes hiding (a plain drop of
-    // the Detail rows) an exact inverse, so toggling can't leave a stray blank
-    // line. A commit with a message body still reads with a blank gap (the
-    // body's own leading blank); a bodyless commit sits flush, which is fine.
-    let at = usize::from(matches!(rows.first(), Some(CommitDiffRow::Head(_))));
-    let prefix: Vec<CommitDiffRow> = details.iter().cloned().map(CommitDiffRow::Detail).collect();
-    rows.splice(at..at, prefix);
 }
 
 pub(crate) fn message(text: &str, color: Hsla) -> Row {
@@ -445,9 +426,13 @@ impl StatusRows<'_> {
                 ),
                 SectionId::Stashes => self.push_stash_section(&mut rows),
                 SectionId::Unpushed => {
+                    // magit's heading: commits not on the upstream are
+                    // "Unmerged into" it — after a rebase they may well be on
+                    // the *push* target already, so "Unpushed" would lie;
+                    // "Unpushed to <push>" is the pushremote section below.
                     let title = match upstream {
-                        Some(t) => format!("Unpushed to {t}"),
-                        None => "Unpushed".to_string(),
+                        Some(t) => format!("Unmerged into {t}"),
+                        None => "Unmerged".to_string(),
                     };
                     let n = self.status_sections.unpushed.len();
                     self.push_commit_section(

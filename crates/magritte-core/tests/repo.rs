@@ -1,5 +1,7 @@
 mod common;
 
+use std::path::Path;
+
 use common::TestRepo;
 use magritte_core::Repo;
 
@@ -88,4 +90,32 @@ fn git_common_dir_is_shared_across_worktrees() {
     );
     // While the per-worktree git dir is its own.
     assert_ne!(linked.git_dir().unwrap().canonicalize().unwrap(), main_git);
+}
+
+#[test]
+fn run_user_and_shell_in_a_subdirectory() {
+    let t = TestRepo::new();
+    t.write("sub/inner.txt", "x\n");
+    t.commit_all("init");
+    let repo = open(&t);
+
+    // A git subcommand in the subdir resolves relative paths there.
+    let run = repo
+        .run_user_in(
+            None,
+            &["ls-files".to_string(), ".".to_string()],
+            Path::new("sub"),
+        )
+        .unwrap();
+    assert!(run.ok);
+    assert_eq!(run.stdout.trim(), "inner.txt");
+
+    // A shell line runs with the subdir as its working directory.
+    let run = repo.run_shell_in("pwd", Path::new("sub")).unwrap();
+    assert!(run.ok, "{}", run.stderr);
+    assert!(
+        run.stdout.trim().ends_with("/sub"),
+        "pwd was {}",
+        run.stdout.trim()
+    );
 }

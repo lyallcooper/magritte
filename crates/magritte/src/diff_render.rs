@@ -11,6 +11,7 @@ use gpui_component::scroll::ScrollableElement;
 
 use crate::render::{color_run, offset_at, StyleRuns};
 use crate::*;
+use gpui_component::menu::ContextMenuExt;
 
 impl StatusView {
     /// Render the commit message editor: a header, the editable text with a
@@ -164,6 +165,7 @@ impl StatusView {
                                             CommitDiffRow::File { .. }
                                                 | CommitDiffRow::Hunk(_)
                                                 | CommitDiffRow::Stats { .. }
+                                                | CommitDiffRow::DetailsHeader
                                         );
                                         let collapsed = ed.diff_collapsed.contains(&ix);
                                         // The editor's diff preview is read-only chrome — no
@@ -235,18 +237,18 @@ impl StatusView {
             )
         };
         match row {
-            // The "Commit <full-sha>" header line: the "Commit" keyword dim, the
-            // hash in the foreground, as one selectable string.
-            CommitDiffRow::Head(rev) => {
-                let text = format!("Commit {rev}");
-                let label = "Commit".len();
-                let runs = vec![
-                    color_run(0..label, self.palette.dim),
-                    color_run(label..text.len(), self.palette.fg),
-                ];
-                let (styled, layout) = self.selectable_text(text, runs, sel);
-                (base.child(styled).into_any_element(), Some(layout))
-            }
+            // The foldable header over the commit metadata: chevron + a dim
+            // "Details" label, like the diffstat summary header.
+            CommitDiffRow::DetailsHeader => (
+                base.child(chevron(!collapsed, self.palette.dim))
+                    .child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from("Details")),
+                    )
+                    .into_any_element(),
+                None,
+            ),
             // The metadata "Refs:" line: dim text with the ref names styled as
             // runs (color-coded by kind), so it's one selectable string.
             CommitDiffRow::Detail(text) if text.starts_with("Refs:") => {
@@ -445,6 +447,7 @@ impl StatusView {
                                     CommitDiffRow::File { .. }
                                         | CommitDiffRow::Hunk(_)
                                         | CommitDiffRow::Stats { .. }
+                                        | CommitDiffRow::DetailsHeader
                                 );
                                 let collapsed = fd.collapsed.contains(&ix);
                                 let has_char_sel = sel.is_some();
@@ -567,12 +570,40 @@ impl StatusView {
     pub(crate) fn render_commit_view(&self, cv: &CommitView, view: &Entity<Self>) -> gpui::Div {
         let body = self.flat_diff_body("commit-view-rows", &cv.body, view);
 
-        self.screen_scaffold()
+        // The identity line, on the header row beside the close button: dim
+        // "Commit" + the full hash. Right-click copies the hash (the chrome
+        // Copy menu, like the title-bar refs); `y b` copies it too.
+        let rev = cv.rev.clone();
+        let title = div()
+            .id("commit-view-rev")
+            .flex()
+            .items_center()
+            .gap_2()
             .child(
-                // The identity lives in the body's first line ("Commit <sha>",
-                // selectable/copyable); the header just carries the close action.
-                self.view_header(div(), "close", view),
+                div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("Commit")),
             )
+            .child(
+                div()
+                    .text_color(self.palette.fg)
+                    .child(SharedString::from(rev.clone())),
+            )
+            .on_mouse_down(gpui::MouseButton::Right, {
+                let view = view.clone();
+                move |_, _window, cx: &mut gpui::App| {
+                    let value = rev.clone();
+                    view.update(cx, |v, vcx| {
+                        v.pending_copy = Some(value);
+                        v.ctx_menu_open = true;
+                        vcx.notify();
+                    });
+                }
+            })
+            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)));
+
+        self.screen_scaffold()
+            .child(self.view_header(title, "close", view))
             .child(body)
     }
 

@@ -263,11 +263,25 @@ fn remote_config_group(remote: &str) -> Group {
                 "pushurl",
                 Completion::None,
             ),
+            Variable::value(
+                "S",
+                format!("remote.{remote}.push"),
+                "push refspec",
+                Completion::None,
+            ),
             Variable::choices(
                 "O",
                 format!("remote.{remote}.tagOpt"),
                 "tag fetching",
                 &["--no-tags", "--tags"],
+                None,
+                None,
+            ),
+            Variable::choices(
+                "h",
+                format!("remote.{remote}.followRemoteHEAD"),
+                "follow remote HEAD",
+                &["create", "always", "warn"],
                 None,
                 None,
             ),
@@ -936,6 +950,31 @@ pub fn bisect_transient(bisecting: bool) -> Transient {
 
 /// The patch transient (magit's `W`): create patches for a range, apply a diff
 /// to the worktree, or apply a mailbox as commits (`git am`).
+/// magit's `!` run transient: a git subcommand or a raw shell command, in the
+/// repository root or the directory of the file at point. (magit's Launch
+/// group — gitk/git-gui — has no equivalent here.)
+pub fn run_transient() -> Transient {
+    Transient {
+        title: plain_title("Run"),
+        groups: vec![
+            Group {
+                title: plain_title("Run git subcommand"),
+                suffixes: vec![
+                    Action::suffix("!", "in repository root", Command::RunGitTopdir),
+                    Action::suffix("p", "in working directory", Command::RunGitWorkdir),
+                ],
+            },
+            Group {
+                title: plain_title("Run shell command"),
+                suffixes: vec![
+                    Action::suffix("s", "in repository root", Command::RunShellTopdir),
+                    Action::suffix("S", "in working directory", Command::RunShellWorkdir),
+                ],
+            },
+        ],
+    }
+}
+
 pub fn patch_transient() -> Transient {
     Transient {
         title: plain_title("Patch"),

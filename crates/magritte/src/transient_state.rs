@@ -380,7 +380,13 @@ pub(crate) enum PickerAction {
     /// Cherry-pick or revert the typed revision/range with the carried args.
     PickRange(PickOp),
     /// Run an arbitrary git command typed by the user (magit's `!`).
-    RunGit,
+    /// The `!` run prompt: a git subcommand (prefilled `git `) or — with
+    /// `shell` — a raw `sh -c` line; run in the worktree-relative `dir`
+    /// (`None` = repository root).
+    Run {
+        shell: bool,
+        dir: Option<String>,
+    },
     /// Patch (magit's `W`): apply a typed patch file to the worktree, apply a
     /// mailbox as commits (`git am`), or create patch files for a typed range.
     PatchApply,
@@ -497,7 +503,13 @@ impl PickerAction {
                 transient::plain_title("Revert changes in range")
             }
             // Reads like magit's "git " prompt: the typed text follows "git".
-            PickerAction::RunGit => transient::plain_title("Run"),
+            PickerAction::Run { shell, dir } => {
+                let what = if *shell { "Run shell" } else { "Run" };
+                match dir {
+                    Some(d) if !d.is_empty() => transient::plain_title(format!("{what} in {d}/")),
+                    _ => transient::plain_title(what),
+                }
+            }
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
             PickerAction::StashMessage { .. } => transient::plain_title("Stash message (optional)"),
             PickerAction::WorktreeAddRef => transient::plain_title("Worktree for ref"),
@@ -566,7 +578,7 @@ impl PickerAction {
             PickerAction::Rebase => "rebase",
             PickerAction::PickRange(PickOp::CherryPick | PickOp::CherryApply) => "pick",
             PickerAction::PickRange(PickOp::Revert | PickOp::RevertNoCommit) => "revert",
-            PickerAction::RunGit => "run",
+            PickerAction::Run { .. } => "run",
             PickerAction::Ignore(_) => "ignore",
             PickerAction::StashMessage { .. } => "stash",
             PickerAction::WorktreeAddRef | PickerAction::WorktreeBranchName => "next",

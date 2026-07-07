@@ -39,6 +39,13 @@ impl KeymapStyle {
 /// resolves the actual remote, prompting when unconfigured).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    /// The `!` run transient's variants (magit's `magit-run`): a git
+    /// subcommand or a shell command, in the repository root or the
+    /// working directory of the file at point.
+    RunGitTopdir,
+    RunGitWorkdir,
+    RunShellTopdir,
+    RunShellWorkdir,
     PushPushRemote,
     PushUpstream,
     PushElsewhere,

@@ -407,8 +407,8 @@ multi-delete; `p` prune (local vs remote) ✗.
 **Arguments**: `-f` fetch-after-add ✓ (default on, both).
 
 **Actions**: `a`/`r`/`k` add/rename/remove ✓; the variables
-(`remote.<name>.url` / `fetch` / `pushurl` / `tagOpt`) and the `C` configure
-sub-transient ✓; `remote.<name>.push` / `followRemoteHEAD` ✗; `p` prune ✗;
+(`remote.<name>.url` / `fetch` / `pushurl` / `push` / `tagOpt` /
+`followRemoteHEAD`) and the `C` configure sub-transient ✓; `p` prune ✗;
 `P` prune-refspecs ✗; `z` unshallow (level 7) ✗; `d u` update-default-branch
 ✗.
 
@@ -434,19 +434,21 @@ fuzzy jumping).
 
 ### Run (magit `!` / ours `!`)
 
-Magit's `!` is a transient; ours is a free-text prompt prefilled with
-`git ` (POSIX-quoted split, **no shell**; output to the `$` log).
+Magit's `!` is a transient; ours now is too, with the same keys. The git
+prompts are prefilled with `git ` (POSIX-quoted split, **no shell**); the
+shell prompts run the raw line via `sh -c` (pipes, `&&`). Evil's `|` (and
+vanilla's `:`) stay the direct git prompt, like evil-collection / magit.
 
 | Key | Command | Status |
 |-----|---------|--------|
 | `!` | git command in repo root | ✓ |
-| `p` / `S` | git / shell command in buffer's directory | N/A — no "current buffer directory" in a status-centric app |
-| `s` | shell command in repo root | ≈ deleting the `git ` prefix runs any program, but with no shell semantics (no pipes/globs); `[[command]]` config entries do run `sh -c` |
+| `p` / `S` | git / shell command in working directory | ✓ — the file at point's directory (the GUI reading of the buffer's directory) |
+| `s` | shell command in repo root | ✓ |
 | `k` `a` `b` `g` | gitk / git-gui launchers | N/A (Magritte is the GUI) |
 | `m` | `git mergetool --gui` | ✗ (meaningful standalone) |
 
-The one real gap is shell interpretation for ad-hoc commands. (Tracked as
-TODO: full `!` run transient.)
+(Shell interpretation for ad-hoc commands now ships via the transient's
+`s`/`S` shell variants.)
 
 ### Missing transients
 
@@ -461,8 +463,9 @@ chunk motion, re-blame at addition/removal, style cycling.
 
 **Show-refs (`y`)** ∂ — the refs browser is in: branches (with an `↑ahead
 ↓behind` margin vs their upstream), remote-tracking refs, and tags in one
-scrollable list, colored by kind, with checkout (Return), delete (`k`/`x`),
-and rename (`R`, local branches) at point. Vanilla binds `y` (magit); evil
+scrollable list, colored by kind, with visit (Return — `magit-visit-ref`'s
+default: show the tip commit, never checkout), checkout (`b`), delete
+(`k`/`x`), and rename (`R`, local branches) at point. Vanilla binds `y` (magit); evil
 binds `yr` via its `y` yank family (matching evil-collection). Remaining: the
 comparison args (`--contains=`, `--merged[=]`, `--no-merged[=]`, `--sort=`) and
 ahead/behind vs an arbitrary comparison point (we show it vs the upstream).

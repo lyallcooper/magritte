@@ -258,7 +258,8 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |
-| `git-command` | `!` | Run a command (git by default) |
+| `run` | `!` | Run… (transient: git or shell command, in the root or the file at point's directory) |
+| `git-command` | `\|` (evil) / `:` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
 | `stage-all` | `S` | Stage all tracked changes (confirms if something is already staged) |
@@ -274,7 +275,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |
 | `copy-buffer-revision` | `y b` (evil) | Copy the current view's revision |
-| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (checkout / delete / rename at point) |
+| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (Return visits the tip commit; `b` checkout, `x`/`k` delete, `R` rename) |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
 | `check-updates` | — | Check for updates |

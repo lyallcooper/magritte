@@ -679,7 +679,7 @@ impl StatusView {
     /// Persist which status sections are collapsed to the repo scope, so the
     /// fold layout survives a restart. Sections are expanded by default, so we
     /// store only the collapsed ones. No-op without a repo scope.
-    fn persist_fold_state(&self) {
+    pub(crate) fn persist_fold_state(&self) {
         let Some(dir) = &self.worktree_scope_dir else {
             return;
         };
@@ -690,7 +690,10 @@ impl StatusView {
             .collect();
         state::save_toml(
             &state::scoped_path(dir, state::FOLDS_FILE),
-            &state::FoldState { collapsed },
+            &state::FoldState {
+                collapsed,
+                commit_details_expanded: self.commit_details_expanded,
+            },
         );
     }
 

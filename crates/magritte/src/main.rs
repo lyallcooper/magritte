@@ -441,6 +441,9 @@ struct StatusView {
     /// Hunks the user has explicitly collapsed (`FoldKey::Hunk`). Hunks default
     /// to expanded, so this tracks the exceptions rather than `expanded` does.
     collapsed_hunks: HashSet<FoldKey>,
+    /// Whether the commit view's Details section opens expanded — loaded with
+    /// the fold state and persisted per worktree when `a` toggles it.
+    commit_details_expanded: bool,
     /// Set by fold level 3 (files open, hunks closed): diffs that finish
     /// loading afterwards get their hunks collapsed on arrival, so the level
     /// covers lazily loaded diffs too. Cleared by any manual fold toggle, a
@@ -692,13 +695,16 @@ impl StatusView {
             .iter()
             .map(|s| FoldKey::Section(*s))
             .collect();
+        let mut commit_details_expanded = false;
         if let Some(dir) = &worktree_scope_dir {
             let folds = state::scoped_path(dir, state::FOLDS_FILE);
-            for id in state::load_toml_or_default::<state::FoldState>(&folds).collapsed {
+            let fold_state = state::load_toml_or_default::<state::FoldState>(&folds);
+            for id in fold_state.collapsed {
                 if let Some(section) = SectionId::from_config_id(&id) {
                     expanded.remove(&FoldKey::Section(section));
                 }
             }
+            commit_details_expanded = fold_state.commit_details_expanded;
         }
 
         let mut view = StatusView {
@@ -715,6 +721,7 @@ impl StatusView {
             error: None,
             open_error,
             expanded,
+            commit_details_expanded,
             collapsed_hunks: HashSet::new(),
             collapse_new_hunks: false,
             diff_context: DEFAULT_DIFF_CONTEXT,
@@ -1531,6 +1538,7 @@ mod tests {
         assert_eq!(km_id(&km, "p"), Some("push"));
         assert_eq!(km_id(&km, "O"), Some("reset"));
         assert_eq!(km_id(&km, "Z"), Some("stash"));
+        assert_eq!(km_id(&km, "!"), Some("run"));
         assert_eq!(km_id(&km, "|"), Some("git-command"));
         assert_eq!(km_id(&km, "V"), Some("visual"));
         assert_eq!(
@@ -1559,7 +1567,7 @@ mod tests {
         assert_eq!(km_id(&km, "n"), Some("next-section"));
         assert_eq!(km_id(&km, "p"), Some("prev-section"));
         assert_eq!(km_id(&km, ":"), Some("git-command"));
-        assert_eq!(km_id(&km, "!"), Some("git-command"));
+        assert_eq!(km_id(&km, "!"), Some("run"));
         // Vanilla's commit-at-point revert is on `V` (evil uses `_`).
         assert_eq!(km_id(&km, "V"), Some("revert-here"));
         assert_eq!(command_keys(&km, &config, "Push").as_deref(), Some("P"));
@@ -1801,8 +1809,8 @@ mod tests {
         // The keys `run_dispatch` handles: every registry command key, plus the
         // inline motions.
         const DISPATCH_KEYS: &[&str] = &[
-            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", ",", "$",
-            "%", "B", "W", // commands
+            "c", "b", "t", "M", "Z", "l", "d", "p", "F", "f", "O", "m", "r", "i", "!", "|", ",",
+            "$", "%", "B", "W", // commands
             "s", "u", "S", "U", "x", "X", // applying changes (X = evil untrack)
             "v", "tab", "g r", ":", "enter", // essential + open file + palette
             "+", "-", "0", // diff context
@@ -1970,60 +1978,25 @@ mod tests {
     }
 
     #[test]
-    fn commit_details_toggle_does_not_accumulate_blank_lines() {
-        let details = vec!["Author:    A".to_string()];
-        let mut rows = vec![
-            CommitDiffRow::Note(String::new()),
-            CommitDiffRow::File {
-                change: magritte_core::Change::Modified,
-                path: "a.txt".to_string(),
-            },
-        ];
-
-        prepend_commit_details(&mut rows, &details);
-        rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
-        prepend_commit_details(&mut rows, &details);
-
-        assert!(matches!(rows.first(), Some(CommitDiffRow::Detail(_))));
-        assert!(matches!(rows.get(1), Some(CommitDiffRow::Note(n)) if n.is_empty()));
-        assert!(matches!(rows.get(2), Some(CommitDiffRow::File { .. })));
-
-        // A bodyless commit (no leading blank): showing then hiding details must
-        // restore exactly `[File]`, not leave a stray blank line at the top.
-        let mut bodyless = vec![CommitDiffRow::File {
-            change: magritte_core::Change::Modified,
-            path: "a.txt".to_string(),
-        }];
-        prepend_commit_details(&mut bodyless, &details);
-        bodyless.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
-        assert!(
-            matches!(bodyless.as_slice(), [CommitDiffRow::File { .. }]),
-            "hiding details on a bodyless commit should leave just the file"
-        );
-    }
-
-    #[test]
-    fn commit_details_slot_below_the_head_line() {
-        // Details must appear under the "Commit <sha>" head line, not above it.
-        let details = vec!["Author:    A".to_string()];
-        let mut rows = vec![
-            CommitDiffRow::Head("deadbeef".to_string()),
+    fn commit_details_fold_hides_the_metadata_lines() {
+        // The Details section is a fold: header + metadata lines, hidden when
+        // the header index is in the collapsed set, restored when it isn't —
+        // row indices never shift, so cursor/selection state survives a toggle.
+        let rows = vec![
+            CommitDiffRow::DetailsHeader,
+            CommitDiffRow::Detail("Author:    A".to_string()),
+            CommitDiffRow::Detail("Date:      D".to_string()),
             CommitDiffRow::Note(String::new()),
             CommitDiffRow::Message("subject".to_string()),
         ];
-        prepend_commit_details(&mut rows, &details);
-        assert!(matches!(rows.first(), Some(CommitDiffRow::Head(_))));
-        assert!(matches!(rows.get(1), Some(CommitDiffRow::Detail(_))));
-        // Hiding restores the exact original order (head line still first).
-        rows.retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
-        assert!(matches!(
-            rows.as_slice(),
-            [
-                CommitDiffRow::Head(_),
-                CommitDiffRow::Note(_),
-                CommitDiffRow::Message(_)
-            ]
-        ));
+        let expanded = commit_diff_view::visible_diff_rows(&rows, &Default::default());
+        assert_eq!(expanded, vec![0, 1, 2, 3, 4]);
+        let collapsed: std::collections::HashSet<usize> = [0].into_iter().collect();
+        let folded = commit_diff_view::visible_diff_rows(&rows, &collapsed);
+        assert_eq!(folded, vec![0, 3, 4], "Detail lines fold under the header");
+        // A Detail line resolves to the Details header for Tab-at-point.
+        assert_eq!(commit_diff_view::fold_header_for(&rows, 2), Some(0));
+        assert_eq!(commit_diff_view::fold_header_for(&rows, 0), Some(0));
     }
 
     #[test]

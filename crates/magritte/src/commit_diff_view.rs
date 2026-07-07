@@ -217,11 +217,9 @@ fn line_region_scope(rows: &[CommitDiffRow], lo: usize, hi: usize) -> Option<App
 /// A single commit's detail (opened from the log): its header and diff, as the
 /// same flattened rows the commit editor renders.
 pub(crate) struct CommitView {
-    /// The commit's full hash — passed to `diff_commit` and shown in the body's
-    /// "Commit <sha>" head line.
+    /// The commit's full hash — passed to `diff_commit` and shown in the
+    /// view header's "Commit <sha>" line (right-click copies it).
     pub(crate) rev: String,
-    pub(crate) details: Vec<String>,
-    pub(crate) show_details: bool,
     pub(crate) body: FlatDiff,
     /// The commit's structured per-file diffs (same order as the rendered file
     /// sections), so the apply engine (`a`/`v`/`u`) can rebuild a patch for the
@@ -366,14 +364,11 @@ impl StatusView {
         // Carry the screen we came from so closing returns there (log or status).
         let back = Box::new(std::mem::take(&mut self.screen));
         let rev = hash.clone();
-        // Seed the body with the head line + subject so they're visible
-        // immediately — the async load replaces the body with the full message
-        // and diff once it lands.
+        // Seed the body with the subject so it's visible immediately — the
+        // async load replaces the body with the full message and diff once it
+        // lands (the sha shows in the view header from the first frame).
         let body = {
-            let mut rows = vec![
-                CommitDiffRow::Head(rev.clone()),
-                CommitDiffRow::Note(String::new()),
-            ];
+            let mut rows = Vec::new();
             if !subject.is_empty() {
                 rows.push(CommitDiffRow::Message(subject));
                 rows.push(CommitDiffRow::Note(String::new()));
@@ -387,8 +382,6 @@ impl StatusView {
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
-                details: Vec::new(),
-                show_details: false,
                 body,
                 files: Vec::new(),
             },
@@ -458,20 +451,24 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let details = commit_metadata_lines(&entry.metadata);
-        let rev = self
-            .commit_view()
-            .map(|cv| cv.rev.clone())
-            .unwrap_or_default();
-        let show_details = self.commit_view().is_some_and(|cv| cv.show_details);
-        let mut rows = self.commit_detail_rows(&rev, &entry.message, &entry.files, cx);
-        if show_details {
-            prepend_commit_details(&mut rows, &details);
-        }
+        let rows = self.commit_detail_rows(&details, &entry.message, &entry.files, cx);
+        let expanded = self.commit_details_expanded;
         let files: Vec<Arc<FileDiff>> = entry.files.iter().map(|(f, _)| f.clone()).collect();
         if let Some(cv) = self.commit_view_mut() {
-            cv.details = details;
             cv.body.set_rows(rows);
             cv.body.collapsed.clear();
+            // The Details section starts collapsed unless this repo's persisted
+            // preference says otherwise (per repo, not per commit).
+            if !expanded {
+                if let Some(ix) = cv
+                    .body
+                    .rows
+                    .iter()
+                    .position(|r| matches!(r, CommitDiffRow::DetailsHeader))
+                {
+                    cv.body.collapsed.insert(ix);
+                }
+            }
             cv.files = files;
         }
     }
@@ -559,18 +556,21 @@ impl StatusView {
 
     pub(crate) fn commit_detail_rows(
         &self,
-        rev: &str,
+        details: &[String],
         message: &str,
         files: &[(Arc<FileDiff>, Option<&'static str>)],
         cx: &mut Context<Self>,
     ) -> Vec<CommitDiffRow> {
-        // The "Commit <sha>" header line, then a blank separating it from the
-        // subject (magit's revision buffer). Details, when shown, slot between
-        // the head line and this blank.
-        let mut rows = vec![
-            CommitDiffRow::Head(rev.to_string()),
-            CommitDiffRow::Note(String::new()),
-        ];
+        // The metadata (author/committer/dates/refs) leads, under a foldable
+        // "Details" header — present by default, collapsed by default; the
+        // caller applies the persisted expanded state. ("Commit <sha>" lives
+        // in the view header, not the body.)
+        let mut rows = Vec::new();
+        if !details.is_empty() {
+            rows.push(CommitDiffRow::DetailsHeader);
+            rows.extend(details.iter().cloned().map(CommitDiffRow::Detail));
+            rows.push(CommitDiffRow::Note(String::new()));
+        }
         let mut lines = message.lines();
         // The subject (summary) as the first selectable message line, so it can
         // be selected/copied like the rest of the message.
@@ -823,28 +823,22 @@ impl StatusView {
         self.copy_to_clipboard(text, cx);
     }
 
+    /// Toggle the Details fold (`a`), persisting the preference per repo so
+    /// the next commit opens the same way.
     pub(crate) fn toggle_commit_details(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.commit_view().and_then(|cv| {
+            cv.body
+                .rows
+                .iter()
+                .position(|r| matches!(r, CommitDiffRow::DetailsHeader))
+        }) else {
+            return;
+        };
         if let Some(cv) = self.commit_view_mut() {
-            cv.show_details = !cv.show_details;
-            // Prepending/removing the detail rows shifts every row index, so
-            // fold and selection state keyed by index can't survive the toggle.
-            cv.body.collapsed.clear();
-            cv.body.visual = None;
-            cv.body.char_sel = None;
-            if cv.show_details {
-                prepend_commit_details(&mut cv.body.rows, &cv.details);
-            } else {
-                cv.body
-                    .rows
-                    .retain(|row| !matches!(row, CommitDiffRow::Detail(_)));
-                cv.body.selected = cv.body.selected.min(cv.body.rows.len().saturating_sub(1));
-                // Re-anchor the viewport too: removing rows can leave it
-                // scrolled past the new end.
-                cv.body
-                    .scroll
-                    .scroll_to_item(cv.body.selected, gpui::ScrollStrategy::Top);
-            }
-            cv.body.invalidate_visible();
+            cv.body.toggle_fold(ix);
+            let expanded = !cv.body.collapsed.contains(&ix);
+            self.commit_details_expanded = expanded;
+            self.persist_fold_state();
             cx.notify();
         }
     }
@@ -860,8 +854,18 @@ pub(crate) fn visible_diff_rows(
 ) -> Vec<usize> {
     let mut vis = Vec::with_capacity(rows.len());
     let (mut file_collapsed, mut hunk_collapsed, mut stats_collapsed) = (false, false, false);
+    let mut details_collapsed = false;
     for (ix, row) in rows.iter().enumerate() {
         match row {
+            CommitDiffRow::DetailsHeader => {
+                details_collapsed = collapsed.contains(&ix);
+                vis.push(ix);
+            }
+            CommitDiffRow::Detail(_) => {
+                if !details_collapsed {
+                    vis.push(ix);
+                }
+            }
             CommitDiffRow::Stats { .. } => {
                 stats_collapsed = collapsed.contains(&ix);
                 vis.push(ix);
@@ -900,15 +904,19 @@ pub(crate) fn visible_diff_rows(
 /// a per-file line. `None` for anything unfoldable.
 pub(crate) fn fold_header_for(rows: &[CommitDiffRow], ix: usize) -> Option<usize> {
     match rows.get(ix)? {
-        CommitDiffRow::File { .. } | CommitDiffRow::Hunk(_) | CommitDiffRow::Stats { .. } => {
-            Some(ix)
-        }
+        CommitDiffRow::File { .. }
+        | CommitDiffRow::Hunk(_)
+        | CommitDiffRow::Stats { .. }
+        | CommitDiffRow::DetailsHeader => Some(ix),
         CommitDiffRow::Line { .. } => rows[..ix]
             .iter()
             .rposition(|r| matches!(r, CommitDiffRow::Hunk(_))),
         CommitDiffRow::StatLine { .. } => rows[..ix]
             .iter()
             .rposition(|r| matches!(r, CommitDiffRow::Stats { .. })),
+        CommitDiffRow::Detail(_) => rows[..ix]
+            .iter()
+            .rposition(|r| matches!(r, CommitDiffRow::DetailsHeader)),
         _ => None,
     }
 }

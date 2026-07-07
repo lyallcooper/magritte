@@ -1,8 +1,8 @@
 //! The refs browser (`y`, magit's `magit-show-refs`): a scrollable listing of
 //! local branches, remote-tracking branches, and tags with a cursor and
-//! act-at-point verbs (checkout the ref at point, delete it). `impl StatusView`
-//! like the other view slices; the list is a flat `Vec<RefsRow>` so section
-//! headers and refs share one uniform-height list.
+//! act-at-point verbs (Return visits the tip commit, `b` checks out, plus
+//! delete/rename). `impl StatusView` like the other view slices; the list is a
+//! flat `Vec<RefsRow>` so section headers and refs share one uniform list.
 
 use gpui::{Context, UniformListScrollHandle, Window};
 use magritte_core::{LocalBranch, Repo};
@@ -198,10 +198,45 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Check out the ref at point (magit's `magit-visit-ref` / the section-map
-    /// `b`): a local branch is switched to, a remote-tracking ref DWIMs into a
-    /// local tracking branch, a tag detaches HEAD — all handled by
-    /// [`Repo::checkout`].
+    /// Visit the ref at point (Return — magit's `magit-visit-ref` default):
+    /// open its tip commit's detail over the browser, without touching the
+    /// checkout. The tip hash + subject resolve off the UI thread first.
+    pub(crate) fn refs_visit_at_point(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self
+            .refs_view()
+            .and_then(RefsView::selected_row)
+            .and_then(RefsRow::ref_name)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let entry = cx
+                .background_executor()
+                .spawn(async move { repo.log(&name, 1).ok().and_then(|mut l| l.pop()) })
+                .await;
+            this.update(cx, |this, cx| {
+                // Only if the browser is still up — the commit view opens over
+                // it (Esc returns), so a superseded screen must not be covered.
+                if this.refs_view().is_none() {
+                    return;
+                }
+                match entry {
+                    Some(e) => this.open_commit(e.hash, e.subject, cx),
+                    None => this.set_status("Could not resolve ref".to_string(), false, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Check out the ref at point (`b`): a local branch is switched to, a
+    /// remote-tracking ref DWIMs into a local tracking branch, a tag detaches
+    /// HEAD — all handled by [`Repo::checkout`].
     pub(crate) fn refs_checkout_at_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self
             .refs_view()

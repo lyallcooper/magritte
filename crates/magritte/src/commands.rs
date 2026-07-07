@@ -368,11 +368,27 @@ pub(crate) fn commands() -> &'static [Command] {
             }
         ),
         top!(
+            "run",
+            "Run",
+            Category::Commands,
+            "!",
+            &["shell", "execute"],
+            |t, _w, cx| {
+                t.open_transient(
+                    "run",
+                    transient::run_transient(),
+                    RemoteTargets::default(),
+                    cx,
+                )
+            }
+        ),
+        top!(
             "git-command",
             "Run command",
             Category::Commands,
-            "!",
-            |t, w, cx| { t.open_run_git(w, cx) }
+            "|",
+            &["git command"],
+            |t, w, cx| { t.open_run_prompt(false, None, w, cx) }
         ),
         top!("patch", "Patch", Category::Commands, "W", |t, _w, cx| {
             t.open_transient(
@@ -547,13 +563,22 @@ pub(crate) fn commands() -> &'static [Command] {
             leaf: None,
             run: |t, w, cx| t.close_screen(w, cx),
         },
-        // Refs browser act-at-point verbs (checkout Return/`b`, delete `x`/`k`,
-        // rename `R`), dispatched only in the Refs context.
+        // Refs browser act-at-point verbs (visit Return, checkout `b`, delete
+        // `x`/`k`, rename `R`), dispatched only in the Refs context. Return
+        // *shows* the ref's commit — magit's `magit-visit-ref` default — and
+        // never checks out; switching is the explicit `b`.
+        verb!(
+            "refs-visit",
+            "Visit commit",
+            ScreenSet::of(&[ScreenKind::Refs]),
+            "enter",
+            |t, _w, cx| t.refs_visit_at_point(cx)
+        ),
         verb!(
             "refs-checkout",
             "Checkout",
             ScreenSet::of(&[ScreenKind::Refs]),
-            "enter",
+            "b",
             |t, w, cx| t.refs_checkout_at_point(w, cx)
         ),
         verb!(
@@ -1372,7 +1397,7 @@ pub(crate) fn commands() -> &'static [Command] {
         ),
         jump!(
             "jump-to-unpushed-upstream",
-            "Jump to unpushed commits",
+            "Jump to unmerged commits",
             SectionId::Unpushed
         ),
         jump!(
@@ -1470,13 +1495,11 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("g p p", "jump-to-unpushed-pushremote"),
     // Evil-collection-magit remaps Magit's direct `:` git-command binding to
     // `|`; Magit's `!` run-command transient remains the canonical key.
-    ("|", "git-command"),
     // Emacs quit.
     ("ctrl-x ctrl-c", "quit"),
     // Secondary-screen close (`q` alongside `Esc`) and refs checkout (`b`
     // alongside Return) — each lands only in its command's contexts.
     ("q", "close"),
-    ("b", "refs-checkout"),
     // Rebase-todo action aliases (magit's `w`=reword, `x`=drop), landing only in
     // the rebase-todo context.
     ("w", "rebase-todo-reword"),
@@ -1520,13 +1543,11 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     // Secondary-screen close (`q`) and refs checkout (`b`); each lands only in
     // its command's contexts.
     ("q", "close"),
-    ("b", "refs-checkout"),
     // Rebase-todo action aliases (`w`=reword, `x`=drop), rebase-todo context only.
     ("w", "rebase-todo-reword"),
     ("x", "rebase-todo-drop"),
     // Magit's `G` is refresh-all; we have one buffer, so alias plain refresh.
     ("G", "refresh"),
-    (":", "git-command"),
     ("Q", "git-command"),
     ("ctrl-x ctrl-c", "quit"),
 ];
@@ -1558,7 +1579,7 @@ pub(crate) fn jump_transient() -> Transient {
                     "Unpulled from push remote",
                     "jump-to-unpulled-pushremote",
                 ),
-                entry("pu", "Unpushed to upstream", "jump-to-unpushed-upstream"),
+                entry("pu", "Unmerged into upstream", "jump-to-unpushed-upstream"),
                 entry(
                     "pp",
                     "Unpushed to push remote",
@@ -1586,6 +1607,7 @@ pub(crate) fn default_key_for_command(
             _ => cmd.key,
         },
         Vanilla => match cmd.id {
+            "git-command" => Some(":"),
             "push" => Some("P"),
             "reset" => Some("X"),
             "stash" => Some("z"),

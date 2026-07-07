@@ -63,6 +63,10 @@ pub(crate) fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> 
 pub struct FoldState {
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Whether the commit view's Details section opens expanded — a repo-wide
+    /// preference (magit-style: per repo, not per commit). Default collapsed.
+    #[serde(default)]
+    pub commit_details_expanded: bool,
 }
 
 /// Last saved application window placement.
@@ -104,6 +108,7 @@ mod tests {
             &path,
             &FoldState {
                 collapsed: vec!["staged".into(), "ignored".into()],
+                commit_details_expanded: false,
             },
         );
         assert_eq!(

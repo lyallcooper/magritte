@@ -66,6 +66,12 @@ impl StatusView {
             RemoteAdd | RemoteRename | RemoteRemove => {
                 self.dispatch_remote(command, args, window, cx)
             }
+            // The `!` run transient: git/shell, at the root or the file at
+            // point's directory (the GUI reading of magit's default-directory).
+            RunGitTopdir => self.open_run_prompt(false, None, window, cx),
+            RunGitWorkdir => self.open_run_prompt(false, self.dir_at_point(), window, cx),
+            RunShellTopdir => self.open_run_prompt(true, None, window, cx),
+            RunShellWorkdir => self.open_run_prompt(true, self.dir_at_point(), window, cx),
             BranchConfigure => self.open_branch_configure(window, cx),
             RemoteConfigure => self.open_remote_configure(window, cx),
             ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
@@ -895,19 +901,39 @@ impl StatusView {
         self.pick_selected_with_args(op, args, window, cx);
     }
 
-    /// Open the free-text command prompt (magit's `!`), prefilled with `git ` —
-    /// run a git subcommand by default, or delete the prefix to run any command.
-    pub(crate) fn open_run_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open the free-text command prompt (magit's `!` family). The git variant
+    /// is prefilled with `git ` — run a subcommand by default, or delete the
+    /// prefix to run any program; the shell variant runs the raw line via
+    /// `sh -c` (pipes, `&&`). `dir` scopes it to a worktree subdirectory
+    /// (magit's in-working-directory variants); `None` runs at the root.
+    pub(crate) fn open_run_prompt(
+        &mut self,
+        shell: bool,
+        dir: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_picker(
-            PickerAction::RunGit,
+            PickerAction::Run { shell, dir },
             Vec::new(),
             CreateMode::Value,
             Vec::new(),
             window,
             cx,
         );
-        // Prefill with the `git ` prefix; delete it to run any command.
-        self.seed_picker_input("git ", window, cx);
+        if !shell {
+            // Prefill with the `git ` prefix; delete it to run any command.
+            self.seed_picker_input("git ", window, cx);
+        }
+    }
+
+    /// The directory of the file at point, worktree-relative — what the run
+    /// transient's "in working directory" variants mean in a GUI (magit runs in
+    /// the buffer's directory). Root when the cursor isn't on a file.
+    pub(crate) fn dir_at_point(&self) -> Option<String> {
+        let path = self.path_at_point()?;
+        let parent = std::path::Path::new(&path).parent()?;
+        (!parent.as_os_str().is_empty()).then(|| parent.to_string_lossy().into_owned())
     }
 
     /// Run a user-typed command from the `!` prompt on the background executor,
@@ -918,7 +944,12 @@ impl StatusView {
     /// shell) so quoted args like `-m "two words"` stay one argv entry. The full
     /// output is recorded in the `$` log; a multi-line result opens it,
     /// otherwise the first line shows as a notice.
-    pub(crate) fn run_user_command(&mut self, input: String, cx: &mut Context<Self>) {
+    pub(crate) fn run_user_command(
+        &mut self,
+        input: String,
+        dir: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let mut parts = match shell_words::split(input.trim()) {
             Ok(p) => p,
             Err(e) => return self.set_status(format!("parse error: {e}"), false, cx),
@@ -942,10 +973,32 @@ impl StatusView {
             Some(p) => format!("{p} {}…", rest.join(" ")),
             None => format!("git {}…", rest.join(" ")),
         };
+        let dir = std::path::PathBuf::from(dir.unwrap_or_default());
         self.run_command_job(
             progress,
             true,
-            move |repo| repo.run_user(program.as_deref(), &rest),
+            move |repo| repo.run_user_in(program.as_deref(), &rest, &dir),
+            cx,
+        );
+    }
+
+    /// Run a raw shell line from the run transient's shell variants (`sh -c`,
+    /// so pipes and `&&` work), in `dir` or the repository root.
+    pub(crate) fn run_shell_prompt_command(
+        &mut self,
+        input: String,
+        dir: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let input = input.trim().to_string();
+        if input.is_empty() {
+            return;
+        }
+        let dir = std::path::PathBuf::from(dir.unwrap_or_default());
+        self.run_command_job(
+            format!("{input}…"),
+            true,
+            move |repo| repo.run_shell_in(&input, &dir),
             cx,
         );
     }
@@ -1364,7 +1417,12 @@ impl StatusView {
                 PickerAction::PickRange(op) => {
                     self.pick_rev_with_args(op, chosen.to_string(), p.switches, window, cx)
                 }
-                PickerAction::RunGit => self.run_user_command(chosen.to_string(), cx),
+                PickerAction::Run { shell: false, dir } => {
+                    self.run_user_command(chosen.to_string(), dir, cx)
+                }
+                PickerAction::Run { shell: true, dir } => {
+                    self.run_shell_prompt_command(chosen.to_string(), dir, cx)
+                }
                 PickerAction::PatchApply => self.run_patch_apply(chosen.to_string(), cx),
                 PickerAction::PatchAm => self.run_patch_am(chosen.to_string(), cx),
                 PickerAction::PatchCreate => self.run_patch_create(chosen.to_string(), cx),

@@ -443,15 +443,35 @@ impl Repo {
     /// point, so it's returned either way. The full output is recorded in the
     /// command log (`user`-flagged, so it's always shown there).
     pub fn run_user(&self, program: Option<&str>, args: &[String]) -> Result<CommandRun> {
+        self.run_user_in(program, args, Path::new(""))
+    }
+
+    /// Like [`run_user`](Self::run_user), but run in `dir` (worktree-relative)
+    /// instead of the repository root — magit's run-in-working-directory
+    /// variants.
+    pub fn run_user_in(
+        &self,
+        program: Option<&str>,
+        args: &[String],
+        dir: &Path,
+    ) -> Result<CommandRun> {
+        let cwd = self.workdir.join(dir);
         let cmd = match program {
             None => {
-                let mut c = self.git();
-                c.args(args);
+                // Like [`git`](Self::git), but rooted at `cwd` so path-relative
+                // subcommands (`git add .`) resolve where the user expects.
+                let mut c = Command::new("git");
+                c.arg("-C")
+                    .arg(&cwd)
+                    .args(["-c", "core.quotepath=false"])
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .args(args);
+                prepare_spawn(&mut c);
                 c
             }
             Some(p) => {
                 let mut c = Command::new(p);
-                c.current_dir(&self.workdir).args(args);
+                c.current_dir(&cwd).args(args);
                 prepare_spawn(&mut c);
                 c
             }
@@ -482,8 +502,15 @@ impl Repo {
     /// a non-zero exit isn't an error. Recorded in the command log as the command
     /// was written (split for display only — it runs via the shell).
     pub fn run_shell(&self, command: &str) -> Result<CommandRun> {
+        self.run_shell_in(command, Path::new(""))
+    }
+
+    /// Like [`run_shell`](Self::run_shell), but run in `dir` (worktree-relative).
+    pub fn run_shell_in(&self, command: &str, dir: &Path) -> Result<CommandRun> {
         let mut cmd = Command::new("sh");
-        cmd.current_dir(&self.workdir).arg("-c").arg(command);
+        cmd.current_dir(self.workdir.join(dir))
+            .arg("-c")
+            .arg(command);
         prepare_spawn(&mut cmd);
         let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output(cmd)?;
