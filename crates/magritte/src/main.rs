@@ -35,6 +35,7 @@ mod config;
 mod controller;
 #[cfg(feature = "debug")]
 mod debug;
+mod diff_render;
 mod editor_launch;
 mod editors;
 mod generation;
@@ -43,10 +44,12 @@ mod highlight;
 mod input;
 mod ipc;
 mod kbd;
+mod list_render;
 mod log_view;
 mod navigation;
 mod palette;
 mod picker;
+mod picker_render;
 mod refs_view;
 mod render;
 mod row_build;
@@ -57,6 +60,8 @@ mod status_label;
 mod status_loader;
 mod targets;
 mod theme;
+mod title_bar;
+mod transient_render;
 mod transient_state;
 mod watchers;
 mod window;
@@ -75,8 +80,6 @@ pub(crate) use transient_state::*;
 pub(crate) use window::*;
 pub(crate) use worktree_view::*;
 
-/// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
-type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{file_head_tail, FileHighlights, Span};
@@ -122,41 +125,12 @@ use magritte_core::{
     Status, TagsAround,
 };
 
+/// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
+type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
+
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/lyallcooper/homebrew-magritte/releases/latest";
-
-impl Transfer {
-    /// Present-tense label for the progress message.
-    fn verb(&self) -> &'static str {
-        match self {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushing",
-            Transfer::Pull { .. } | Transfer::PullRef => "Pulling",
-            Transfer::Fetch => "Fetching",
-        }
-    }
-
-    /// The minibuffer prompt (styled spans): you push the current branch *to* a
-    /// target, but pull/fetch *from* one (matching magit's "Push master to" /
-    /// "Pull from" / "Fetch from"). The branch is set off as its own span.
-    fn prompt(&self) -> Vec<TitleSpan> {
-        match self {
-            Transfer::Push { branch, .. } | Transfer::PushRef { branch } => {
-                if branch.is_empty() {
-                    transient::plain_title("Push to")
-                } else {
-                    vec![
-                        TitleSpan::text("Push "),
-                        TitleSpan::branch(branch.clone()),
-                        TitleSpan::text(" to"),
-                    ]
-                }
-            }
-            Transfer::Pull { .. } | Transfer::PullRef => transient::plain_title("Pull from"),
-            Transfer::Fetch => transient::plain_title("Fetch from"),
-        }
-    }
-}
 
 /// Whether the rebase-todo editor is composing a *new* interactive rebase or
 /// editing the remaining plan of one already in progress.
@@ -978,12 +952,6 @@ impl StatusView {
             .clone()
             .map(|r| r.with_cancel(self.read_cancel.clone()))
     }
-
-    // --- Row construction -------------------------------------------------
-
-    // --- Staging ----------------------------------------------------------
-
-    // --- Popups (transients + help) --------------------------------------
 
     /// Advance and return the screen-load generation. A screen-changing async
     /// load captures this and re-checks it before mutating the screen.

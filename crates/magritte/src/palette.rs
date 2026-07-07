@@ -46,10 +46,11 @@ impl Palette {
         // semantic tokens: many themes (e.g. Solarized) leave the base tokens
         // muted and put the vivid git colors in the highlight block. These
         // accessors fall back to the base tokens when a theme omits them.
-        // Every face is read directly from the theme — the app never blends
-        // colors at runtime. Translucent overlays (the visual-mode region, the
-        // diff line bands, the warning banner) carry their alpha in the theme's
-        // hex (`#rrggbbaa`), so they're read verbatim too.
+        // Most faces are read verbatim from the theme; translucent overlays
+        // (the visual-mode region, the diff line bands) carry their alpha in
+        // the theme's hex (`#rrggbbaa`). A few chrome washes are code-side
+        // blends via `with_alpha` (the banner below, the title bar's count and
+        // tag pills).
         let status = &t.highlight_theme.style.status;
         Palette {
             bg: t.background,

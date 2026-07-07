@@ -321,7 +321,7 @@ pub(crate) fn spacer() -> Row {
         target: None,
         kind: RowKind::Plain {
             text: String::new(),
-            color: gpui::black(),
+            color: gpui::transparent_black(),
         },
     }
 }

@@ -249,6 +249,38 @@ pub(crate) enum Transfer {
     Fetch,
 }
 
+impl Transfer {
+    /// Present-tense label for the progress message.
+    pub(crate) fn verb(&self) -> &'static str {
+        match self {
+            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushing",
+            Transfer::Pull { .. } | Transfer::PullRef => "Pulling",
+            Transfer::Fetch => "Fetching",
+        }
+    }
+
+    /// The minibuffer prompt (styled spans): you push the current branch *to* a
+    /// target, but pull/fetch *from* one (matching magit's "Push master to" /
+    /// "Pull from" / "Fetch from"). The branch is set off as its own span.
+    pub(crate) fn prompt(&self) -> Vec<TitleSpan> {
+        match self {
+            Transfer::Push { branch, .. } | Transfer::PushRef { branch } => {
+                if branch.is_empty() {
+                    transient::plain_title("Push to")
+                } else {
+                    vec![
+                        TitleSpan::text("Push "),
+                        TitleSpan::branch(branch.clone()),
+                        TitleSpan::text(" to"),
+                    ]
+                }
+            }
+            Transfer::Pull { .. } | Transfer::PullRef => transient::plain_title("Pull from"),
+            Transfer::Fetch => transient::plain_title("Fetch from"),
+        }
+    }
+}
+
 /// A branch-transient operation carried out against a picked branch/name. Some
 /// are two-step (`RenameFrom` → `RenameTo`): the first picker's confirm opens
 /// the second.
