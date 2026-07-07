@@ -66,7 +66,7 @@ impl CharSelection {
 
 /// Clamp `offset` down to the nearest char boundary at or before it, within
 /// `text` (so a byte offset from hit-testing can safely slice the string).
-fn clamp_boundary(text: &str, offset: usize) -> usize {
+pub(crate) fn clamp_boundary(text: &str, offset: usize) -> usize {
     let mut offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
         offset -= 1;

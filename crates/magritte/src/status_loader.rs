@@ -43,6 +43,12 @@ impl StatusView {
         // state across a refresh.
         self.collapsed_hunks.clear();
         self.collapse_new_hunks = false;
+        // Row indices shift too: a visual/char selection made against the old
+        // rows would silently cover different content once the reload lands
+        // (auto-fetch and focus-refresh run mid-interaction), so drop it —
+        // like magit, which deactivates the region on refresh.
+        self.selection.visual = None;
+        self.char_sel = None;
         self.error = None;
 
         if self.read_repo().is_none() {

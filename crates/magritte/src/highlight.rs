@@ -382,7 +382,9 @@ fn line_spans(
     };
 
     for (r, style) in runs {
-        let s = r.start.max(range.start);
+        // Also clamp to `pos` so an overlapping/nested run (which some grammars
+        // can produce) can't emit the same text twice.
+        let s = r.start.max(range.start).max(pos);
         let e = r.end.min(range.end);
         if s >= e {
             continue;

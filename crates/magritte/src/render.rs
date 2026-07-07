@@ -39,10 +39,14 @@ fn color_run(range: Range<usize>, color: Hsla) -> (Range<usize>, HighlightStyle)
 /// The whitespace-delimited word (token) of `text` containing byte `offset` —
 /// used by right-click to select the sha/ref/word under the cursor.
 fn word_range(text: &str, offset: usize) -> Range<usize> {
-    let offset = offset.min(text.len());
+    let offset = clamp_boundary(text, offset);
     let start = text[..offset]
-        .rfind(char::is_whitespace)
-        .map(|i| i + 1)
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        // Step past the whitespace char itself — `+ 1` would land mid-char on
+        // multibyte whitespace (NBSP, ideographic space).
+        .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     let end = text[offset..]
         .find(char::is_whitespace)
@@ -257,10 +261,6 @@ impl StatusView {
             .text_color(self.palette.fg)
     }
 
-    /// One diff line's body — the +/- sign and its syntax-highlighted content
-    /// as adjacent runs (no gap) — plus the add/remove background tint the
-    /// caller applies under its own selection rules. Shared by the status rows
-    /// and the flattened diff screens.
     /// Render `text` as a single [`StyledText`] with per-range colors (`runs`)
     /// and — when this row owns the active char selection — a selection
     /// background over `sel`. Returns the element's [`TextLayout`] (a shared
@@ -276,6 +276,14 @@ impl StatusView {
         runs: StyleRuns,
         sel: Option<Range<usize>>,
     ) -> (StyledText, TextLayout) {
+        let text = text.into();
+        // A selection can outlive the rows it was made against (a background
+        // refresh rebuilds the list); clamp so a stale range can't feed
+        // out-of-bounds offsets into the layout.
+        let sel = sel.map(|r| {
+            let end = clamp_boundary(&text, r.end);
+            clamp_boundary(&text, r.start.min(end))..end
+        });
         let highlights = merge_highlights(&runs, sel, self.palette.selection);
         let styled = StyledText::new(text).with_highlights(highlights);
         let layout = styled.layout().clone();

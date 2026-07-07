@@ -785,8 +785,11 @@ impl StatusView {
     pub(crate) fn toggle_commit_details(&mut self, cx: &mut Context<Self>) {
         if let Some(cv) = self.commit_view_mut() {
             cv.show_details = !cv.show_details;
-            // Prepending/removing the detail rows shifts every header index.
+            // Prepending/removing the detail rows shifts every row index, so
+            // fold and selection state keyed by index can't survive the toggle.
             cv.body.collapsed.clear();
+            cv.body.visual = None;
+            cv.body.char_sel = None;
             if cv.show_details {
                 prepend_commit_details(&mut cv.body.rows, &cv.details);
             } else {
