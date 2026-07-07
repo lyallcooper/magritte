@@ -37,6 +37,12 @@ pub(crate) struct FlatDiff {
     /// Set by a mouse-down on a row that had an active char selection: the
     /// following click only clears the selection (see [`Selection::char_click`]).
     pub(crate) char_click: bool,
+    /// Memoized [`visible_rows`](Self::visible_rows) projection — an O(rows)
+    /// walk otherwise repeated per frame and per keystroke on a large commit.
+    /// `RefCell` because render derives it with `&self`; every `rows`/
+    /// `collapsed` mutation must clear it (via [`Self::invalidate_visible`] or
+    /// [`Self::set_rows`]).
+    visible_cache: std::cell::RefCell<Option<std::rc::Rc<Vec<usize>>>>,
 }
 
 impl FlatDiff {
@@ -51,13 +57,44 @@ impl FlatDiff {
             drag_anchor: None,
             char_anchor: None,
             char_click: false,
+            visible_cache: std::cell::RefCell::new(None),
         }
     }
 
     /// The full-row indices currently visible: everything except lines under a
-    /// collapsed hunk and hunks/lines under a collapsed file.
-    pub(crate) fn visible_rows(&self) -> Vec<usize> {
-        visible_diff_rows(&self.rows, &self.collapsed)
+    /// collapsed hunk and hunks/lines under a collapsed file. Memoized until
+    /// the next fold/rows change (shared `Rc`, no per-call walk or copy).
+    pub(crate) fn visible_rows(&self) -> std::rc::Rc<Vec<usize>> {
+        if let Some(vis) = self.visible_cache.borrow().as_ref() {
+            return vis.clone();
+        }
+        let vis = std::rc::Rc::new(visible_diff_rows(&self.rows, &self.collapsed));
+        *self.visible_cache.borrow_mut() = Some(vis.clone());
+        vis
+    }
+
+    /// Drop the memoized projection after a direct `rows`/`collapsed` edit
+    /// (fold toggles and `set_rows` call this themselves).
+    pub(crate) fn invalidate_visible(&mut self) {
+        self.visible_cache.borrow_mut().take();
+    }
+
+    /// Replace the row model, resetting the projection cache.
+    pub(crate) fn set_rows(&mut self, rows: Vec<CommitDiffRow>) {
+        self.rows = rows;
+        self.invalidate_visible();
+    }
+
+    /// This surface's drag-selection state, packed for [`DragState`].
+    pub(crate) fn drag(&mut self) -> DragState<'_> {
+        DragState {
+            visual: &mut self.visual,
+            char_sel: &mut self.char_sel,
+            drag_anchor: &mut self.drag_anchor,
+            char_anchor: &mut self.char_anchor,
+            char_click: &mut self.char_click,
+            selected: &mut self.selected,
+        }
     }
 
     /// The fold header governing `ix`: the row itself if it's a File/Hunk header,
@@ -75,6 +112,7 @@ impl FlatDiff {
         if !self.collapsed.remove(&header) {
             self.collapsed.insert(header);
         }
+        self.invalidate_visible();
         if !self.visible_rows().contains(&self.selected) {
             self.selected = header;
         }
@@ -188,7 +226,7 @@ pub(crate) struct CommitView {
     /// The commit's structured per-file diffs (same order as the rendered file
     /// sections), so the apply engine (`a`/`v`/`u`) can rebuild a patch for the
     /// file/hunk at point. Empty until the diff loads.
-    pub(crate) files: Vec<FileDiff>,
+    pub(crate) files: Vec<Arc<FileDiff>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -202,7 +240,9 @@ pub(crate) struct CommitCacheKey {
 pub(crate) struct CommitCacheEntry {
     pub(crate) metadata: CommitMetadata,
     pub(crate) message: String,
-    pub(crate) files: Vec<(FileDiff, Option<&'static str>)>,
+    /// `Arc` so a cache hit (the entry is cloned out) and the view's apply
+    /// copy are refcount bumps, not deep copies of every parsed diff.
+    pub(crate) files: Vec<(Arc<FileDiff>, Option<&'static str>)>,
 }
 
 pub(crate) const COMMIT_CACHE_CAPACITY: usize = 64;
@@ -242,7 +282,7 @@ pub(crate) struct DiffView {
     pub(crate) body: FlatDiff,
     /// Structured per-file diffs (rendered order), for the apply engine
     /// (`a`/`v`/`u`) — same role as [`CommitView::files`].
-    pub(crate) files: Vec<FileDiff>,
+    pub(crate) files: Vec<Arc<FileDiff>>,
 }
 
 #[derive(Clone)]
@@ -374,7 +414,7 @@ impl StatusView {
                                     file_head_tail(&repo.workdir().join(d.display_path()));
                                 let lang =
                                     highlight::detect_language(d.display_path(), &head, &tail);
-                                (d, lang)
+                                (Arc::new(d), lang)
                             })
                             .collect::<Vec<_>>()
                     })?;
@@ -395,8 +435,9 @@ impl StatusView {
                     Ok(loaded) => loaded,
                     Err(e) => {
                         if let Some(cv) = this.commit_view_mut() {
-                            cv.body.rows =
-                                vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))];
+                            cv.body.set_rows(vec![CommitDiffRow::Note(format!(
+                                "diff unavailable: {e}"
+                            ))]);
                         }
                         cx.notify();
                         return;
@@ -426,10 +467,10 @@ impl StatusView {
         if show_details {
             prepend_commit_details(&mut rows, &details);
         }
-        let files: Vec<FileDiff> = entry.files.iter().map(|(f, _)| f.clone()).collect();
+        let files: Vec<Arc<FileDiff>> = entry.files.iter().map(|(f, _)| f.clone()).collect();
         if let Some(cv) = self.commit_view_mut() {
             cv.details = details;
-            cv.body.rows = rows;
+            cv.body.set_rows(rows);
             cv.body.collapsed.clear();
             cv.files = files;
         }
@@ -473,7 +514,7 @@ impl StatusView {
                                     file_head_tail(&repo.workdir().join(d.display_path()));
                                 let lang =
                                     highlight::detect_language(d.display_path(), &head, &tail);
-                                (d, lang)
+                                (Arc::new(d), lang)
                             })
                             .collect::<Vec<_>>(),
                     )
@@ -483,7 +524,7 @@ impl StatusView {
                 if !this.screen_gen.is_current(gen) || this.diff_view().is_none() {
                     return;
                 }
-                let files: Vec<FileDiff> = match &loaded {
+                let files: Vec<Arc<FileDiff>> = match &loaded {
                     Ok(fs) => fs.iter().map(|(f, _)| f.clone()).collect(),
                     Err(_) => Vec::new(),
                 };
@@ -505,7 +546,7 @@ impl StatusView {
                     Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
                 };
                 if let Some(dv) = this.diff_view_mut() {
-                    dv.body.rows = rows;
+                    dv.body.set_rows(rows);
                     dv.body.collapsed.clear();
                     dv.files = files;
                 }
@@ -520,7 +561,7 @@ impl StatusView {
         &self,
         rev: &str,
         message: &str,
-        files: &[(FileDiff, Option<&'static str>)],
+        files: &[(Arc<FileDiff>, Option<&'static str>)],
         cx: &mut Context<Self>,
     ) -> Vec<CommitDiffRow> {
         // The "Commit <sha>" header line, then a blank separating it from the
@@ -562,7 +603,7 @@ impl StatusView {
 
     /// The structured per-file diffs of the active flattened-diff screen (commit
     /// or standalone diff), in rendered order — the apply engine's patch source.
-    fn active_diff_files(&self) -> Option<&[FileDiff]> {
+    fn active_diff_files(&self) -> Option<&[Arc<FileDiff>]> {
         match &self.screen {
             Screen::Commit { view, .. } => Some(&view.files),
             Screen::Diff { view, .. } => Some(&view.files),
@@ -803,6 +844,7 @@ impl StatusView {
                     .scroll
                     .scroll_to_item(cv.body.selected, gpui::ScrollStrategy::Top);
             }
+            cv.body.invalidate_visible();
             cx.notify();
         }
     }
@@ -888,7 +930,9 @@ pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
 /// The diffstat block above the diffs (magit's overview): the "N files changed …"
 /// summary, then a per-file `path N +++---` line for each file. The summary is a
 /// collapsible header over the per-file lines. Empty when there are no files.
-pub(crate) fn diffstat_block(files: &[(FileDiff, Option<&'static str>)]) -> Vec<CommitDiffRow> {
+pub(crate) fn diffstat_block(
+    files: &[(Arc<FileDiff>, Option<&'static str>)],
+) -> Vec<CommitDiffRow> {
     if files.is_empty() {
         return Vec::new();
     }

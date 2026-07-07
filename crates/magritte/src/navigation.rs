@@ -74,6 +74,115 @@ pub(crate) fn clamp_boundary(text: &str, offset: usize) -> usize {
     offset
 }
 
+/// A mutable view over one surface's drag-selection state — the char/line
+/// mouse-selection machine shared by the status rows, the flattened diff
+/// views, and the log. Each surface packs its own fields into this (see
+/// `StatusView::status_drag`, `FlatDiff::drag`, `LogState::drag`), so the
+/// transitions — press arms a drag; movement on the anchor row selects
+/// char-wise, spanning rows goes line-wise, returning collapses back;
+/// release disarms — are written once and can't drift apart per view.
+pub(crate) struct DragState<'a> {
+    /// Anchor row of an active line-wise (visual) region.
+    pub(crate) visual: &'a mut Option<usize>,
+    /// The active same-row character selection.
+    pub(crate) char_sel: &'a mut Option<CharSelection>,
+    /// Row a held left-drag began on.
+    pub(crate) drag_anchor: &'a mut Option<usize>,
+    /// Byte offset the drag anchored at (only on selectable text).
+    pub(crate) char_anchor: &'a mut Option<usize>,
+    /// Set when the press landed on a live char selection: the coming click
+    /// only clears it.
+    pub(crate) char_click: &'a mut bool,
+    /// The surface's cursor row.
+    pub(crate) selected: &'a mut usize,
+}
+
+impl DragState<'_> {
+    /// A left press at row `ix` (`offset` = byte under the pointer when the
+    /// row is selectable text): arm a drag there, clearing any prior
+    /// selection. The caller repaints.
+    pub(crate) fn mouse_down(&mut self, ix: usize, offset: Option<usize>) {
+        *self.char_click = self.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
+        *self.char_sel = None;
+        *self.visual = None;
+        *self.drag_anchor = Some(ix);
+        *self.char_anchor = offset;
+        *self.selected = ix;
+    }
+
+    /// A held drag reaching row `ix` / byte `offset`. Char-wise while it stays
+    /// on the anchor's text, line-wise once it spans rows; returning to the
+    /// anchor re-engages char-wise (or collapses to the row when the anchor
+    /// isn't text). Returns whether anything changed (repaint).
+    pub(crate) fn mouse_move(&mut self, ix: usize, offset: Option<usize>) -> bool {
+        let Some(anchor) = *self.drag_anchor else {
+            return false;
+        };
+        if ix == anchor {
+            return match (*self.char_anchor, offset) {
+                (Some(a), Some(cursor)) => {
+                    let sel = CharSelection {
+                        row: anchor,
+                        anchor: a,
+                        cursor,
+                    };
+                    if *self.char_sel == Some(sel) && self.visual.is_none() {
+                        return false;
+                    }
+                    *self.visual = None;
+                    *self.char_sel = Some(sel);
+                    *self.selected = anchor;
+                    true
+                }
+                _ => {
+                    if self.visual.is_some() || *self.selected != anchor {
+                        *self.visual = None;
+                        *self.char_sel = None;
+                        *self.selected = anchor;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+        }
+        // Spanned rows → line-wise region. The char anchor is kept so a return
+        // to the origin row re-engages char-wise selection.
+        if *self.selected == ix && *self.visual == Some(anchor) && self.char_sel.is_none() {
+            return false;
+        }
+        *self.char_sel = None;
+        *self.visual = Some(anchor);
+        *self.selected = ix;
+        true
+    }
+
+    /// Button release: disarm the drag (the selection itself stays). Returns
+    /// whether anything changed (repaint).
+    pub(crate) fn mouse_up(&mut self) -> bool {
+        if self.drag_anchor.take().is_some() {
+            *self.char_anchor = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl StatusView {
+    /// The status surface's drag-selection state, packed for [`DragState`].
+    pub(crate) fn status_drag(&mut self) -> DragState<'_> {
+        DragState {
+            visual: &mut self.selection.visual,
+            char_sel: &mut self.char_sel,
+            drag_anchor: &mut self.selection.drag_anchor,
+            char_anchor: &mut self.selection.char_anchor,
+            char_click: &mut self.selection.char_click,
+            selected: &mut self.selected,
+        }
+    }
+}
+
 impl StatusView {
     // --- Selection & folding ---------------------------------------------
 

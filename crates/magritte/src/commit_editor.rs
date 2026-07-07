@@ -531,7 +531,7 @@ impl StatusView {
                                         file_head_tail(&repo.workdir().join(d.display_path()));
                                     let lang =
                                         highlight::detect_language(d.display_path(), &head, &tail);
-                                    (d, lang)
+                                    (Arc::new(d), lang)
                                 })
                                 .collect::<Vec<_>>();
                             (mapped, None)
@@ -579,9 +579,15 @@ impl StatusView {
     /// preview and the log's commit-detail view.
     pub(crate) fn diff_rows(
         &self,
-        files: &[(FileDiff, Option<&'static str>)],
+        files: &[(Arc<FileDiff>, Option<&'static str>)],
         cx: &mut Context<Self>,
     ) -> Vec<CommitDiffRow> {
+        // Highlighting runs here on the UI thread; highlight_diff caps each
+        // *file*, but a commit touching many files could still parse ~100k
+        // lines in one build. Past this aggregate budget, later files render
+        // unhighlighted rather than hitching the frame.
+        const HIGHLIGHT_LINE_BUDGET: usize = 20_000;
+        let mut budget = HIGHLIGHT_LINE_BUDGET;
         let default = cx.theme().foreground;
         let (fg, dim) = (self.palette.fg, self.palette.dim);
         let mut rows = Vec::new();
@@ -591,7 +597,11 @@ impl StatusView {
                 path: diff.display_path().to_string(),
             });
             let hl = match lang {
-                Some(l) if !diff.is_binary => Some(highlight::highlight_diff(diff, l, cx, default)),
+                Some(l) if !diff.is_binary && budget > 0 => {
+                    let lines: usize = diff.hunks.iter().map(|h| h.lines.len()).sum();
+                    budget = budget.saturating_sub(lines);
+                    Some(highlight::highlight_diff(diff, l, cx, default))
+                }
                 _ => None,
             };
             for (hi, hunk) in diff.hunks.iter().enumerate() {

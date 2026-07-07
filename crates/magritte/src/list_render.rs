@@ -691,12 +691,9 @@ impl StatusView {
     /// the copy path so offsets and copied text agree.
     pub(crate) fn log_row_text(
         &self,
+        ix: usize,
         entry: &magritte_core::LogEntry,
     ) -> (SharedString, StyleRuns) {
-        let upstream = self
-            .status
-            .as_ref()
-            .and_then(|s| s.head.upstream.as_deref());
         let (mut text, mut runs) = (String::new(), StyleRuns::new());
         push_run(
             &mut text,
@@ -704,9 +701,12 @@ impl StatusView {
             &entry.short_hash,
             self.palette.modified,
         );
-        for (label, kind) in parse_refs(&entry.refs, upstream) {
+        // Decorations were parsed when the entries landed (see `fill_log`);
+        // only the styling (theme-dependent) is resolved per frame.
+        let parsed = self.log().and_then(|l| l.parsed_refs.get(ix));
+        for (label, kind) in parsed.into_iter().flatten() {
             push_run(&mut text, &mut runs, " ", self.palette.fg);
-            push_styled(&mut text, &mut runs, &label, self.ref_style(kind));
+            push_styled(&mut text, &mut runs, label, self.ref_style(*kind));
         }
         push_run(&mut text, &mut runs, " ", self.palette.fg);
         push_run(&mut text, &mut runs, &entry.subject, self.palette.fg);
@@ -755,7 +755,7 @@ impl StatusView {
         // The whole `hash refs subject` as one selectable StyledText (refs as
         // styled runs); its layout drives hit-testing. The date trails, right-
         // aligned, as its own element.
-        let (text, runs) = self.log_row_text(entry);
+        let (text, runs) = self.log_row_text(ix, entry);
         let row_text = text.clone();
         let (line, layout) = self.selectable_text(text, runs, sel);
         row = row.child(line);
@@ -779,16 +779,16 @@ impl StatusView {
                 move |ev: &MouseDownEvent, _window, cx: &mut App| {
                     let offset = offset_at(&down_layout, ev.position);
                     v_down.update(cx, |this, vcx| {
+                        // Match the other surfaces: a press under an open popup
+                        // is a dismiss, not a selection.
+                        if this.popup.is_some() {
+                            return;
+                        }
                         // This press is on a log row (which manages its own
                         // selection), not a click-to-dismiss off the content.
                         this.click_hit_selectable = true;
                         if let Some(log) = this.log_mut() {
-                            log.char_click =
-                                log.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
-                            log.char_sel = None;
-                            log.drag_anchor = Some(ix);
-                            log.char_anchor = Some(offset);
-                            log.selected = ix;
+                            log.drag().mouse_down(ix, Some(offset));
                             vcx.notify();
                         }
                     });
@@ -801,35 +801,7 @@ impl StatusView {
                 let offset = offset_at(&move_layout, ev.position);
                 v_move.update(cx, |this, vcx| {
                     if let Some(log) = this.log_mut() {
-                        let (Some(anchor), Some(a)) = (log.drag_anchor, log.char_anchor) else {
-                            return;
-                        };
-                        if anchor == ix {
-                            // On the anchor row → char-wise (returning here from a
-                            // line-wise span re-engages char selection).
-                            let candidate = CharSelection {
-                                row: anchor,
-                                anchor: a,
-                                cursor: offset,
-                            };
-                            if log.char_sel == Some(candidate) && log.visual.is_none() {
-                                return;
-                            }
-                            log.visual = None;
-                            log.char_sel = Some(candidate);
-                            log.selected = anchor;
-                            vcx.notify();
-                        } else {
-                            // Spanned rows → line-wise region.
-                            if log.selected == ix
-                                && log.visual == Some(anchor)
-                                && log.char_sel.is_none()
-                            {
-                                return;
-                            }
-                            log.char_sel = None;
-                            log.visual = Some(anchor);
-                            log.selected = ix;
+                        if log.drag().mouse_move(ix, Some(offset)) {
                             vcx.notify();
                         }
                     }
@@ -838,8 +810,7 @@ impl StatusView {
             .on_mouse_up(MouseButton::Left, move |_, _window, cx: &mut App| {
                 v_up.update(cx, |this, vcx| {
                     if let Some(log) = this.log_mut() {
-                        if log.drag_anchor.take().is_some() {
-                            log.char_anchor = None;
+                        if log.drag().mouse_up() {
                             vcx.notify();
                         }
                     }

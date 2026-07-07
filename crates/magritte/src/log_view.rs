@@ -77,6 +77,10 @@ impl SquashOp {
 /// in a select mode, Return confirms the commit for the pending action.
 pub(crate) struct LogState {
     pub(crate) entries: Vec<magritte_core::LogEntry>,
+    /// Each entry's ref decorations, parsed once when the entries land (the
+    /// status rows do the same at row-build time) rather than per row per
+    /// frame. Parallel to `entries`.
+    pub(crate) parsed_refs: Vec<Vec<(String, RefKind)>>,
     pub(crate) selected: usize,
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) load: LogLoad,
@@ -99,6 +103,20 @@ pub(crate) struct LogState {
     pub(crate) drag_anchor: Option<usize>,
     pub(crate) char_anchor: Option<usize>,
     pub(crate) char_click: bool,
+}
+
+impl LogState {
+    /// This surface's drag-selection state, packed for [`DragState`].
+    pub(crate) fn drag(&mut self) -> DragState<'_> {
+        DragState {
+            visual: &mut self.visual,
+            char_sel: &mut self.char_sel,
+            drag_anchor: &mut self.drag_anchor,
+            char_anchor: &mut self.char_anchor,
+            char_click: &mut self.char_click,
+            selected: &mut self.selected,
+        }
+    }
 }
 
 /// The commit limit encoded in a log arg list (`--max-count=N` or `-nN`), if
@@ -547,6 +565,7 @@ impl StatusView {
         let gen = self.next_screen_gen();
         self.screen = Screen::Log(LogState {
             entries: Vec::new(),
+            parsed_refs: Vec::new(),
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             load: LogLoad::Loading,
@@ -575,9 +594,14 @@ impl StatusView {
         if !self.screen_gen.is_current(gen) {
             return;
         }
+        let upstream = self.status.as_ref().and_then(|s| s.head.upstream.clone());
         if let Some(log) = self.log_mut() {
             match result {
                 Ok(entries) => {
+                    log.parsed_refs = entries
+                        .iter()
+                        .map(|e| parse_refs(&e.refs, upstream.as_deref()))
+                        .collect();
                     log.entries = entries;
                     log.load = LogLoad::Loaded;
                 }
@@ -688,7 +712,7 @@ impl StatusView {
                 return None;
             }
             let entry = self.log()?.entries.get(sel.row)?;
-            let (text, _) = self.log_row_text(entry);
+            let (text, _) = self.log_row_text(sel.row, entry);
             Some(sel.slice(&text).to_string())
         });
         if let Some(text) = char_text {
@@ -705,7 +729,8 @@ impl StatusView {
             Some(
                 l.entries[lo..=hi.min(l.entries.len().saturating_sub(1))]
                     .iter()
-                    .map(|e| self.log_row_text(e).0.to_string())
+                    .enumerate()
+                    .map(|(i, e)| self.log_row_text(lo + i, e).0.to_string())
                     .collect::<Vec<_>>()
                     .join("\n"),
             )

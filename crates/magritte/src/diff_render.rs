@@ -480,16 +480,7 @@ impl StatusView {
                                                 // click-to-dismiss off the content.
                                                 view.click_hit_selectable = true;
                                                 if let Some(fd) = view.flat_diff_mut() {
-                                                    // A press on a live char selection means
-                                                    // the coming click just clears it.
-                                                    fd.char_click = fd.char_sel.is_some_and(|c| {
-                                                        c.row == ix && !c.is_empty()
-                                                    });
-                                                    fd.selected = ix;
-                                                    fd.visual = None;
-                                                    fd.char_sel = None;
-                                                    fd.drag_anchor = Some(ix);
-                                                    fd.char_anchor = offset;
+                                                    fd.drag().mouse_down(ix, offset);
                                                     vcx.notify();
                                                 }
                                             });
@@ -507,56 +498,9 @@ impl StatusView {
                                                 let Some(fd) = view.flat_diff_mut() else {
                                                     return;
                                                 };
-                                                let Some(anchor) = fd.drag_anchor else {
-                                                    return;
-                                                };
-                                                if ix == anchor {
-                                                    match (fd.char_anchor, offset) {
-                                                        // On the anchor text row → char-wise.
-                                                        (Some(a), Some(cursor)) => {
-                                                            let sel = CharSelection {
-                                                                row: anchor,
-                                                                anchor: a,
-                                                                cursor,
-                                                            };
-                                                            if fd.char_sel == Some(sel)
-                                                                && fd.visual.is_none()
-                                                            {
-                                                                return;
-                                                            }
-                                                            fd.visual = None;
-                                                            fd.char_sel = Some(sel);
-                                                            fd.selected = anchor;
-                                                            vcx.notify();
-                                                        }
-                                                        // Back on the anchor after going
-                                                        // line-wise → collapse to it.
-                                                        _ => {
-                                                            if fd.visual.is_some()
-                                                                || fd.selected != anchor
-                                                            {
-                                                                fd.visual = None;
-                                                                fd.char_sel = None;
-                                                                fd.selected = anchor;
-                                                                vcx.notify();
-                                                            }
-                                                        }
-                                                    }
-                                                    return;
+                                                if fd.drag().mouse_move(ix, offset) {
+                                                    vcx.notify();
                                                 }
-                                                // Spanned rows → line-wise region. Keep the
-                                                // char anchor so returning to the origin row
-                                                // re-engages char-wise selection.
-                                                if fd.selected == ix
-                                                    && fd.visual == Some(anchor)
-                                                    && fd.char_sel.is_none()
-                                                {
-                                                    return;
-                                                }
-                                                fd.char_sel = None;
-                                                fd.visual = Some(anchor);
-                                                fd.selected = ix;
-                                                vcx.notify();
                                             });
                                         }
                                     })
@@ -564,8 +508,7 @@ impl StatusView {
                                         move |_, _window, cx: &mut App| {
                                             v_up.update(cx, |view, vcx| {
                                                 if let Some(fd) = view.flat_diff_mut() {
-                                                    if fd.drag_anchor.take().is_some() {
-                                                        fd.char_anchor = None;
+                                                    if fd.drag().mouse_up() {
                                                         vcx.notify();
                                                     }
                                                 }
