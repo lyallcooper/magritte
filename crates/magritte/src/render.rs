@@ -1180,14 +1180,6 @@ impl Render for StatusView {
                     this.open_settings(window, cx);
                 }
             }))
-            // Menu-bar items that act on this window's view, routed through the
-            // command registry like their keyboard equivalents.
-            .on_action(cx.listener(|this, _: &menus::CheckForUpdates, window, cx| {
-                this.invoke_command("check-updates", window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &menus::HelpMenu, window, cx| {
-                this.invoke_command("help", window, cx)
-            }))
             // Edit > Copy reaches here only when no text input is focused (an
             // input handles it itself): copy the selection/row at point.
             .on_action(

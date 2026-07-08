@@ -14,6 +14,14 @@ impl StatusView {
     /// exists; the in-app settings screen is the other path. Held subscriptions
     /// keep both alive.
     pub(crate) fn install_watchers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The OS-level window title (Window menu, Dock window list, Mission
+        // Control) — the in-window chrome draws its own richer title bar.
+        window.set_window_title(
+            &self
+                .repo_display_name()
+                .unwrap_or_else(|| "Magritte".into()),
+        );
+
         // System light/dark: re-theme when the window's appearance flips (only
         // matters when the config follows the system, but `reapply_theme` is
         // cheap and idempotent).

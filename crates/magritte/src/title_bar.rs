@@ -484,15 +484,19 @@ impl StatusView {
     /// its ahead/behind vs upstream, and a dirty marker — styled to match the
     /// app (so it reads as chrome, not the OS bar). The `TitleBar` component
     /// handles traffic-light spacing, dragging, and (off-macOS) window controls.
-    pub(crate) fn render_title_bar(&self, view: &Entity<Self>) -> impl IntoElement {
-        let repo_name = self
-            .repo
+    /// The repo directory's name — the window's identity in the custom title
+    /// bar and the OS-level window title (Window menu, Dock, Mission Control).
+    pub(crate) fn repo_display_name(&self) -> Option<String> {
+        self.repo
             .as_ref()
             .map(|r| r.workdir())
             .unwrap_or(self.root.as_path())
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "—".to_string());
+    }
+
+    pub(crate) fn render_title_bar(&self, view: &Entity<Self>) -> impl IntoElement {
+        let repo_name = self.repo_display_name().unwrap_or_else(|| "—".to_string());
 
         let mut info = div().flex().items_center().gap_2().child(
             self.titlebar_tip(
