@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{atomic_write_text, atomic_write_toml};
@@ -109,11 +110,13 @@ pub struct Config {
     pub keymap_preset: KeymapPreset,
     /// Extra suffixes to add into a transient, keyed by the transient's command
     /// id (`branch`, `commit`, `push`, …): each inner entry maps a suffix
-    /// keystroke to a [`TransientSuffix`] — a command to run, or a toggleable git
-    /// flag. Lets users add e.g. a `b X` → delete-branch action, or a custom
-    /// switch, inside a built-in transient.
+    /// keystroke to a [`TransientSuffix`] — a command to run, a toggleable git
+    /// flag, or a placement-only move of the built-in at that key. Lets users
+    /// add e.g. a `b X` → delete-branch action, or a custom switch, inside a
+    /// built-in transient. The inner map preserves file order: entries apply
+    /// in the order written, so one can place relative to an earlier one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub transient: BTreeMap<String, BTreeMap<String, TransientSuffix>>,
+    pub transient: BTreeMap<String, IndexMap<String, TransientSuffix>>,
     /// How long (ms) after a prefix key is pressed before the which-key popup
     /// of possible continuations appears. The prefix itself waits indefinitely
     /// for the next key; this only delays the help.
@@ -258,53 +261,168 @@ pub struct CustomCommand {
     pub section: Option<String>,
 }
 
-/// A `[transient.<id>]` injection. A bare string is a command id (an action),
-/// or — if it starts with `-` — a git flag (a switch). The table forms add a
-/// switch description and/or a target `group` (the section title to place it in;
-/// switches default to "Arguments", actions to "Custom"):
+/// Where a `[transient.<id>]` entry lands in the menu. `before`/`after` place
+/// it next to the suffix invoked by that key (a built-in, or an earlier user
+/// entry — magit's `transient-insert-suffix` coordinates); `group` names a
+/// section title to append into (created at the end if missing), and is the
+/// fallback when the `before`/`after` key isn't in the transient.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Placement {
+    pub group: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+impl Placement {
+    pub const NONE: Placement = Placement {
+        group: None,
+        before: None,
+        after: None,
+    };
+}
+
+/// A `[transient.<id>]` entry. A bare string is a command id (an action), or —
+/// if it starts with `-` — a git flag (a switch). The table forms add a switch
+/// description and/or a [`Placement`]; a table with *only* placement keys moves
+/// the built-in suffix at that key:
 ///
 /// ```toml
 /// [transient.commit]
 /// "A" = "commit-amend"                                # action (command id)
 /// "-d" = "--depth=1"                                  # switch (bare flag)
 /// "-n" = { flag = "--no-verify", description = "Skip hooks" }  # switch + label
-/// "-v" = { flag = "--verbose", group = "Arguments" }  # placed in a section
+/// "-v" = { flag = "--verbose", after = "-s" }         # placed next to a key
 /// "X" = { command = "branch-delete", group = "Create" }
+/// "F" = { after = "c" }                               # move built-in `F`
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(try_from = "RawSuffix", into = "RawSuffix")]
 pub enum TransientSuffix {
     /// A bare string: a command id, or a `-`-prefixed git flag.
     Bare(String),
-    /// A table naming a command to run, optionally in a given section.
+    /// A table naming a command to run, optionally placed.
     Action {
         command: String,
-        #[serde(default)]
-        group: Option<String>,
+        placement: Placement,
     },
-    /// A table: a git flag, optionally with a description and target section.
+    /// A table: a git flag, optionally with a description and placement.
     Switch {
         flag: String,
-        #[serde(default)]
         description: String,
-        #[serde(default)]
-        group: Option<String>,
+        placement: Placement,
     },
+    /// A placement-only table: move the built-in suffix at this key.
+    Move(Placement),
 }
 
-/// A [`TransientSuffix`] interpreted: an action (command id) or a switch (flag +
-/// description), each with an optional target `group`. A bare `-`-prefixed
-/// string resolves to a switch.
+/// The on-disk shape of a [`TransientSuffix`] table, validated into the enum:
+/// `command` and `flag` are mutually exclusive and pick the kind; neither
+/// makes the entry a placement-only move.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawSuffix {
+    Bare(String),
+    Table(RawSuffixTable),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSuffixTable {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    flag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after: Option<String>,
+}
+
+impl TryFrom<RawSuffix> for TransientSuffix {
+    type Error = String;
+
+    fn try_from(raw: RawSuffix) -> Result<Self, String> {
+        let t = match raw {
+            RawSuffix::Bare(s) => return Ok(TransientSuffix::Bare(s)),
+            RawSuffix::Table(t) => t,
+        };
+        if t.before.is_some() && t.after.is_some() {
+            return Err("a transient suffix takes `before` or `after`, not both".into());
+        }
+        let placement = Placement {
+            group: t.group,
+            before: t.before,
+            after: t.after,
+        };
+        match (t.command, t.flag) {
+            (Some(_), Some(_)) => {
+                Err("a transient suffix takes `command` or `flag`, not both".into())
+            }
+            (Some(command), None) if t.description.is_some() => Err(format!(
+                "`description` only applies to a `flag` suffix (command \"{command}\")"
+            )),
+            (Some(command), None) => Ok(TransientSuffix::Action { command, placement }),
+            (None, Some(flag)) => Ok(TransientSuffix::Switch {
+                flag,
+                description: t.description.unwrap_or_default(),
+                placement,
+            }),
+            (None, None) if placement == Placement::NONE => Err(
+                "a transient suffix needs a `command`, a `flag`, or a placement \
+                 (`group`/`before`/`after`) to move the built-in at its key"
+                    .into(),
+            ),
+            (None, None) => Ok(TransientSuffix::Move(placement)),
+        }
+    }
+}
+
+impl From<TransientSuffix> for RawSuffix {
+    fn from(suffix: TransientSuffix) -> Self {
+        let table = |placement: Placement| RawSuffixTable {
+            group: placement.group,
+            before: placement.before,
+            after: placement.after,
+            ..RawSuffixTable::default()
+        };
+        match suffix {
+            TransientSuffix::Bare(s) => RawSuffix::Bare(s),
+            TransientSuffix::Action { command, placement } => RawSuffix::Table(RawSuffixTable {
+                command: Some(command),
+                ..table(placement)
+            }),
+            TransientSuffix::Switch {
+                flag,
+                description,
+                placement,
+            } => RawSuffix::Table(RawSuffixTable {
+                flag: Some(flag),
+                description: (!description.is_empty()).then_some(description),
+                ..table(placement)
+            }),
+            TransientSuffix::Move(placement) => RawSuffix::Table(table(placement)),
+        }
+    }
+}
+
+/// A [`TransientSuffix`] interpreted: an action (command id), a switch (flag +
+/// description), or a move of the built-in at its key, each with a
+/// [`Placement`]. A bare `-`-prefixed string resolves to a switch.
 pub enum SuffixKind<'a> {
     Action {
         id: &'a str,
-        group: Option<&'a str>,
+        placement: &'a Placement,
     },
     Switch {
         flag: &'a str,
         description: &'a str,
-        group: Option<&'a str>,
+        placement: &'a Placement,
     },
+    Move(&'a Placement),
 }
 
 impl TransientSuffix {
@@ -319,22 +437,26 @@ impl TransientSuffix {
             TransientSuffix::Bare(s) if s.starts_with('-') => SuffixKind::Switch {
                 flag: s,
                 description: "",
-                group: None,
+                placement: &Placement::NONE,
             },
-            TransientSuffix::Bare(s) => SuffixKind::Action { id: s, group: None },
-            TransientSuffix::Action { command, group } => SuffixKind::Action {
+            TransientSuffix::Bare(s) => SuffixKind::Action {
+                id: s,
+                placement: &Placement::NONE,
+            },
+            TransientSuffix::Action { command, placement } => SuffixKind::Action {
                 id: command,
-                group: group.as_deref(),
+                placement,
             },
             TransientSuffix::Switch {
                 flag,
                 description,
-                group,
+                placement,
             } => SuffixKind::Switch {
                 flag,
                 description,
-                group: group.as_deref(),
+                placement,
             },
+            TransientSuffix::Move(placement) => SuffixKind::Move(placement),
         }
     }
 }
@@ -899,6 +1021,83 @@ mod tests {
         assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
         assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete"));
         // added by repo
+    }
+
+    #[test]
+    fn transient_suffix_parses_all_forms_in_file_order() {
+        let cfg: Config = toml::from_str(
+            r#"
+[transient.commit]
+"A" = "commit-amend"
+"-d" = "--depth=1"
+"-n" = { flag = "--no-verify", description = "Skip hooks", after = "-a" }
+"X" = { command = "branch-delete", group = "Create", before = "c" }
+"F" = { after = "c" }
+"e" = { group = "Extras" }
+"#,
+        )
+        .unwrap();
+        let t = &cfg.transient["commit"];
+        assert_eq!(t["A"], TransientSuffix::Bare("commit-amend".into()));
+        assert!(matches!(&t["-n"], TransientSuffix::Switch { placement, .. }
+                if placement.after.as_deref() == Some("-a")));
+        assert!(matches!(&t["X"], TransientSuffix::Action { placement, .. }
+                if placement.before.as_deref() == Some("c")
+                    && placement.group.as_deref() == Some("Create")));
+        assert!(matches!(&t["F"], TransientSuffix::Move(p) if p.after.as_deref() == Some("c")));
+        assert!(
+            matches!(&t["e"], TransientSuffix::Move(p) if p.group.as_deref() == Some("Extras"))
+        );
+        // Entries keep the order they were written in, not key order.
+        let keys: Vec<_> = t.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["A", "-d", "-n", "X", "F", "e"]);
+    }
+
+    #[test]
+    fn transient_suffix_rejects_invalid_tables() {
+        let bad = [
+            r#""x" = { command = "a", flag = "--b" }"#, // both kinds
+            r#""x" = { flag = "--b", before = "a", after = "c" }"#, // both directions
+            r#""x" = { command = "a", description = "d" }"#, // description on an action
+            r#""x" = {}"#,                              // nothing at all
+            r#""x" = { flagg = "--typo" }"#,            // unknown field
+        ];
+        for entry in bad {
+            let src = format!("[transient.commit]\n{entry}\n");
+            assert!(
+                toml::from_str::<Config>(&src).is_err(),
+                "should reject: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_entries_keep_file_order_through_the_repo_merge() {
+        // Non-alphabetical on purpose: file order must survive the
+        // `toml::Value` round trip and the deep merge — global order first,
+        // a repo override staying in place, repo-new entries appended.
+        let mut base = val("[transient.commit]\n\"z\" = \"commit-amend\"\n\"-a\" = \"--all\"\n");
+        let overlay =
+            val("[transient.commit]\n\"-a\" = \"--allow-empty\"\n\"b\" = \"commit-extend\"\n");
+        deep_merge(&mut base, overlay);
+        let cfg: Config = base.try_into().unwrap();
+        let t = &cfg.transient["commit"];
+        let keys: Vec<_> = t.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["z", "-a", "b"]);
+        assert_eq!(t["-a"], TransientSuffix::Bare("--allow-empty".into()));
+    }
+
+    #[test]
+    fn transient_suffix_round_trips() {
+        let cfg: Config = toml::from_str(
+            "[transient.commit]\n\
+             \"A\" = \"commit-amend\"\n\
+             \"-n\" = { flag = \"--no-verify\", description = \"Skip hooks\", after = \"-a\" }\n\
+             \"F\" = { after = \"c\" }\n",
+        )
+        .unwrap();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg, "round-trips");
     }
 
     #[test]

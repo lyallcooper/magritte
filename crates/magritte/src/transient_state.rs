@@ -649,8 +649,154 @@ pub(crate) fn suffix_key(s: &Suffix) -> Option<&str> {
     }
 }
 
+/// Apply a user's `[transient.<id>]` entries to a built-in definition, in
+/// config order: `"unbound"` removals first, then each remaining entry either
+/// injects a new suffix (a switch or an action) or — when it carries only
+/// placement fields — moves the suffix bound at its key. Because entries apply
+/// sequentially, a later one can place relative to an earlier injection.
+/// `describe_action` labels an injected action from its command id.
+pub(crate) fn apply_user_suffixes(
+    def: &mut Transient,
+    entries: &indexmap::IndexMap<String, config::TransientSuffix>,
+    describe_action: impl Fn(&str) -> String,
+) {
+    // `"key" = "unbound"` removes the built-in suffix at that key
+    // (keymap-style), so a user can drop a default flag/action.
+    let unbinds: std::collections::HashSet<&str> = entries
+        .iter()
+        .filter(|(_, spec)| spec.is_unbound())
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if !unbinds.is_empty() {
+        for g in def.groups.iter_mut() {
+            g.suffixes
+                .retain(|s| suffix_key(s).is_none_or(|k| !unbinds.contains(k)));
+        }
+        // Drop a section emptied by the removals.
+        def.groups.retain(|g| !g.suffixes.is_empty());
+    }
+
+    for (key, spec) in entries {
+        match spec.kind() {
+            // The `"unbound"` removal entries (handled above).
+            _ if spec.is_unbound() => {}
+            // A custom switch (toggleable git flag). Skip if the key collides
+            // with a built-in switch/option (which wins).
+            config::SuffixKind::Switch {
+                flag,
+                description,
+                placement,
+            } => {
+                if def.switches().any(|s| s.key == *key) || def.option_for(key).is_some() {
+                    continue;
+                }
+                let suffix = transient::Suffix::Switch(transient::Switch::new(
+                    key.clone(),
+                    flag.to_string(),
+                    description.to_string(),
+                ));
+                insert_suffix(def, suffix, key, placement, "Arguments");
+            }
+            // A custom action runs a command by id. Skip if the key collides
+            // with a built-in action (which wins).
+            config::SuffixKind::Action { id, placement } => {
+                if def.action_for(key).is_some() {
+                    continue;
+                }
+                let suffix = transient::Suffix::Custom(transient::Custom {
+                    key: key.clone(),
+                    description: describe_action(id),
+                    id: id.to_string(),
+                });
+                insert_suffix(def, suffix, key, placement, "Custom");
+            }
+            config::SuffixKind::Move(placement) => move_suffix(def, key, placement),
+        }
+    }
+}
+
+/// Insert an injected suffix at its placement: next to the `before`/`after`
+/// key when that resolves, else appended into the `group` (or the kind's
+/// default section — where switches or actions respectively live).
+fn insert_suffix(
+    def: &mut Transient,
+    suffix: transient::Suffix,
+    key: &str,
+    placement: &config::Placement,
+    default_group: &str,
+) {
+    if let Some((gi, si)) = placement_index(def, key, placement) {
+        def.groups[gi].suffixes.insert(si, suffix);
+        return;
+    }
+    let title = placement.group.as_deref().unwrap_or(default_group);
+    append_to_group(def, title, suffix);
+}
+
+/// Move the suffix bound at `key` (a built-in, or an earlier injection) to the
+/// entry's placement. With no resolvable destination it stays put; a move that
+/// empties its old section drops the section, like an unbind.
+fn move_suffix(def: &mut Transient, key: &str, placement: &config::Placement) {
+    let Some((gi, si)) = find_suffix(def, key) else {
+        return;
+    };
+    if placement_index(def, key, placement).is_none() && placement.group.is_none() {
+        return;
+    }
+    let suffix = def.groups[gi].suffixes.remove(si);
+    // Reinsert before sweeping the (possibly emptied) source section, so the
+    // re-resolved indices stay valid. A relative target that resolved above
+    // still does — it's a different, still-present suffix — leaving `None` to
+    // the `group` fallback checked above.
+    match placement_index(def, key, placement) {
+        Some((gi, si)) => def.groups[gi].suffixes.insert(si, suffix),
+        None => append_to_group(def, placement.group.as_deref().unwrap_or_default(), suffix),
+    }
+    def.groups.retain(|g| !g.suffixes.is_empty());
+}
+
+/// The insertion position a `before`/`after` placement names: the target key's
+/// slot (plus one for `after`). `None` when the placement has no relative
+/// part, the target key isn't in the transient, or it names the entry itself.
+fn placement_index(
+    def: &Transient,
+    self_key: &str,
+    placement: &config::Placement,
+) -> Option<(usize, usize)> {
+    let (target, offset) = match (&placement.before, &placement.after) {
+        (Some(t), _) => (t, 0),
+        (None, Some(t)) => (t, 1),
+        (None, None) => return None,
+    };
+    if target == self_key {
+        return None;
+    }
+    find_suffix(def, target).map(|(gi, si)| (gi, si + offset))
+}
+
+/// The (group, suffix) position of the suffix invoked by `key`, if any.
+fn find_suffix(def: &Transient, key: &str) -> Option<(usize, usize)> {
+    def.groups.iter().enumerate().find_map(|(gi, g)| {
+        g.suffixes
+            .iter()
+            .position(|s| suffix_key(s) == Some(key))
+            .map(|si| (gi, si))
+    })
+}
+
+/// Append into the section with this title if it exists, else create it.
+fn append_to_group(def: &mut Transient, title: &str, suffix: transient::Suffix) {
+    match def.groups.iter_mut().find(|g| group_text(g) == title) {
+        Some(g) => g.suffixes.push(suffix),
+        None => def.groups.push(transient::Group {
+            title: transient::plain_title(title),
+            suffixes: vec![suffix],
+        }),
+    }
+}
+
 impl StatusView {
-    /// Open a transient, injecting any user-configured suffixes for it. `id` is
+    /// Open a transient, applying any user-configured suffixes for it. `id` is
     /// the transient's command id (`branch`, `commit`, …); pass `""` for ad-hoc
     /// transients (e.g. an in-progress sequence) that take no user suffixes.
     pub(crate) fn open_transient(
@@ -660,87 +806,16 @@ impl StatusView {
         targets: RemoteTargets,
         cx: &mut Context<Self>,
     ) {
-        // `"key" = "unbound"` removes the built-in suffix at that key
-        // (keymap-style), so a user can drop a default flag/action — or replace
-        // it by also binding their own at the same key.
-        let unbinds: std::collections::HashSet<&str> = self
-            .config
-            .transient
-            .get(id)
-            .into_iter()
-            .flatten()
-            .filter(|(_, spec)| spec.is_unbound())
-            .map(|(k, _)| k.as_str())
-            .collect();
-        if !unbinds.is_empty() {
-            for g in def.groups.iter_mut() {
-                g.suffixes
-                    .retain(|s| suffix_key(s).is_none_or(|k| !unbinds.contains(k)));
-            }
-            // Drop a section emptied by the removals.
-            def.groups.retain(|g| !g.suffixes.is_empty());
-        }
-
-        // Each injection resolves to a (target section title, suffix). Switches
-        // default into the "Arguments" section (where switches live), actions
-        // into "Custom"; an explicit `group` overrides.
-        let placements: Vec<(String, transient::Suffix)> = self
-            .config
-            .transient
-            .get(id)
-            .into_iter()
-            .flatten()
-            // Skip the `"unbound"` removal entries (handled above).
-            .filter(|(_, spec)| !spec.is_unbound())
-            .filter_map(|(key, spec)| match spec.kind() {
-                // A custom switch (toggleable git flag). Skip if the key collides
-                // with a built-in switch/option (which wins).
-                config::SuffixKind::Switch {
-                    flag,
-                    description,
-                    group,
-                } => {
-                    if def.switches().any(|s| s.key == *key) || def.option_for(key).is_some() {
-                        return None;
-                    }
-                    let suffix = transient::Suffix::Switch(transient::Switch::new(
-                        key.clone(),
-                        flag.to_string(),
-                        description.to_string(),
-                    ));
-                    Some((group.unwrap_or("Arguments").to_string(), suffix))
-                }
-                // A custom action runs a command by id. Skip if the key collides
-                // with a built-in action (which wins).
-                config::SuffixKind::Action { id, group } => {
-                    if def.action_for(key).is_some() {
-                        return None;
-                    }
-                    // Label it with the command's title (built-in or user,
-                    // placeholders expanded), falling back to the raw id if it
-                    // names nothing.
-                    let description = all_commands(&self.config)
-                        .find(|c| c.id == id)
-                        .map(|c| self.expand_placeholders_display(c.title))
-                        .unwrap_or_else(|| id.to_string());
-                    let suffix = transient::Suffix::Custom(transient::Custom {
-                        key: key.clone(),
-                        description,
-                        id: id.to_string(),
-                    });
-                    Some((group.unwrap_or("Custom").to_string(), suffix))
-                }
-            })
-            .collect();
-        // Append into the named section if it exists, else create it.
-        for (group_title, suffix) in placements {
-            match def.groups.iter_mut().find(|g| group_text(g) == group_title) {
-                Some(g) => g.suffixes.push(suffix),
-                None => def.groups.push(transient::Group {
-                    title: transient::plain_title(group_title),
-                    suffixes: vec![suffix],
-                }),
-            }
+        if let Some(entries) = self.config.transient.get(id) {
+            // An action is labeled with its command's title (built-in or user,
+            // placeholders expanded), falling back to the raw id if it names
+            // nothing.
+            apply_user_suffixes(&mut def, entries, |cid| {
+                all_commands(&self.config)
+                    .find(|c| c.id == cid)
+                    .map(|c| self.expand_placeholders_display(c.title))
+                    .unwrap_or_else(|| cid.to_string())
+            });
         }
         // A switch tied to a git-config key starts on when that config is
         // enabled (e.g. --gpg-sign with commit.gpgSign=true); toggling it off
@@ -1231,7 +1306,171 @@ pub(crate) fn conflicting_switch_keys(def: &Transient, key: &str) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::cycle_choice;
+    use super::*;
+    use indexmap::IndexMap;
+    use magritte_core::transient::{Command, Group, Suffix, Switch};
+
+    /// A miniature commit-like transient: Arguments (`-a`, `-s`), Create (`c`),
+    /// Edit HEAD (`e`).
+    fn fixture() -> Transient {
+        Transient {
+            title: transient::plain_title("Commit"),
+            groups: vec![
+                Group {
+                    title: transient::plain_title("Arguments"),
+                    suffixes: vec![
+                        Suffix::Switch(Switch::new("-a", "--all", "Stage all")),
+                        Suffix::Switch(Switch::new("-s", "--signoff", "Signoff")),
+                    ],
+                },
+                Group {
+                    title: transient::plain_title("Create"),
+                    suffixes: vec![transient::Action::suffix(
+                        "c",
+                        "Commit",
+                        Command::CommitCreate,
+                    )],
+                },
+                Group {
+                    title: transient::plain_title("Edit HEAD"),
+                    suffixes: vec![transient::Action::suffix(
+                        "e",
+                        "Extend",
+                        Command::CommitCreate,
+                    )],
+                },
+            ],
+        }
+    }
+
+    /// `(section title, suffix keys)` per group — the whole layout as one
+    /// comparable value.
+    fn layout(def: &Transient) -> Vec<(String, Vec<String>)> {
+        def.groups
+            .iter()
+            .map(|g| {
+                let keys = g
+                    .suffixes
+                    .iter()
+                    .filter_map(|s| suffix_key(s).map(str::to_string))
+                    .collect();
+                (group_text(g), keys)
+            })
+            .collect()
+    }
+
+    /// Parse `[transient.<id>]` entries from TOML and apply them, labeling
+    /// injected actions `cmd:<id>`.
+    fn apply(def: &mut Transient, entries: &str) {
+        let entries: IndexMap<String, config::TransientSuffix> = toml::from_str(entries).unwrap();
+        apply_user_suffixes(def, &entries, |id| format!("cmd:{id}"));
+    }
+
+    #[test]
+    fn injects_a_switch_after_a_key() {
+        let mut def = fixture();
+        apply(&mut def, r#""-n" = { flag = "--no-verify", after = "-a" }"#);
+        assert_eq!(layout(&def)[0].1, ["-a", "-n", "-s"]);
+    }
+
+    #[test]
+    fn injects_an_action_before_a_key_in_that_group() {
+        let mut def = fixture();
+        apply(&mut def, r#""x" = { command = "user.x", before = "c" }"#);
+        assert_eq!(layout(&def)[1].1, ["x", "c"]);
+        let Suffix::Custom(custom) = &def.groups[1].suffixes[0] else {
+            panic!("expected the injected custom suffix");
+        };
+        assert_eq!(custom.description, "cmd:user.x");
+    }
+
+    #[test]
+    fn missing_target_falls_back_to_group_then_default() {
+        let mut def = fixture();
+        apply(
+            &mut def,
+            r#""-n" = { flag = "--x", after = "-z", group = "Create" }"#,
+        );
+        assert_eq!(layout(&def)[1].1, ["c", "-n"]);
+
+        let mut def = fixture();
+        apply(&mut def, r#""-n" = { flag = "--x", after = "-z" }"#);
+        assert_eq!(layout(&def)[0].1, ["-a", "-s", "-n"]);
+    }
+
+    #[test]
+    fn entries_apply_in_config_order_and_can_reference_each_other() {
+        let mut def = fixture();
+        apply(
+            &mut def,
+            "\"z\" = \"user.z\"\n\"y\" = { command = \"user.y\", before = \"z\" }\n",
+        );
+        let custom = layout(&def)
+            .into_iter()
+            .find(|(title, _)| title == "Custom")
+            .expect("created Custom section");
+        assert_eq!(custom.1, ["y", "z"]);
+    }
+
+    #[test]
+    fn moves_a_builtin_within_its_group() {
+        let mut def = fixture();
+        apply(&mut def, r#""-s" = { before = "-a" }"#);
+        assert_eq!(layout(&def)[0].1, ["-s", "-a"]);
+    }
+
+    #[test]
+    fn moving_the_last_suffix_out_drops_the_emptied_section() {
+        let mut def = fixture();
+        apply(&mut def, r#""c" = { after = "e" }"#);
+        let layout = layout(&def);
+        assert!(
+            layout.iter().all(|(title, _)| title != "Create"),
+            "emptied section dropped: {layout:?}"
+        );
+        assert_eq!(
+            layout[1],
+            ("Edit HEAD".into(), vec!["e".into(), "c".into()])
+        );
+    }
+
+    #[test]
+    fn moves_a_builtin_into_a_created_group() {
+        let mut def = fixture();
+        apply(&mut def, r#""c" = { group = "Extras" }"#);
+        let layout = layout(&def);
+        assert_eq!(
+            layout.last().unwrap(),
+            &("Extras".to_string(), vec!["c".to_string()])
+        );
+    }
+
+    #[test]
+    fn unresolvable_moves_are_noops() {
+        let mut def = fixture();
+        let before = layout(&def);
+        apply(&mut def, r#""c" = { after = "zz" }"#); // unknown target
+        apply(&mut def, r#""zz" = { after = "c" }"#); // unknown key
+        apply(&mut def, r#""c" = { after = "c" }"#); // names itself
+        assert_eq!(layout(&def), before);
+    }
+
+    #[test]
+    fn unbinds_apply_before_placements() {
+        let mut def = fixture();
+        apply(
+            &mut def,
+            "\"-a\" = \"unbound\"\n\"-n\" = { flag = \"--no-verify\", after = \"-s\" }\n",
+        );
+        assert_eq!(layout(&def)[0].1, ["-s", "-n"]);
+    }
+
+    #[test]
+    fn colliding_injection_still_loses_to_the_builtin() {
+        let mut def = fixture();
+        apply(&mut def, r#""-a" = { flag = "--other", before = "-s" }"#);
+        assert_eq!(layout(&def)[0].1, ["-a", "-s"]);
+    }
 
     #[test]
     fn cycle_choice_wraps_through_unset() {

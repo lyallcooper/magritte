@@ -315,11 +315,13 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 
 ## Transients
 
-A `[transient.<id>]` table adds extra suffixes into a transient menu — magit's
-`transient-append-suffix`. The section id is the transient's command id
-(`commit`, `branch`, `tag`, `remote`, `stash`, `reset`, `rebase`, `merge`,
-`ignore`, `log`, `diff`, `push`, `pull`, `fetch`); each entry maps a suffix key
-to either an **action** (a command to run) or a **switch** (a toggleable git flag).
+A `[transient.<id>]` table customizes a transient menu — magit's
+`transient-append-suffix`/`transient-insert-suffix`. The section id is the
+transient's command id (`commit`, `branch`, `tag`, `remote`, `stash`, `reset`,
+`rebase`, `merge`, `ignore`, `log`, `diff`, `push`, `pull`, `fetch`); each entry
+maps a suffix key to an **action** (a command to run), a **switch** (a
+toggleable git flag), or — with only placement fields — a **move** of the
+built-in suffix at that key.
 
 ```toml
 [transient.branch]
@@ -329,11 +331,11 @@ to either an **action** (a command to run) or a **switch** (a toggleable git fla
 "-d" = "--depth=1"             # switch: a bare `-`-prefixed flag, no label
 
 [transient.commit]
-"A" = "commit-amend"           # action
-"-v" = { flag = "--verbose", description = "Show diff in message" }  # switch + label
-# place a suffix in an existing section by its title:
-"-S" = { flag = "--gpg-sign", group = "Arguments" }
-"W" = { command = "commit-amend", group = "Edit HEAD" }
+"A" = "commit-amend"           # action, default placement (a "Custom" section)
+"-v" = { flag = "--verbose", description = "Show diff in message", after = "-s" }
+"W" = { command = "user.wip", group = "Create" }
+"F" = { after = "c" }          # move: put built-in Fixup right after Commit
+"x" = { group = "Arguments" }  # move: into another section
 ```
 
 - **Actions** — the value is a **command id** (no leading `-`); runs with
@@ -341,14 +343,23 @@ to either an **action** (a command to run) or a **switch** (a toggleable git fla
 - **Switches** — the value is a **git flag**: a bare string like `"--depth=1"`,
   or a table `{ flag = "…", description = "…" }` to add a label. Keyed dash-first
   (`-d`, toggled with `- d`), like the built-in switches.
-- **Section** — the table form takes an optional `group` (a section title). By
-  default switches land in **Arguments** and actions in a **Custom** group; name
-  a `group` to place them elsewhere (a title that doesn't exist is created).
+- **Placement** — the table form takes `before = "<key>"` or `after = "<key>"`
+  (one, not both) to sit next to the suffix invoked by that key, or `group`
+  (a section title) to append into that section — created at the end when no
+  section has the title. A `before`/`after` key that isn't in the menu falls
+  back to the `group`; with no placement at all, switches land in **Arguments**
+  and actions in a **Custom** section.
+- **Moves** — a table with *only* placement fields relocates the built-in
+  suffix at that key, e.g. `"F" = { after = "c" }`. A move whose key or target
+  isn't in the menu does nothing; moving the last suffix out of a section
+  removes the section.
 - **Remove** a built-in suffix with the sentinel `"key" = "unbound"` (like
-  `[keymap]`), e.g. `"-n" = "unbound"` drops commit's `--no-verify`. Pair it with
-  a new binding at the same key to *replace* a default.
+  `[keymap]`), e.g. `"-n" = "unbound"` drops commit's `--no-verify`.
 
-A key already used by a built-in suffix is left alone (the built-in wins). A
+Entries apply **in the order written** — the global config's first, then the
+repo overlay's additions — so a later entry can place itself relative to an
+earlier one. A key already used by a built-in suffix is left alone (the
+built-in wins); to repurpose one, unbind it and add yours at another key. A
 section that isn't a real transient, an action naming an unknown command, or a
 switch whose key isn't dash-prefixed warns at startup.
 

@@ -1643,7 +1643,7 @@ mod tests {
             Sfx::Switch {
                 flag: "--no-verify".into(),
                 description: "Skip hooks".into(),
-                group: None,
+                placement: config::Placement::NONE,
             },
         ); // table form, ok
         commit.insert("x".into(), Sfx::Bare("--depth=1".into())); // flag, non-dash key

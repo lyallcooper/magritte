@@ -3662,7 +3662,7 @@ dependencies = [
 
 [[package]]
 name = "magritte"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "async-channel 2.5.0",
  "core-foundation 0.10.0",
@@ -3673,6 +3673,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "image",
+ "indexmap",
  "libc",
  "magritte-core",
  "notify",
@@ -6702,6 +6703,7 @@ version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
+ "indexmap",
  "serde",
  "serde_spanned 0.6.9",
  "toml_datetime 0.6.11",
