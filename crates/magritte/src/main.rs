@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use gpui::{
     actions, div, px, uniform_list, AnyElement, AnyWindowHandle, App, ClipboardItem, Context,
-    Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyBinding, KeyDownEvent, Menu,
-    MenuItem, MouseButton, MouseDownEvent, SharedString, Styled, UniformListScrollHandle,
+    Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyBinding, KeyDownEvent,
+    MouseButton, MouseDownEvent, SharedString, Styled, UniformListScrollHandle,
 };
 
 mod app_icon;
@@ -47,6 +47,7 @@ mod jobs;
 mod kbd;
 mod list_render;
 mod log_view;
+mod menus;
 mod navigation;
 mod palette;
 mod picker;
@@ -1157,14 +1158,6 @@ fn main() {
             KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-,", OpenSettings, Some(STATUS_CONTEXT)),
         ]);
-        cx.set_menus(vec![
-            Menu::new("Magritte").items([
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action("Quit Magritte", Quit),
-            ]),
-            Menu::new("File").items([MenuItem::action("Close Window", CloseWindow)]),
-        ]);
         // Closing the last window (red traffic light included) quits the app.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -1177,6 +1170,9 @@ fn main() {
         // Expose the registry as a global so views can open-or-focus repo
         // windows (worktree "visit") without threading it through constructors.
         cx.set_global(GlobalRepoWindows(windows.clone()));
+        // The native menu bar / Dock menu (after the window registry global,
+        // which File > Open Repository… resolves through).
+        menus::install(cx);
         if single_instance {
             let (tx, rx) = async_channel::unbounded();
             if ipc::start_server(tx) {
