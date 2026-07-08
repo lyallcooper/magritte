@@ -52,11 +52,20 @@ pub(crate) fn status_window_options(
     // launch, avoid the stiff "exactly centered on the primary display" feel:
     // place a reasonably sized window near the top-left of the usable display
     // area, and let later windows cascade from the active Magritte window.
-    let bounds = load_window_state(worktree_scope_dir)
-        .and_then(|state| window_state_to_bounds(state, cx))
-        .unwrap_or_else(|| WindowBounds::Windowed(default_status_window_bounds(cx)));
+    //
+    // gpui window frames are per-display: a placement is the pair of a display
+    // and bounds relative to it (`WindowOptions.display_id` picks the display —
+    // primary when `None`). Both restore paths resolve the display alongside
+    // the bounds, so a window comes back on the monitor it was closed on.
+    let (bounds, display_id) = load_window_state(worktree_scope_dir)
+        .and_then(|state| window_state_to_placement(state, cx))
+        .unwrap_or_else(|| {
+            let (bounds, display_id) = default_status_window_placement(cx);
+            (WindowBounds::Windowed(bounds), display_id)
+        });
     WindowOptions {
         window_bounds: Some(bounds),
+        display_id,
         // Transparent system bar so our custom `TitleBar` draws the chrome
         // (and the traffic lights sit where the component expects them).
         titlebar: Some(gpui_component::TitleBar::title_bar_options()),
@@ -89,51 +98,42 @@ pub(crate) fn save_window_state(
     }
 }
 
-pub(crate) fn default_status_window_bounds(cx: &mut App) -> Bounds<gpui::Pixels> {
-    if let Some(bounds) = cx.active_window().and_then(|window| {
+/// Cascade from the active Magritte window on its own display, else near the
+/// top-left of the primary display's usable area.
+pub(crate) fn default_status_window_placement(
+    cx: &mut App,
+) -> (Bounds<gpui::Pixels>, Option<gpui::DisplayId>) {
+    if let Some((bounds, display)) = cx.active_window().and_then(|window| {
         window
-            .update(cx, |_, window, _| window.window_bounds().get_bounds())
+            .update(cx, |_, window, cx| {
+                (window.window_bounds().get_bounds(), window.display(cx))
+            })
             .ok()
     }) {
-        return fit_window_bounds_on_display(
-            Bounds::new(bounds.origin + point(px(25.0), px(25.0)), bounds.size),
-            None,
-            cx,
+        let visible = display
+            .as_ref()
+            .map(|d| d.visible_bounds())
+            .unwrap_or_else(|| primary_visible_bounds(cx));
+        return (
+            fit_window_bounds_to_visible_bounds(
+                Bounds::new(bounds.origin + point(px(25.0), px(25.0)), bounds.size),
+                visible,
+            ),
+            display.map(|d| d.id()),
         );
     }
 
     let display = primary_visible_bounds(cx);
-    fit_window_bounds_to_visible_bounds(
-        Bounds::new(
-            display.origin + point(px(80.0), px(60.0)),
-            size(px(1000.0), px(720.0)),
+    (
+        fit_window_bounds_to_visible_bounds(
+            Bounds::new(
+                display.origin + point(px(80.0), px(60.0)),
+                size(px(1000.0), px(720.0)),
+            ),
+            display,
         ),
-        display,
+        None,
     )
-}
-
-pub(crate) fn fit_window_bounds_on_display(
-    bounds: Bounds<gpui::Pixels>,
-    display_uuid: Option<&str>,
-    cx: &mut App,
-) -> Bounds<gpui::Pixels> {
-    let displays = cx.displays();
-    let display = display_uuid
-        .and_then(|uuid| {
-            displays
-                .iter()
-                .find(|display| display.uuid().ok().is_some_and(|id| id.to_string() == uuid))
-                .cloned()
-        })
-        .or_else(|| {
-            displays
-                .iter()
-                .find(|display| display.visible_bounds().intersects(&bounds))
-                .cloned()
-        })
-        .map(|display| display.visible_bounds())
-        .unwrap_or_else(|| primary_visible_bounds(cx));
-    fit_window_bounds_to_visible_bounds(bounds, display)
 }
 
 pub(crate) fn fit_window_bounds_to_visible_bounds(
@@ -159,10 +159,10 @@ pub(crate) fn primary_visible_bounds(cx: &App) -> Bounds<gpui::Pixels> {
         .unwrap_or_else(|| Bounds::new(point(px(0.0), px(0.0)), size(px(1280.0), px(800.0))))
 }
 
-pub(crate) fn window_state_to_bounds(
+pub(crate) fn window_state_to_placement(
     state: state::WindowState,
     cx: &mut App,
-) -> Option<WindowBounds> {
+) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
     if !(state.x.is_finite()
         && state.y.is_finite()
         && state.width.is_finite()
@@ -176,12 +176,25 @@ pub(crate) fn window_state_to_bounds(
         point(px(state.x), px(state.y)),
         size(px(state.width), px(state.height)),
     );
-    let bounds = fit_window_bounds_on_display(bounds, state.display_uuid.as_deref(), cx);
-    Some(match state.mode {
+    // The saved frame is relative to the display it was on; reopen there when
+    // that monitor is still around, else fall back to the primary. The clamp
+    // compares within one display's space, so it's consistent either way.
+    let display = state.display_uuid.as_deref().and_then(|uuid| {
+        cx.displays()
+            .into_iter()
+            .find(|display| display.uuid().ok().is_some_and(|id| id.to_string() == uuid))
+    });
+    let (display_id, visible) = match &display {
+        Some(display) => (Some(display.id()), display.visible_bounds()),
+        None => (None, primary_visible_bounds(cx)),
+    };
+    let bounds = fit_window_bounds_to_visible_bounds(bounds, visible);
+    let bounds = match state.mode {
         state::WindowMode::Windowed => WindowBounds::Windowed(bounds),
         state::WindowMode::Maximized => WindowBounds::Maximized(bounds),
         state::WindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
-    })
+    };
+    Some((bounds, display_id))
 }
 
 pub(crate) fn window_state_from_window(window: &mut Window, cx: &mut App) -> state::WindowState {
