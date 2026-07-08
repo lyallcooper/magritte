@@ -26,6 +26,46 @@ impl Repo {
             .filter(|name| !name.is_empty()))
     }
 
+    /// The repo's default branch — what `<remote>/HEAD` points at (`origin`
+    /// first, then any other remote), falling back to the first local branch
+    /// named like a mainline (magit's `magit-main-branch-names`). `None` when
+    /// neither resolves.
+    pub fn default_branch(&self) -> Result<Option<String>> {
+        let remotes = self.remotes().unwrap_or_default();
+        let ordered = std::iter::once("origin").chain(
+            remotes
+                .iter()
+                .map(|r| r.as_str())
+                .filter(|r| *r != "origin"),
+        );
+        for remote in ordered {
+            // `-q` exits 1 silently when the remote HEAD isn't recorded;
+            // run_optional maps that to None.
+            let head = self
+                .run_optional([
+                    "symbolic-ref",
+                    "--short",
+                    "-q",
+                    &format!("refs/remotes/{remote}/HEAD"),
+                ])?
+                .map(|out| out.stdout_text())
+                .filter(|s| !s.is_empty());
+            if let Some(head) = head {
+                let name = head.strip_prefix(&format!("{remote}/")).unwrap_or(&head);
+                return Ok(Some(name.to_string()));
+            }
+        }
+        for name in ["main", "master", "next", "trunk", "development"] {
+            if self
+                .run_optional(["show-ref", "--verify", "-q", &format!("refs/heads/{name}")])?
+                .is_some()
+            {
+                return Ok(Some(name.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Local branch names (`refs/heads`), most-recently-committed first so the
     /// branches you're likely to want are near the top of the picker.
     pub fn local_branches(&self) -> Result<Vec<String>> {

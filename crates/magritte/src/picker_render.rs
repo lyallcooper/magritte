@@ -89,15 +89,20 @@ impl StatusView {
                                             Some(pair) => pair.clone(),
                                             None => {
                                                 let v = view.read(cx);
+                                                // Palette labels are shown
+                                                // placeholder-expanded; the
+                                                // by-title lookups need the
+                                                // configured title.
+                                                let title = v.raw_command_title(&r.label);
                                                 let pair = (
                                                     command_keys(
                                                         v.screen_bindings(),
                                                         &v.config,
-                                                        &r.label,
+                                                        &title,
                                                     )
                                                     .map(SharedString::from),
                                                     commands::command_id_for_title(
-                                                        &v.config, &r.label,
+                                                        &v.config, &title,
                                                     )
                                                     .map(SharedString::from),
                                                 );

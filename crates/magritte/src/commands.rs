@@ -2280,6 +2280,17 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
     // with the act-at-point commit/stash groups grafted on when the cursor is on
     // one of those rows.
     let mut menu = dispatch_menu(view.screen_bindings(), &view.config);
+    // User `[[command]]` titles may carry placeholders ({branch}, …) — show
+    // them expanded (built-in titles have no braces, so this is a no-op there).
+    for group in &mut menu.groups {
+        for suffix in &mut group.suffixes {
+            if let Suffix::Info(info) = suffix {
+                if info.description.contains('{') {
+                    info.description = view.expand_placeholders_display(&info.description);
+                }
+            }
+        }
+    }
     if view
         .rows
         .get(view.selected)

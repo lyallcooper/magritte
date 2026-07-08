@@ -716,11 +716,12 @@ impl StatusView {
                     if def.action_for(key).is_some() {
                         return None;
                     }
-                    // Label it with the command's title (built-in or user),
-                    // falling back to the raw id if it names nothing.
+                    // Label it with the command's title (built-in or user,
+                    // placeholders expanded), falling back to the raw id if it
+                    // names nothing.
                     let description = all_commands(&self.config)
                         .find(|c| c.id == id)
-                        .map(|c| c.title.to_string())
+                        .map(|c| self.expand_placeholders_display(c.title))
                         .unwrap_or_else(|| id.to_string());
                     let suffix = transient::Suffix::Custom(transient::Custom {
                         key: key.clone(),

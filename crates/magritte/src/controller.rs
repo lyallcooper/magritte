@@ -1535,10 +1535,12 @@ impl StatusView {
                     self.open_commit_with_args(rev, String::new(), args, paths, cx);
                 }
                 // Resolve the chosen title back to its command (built-in or a
-                // user `[[command]]`) and run it through the shared dispatch.
+                // user `[[command]]`, whose displayed title may have been
+                // placeholder-expanded) and run it through the shared dispatch.
                 PickerAction::RunCommand => {
+                    let title = self.raw_command_title(&chosen);
                     let id = all_commands(&self.config)
-                        .find(|c| c.title == chosen.as_ref())
+                        .find(|c| c.title == title)
                         .map(|c| c.id.to_string());
                     if let Some(id) = id {
                         self.record_use(&id);

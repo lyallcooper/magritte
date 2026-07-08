@@ -36,6 +36,30 @@ fn current_branch_on_normal_unborn_and_detached_head() {
 }
 
 #[test]
+fn default_branch_from_remote_head_or_mainline_name() {
+    // No remote: falls back to the local mainline name.
+    let (t, repo) = repo();
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+
+    // A recorded origin/HEAD wins, even over a local `main`.
+    t.git(["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+    t.git([
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+    assert_eq!(repo.default_branch().unwrap().as_deref(), Some("trunk"));
+
+    // Neither a remote HEAD nor a mainline-named branch: none.
+    let odd = TestRepo::new();
+    odd.write("f", "x\n");
+    odd.commit_all("init");
+    odd.git(["branch", "-m", "work"]);
+    let odd_repo = Repo::discover(odd.path()).unwrap();
+    assert_eq!(odd_repo.default_branch().unwrap(), None);
+}
+
+#[test]
 fn create_lists_and_checkout() {
     let (t, repo) = repo();
 

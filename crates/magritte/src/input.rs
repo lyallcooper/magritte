@@ -6,7 +6,7 @@
 use gpui::{Context, KeyDownEvent, SharedString, Window};
 use magritte_core::{
     transient::{self, Suffix, Transient},
-    SequenceKind,
+    HeadInfo, RemoteTargets, SequenceKind,
 };
 
 use crate::*;
@@ -593,39 +593,96 @@ impl StatusView {
         }
     }
 
-    /// Substitute `{file}`/`{commit}`/`{branch}` in the command against the
-    /// current selection, each shell-quoted so a path with spaces stays one word.
-    /// `Err` (with why) if a placeholder can't be resolved — e.g. `{file}` with
-    /// no file at point.
-    pub(crate) fn expand_placeholders(&self, command: &str) -> Result<String, String> {
-        let mut s = command.to_string();
-        if s.contains("{file}") {
-            let path = self
+    /// The custom-command placeholder names (`{file}`, `{branch}`, …), resolved
+    /// by [`placeholder_value`](Self::placeholder_value).
+    pub(crate) const PLACEHOLDERS: &'static [&'static str] = &[
+        "file",
+        "commit",
+        "branch",
+        "upstream",
+        "push-remote",
+        "default-branch",
+    ];
+
+    /// Resolve one placeholder name against the current selection and repo
+    /// state; `Err` (with why) when it doesn't apply right now.
+    fn placeholder_value(&self, name: &str) -> Result<String, String> {
+        let head = |sel: fn(&HeadInfo) -> Option<String>| {
+            self.status.as_ref().and_then(|st| sel(&st.head))
+        };
+        match name {
+            "file" => self
                 .path_at_point()
-                .ok_or_else(|| "No file at point for {file}".to_string())?;
-            s = s.replace("{file}", &shell_words::quote(&path));
-        }
-        if s.contains("{branch}") {
-            let branch = self
-                .status
-                .as_ref()
-                .and_then(|st| st.head.branch.clone())
-                .ok_or_else(|| "No current branch for {branch}".to_string())?;
-            s = s.replace("{branch}", &shell_words::quote(&branch));
-        }
-        if s.contains("{commit}") {
+                .ok_or_else(|| "No file at point for {file}".to_string()),
             // The commit at point: the log selection, else a status commit row
             // (unpushed/unpulled/recent), else the open commit view.
-            let hash = self
+            "commit" => self
                 .log()
                 .and_then(|l| l.entries.get(l.selected))
                 .map(|e| e.hash.clone())
                 .or_else(|| self.point_commit().map(|(hash, _, _)| hash))
                 .or_else(|| self.commit_view().map(|cv| cv.rev.clone()))
-                .ok_or_else(|| "No commit at point for {commit}".to_string())?;
-            s = s.replace("{commit}", &shell_words::quote(&hash));
+                .ok_or_else(|| "No commit at point for {commit}".to_string()),
+            "branch" => head(|h| h.branch.clone())
+                .ok_or_else(|| "No current branch for {branch}".to_string()),
+            "upstream" => head(|h| h.upstream.clone())
+                .ok_or_else(|| "No upstream configured for {upstream}".to_string()),
+            // The resolved push remote, like the push/pull transients: an
+            // explicit pushRemote/pushDefault, else the upstream's remote.
+            "push-remote" => head(|h| RemoteTargets::from_head(h).push_remote)
+                .ok_or_else(|| "No push-remote configured for {push-remote}".to_string()),
+            "default-branch" => self
+                .repo
+                .as_ref()
+                .and_then(|r| r.default_branch().ok().flatten())
+                .ok_or_else(|| "No default branch found for {default-branch}".to_string()),
+            _ => Err(format!("unknown placeholder {{{name}}}")),
+        }
+    }
+
+    /// Substitute the [`PLACEHOLDERS`](Self::PLACEHOLDERS) in a command against
+    /// the current selection, each shell-quoted so a path with spaces stays one
+    /// word. `Err` (with why) if a placeholder can't be resolved — e.g. `{file}`
+    /// with no file at point.
+    pub(crate) fn expand_placeholders(&self, command: &str) -> Result<String, String> {
+        let mut s = command.to_string();
+        for name in Self::PLACEHOLDERS {
+            let token = format!("{{{name}}}");
+            if s.contains(&token) {
+                s = s.replace(&token, &shell_words::quote(&self.placeholder_value(name)?));
+            }
         }
         Ok(s)
+    }
+
+    /// Expand placeholders for a display label (a command title): unquoted, and
+    /// an unresolvable placeholder stays literal — a label must always render.
+    pub(crate) fn expand_placeholders_display(&self, text: &str) -> String {
+        if !text.contains('{') {
+            return text.to_string();
+        }
+        let mut s = text.to_string();
+        for name in Self::PLACEHOLDERS {
+            let token = format!("{{{name}}}");
+            if s.contains(&token) {
+                if let Ok(value) = self.placeholder_value(name) {
+                    s = s.replace(&token, &value);
+                }
+            }
+        }
+        s
+    }
+
+    /// The configured (raw) title behind a displayed command label: palette and
+    /// menu labels are placeholder-expanded, so by-title lookups map the label
+    /// back to the `[[command]]` title it was expanded from first.
+    pub(crate) fn raw_command_title(&self, label: &str) -> String {
+        self.config
+            .commands
+            .iter()
+            .find(|c| c.title.contains('{') && self.expand_placeholders_display(&c.title) == label)
+            .map(|c| c.title.clone())
+            .unwrap_or_else(|| label.to_string())
     }
 
     /// The repo-relative path of the file at point (its row, or the file a
@@ -803,12 +860,15 @@ impl StatusView {
         let mut entries: Vec<(String, String, String)> = all_commands(&self.config)
             .filter(|c| c.palette && (c.enabled)(self))
             .map(|c| {
+                // User `[[command]]` titles may carry placeholders ({branch},
+                // …); show and match them expanded, as they'd read on screen.
+                let title = self.expand_placeholders_display(c.title);
                 let search = if c.aliases.is_empty() {
-                    c.title.to_lowercase()
+                    title.to_lowercase()
                 } else {
-                    format!("{} {}", c.title, c.aliases.join(" ")).to_lowercase()
+                    format!("{} {}", title, c.aliases.join(" ")).to_lowercase()
                 };
-                (c.id.to_string(), c.title.to_string(), search)
+                (c.id.to_string(), title, search)
             })
             .collect();
         entries.sort_by(|a, b| {

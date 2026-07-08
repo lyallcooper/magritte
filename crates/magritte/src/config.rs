@@ -240,12 +240,14 @@ pub struct CustomCommand {
     /// Stable id — bound in `[keymap]` and recorded for palette frecency.
     /// Conventionally namespaced (`user.sync`) to avoid clashing with built-ins.
     pub id: String,
-    /// Human label shown in the palette.
+    /// Human label shown in the palette. Placeholders (`{branch}`, …) are
+    /// expanded for display; one that doesn't resolve stays literal.
     pub title: String,
     /// The shell command to run, e.g. `"git pull --rebase && git push"`. Run via
     /// `sh -c` in the repo root, so it supports `&&`, pipes, and any program —
-    /// not just git. The `{file}`, `{commit}`, and `{branch}` placeholders are
-    /// substituted (shell-quoted) from the selection at run time.
+    /// not just git. The `{file}`, `{commit}`, `{branch}`, `{upstream}`,
+    /// `{push-remote}`, and `{default-branch}` placeholders are substituted
+    /// (shell-quoted) from the selection and repo at run time.
     pub run: String,
     /// Re-read status after running (default true).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]

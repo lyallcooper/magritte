@@ -412,9 +412,16 @@ section = "My commands"         # which ? group to list it under when bound
   `&&`, pipes, and redirection all work, and it can run any program, not just
   git (`run = "make test"`).
 - **Placeholders** are resolved at run time against the current selection and
-  shell-quoted: `{file}` (the file at point), `{commit}` (the commit at point in
-  the log), `{branch}` (the current branch). If one can't be resolved — e.g.
-  `{file}` with no file selected — the command reports that and doesn't run.
+  repo, and shell-quoted: `{file}` (the file at point), `{commit}` (the commit
+  at point in the log), `{branch}` (the current branch), `{upstream}` (the
+  branch's upstream, e.g. `origin/main`), `{push-remote}` (the resolved push
+  remote, e.g. `origin`), `{default-branch}` (what `origin/HEAD` points at,
+  e.g. `main`). If one can't be resolved — e.g. `{file}` with no file selected
+  — the command reports that and doesn't run.
+- **Titles expand placeholders too**, wherever the title shows (palette, `?`
+  menu, transient injections) — `title = "Rebase onto origin/{default-branch}"`
+  reads as "Rebase onto origin/main". Display-only: an unresolvable placeholder
+  stays literal rather than blocking the label.
 - **Bind it** like any built-in: `[keymap]` entry `"X" = "user.wip"`, or run it
   from the `:` palette by its `title`. Its output shows as a toast (a failure
   stays until dismissed); long output is cut off with a pointer to the `$` log,
