@@ -903,6 +903,20 @@ impl StatusView {
     /// a copy confirmation is visible there too, not only in the status view.
     pub(crate) fn status_toast(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
         let msg = self.toast.message.clone()?;
+        // A persistent toast (an error, a long report) gets an explicit ✕ at
+        // the right edge — the whole bar already dismisses on click, this makes
+        // that discoverable. Auto-fading notices and in-progress messages
+        // (which show the cancel hint instead) don't need one.
+        let close = (!self.toast.transient && self.job_cancel.is_none()).then(|| {
+            div()
+                .id("status-dismiss")
+                .ml_auto()
+                .flex_none()
+                .cursor_pointer()
+                .text_color(self.palette.dim)
+                .hover(|s| s.text_color(self.palette.fg))
+                .child(Icon::new(IconName::Close).small())
+        });
         let bar = self
             .bottom_bar(self.palette.panel)
             .id("status-bar")
@@ -939,7 +953,8 @@ impl StatusView {
                         &self.font,
                         &self.system_ui_font,
                     ))
-                    .child(SharedString::from(msg)),
+                    .child(SharedString::from(msg))
+                    .children(close),
             );
         }
         Some(match () {
@@ -965,11 +980,17 @@ impl StatusView {
                 ),
             // A plain message, possibly multi-line (a command's full output):
             // one row per line so it renders as a block, not run together.
-            _ => bar.flex().flex_col().children(
-                msg.lines()
-                    .map(|l| SharedString::from(l.to_string()))
-                    .collect::<Vec<_>>(),
-            ),
+            _ => bar
+                .flex()
+                .items_center()
+                .child(
+                    div().flex_grow(1.0).flex().flex_col().children(
+                        msg.lines()
+                            .map(|l| SharedString::from(l.to_string()))
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+                .children(close),
         })
     }
 
