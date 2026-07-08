@@ -7,6 +7,7 @@
 use gpui::{
     actions, App, Context, Menu, MenuItem, OsAction, PathPromptOptions, SystemMenuType, Window,
 };
+use std::path::{Path, PathBuf};
 
 use crate::*;
 
@@ -24,6 +25,54 @@ actions!(
         HelpMenu
     ]
 );
+
+/// Open a specific repository from the Dock menu's recent list.
+#[derive(Clone, Default, PartialEq, gpui::Action)]
+#[action(namespace = magritte, no_json)]
+pub(crate) struct OpenRecent {
+    pub path: PathBuf,
+}
+
+/// How many repositories the Dock menu's recent list keeps.
+const MAX_RECENT_REPOS: usize = 10;
+
+/// Record `path` at the head of the persisted recent-repos list and rebuild
+/// the Dock menu to match. (The system recent-documents list ignores unbundled
+/// binaries, so the Dock section is ours to maintain.)
+pub(crate) fn note_recent_repo(path: &Path, cx: &mut App) {
+    let Some(file) = state::global_path(state::RECENT_REPOS_FILE) else {
+        return;
+    };
+    let mut recents: state::RecentRepos = state::load_toml_or_default(&file);
+    recents.paths.retain(|p| p != path);
+    recents.paths.insert(0, path.to_path_buf());
+    recents.paths.truncate(MAX_RECENT_REPOS);
+    state::save_toml(&file, &recents);
+    set_dock_menu(&recents, cx);
+}
+
+/// The Dock menu: the recent repositories (most recent first, by directory
+/// name), then Open Repository…. Entries whose directory has vanished are
+/// skipped.
+fn set_dock_menu(recents: &state::RecentRepos, cx: &mut App) {
+    let mut items: Vec<MenuItem> = recents
+        .paths
+        .iter()
+        .filter(|p| p.is_dir())
+        .map(|p| {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            MenuItem::action(name, OpenRecent { path: p.clone() })
+        })
+        .collect();
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
+    items.push(MenuItem::action("Open Repository…", OpenRepository));
+    cx.set_dock_menu(items);
+}
 
 /// Run `f` on the active window, deferred out of the current dispatch: a menu
 /// action is dispatched *inside* an update of the active window, so touching
@@ -97,16 +146,19 @@ pub(crate) fn install(cx: &mut App) {
         on_active_window(cx, |window, _| window.zoom_window());
     });
     cx.on_action(|_: &About, cx| {
-        on_status_view(cx, |view, _, cx| {
-            view.set_status(
-                format!(
-                    "Magritte {CURRENT_VERSION} — a fast, keyboard-driven git client \
-                     in the spirit of magit"
-                ),
-                false,
-                cx,
-            );
+        on_active_window(cx, |window, cx| {
+            use gpui_component::WindowExt as _;
+            window.open_alert_dialog(cx, |alert, _, _| {
+                alert
+                    .title(format!("Magritte {CURRENT_VERSION}"))
+                    .description("A fast, keyboard-driven git client in the spirit of magit.")
+            });
         });
+    });
+    cx.on_action(|action: &OpenRecent, cx| {
+        let path = action.path.clone();
+        let windows = cx.global::<GlobalRepoWindows>().0.clone();
+        open_or_focus_repo(Some(path), &windows, cx);
     });
     cx.on_action(|_: &CheckForUpdates, cx| {
         on_status_view(cx, |view, window, cx| {
@@ -166,5 +218,8 @@ pub(crate) fn install(cx: &mut App) {
         ]),
         Menu::new("Help").items([MenuItem::action("Magritte Help", HelpMenu)]),
     ]);
-    cx.set_dock_menu(vec![MenuItem::action("Open Repository…", OpenRepository)]);
+    let recents = state::global_path(state::RECENT_REPOS_FILE)
+        .map(|p| state::load_toml_or_default(&p))
+        .unwrap_or_default();
+    set_dock_menu(&recents, cx);
 }

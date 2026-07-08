@@ -261,8 +261,9 @@ pub(crate) fn open_or_focus_repo(
     cx: &mut App,
 ) -> Option<AnyWindowHandle> {
     let key = repo_window_key(start_dir.as_deref());
-    // Feed the system recent-documents list (the Dock menu's Recent section),
-    // so recently opened repos are one right-click away.
+    // Feed both recent lists: ours (rebuilt into the Dock menu) and the
+    // system's (inert for an unbundled binary, live if we ever ship a bundle).
+    menus::note_recent_repo(&key, cx);
     cx.add_recent_document(&key);
     if let Some(handle) = windows.borrow().get(&key).copied() {
         if cx

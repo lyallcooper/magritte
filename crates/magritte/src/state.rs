@@ -10,6 +10,7 @@ use crate::config;
 
 pub const FOLDS_FILE: &str = "folds.toml";
 pub const WINDOW_FILE: &str = "window.toml";
+pub const RECENT_REPOS_FILE: &str = "recent-repos.toml";
 
 pub fn global_path(file: &str) -> Option<PathBuf> {
     config::path().map(|p| p.with_file_name(file))
@@ -54,6 +55,13 @@ pub(crate) fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> 
         return Err(e);
     }
     Ok(())
+}
+
+/// Recently opened repositories, most recent first — the Dock menu's list.
+#[derive(Serialize, Deserialize, Default)]
+pub struct RecentRepos {
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
 }
 
 /// Per-worktree persisted status fold state. Sections are expanded by default,
