@@ -75,13 +75,103 @@ fn set_dock_menu(recents: &state::RecentRepos, cx: &mut App) {
 }
 
 impl StatusView {
-    /// The About dialog — the app-menu item and the `about` palette command.
+    /// The About dialog — the app-menu item and the `about` palette command:
+    /// the current app icon, name, version and description, the third-party
+    /// attributions, and the update-check / GitHub actions.
     pub(crate) fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_component::WindowExt as _;
-        window.open_alert_dialog(cx, |alert, _, _| {
-            alert
-                .title(format!("Magritte {CURRENT_VERSION}"))
-                .description("A fast, keyboard-driven git client in the spirit of magit.")
+        use gpui::prelude::*;
+        use gpui::{div, px, FontWeight};
+        use gpui_component::button::Button;
+        use gpui_component::{ActiveTheme as _, IconName, Sizable as _, WindowExt as _};
+
+        let icon_id = app_icon::resolved_icon(&self.config.app_icon);
+        let thumb = app_icon::ICONS
+            .iter()
+            .find(|icon| icon.id == icon_id)
+            .map(|icon| icon.thumb)
+            .unwrap_or(app_icon::ICONS[0].thumb);
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            dialog.w(px(430.0)).content(move |content, _, cx| {
+                let dim = cx.theme().muted_foreground;
+                let updates = Button::new("about-updates")
+                    .label("Check for Updates…")
+                    .outline()
+                    .small()
+                    .on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            // Close first so the check's outcome toast isn't
+                            // hidden behind the dialog.
+                            window.close_dialog(cx);
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |view, cx| view.check_for_updates(cx));
+                            }
+                        }
+                    });
+                let github = Button::new("about-github")
+                    .label("GitHub")
+                    .icon(IconName::ExternalLink)
+                    .outline()
+                    .small()
+                    .on_click(|_, _, cx| cx.open_url(env!("CARGO_PKG_REPOSITORY")));
+                content
+                    .items_center()
+                    .gap_1()
+                    .pt_2()
+                    .child(
+                        gpui::img(std::sync::Arc::new(gpui::Image::from_bytes(
+                            gpui::ImageFormat::Png,
+                            thumb.to_vec(),
+                        )))
+                        .size(px(72.0))
+                        .rounded(px(16.0)),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Magritte"),
+                    )
+                    .child(
+                        div()
+                            .text_color(dim)
+                            .text_sm()
+                            .child(format!("Version {CURRENT_VERSION}")),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_center()
+                            .child("A fast, keyboard-driven git client in the spirit of magit."),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_center()
+                            .text_xs()
+                            .text_color(dim)
+                            .child(
+                                "Built with GPUI (Zed Industries) and gpui-component \
+                                 (Longbridge), used under the Apache License 2.0.",
+                            )
+                            .child(
+                                "Bundled theme palettes after Solarized, Selenized, \
+                                 Catppuccin, Dracula, Gruvbox, Nord, GitHub, and Tao.",
+                            ),
+                    )
+                    .child(
+                        div()
+                            .mt_3()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(updates)
+                            .child(github),
+                    )
+            })
         });
     }
 }
