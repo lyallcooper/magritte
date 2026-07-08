@@ -105,12 +105,12 @@
         "table.active.border": "#bd93f9"
       },
       "highlight": {
-        "editor.foreground": "#CACCCA",
-        "editor.background": "#0a0a0a",
-        "editor.active_line.background": "#171717",
-        "editor.line_number": "#8F8F8F",
-        "editor.active_line_number": "#DDDDDD",
-        "editor.invisible": "#73737366",
+        "editor.foreground": "#f8f8f2",
+        "editor.background": "#282a36",
+        "editor.active_line.background": "#343746",
+        "editor.line_number": "#6272a4",
+        "editor.active_line_number": "#f8f8f2",
+        "editor.invisible": "#6272a466",
         "conflict": "#D2602D",
         "created": "#3f72e2",
         "created.background": "#0C4619",
