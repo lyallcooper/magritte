@@ -438,15 +438,32 @@ impl StatusView {
                 // Re-wrap the body and refresh the summary-length warning as the
                 // message is edited.
                 InputEvent::Change => this.on_editor_changed(window, cx),
+                // Vim Normal/Visual keeps focus on the view (that's what
+                // hides the input's caret). A mouse click focuses the input —
+                // let it place the cursor, then blur back on the next frame.
+                InputEvent::Focus
+                    if this
+                        .editor()
+                        .and_then(|e| e.vim.as_ref())
+                        .is_some_and(|v| !v.in_insert()) =>
+                {
+                    cx.on_next_frame(window, |this, window, cx| {
+                        this.sync_vim_focus(window, cx);
+                    });
+                }
                 _ => {}
             },
         );
         // Focus on the next frame, not now: the keystroke that opened the editor
         // (`c`) is still mid-dispatch, and focusing synchronously would let that
         // character land in the message (see open_picker for the same reasoning).
+        // Vim mode opens in Normal, which keeps focus on the view instead —
+        // the input is only focused for Insert.
         let to_focus = state.clone();
-        cx.on_next_frame(window, move |_this, window, cx| {
-            to_focus.read(cx).focus_handle(cx).focus(window, cx);
+        cx.on_next_frame(window, move |this, window, cx| {
+            if this.editor().is_some_and(|e| e.vim.is_none()) {
+                to_focus.read(cx).focus_handle(cx).focus(window, cx);
+            }
         });
         self.screen = Screen::Editor(CommitEditor {
             state: state.clone(),

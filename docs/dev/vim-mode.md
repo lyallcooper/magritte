@@ -160,30 +160,42 @@ even if the first cut ignores it.
 - **Enable flag:** a `vim_mode` bool in the commit-editor config (`config.rs` + a
   Settings toggle by "Summary ruler"/"Body auto-wrap"). When on, `open_editor`
   starts in Normal.
-- **Key routing** is two-channel, because gpui dispatches an Input-context
-  *keybinding's action* even when a capture-phase listener stops the
-  keystroke (the same reason main.rs overrides Root's `tab`):
-  - *Unbound keys* (letters, symbols, `Space`, `Esc`, ctrl chords) are
-    intercepted in the existing `CommitEditor::on_capture_key`: when `vim` is
-    `Some` and mode ≠ Insert, route to the engine and `cx.stop_propagation()`.
-    In Insert, only catch `Esc`. Unhandled printables are swallowed so they
-    can't insert.
-  - *Input-bound keys* (`Enter`, `Backspace`, `Delete`, `Tab`, arrows) are
-    overridden with our own `Vim*` actions bound in the `Input` context after
-    `gpui_component::init` (later bindings win). The handler feeds the engine
-    in Normal/Visual mode and re-dispatches the input's original action
-    (`input::Enter`, `input::Backspace`…) everywhere else — Insert mode, the
-    pickers, settings fields, Vim off — so those keep their behavior.
-  Pending state (operator/`f`/surround) accumulates across keystrokes like the
-  status view's `pending_prefix` machinery.
-- **Commit gating:** commit fires on `PressEnter { secondary: true }` (a
-  subscription) from `⌘⏎`, whose chord never reaches our handlers; a bare
-  `Enter` in Normal mode is consumed by the `Vim*` reroute as a motion.
+- **Key routing rides on focus.** Insert mode focuses the input (typing, IME,
+  and the input's own keybindings work normally; we only catch `Esc`).
+  Normal/Visual focus the *view*: the input paints no caret, its `Input`-
+  context bindings never match (context comes from the focused element), and
+  every key flows through `CommitEditor::on_capture_key` into the engine —
+  handled keys `cx.stop_propagation()`, unhandled printables are swallowed so
+  they can't insert. `sync_vim_focus` re-asserts the focus after every
+  applied key (`set_cursor_position` focuses the input as a side effect), and
+  an `InputEvent::Focus` subscriber blurs back after a mouse click has placed
+  the cursor. Beware the alternative: gpui dispatches a *bound action* even
+  when a capture listener stops the keystroke (the same reason main.rs
+  overrides Root's `tab`), so interception-while-focused doesn't work.
+  Pending state (operator/`f`/surround/search) accumulates across keystrokes
+  like the status view's `pending_prefix` machinery.
+- **Editor commands** use evil's commit-buffer keys so `Esc` and the editing
+  keys stay free for modal editing: `ZZ` commit, `ZQ` cancel (the
+  discard-confirm flow still applies), `gq` reflow. The engine emits
+  `Action::Commit`/`Quit`/`Reflow`; `Esc` in idle Normal is a quiet no-op.
+  `⌘⏎` still commits from any mode (in Normal it's caught in the capture
+  phase, since the unfocused input can't).
+- **`.` repeat:** the engine records each change's keys (`recording` →
+  `last_change`), plus the text an Insert session typed — captured at `Esc`
+  as the slice between the insert-entry point and the exit cursor
+  (best-effort; covers plain typing). `.` emits `Action::Repeat` and the app
+  replays the keys through `feed_vim`, re-inserts the text, and closes with
+  `Esc` — so anything key-driven repeats, surround included.
+- **`/` search:** a `Pending::Search` prompt collects the query (shown live
+  in the mode bar), `Enter` jumps — literal substring, case-sensitive,
+  wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N` repeat, `?` searches
+  backward.
 
 ## Rendering
 
-- **Mode indicator** (`NORMAL`/`INSERT`/`VISUAL`) in the editor header
-  (`render_editor`), by the `⌘⏎ commit` / `⌥q reflow` hints.
+- **Mode line** (`NORMAL`/`INSERT`/`VISUAL` plus the pending keys or search
+  prompt) pinned under the editor (`render_editor`), vim-style; the header
+  hints show the vim keys (`ZZ`/`ZQ`/`gq`).
 - **Visual selection**: split `anchor..cursor` into per-line byte ranges and
   draw a translucent rect per line via `range_to_bounds`; falls back to none if
   bounds aren't available (not laid out / off-screen).
@@ -206,10 +218,11 @@ even if the first cut ignores it.
 3. Visual mode + the `range_to_bounds` per-line selection overlay.
 4. Surround MVP.
 5. Block cursor; polish.
-6. Later: `.`-repeat, registers/marks, `>`/`<`, search, a minimal `:` line,
-   and mouse integration (a click should abort a pending operator, and a
-   native drag-selection should become — or at least clear on entering —
-   Visual mode; today the two selection models simply coexist).
+6. Later: registers/marks, `>`/`<`, regex search (`/` is a literal substring
+   today), a minimal `:` line, and mouse integration (a click should abort a
+   pending operator, and a native drag-selection should become — or at least
+   clear on entering — Visual mode; today the two selection models simply
+   coexist).
 
 ## Risks / open questions
 

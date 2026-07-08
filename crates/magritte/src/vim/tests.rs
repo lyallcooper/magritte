@@ -91,7 +91,28 @@ impl Buf {
                 self.cursor = op.cursor;
             }
             Action::Yank(s) => self.clipboard = Some(s.clone()),
-            Action::Undo | Action::Redo | Action::Beep => {}
+            // `.`: replay like the app layer does — feed the recorded keys,
+            // re-type the captured Insert text, close with Esc.
+            Action::Repeat => {
+                if let Some((keys, typed)) = self.vim.begin_repeat() {
+                    for k in keys {
+                        self.feed_key(k);
+                    }
+                    if self.vim.in_insert() {
+                        for c in typed.chars() {
+                            self.type_insert(Key::Char(c));
+                        }
+                        self.feed_key(Key::Escape);
+                    }
+                    self.vim.end_repeat();
+                }
+            }
+            Action::Undo
+            | Action::Redo
+            | Action::Commit
+            | Action::Quit
+            | Action::Reflow
+            | Action::Beep => {}
         }
         self.log.push(action);
     }
@@ -1178,4 +1199,62 @@ fn visual_put_linewise_matrix() {
 fn aw_trailing_blanks_cross_newline() {
     check_clip("ab| \t\ncd", "daw", "a|b", " \t\ncd");
     check("ab|  \ncd ef", "daw", "ab| ef");
+}
+
+// --- Dot repeat, editor commands, and search --------------------------------
+
+#[test]
+fn dot_repeat_simple() {
+    check("|ab cd ef", "dw.", "|ef");
+    check("a|bcd", "x..", "|a");
+    check_any("|abc", "2x.", "|"); // the second 2x runs out of chars
+    check("a|b ab", "xw.", "a |b");
+    check_beep("|ab", ".", "|ab"); // nothing to repeat
+                                   // An undo between doesn't clobber the recorded change.
+    let buf = run("a|bcd", "xu.");
+    assert_eq!(buf.undos(), 1); // (the harness doesn't apply undo itself)
+    assert_eq!(buf.text, "ad"); // x repeated after u
+}
+
+#[test]
+fn dot_repeat_insert_and_surround() {
+    // The Insert session's text is captured and re-typed.
+    check("|foo bar", "ciwnew<esc>w.", "new ne|w");
+    check("|ab", "oxy<esc>.", "ab\nxy\nx|y");
+    check("|foo bar", "ysiw\"W.", "\"foo\" |\"bar\"");
+    check("|abcd", "vlrzll.", "zz|zz");
+    check("x|y", "aQ<esc>.", "xyQ|Q"); // append repeats after the new char
+}
+
+#[test]
+fn editor_commands() {
+    let buf = run("|ab", "ZZ");
+    assert!(buf.log.contains(&Action::Commit), "ZZ commits");
+    let buf = run("|ab", "ZQ");
+    assert!(buf.log.contains(&Action::Quit), "ZQ cancels");
+    let buf = run("|ab", "gq");
+    assert!(buf.log.contains(&Action::Reflow), "gq reflows");
+    check_beep("|ab", "Zx", "|ab");
+    // Esc in idle Normal mode is a quiet no-op (cancel is ZQ).
+    check("a|b", "<esc>", "a|b");
+    // A committed/cancelled editor isn't a repeatable change.
+    check_beep("|ab", "ZZ.", "|ab");
+}
+
+#[test]
+fn search_basic() {
+    check("|ab cd ab", "/cd<cr>", "ab |cd ab");
+    check("|ab cd ab", "/ab<cr>", "ab cd |ab"); // strictly after the cursor
+    check("ab cd a|b", "/ab<cr>", "|ab cd ab"); // wraps at EOF
+    check("|ab ab ab", "/ab<cr>n", "ab ab |ab");
+    check("|ab ab ab", "/ab<cr>nN", "ab |ab ab");
+    check("a|b\ncd", "?a<cr>", "|ab\ncd"); // backward
+    check("|ab ab ab", "/ab<cr>/<cr>", "ab ab |ab"); // empty / repeats
+    check("|ab cd", "/x<bs>cd<cr>", "ab |cd"); // backspace edits the query
+    check("|ab\ncd", "/<bs>j", "ab\n|cd"); // backspace on empty cancels
+    check("|ab\ncd", "/cd<esc>j", "ab\n|cd"); // esc cancels the prompt
+    check_beep("|abc", "/zz<cr>", "|abc"); // no match
+    check_beep("|ab", "n", "|ab"); // nothing searched yet
+                                   // Search across lines, multibyte content.
+    check("é|✓\nx é✓", "/é✓<cr>", "é✓\nx |é✓");
 }

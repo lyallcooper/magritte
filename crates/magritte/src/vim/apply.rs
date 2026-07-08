@@ -3,7 +3,12 @@
 //! [`Action`]s to the commit editor's `InputState`. Also renders the pieces
 //! the engine can't: the Visual-selection/block-cursor overlay (drawn with
 //! `range_to_bounds`, since `InputState` exposes no way to set a selection)
-//! and the header mode indicator's data.
+//! and the mode bar's data.
+//!
+//! Focus is the routing switch: Insert mode focuses the input (typing, IME,
+//! and the input's own keybindings work normally); Normal/Visual keep focus
+//! on the view, so the input paints no caret, its bindings never match, and
+//! every key flows through `on_capture_key` into the engine.
 
 use gpui::prelude::*;
 use gpui::{Bounds, Context, EntityInputHandler, KeyDownEvent, Pixels, Window};
@@ -30,8 +35,14 @@ impl StatusView {
             return false;
         };
         let mods = &event.keystroke.modifiers;
-        // Cmd/function chords (⌘⏎ commit, ⌘C copy…) are never Vim's.
+        // Cmd/function chords (⌘C copy…) are never Vim's — except ⌘⏎,
+        // which still commits from Normal/Visual (the input is unfocused
+        // there, so its own binding can't fire).
         if mods.platform || mods.function {
+            if mods.platform && key == "enter" && !vim.in_insert() {
+                self.submit_editor(window, cx);
+                return true;
+            }
             return false;
         }
         if vim.in_insert() {
@@ -47,16 +58,11 @@ impl StatusView {
             if mods.alt && key != "escape" {
                 return key != "q" && event.keystroke.key_char.is_some();
             }
-            // Esc in idle Normal mode falls through to cancel the editor.
-            if key == "escape" && vim.is_idle_normal() {
-                return false;
-            }
         }
         let Some(k) = vim_key(key, event) else {
             // Unmapped printable keys must not reach the input in Normal /
-            // Visual mode (they would insert); named keys pass through — the
-            // ones that matter arrive via the rerouted Input-context bindings
-            // (`vim_bound_key`), the rest (page-up…) keep their behavior.
+            // Visual mode (they would insert); unknown named keys (page-up…)
+            // fall through, where the editor screen ignores them.
             return !vim.in_insert()
                 && event
                     .keystroke
@@ -66,54 +72,6 @@ impl StatusView {
         };
         self.feed_vim(k, window, cx);
         true
-    }
-
-    /// Handle one of the rerouted Input-context key actions (see the
-    /// `Vim*` actions in main.rs): the Input binds these keys to its own edit
-    /// actions, which fire even when `on_capture_key` stops the keystroke —
-    /// so the bindings route here instead. In Vim Normal/Visual mode the key
-    /// feeds the engine; everywhere else (Insert mode, the pickers, settings
-    /// inputs, Vim off) the input's original action is re-dispatched.
-    pub(crate) fn vim_bound_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let intercept = self.editor().is_some_and(|e| {
-            !e.confirming_cancel && e.vim.as_ref().is_some_and(|v| !v.in_insert())
-        });
-        if intercept {
-            let k = match key {
-                "enter" | "shift-enter" => Some(Key::Enter),
-                "backspace" => Some(Key::Backspace),
-                "up" => Some(Key::Up),
-                "down" => Some(Key::Down),
-                "left" => Some(Key::Left),
-                "right" => Some(Key::Right),
-                // tab/delete and the rest are swallowed in Normal mode.
-                _ => None,
-            };
-            if let Some(k) = k {
-                self.feed_vim(k, window, cx);
-            }
-            return;
-        }
-        let action: Box<dyn gpui::Action> = match key {
-            "enter" => Box::new(input::Enter {
-                secondary: false,
-                shift: false,
-            }),
-            "shift-enter" => Box::new(input::Enter {
-                secondary: false,
-                shift: true,
-            }),
-            "backspace" => Box::new(input::Backspace),
-            "delete" => Box::new(input::Delete),
-            "tab" => Box::new(input::IndentInline),
-            "shift-tab" => Box::new(input::OutdentInline),
-            "up" => Box::new(input::MoveUp),
-            "down" => Box::new(input::MoveDown),
-            "left" => Box::new(input::MoveLeft),
-            "right" => Box::new(input::MoveRight),
-            _ => return,
-        };
-        window.dispatch_action(action, cx);
     }
 
     /// Read the buffer, feed one key to the engine, apply the actions.
@@ -131,7 +89,26 @@ impl StatusView {
             .map(|vim| vim.handle_key(&text, cursor, k))
             .unwrap_or_default();
         self.apply_vim_actions(actions, window, cx);
+        self.sync_vim_focus(window, cx);
         cx.notify();
+    }
+
+    /// Keep focus in step with the mode: Insert focuses the input, everything
+    /// else the view (which is what hides the input's caret in Normal mode —
+    /// and set_cursor_position refocuses the input as a side effect, so this
+    /// runs after every applied key).
+    pub(crate) fn sync_vim_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ed) = self.editor() else {
+            return;
+        };
+        let Some(vim) = ed.vim.as_ref() else {
+            return;
+        };
+        if vim.in_insert() {
+            ed.state.read(cx).focus_handle(cx).focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
     }
 
     fn apply_vim_actions(
@@ -175,8 +152,46 @@ impl StatusView {
                     );
                 }),
                 Action::Yank(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-                Action::Undo => window.dispatch_action(Box::new(input::Undo), cx),
-                Action::Redo => window.dispatch_action(Box::new(input::Redo), cx),
+                // Undo/Redo dispatch on the input's own focus handle — in
+                // Normal mode the input isn't focused, so a window-level
+                // dispatch would miss it.
+                Action::Undo => {
+                    let fh = state.read(cx).focus_handle(cx);
+                    fh.dispatch_action(&input::Undo, window, cx);
+                }
+                Action::Redo => {
+                    let fh = state.read(cx).focus_handle(cx);
+                    fh.dispatch_action(&input::Redo, window, cx);
+                }
+                Action::Repeat => {
+                    let repeat = self
+                        .editor_mut()
+                        .and_then(|e| e.vim.as_mut())
+                        .and_then(|vim| vim.begin_repeat());
+                    if let Some((keys, typed)) = repeat {
+                        for k in keys {
+                            self.feed_vim(k, window, cx);
+                        }
+                        // A change that opened an Insert session re-types its
+                        // text and closes back to Normal.
+                        let in_insert = self
+                            .editor()
+                            .and_then(|e| e.vim.as_ref())
+                            .is_some_and(|v| v.in_insert());
+                        if in_insert {
+                            if !typed.is_empty() {
+                                state.update(cx, |s, cx| s.insert(typed, window, cx));
+                            }
+                            self.feed_vim(Key::Escape, window, cx);
+                        }
+                        if let Some(vim) = self.editor_mut().and_then(|e| e.vim.as_mut()) {
+                            vim.end_repeat();
+                        }
+                    }
+                }
+                Action::Commit => self.submit_editor(window, cx),
+                Action::Quit => self.cancel_editor(window, cx),
+                Action::Reflow => self.reflow_editor(window, cx),
                 Action::Beep => {}
             }
         }
@@ -272,9 +287,8 @@ fn widen(b: Bounds<Pixels>) -> Bounds<Pixels> {
 
 /// Convert a capture-phase gpui keystroke to an engine [`Key`]. Shifted
 /// symbols arrive via `key_char` (`$`, `{`…), so this is keyboard-layout
-/// aware. Keys the Input binds to actions (Enter, Backspace, arrows…) are
-/// deliberately absent — they arrive through `vim_bound_key` instead, and
-/// feeding them here too would double-handle them.
+/// aware. Named keys are safe to claim here: in Normal/Visual mode the input
+/// is unfocused, so its own bindings for them can't fire.
 fn vim_key(key: &str, event: &KeyDownEvent) -> Option<Key> {
     let ks = &event.keystroke;
     // Named keys first: `key` may be C-g already normalized to "escape", and
@@ -282,6 +296,13 @@ fn vim_key(key: &str, event: &KeyDownEvent) -> Option<Key> {
     match key {
         "escape" => return Some(Key::Escape),
         "space" => return Some(Key::Char(' ')),
+        "enter" => return Some(Key::Enter),
+        "backspace" => return Some(Key::Backspace),
+        "up" => return Some(Key::Up),
+        "down" => return Some(Key::Down),
+        "left" => return Some(Key::Left),
+        "right" => return Some(Key::Right),
+        "tab" => return Some(Key::Char('\t')),
         _ => {}
     }
     if ks.modifiers.control {

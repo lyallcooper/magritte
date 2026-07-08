@@ -48,29 +48,6 @@ impl StatusView {
                     .items_center()
                     .gap_2()
                     .child(div().text_color(self.palette.section).child(title))
-                    .when_some(self.vim_indicator(ed), |el, (label, pending)| {
-                        // The Vim mode chip (NORMAL/INSERT/VISUAL) plus any
-                        // in-progress key sequence (`2d`, `ys`, `f`…).
-                        el.child(
-                            div()
-                                .px_1()
-                                .rounded(px(3.0))
-                                .bg(self.palette.visual)
-                                .text_color(match label {
-                                    "INSERT" => self.palette.added,
-                                    "VISUAL" | "V-LINE" => self.palette.modified,
-                                    _ => self.palette.fg,
-                                })
-                                .child(SharedString::from(label)),
-                        )
-                        .when_some(pending, |el, keys| {
-                            el.child(
-                                div()
-                                    .text_color(self.palette.dim)
-                                    .child(SharedString::from(keys)),
-                            )
-                        })
-                    })
                     .map(|el| {
                         if ed.confirming_cancel {
                             // Unsaved edits: confirm before discarding the message.
@@ -110,23 +87,27 @@ impl StatusView {
                                     )),
                             )
                         } else {
+                            // Vim mode uses evil's commit-buffer keys (ZZ
+                            // finish, ZQ cancel, gq reflow) so Esc and the
+                            // editing keys stay free for modal editing.
+                            let vim = ed.vim.is_some();
                             el.child(self.key_action(
                                 "editor-commit",
-                                "cmd-enter",
+                                if vim { "ZZ" } else { "cmd-enter" },
                                 submit_label,
                                 view,
                                 Self::submit_editor,
                             ))
                             .child(self.key_action(
                                 "editor-reflow",
-                                "alt-q",
+                                if vim { "gq" } else { "alt-q" },
                                 "reflow",
                                 view,
                                 Self::reflow_editor,
                             ))
                             .child(self.key_action(
                                 "editor-cancel",
-                                "esc",
+                                if vim { "ZQ" } else { "esc" },
                                 "cancel",
                                 view,
                                 Self::cancel_editor,
@@ -151,10 +132,44 @@ impl StatusView {
         };
         if ed.diff.is_empty() {
             root.child(message(div().flex_grow(1.0).w_full()))
+                .children(self.vim_mode_bar(ed))
         } else {
             root.child(message(div().h(px(176.0)).w_full()))
                 .child(self.render_commit_diff(ed, view))
+                .children(self.vim_mode_bar(ed))
         }
+    }
+
+    /// The Vim mode line pinned under the editor: the mode chip
+    /// (NORMAL/INSERT/VISUAL) plus the in-progress key sequence or search
+    /// prompt (`2d`, `ys`, `/quer`…).
+    fn vim_mode_bar(&self, ed: &CommitEditor) -> Option<gpui::Div> {
+        let (label, pending) = self.vim_indicator(ed)?;
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .px_1()
+                        .rounded(px(3.0))
+                        .bg(self.palette.visual)
+                        .text_color(match label {
+                            "INSERT" => self.palette.added,
+                            "VISUAL" | "V-LINE" => self.palette.modified,
+                            _ => self.palette.fg,
+                        })
+                        .child(SharedString::from(label)),
+                )
+                .when_some(pending, |el, keys| {
+                    el.child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(keys)),
+                    )
+                }),
+        )
     }
 
     /// The read-only, scrollable staged-diff preview shown below the message.

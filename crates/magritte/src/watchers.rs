@@ -261,11 +261,21 @@ impl StatusView {
         warnings.extend(theme::config_value_warnings(&self.config, cx));
         self.reapply_theme(cx);
         // Toggling Vim mode applies to an already-open commit editor too:
-        // turning it on starts in Normal, off returns to plain editing.
+        // turning it on starts in Normal (view-focused, no caret), off
+        // returns to plain editing with the input focused.
         let vim_on = self.config.commit_vim_mode;
-        if let Some(ed) = self.editor_mut() {
-            if vim_on != ed.vim.is_some() {
+        let toggled = self
+            .editor_mut()
+            .filter(|ed| vim_on != ed.vim.is_some())
+            .map(|ed| {
                 ed.vim = vim_on.then(vim::VimState::new);
+                ed.state.clone()
+            });
+        if let Some(state) = toggled {
+            if vim_on {
+                self.focus.focus(window, cx);
+            } else {
+                state.read(cx).focus_handle(cx).focus(window, cx);
             }
         }
         if data_changed {

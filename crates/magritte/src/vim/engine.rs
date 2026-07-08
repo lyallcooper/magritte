@@ -76,6 +76,14 @@ enum Pending {
     SurroundChangeTo {
         from: char,
     },
+    /// After `Z`: awaiting `Z` (commit) or `Q` (cancel).
+    Z,
+    /// `/` or `?`: collecting the search query (shown live in the mode bar);
+    /// Enter executes, Esc cancels, Backspace edits.
+    Search {
+        query: String,
+        back: bool,
+    },
 }
 
 /// The unnamed register: the last yanked or deleted text.
@@ -102,6 +110,19 @@ pub(crate) struct VimState {
     /// Last `f`/`F`/`t`/`T` for `;` and `,`.
     last_find: Option<(FindKind, char)>,
     register: Option<Register>,
+    /// Last `/`/`?` query and direction, for `n`/`N` (and an empty `/`).
+    last_search: Option<(String, bool)>,
+    /// Keys of the command in progress, kept while a multi-key sequence (or
+    /// an Insert session it opened) is still running — the candidate for
+    /// [`Self::last_change`].
+    recording: Vec<Key>,
+    /// The last buffer-changing command for `.`: its keys, plus the text the
+    /// Insert session it opened typed (captured between entry and Esc).
+    last_change: Option<(Vec<Key>, String)>,
+    /// Where Insert-mode typing began, for the `.` text capture.
+    insert_entry: Option<usize>,
+    /// True while the app replays a `.` — suppresses re-recording.
+    replaying: bool,
 }
 
 impl VimState {
@@ -114,6 +135,11 @@ impl VimState {
             desired_col: None,
             last_find: None,
             register: None,
+            last_search: None,
+            recording: Vec::new(),
+            last_change: None,
+            insert_entry: None,
+            replaying: false,
         }
     }
 
@@ -125,13 +151,7 @@ impl VimState {
         self.mode == Mode::Insert
     }
 
-    /// Normal mode with nothing pending: the app passes `Esc` through to
-    /// cancel the editor instead of feeding it here.
-    pub(crate) fn is_idle_normal(&self) -> bool {
-        self.mode == Mode::Normal && self.pending == Pending::None && self.count.is_empty()
-    }
-
-    /// The in-progress key sequence for the header (e.g. `2d`, `ys`, `f`).
+    /// The in-progress key sequence for the mode bar (e.g. `2d`, `ys`, `f`).
     pub(crate) fn pending_display(&self) -> Option<String> {
         let mut s = self.count.clone();
         match &self.pending {
@@ -161,6 +181,11 @@ impl VimState {
             Pending::SurroundChangeTo { from } => {
                 s.push_str("cs");
                 s.push(*from);
+            }
+            Pending::Z => s.push('Z'),
+            Pending::Search { query, back } => {
+                s.push(if *back { '?' } else { '/' });
+                s.push_str(query);
             }
         }
         (!s.is_empty()).then_some(s)
@@ -197,14 +222,50 @@ impl VimState {
             Mode::Insert => self.key_insert(text, cursor, key),
             Mode::Normal | Mode::Visual { .. } => {
                 let cursor = clamp_normal(text, cursor);
+                if !self.replaying {
+                    self.recording.push(key);
+                }
                 let actions = self.key_modal(text, cursor, key);
+                let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
                 // Any edit resets the sticky column, like Vim's curswant
                 // (`$x` then `j` aims at the deletion column, not line end).
-                if actions.iter().any(|a| matches!(a, Action::Edit(_))) {
+                if edited {
                     self.desired_col = None;
+                }
+                if !self.replaying {
+                    self.remember_change(cursor, edited, &actions);
                 }
                 actions
             }
+        }
+    }
+
+    /// Track the keys of the change in progress for `.`. A command that
+    /// edited the buffer becomes the repeatable change; one that opened an
+    /// Insert session stays open until [`Self::key_insert`] sees Esc and
+    /// captures the typed text; anything else (a completed motion, yank,
+    /// beep…) discards the recording.
+    fn remember_change(&mut self, cursor: usize, edited: bool, actions: &[Action]) {
+        if self.mode == Mode::Insert {
+            // Typing starts wherever the command left the cursor.
+            self.insert_entry = Some(
+                actions
+                    .iter()
+                    .rev()
+                    .find_map(|a| match a {
+                        Action::Edit(e) => Some(e.cursor),
+                        Action::MoveCursor(p) => Some(*p),
+                        _ => None,
+                    })
+                    .unwrap_or(cursor),
+            );
+        } else if edited {
+            self.last_change = Some((std::mem::take(&mut self.recording), String::new()));
+        } else if self.pending == Pending::None
+            && self.count.is_empty()
+            && !matches!(self.mode, Mode::Visual { .. })
+        {
+            self.recording.clear();
         }
     }
 
@@ -217,14 +278,43 @@ impl VimState {
         self.clear_pending();
         // Leaving Insert re-anchors the sticky column at the cursor.
         self.desired_col = None;
-        // Step left one column, like Vim, unless at the line start.
         let cursor = cursor.min(text.len());
+        // Close the `.` recording: the change is the command's keys plus what
+        // the Insert session typed (best-effort — the slice from entry to the
+        // exit cursor covers plain typing; edits that moved before the entry
+        // point just record less).
+        if !self.replaying && !self.recording.is_empty() {
+            let entry = self.insert_entry.take().unwrap_or(cursor);
+            let typed =
+                if entry <= cursor && text.is_char_boundary(entry) && text.is_char_boundary(cursor)
+                {
+                    text[entry..cursor].to_string()
+                } else {
+                    String::new()
+                };
+            self.last_change = Some((std::mem::take(&mut self.recording), typed));
+        }
+        // Step left one column, like Vim, unless at the line start.
         let pos = if cursor > line_start(text, cursor) {
             prev_char(text, cursor)
         } else {
             cursor
         };
         vec![Action::MoveCursor(clamp_normal(text, pos))]
+    }
+
+    /// Start a `.` replay: the recorded keys and the Insert text to re-type.
+    /// [`Self::end_repeat`] must be called after feeding them back.
+    pub(crate) fn begin_repeat(&mut self) -> Option<(Vec<Key>, String)> {
+        let change = self.last_change.clone();
+        if change.is_some() {
+            self.replaying = true;
+        }
+        change
+    }
+
+    pub(crate) fn end_repeat(&mut self) {
+        self.replaying = false;
     }
 
     fn key_modal(&mut self, text: &str, cursor: usize, key: Key) -> Vec<Action> {
@@ -287,6 +377,12 @@ impl VimState {
             }
             Pending::G(consumer) => {
                 self.pending = Pending::None;
+                // `gq`: reflow the body (the app's whole-body reflow — a nod
+                // to Vim's gq operator, without the motion grammar).
+                if key == Key::Char('q') && consumer == Consumer::Move {
+                    self.take_count();
+                    return vec![Action::Reflow];
+                }
                 let Key::Char('g') = key else {
                     return self.beep();
                 };
@@ -332,6 +428,40 @@ impl VimState {
                     return self.beep();
                 };
                 return vec![Action::Edit(edit)];
+            }
+            Pending::Z => {
+                self.pending = Pending::None;
+                return match key {
+                    Key::Char('Z') => vec![Action::Commit],
+                    Key::Char('Q') => vec![Action::Quit],
+                    _ => self.beep(),
+                };
+            }
+            Pending::Search { mut query, back } => {
+                match key {
+                    Key::Char(c) => {
+                        query.push(c);
+                        self.pending = Pending::Search { query, back };
+                    }
+                    Key::Backspace => {
+                        // Backspace on an empty query cancels, like Vim.
+                        if query.pop().is_some() {
+                            self.pending = Pending::Search { query, back };
+                        } else {
+                            self.pending = Pending::None;
+                        }
+                    }
+                    Key::Enter => {
+                        self.pending = Pending::None;
+                        // An empty `/` repeats the last search.
+                        if !query.is_empty() {
+                            self.last_search = Some((query, back));
+                        }
+                        return self.search(text, cursor, back);
+                    }
+                    _ => return self.beep(),
+                }
+                return Vec::new();
             }
             Pending::None | Pending::AwaitMotion(_) => {}
         }
@@ -700,8 +830,59 @@ impl VimState {
                 self.pending = Pending::G(Consumer::Move);
                 Vec::new()
             }
+            '.' => {
+                self.take_count();
+                if self.last_change.is_none() {
+                    return self.beep();
+                }
+                vec![Action::Repeat]
+            }
+            'Z' => {
+                self.take_count();
+                self.pending = Pending::Z;
+                Vec::new()
+            }
+            '/' | '?' => {
+                self.take_count();
+                self.pending = Pending::Search {
+                    query: String::new(),
+                    back: c == '?',
+                };
+                Vec::new()
+            }
+            'n' | 'N' => {
+                self.take_count();
+                let Some(dir) = self.last_search.as_ref().map(|(_, back)| *back) else {
+                    return self.beep();
+                };
+                self.search(text, cursor, dir != (c == 'N'))
+            }
             _ => self.beep(),
         }
+    }
+
+    /// Jump to the next occurrence of the last search query — a literal,
+    /// case-sensitive substring — wrapping around the buffer like Vim's
+    /// default 'wrapscan'.
+    fn search(&mut self, text: &str, cursor: usize, back: bool) -> Vec<Action> {
+        let Some((query, _)) = self.last_search.clone() else {
+            return self.beep();
+        };
+        let found = if back {
+            text[..cursor].rfind(&query).or_else(|| text.rfind(&query))
+        } else {
+            let from = next_char(text, cursor);
+            text[from..]
+                .find(&query)
+                .map(|i| from + i)
+                .or_else(|| text.find(&query))
+        };
+        let Some(pos) = found else {
+            return self.beep();
+        };
+        let pos = clamp_normal(text, pos);
+        self.desired_col = Some(char_col(text, pos));
+        vec![Action::MoveCursor(pos)]
     }
 
     // --- Motion / object resolution ------------------------------------

@@ -61,6 +61,17 @@ pub(crate) enum Action {
     Yank(String),
     Undo,
     Redo,
+    /// `.`: replay the last change. The app fetches it with
+    /// [`VimState::begin_repeat`], feeds the recorded keys back through
+    /// `handle_key`, re-inserts the captured Insert-mode text, and closes
+    /// with [`VimState::end_repeat`].
+    Repeat,
+    /// `ZZ`: submit the commit message.
+    Commit,
+    /// `ZQ`: cancel the editor (the app's discard-confirm flow applies).
+    Quit,
+    /// `gq`: reflow the message body.
+    Reflow,
     /// Unhandled or invalid input — swallow the key, optionally flash.
     Beep,
 }
