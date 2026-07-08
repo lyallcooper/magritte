@@ -158,8 +158,8 @@ impl StatusView {
                 .unwrap_or(0);
             config_height + arg_height + command_height
         };
-        let band_cap = if estimate_height(7) < 10 {
-            7
+        let band_cap = if estimate_height(6) < 10 {
+            6
         } else if estimate_height(4) < 14 {
             4
         } else {
