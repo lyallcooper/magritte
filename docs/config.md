@@ -416,8 +416,11 @@ section = "My commands"         # which ? group to list it under when bound
   at point in the log), `{branch}` (the current branch), `{upstream}` (the
   branch's upstream, e.g. `origin/main`), `{push-remote}` (the resolved push
   remote, e.g. `origin`), `{default-branch}` (what `origin/HEAD` points at,
-  e.g. `main`). If one can't be resolved — e.g. `{file}` with no file selected
-  — the command reports that and doesn't run.
+  e.g. `main`), `{default-remote}` (the remote that named `{default-branch}`,
+  falling back to the push remote — so
+  `git pull {default-remote} {default-branch}` never mixes remotes). If one
+  can't be resolved — e.g. `{file}` with no file selected — the command
+  reports that and doesn't run.
 - **Titles expand placeholders too**, wherever the title shows (palette, `?`
   menu, transient injections) — `title = "Rebase onto origin/{default-branch}"`
   reads as "Rebase onto origin/main". Display-only: an unresolvable placeholder

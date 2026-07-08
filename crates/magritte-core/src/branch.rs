@@ -26,11 +26,12 @@ impl Repo {
             .filter(|name| !name.is_empty()))
     }
 
-    /// The repo's default branch — what `<remote>/HEAD` points at (`origin`
-    /// first, then any other remote), falling back to the first local branch
-    /// named like a mainline (magit's `magit-main-branch-names`). `None` when
-    /// neither resolves.
-    pub fn default_branch(&self) -> Result<Option<String>> {
+    /// The repo's default branch, with the remote whose recorded HEAD named it:
+    /// `(Some(remote), branch)` from `<remote>/HEAD` (`origin` first, then any
+    /// other remote), else `(None, branch)` for the first local branch named
+    /// like a mainline (magit's `magit-main-branch-names`). `None` when neither
+    /// resolves.
+    pub fn default_branch_remote(&self) -> Result<Option<(Option<String>, String)>> {
         let remotes = self.remotes().unwrap_or_default();
         let ordered = std::iter::once("origin").chain(
             remotes
@@ -52,7 +53,7 @@ impl Repo {
                 .filter(|s| !s.is_empty());
             if let Some(head) = head {
                 let name = head.strip_prefix(&format!("{remote}/")).unwrap_or(&head);
-                return Ok(Some(name.to_string()));
+                return Ok(Some((Some(remote.to_string()), name.to_string())));
             }
         }
         for name in ["main", "master", "next", "trunk", "development"] {
@@ -60,10 +61,15 @@ impl Repo {
                 .run_optional(["show-ref", "--verify", "-q", &format!("refs/heads/{name}")])?
                 .is_some()
             {
-                return Ok(Some(name.to_string()));
+                return Ok(Some((None, name.to_string())));
             }
         }
         Ok(None)
+    }
+
+    /// Just the branch part of [`default_branch_remote`](Self::default_branch_remote).
+    pub fn default_branch(&self) -> Result<Option<String>> {
+        Ok(self.default_branch_remote()?.map(|(_, branch)| branch))
     }
 
     /// Local branch names (`refs/heads`), most-recently-committed first so the

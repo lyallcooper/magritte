@@ -602,6 +602,7 @@ impl StatusView {
         "upstream",
         "push-remote",
         "default-branch",
+        "default-remote",
     ];
 
     /// Resolve one placeholder name against the current selection and repo
@@ -636,6 +637,16 @@ impl StatusView {
                 .as_ref()
                 .and_then(|r| r.default_branch().ok().flatten())
                 .ok_or_else(|| "No default branch found for {default-branch}".to_string()),
+            // Resolved together with {default-branch}: the remote whose HEAD
+            // named it, else the push-remote (when the default branch was only
+            // found as a local mainline name) — so the pair can't disagree.
+            "default-remote" => self
+                .repo
+                .as_ref()
+                .and_then(|r| r.default_branch_remote().ok().flatten())
+                .and_then(|(remote, _)| remote)
+                .or_else(|| head(|h| RemoteTargets::from_head(h).push_remote))
+                .ok_or_else(|| "No default remote found for {default-remote}".to_string()),
             _ => Err(format!("unknown placeholder {{{name}}}")),
         }
     }

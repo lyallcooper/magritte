@@ -37,11 +37,16 @@ fn current_branch_on_normal_unborn_and_detached_head() {
 
 #[test]
 fn default_branch_from_remote_head_or_mainline_name() {
-    // No remote: falls back to the local mainline name.
+    // No remote: falls back to the local mainline name, with no remote.
     let (t, repo) = repo();
     assert_eq!(repo.default_branch().unwrap().as_deref(), Some("main"));
+    assert_eq!(
+        repo.default_branch_remote().unwrap(),
+        Some((None, "main".to_string()))
+    );
 
-    // A recorded origin/HEAD wins, even over a local `main`.
+    // A recorded origin/HEAD wins, even over a local `main`, and names the
+    // remote it came from.
     t.git(["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
     t.git([
         "symbolic-ref",
@@ -49,6 +54,10 @@ fn default_branch_from_remote_head_or_mainline_name() {
         "refs/remotes/origin/trunk",
     ]);
     assert_eq!(repo.default_branch().unwrap().as_deref(), Some("trunk"));
+    assert_eq!(
+        repo.default_branch_remote().unwrap(),
+        Some((Some("origin".to_string()), "trunk".to_string()))
+    );
 
     // Neither a remote HEAD nor a mainline-named branch: none.
     let odd = TestRepo::new();

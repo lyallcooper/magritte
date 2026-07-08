@@ -246,8 +246,8 @@ pub struct CustomCommand {
     /// The shell command to run, e.g. `"git pull --rebase && git push"`. Run via
     /// `sh -c` in the repo root, so it supports `&&`, pipes, and any program —
     /// not just git. The `{file}`, `{commit}`, `{branch}`, `{upstream}`,
-    /// `{push-remote}`, and `{default-branch}` placeholders are substituted
-    /// (shell-quoted) from the selection and repo at run time.
+    /// `{push-remote}`, `{default-branch}`, and `{default-remote}` placeholders
+    /// are substituted (shell-quoted) from the selection and repo at run time.
     pub run: String,
     /// Re-read status after running (default true).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
