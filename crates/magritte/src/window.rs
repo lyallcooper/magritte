@@ -265,12 +265,20 @@ pub(crate) fn open_or_focus_repo(
     // system's (inert for an unbundled binary, live if we ever ship a bundle).
     menus::note_recent_repo(&key, cx);
     cx.add_recent_document(&key);
-    if let Some(handle) = windows.borrow().get(&key).copied() {
-        if cx
-            .update_window(handle, |_, window, _| window.activate_window())
-            .is_ok()
-        {
-            cx.activate(true);
+    // Drop the registry borrow before mutating it below. Liveness comes from
+    // `cx.windows()`, not from whether an update succeeds: this can run inside
+    // an update of that very window (a Dock-menu open of the already-focused
+    // repo), where a re-entrant update fails — treating that as a dead window
+    // panicked on the still-held borrow and reopened a duplicate. Defer the
+    // activation instead.
+    let existing = windows.borrow().get(&key).copied();
+    if let Some(handle) = existing {
+        if cx.windows().contains(&handle) {
+            cx.defer(move |cx| {
+                cx.update_window(handle, |_, window, _| window.activate_window())
+                    .ok();
+                cx.activate(true);
+            });
             return Some(handle);
         }
         windows.borrow_mut().remove(&key);

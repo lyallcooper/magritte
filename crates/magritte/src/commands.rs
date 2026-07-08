@@ -1021,6 +1021,20 @@ pub(crate) fn commands() -> &'static [Command] {
             leaf: None,
             run: |t, _w, cx| t.check_for_updates(cx),
         },
+        Command {
+            id: "about",
+            contexts: ScreenSet::ALL,
+            title: "About Magritte",
+            aliases: &["version"],
+            category: Category::Application,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            at_point: false,
+            leaf: None,
+            run: |t, w, cx| t.show_about(w, cx),
+        },
         // The `?` accelerator opens this too; a registry entry so vanilla's `h`
         // (magit binds both `h` and `?` to the dispatch) and the palette reach it.
         Command {

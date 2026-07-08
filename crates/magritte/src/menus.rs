@@ -74,6 +74,18 @@ fn set_dock_menu(recents: &state::RecentRepos, cx: &mut App) {
     cx.set_dock_menu(items);
 }
 
+impl StatusView {
+    /// The About dialog — the app-menu item and the `about` palette command.
+    pub(crate) fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::WindowExt as _;
+        window.open_alert_dialog(cx, |alert, _, _| {
+            alert
+                .title(format!("Magritte {CURRENT_VERSION}"))
+                .description("A fast, keyboard-driven git client in the spirit of magit.")
+        });
+    }
+}
+
 /// Run `f` on the active window, deferred out of the current dispatch: a menu
 /// action is dispatched *inside* an update of the active window, so touching
 /// that window immediately would re-enter it and silently fail.
@@ -146,13 +158,8 @@ pub(crate) fn install(cx: &mut App) {
         on_active_window(cx, |window, _| window.zoom_window());
     });
     cx.on_action(|_: &About, cx| {
-        on_active_window(cx, |window, cx| {
-            use gpui_component::WindowExt as _;
-            window.open_alert_dialog(cx, |alert, _, _| {
-                alert
-                    .title(format!("Magritte {CURRENT_VERSION}"))
-                    .description("A fast, keyboard-driven git client in the spirit of magit.")
-            });
+        on_status_view(cx, |view, window, cx| {
+            view.invoke_command("about", window, cx)
         });
     });
     cx.on_action(|action: &OpenRecent, cx| {

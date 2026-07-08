@@ -977,7 +977,7 @@ impl StatusView {
         &self,
         mut root: gpui::Div,
         view: &Entity<Self>,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         if let Some(popup) = &self.popup {
@@ -1086,7 +1086,10 @@ impl StatusView {
             );
         }
 
-        root.children(self.prefix_indicator(window))
+        root = root.children(self.prefix_indicator(window));
+        // gpui-component's dialog layer (the About dialog): `Root` only holds
+        // the dialog state — the app's root view must draw the layer, topmost.
+        root.children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -1098,7 +1101,11 @@ impl Render for StatusView {
         // keystrokes while the window isn't frontmost.
         let owns_focus_elsewhere = self.editor().is_some()
             || self.settings().is_some()
-            || matches!(self.popup, Some(Popup::Picker(_)));
+            || matches!(self.popup, Some(Popup::Picker(_)))
+            || {
+                use gpui_component::WindowExt as _;
+                window.has_active_dialog(cx)
+            };
         if !owns_focus_elsewhere && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
