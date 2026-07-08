@@ -67,6 +67,7 @@ mod title_bar;
 mod transfer;
 mod transient_render;
 mod transient_state;
+mod vim;
 mod watchers;
 mod window;
 mod worktree_view;
@@ -99,6 +100,27 @@ const STATUS_CONTEXT: &str = "MagritteStatus";
 actions!(
     magritte,
     [ToggleFold, BackTab, Quit, CloseWindow, OpenSettings]
+);
+// Keys the Input binds to its own edit actions (newline, delete, cursor
+// moves). Bound actions fire even when a capture-phase listener stops the
+// keystroke, so Vim mode can't intercept them there — instead these override
+// the Input-context bindings (ours are registered later, so they win) and the
+// handler either feeds the Vim engine or re-dispatches the input's original
+// action (see `vim::apply::vim_bound_key`).
+actions!(
+    magritte,
+    [
+        VimEnter,
+        VimShiftEnter,
+        VimBackspace,
+        VimDelete,
+        VimTab,
+        VimShiftTab,
+        VimUp,
+        VimDown,
+        VimLeft,
+        VimRight
+    ]
 );
 // Right-click context-menu actions; dispatched by the PopupMenu and handled on
 // the status view, which applies them to the row at point (selected on
@@ -1157,6 +1179,18 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-,", OpenSettings, Some(STATUS_CONTEXT)),
+            // Vim-mode reroutes for the Input's own bound keys (see the
+            // actions! block above); pass-through outside Vim Normal mode.
+            KeyBinding::new("enter", VimEnter, Some("Input")),
+            KeyBinding::new("shift-enter", VimShiftEnter, Some("Input")),
+            KeyBinding::new("backspace", VimBackspace, Some("Input")),
+            KeyBinding::new("delete", VimDelete, Some("Input")),
+            KeyBinding::new("tab", VimTab, Some("Input")),
+            KeyBinding::new("shift-tab", VimShiftTab, Some("Input")),
+            KeyBinding::new("up", VimUp, Some("Input")),
+            KeyBinding::new("down", VimDown, Some("Input")),
+            KeyBinding::new("left", VimLeft, Some("Input")),
+            KeyBinding::new("right", VimRight, Some("Input")),
         ]);
         // Closing the last window (red traffic light included) quits the app.
         cx.on_window_closed(|cx, _| {

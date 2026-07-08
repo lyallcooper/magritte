@@ -32,30 +32,35 @@ primitives a Vim mode needs:
   It records undo history (`push_history`) and emits `InputEvent::Change`, so
   operator edits are **properly undoable** and re-trigger the summary-ruler
   diagnostic — no whole-buffer `set_value` clobbering.
-- `selected_text_range(…) -> Option<UTF16Selection>` — read the selection
-  (range + `reversed`).
 - `text_for_range(range, …) -> Option<String>` — read any slice.
-- `bounds_for_range(range, element_bounds, …) -> Option<Bounds<Pixels>>` — the
-  pixel rect for a range, so we can draw our own visual-selection highlight and
-  block cursor.
 
-Plus the inherent public methods already used elsewhere: `value()`/`text()`
-(`&Rope`), `cursor()`, `set_cursor_position()`, `insert()`, `unselect()`.
+Plus the inherent public methods, which for *reading* are byte-native (no UTF-16
+anywhere): `value()`/`text()` (`&Rope`), `cursor()` (documented UTF-8 byte
+offset), `selected_range()` (byte range), `set_cursor_position()`, `insert()`,
+`unselect()` — and, for rendering, **`range_to_bounds(&Range<usize>)`**, a
+public inherent method that takes a byte range and returns its laid-out pixel
+rect using the input's stored element bounds. Prefer it over the trait's
+`bounds_for_range`, which is built for IME-panel positioning: it clamps the
+result to a single line (`end_origin.y = start_origin.y`) and needs the element
+bounds passed in, which `InputState` doesn't expose (`last_bounds` is
+`pub(super)`).
 
-**Offsets:** `EntityInputHandler` speaks UTF-16 offsets; our engine works in byte
-offsets over the buffer text. Convert at the boundary (walk the rope to map
-byte↔UTF-16) — for a commit message this is short and cheap. Keep the conversion
-in one helper so it's the only place that has to be right.
+**Offsets:** only the *write* path (`replace_text_in_range`) speaks UTF-16;
+every read we need is already in bytes. So the engine works in byte offsets and
+one helper converts a byte range to UTF-16 at the single write boundary. Keep
+that conversion in one place so it's the only code that has to be right.
 
 Two genuine gaps, both solvable without upstreaming or a new editor:
 
 1. **Setting a normal selection** (for Visual-mode highlighting) isn't exposed —
-   `selected_text_range` reads, nothing public sets it. We track the Visual
-   anchor in our own state and **render the highlight ourselves** via
-   `bounds_for_range` (a translucent rect behind the text). This is an overlay,
-   not an editor.
+   `selected_range()` reads, nothing public sets it. We track the Visual anchor
+   in our own state and **render the highlight ourselves** via
+   `range_to_bounds`. A multi-line selection is *not* one rectangle: decompose
+   it into per-line byte ranges and draw one translucent rect per line. This is
+   an overlay, not an editor.
 2. **Block cursor shape** in Normal mode isn't exposed. Ship a header mode
-   indicator first; optionally draw a block cursor via `bounds_for_range` later.
+   indicator first; optionally draw a block cursor via
+   `range_to_bounds(cursor..next char)` later.
 
 ## Build our own engine — but cross-check against proven emulations
 
@@ -127,9 +132,20 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
 - **Motions:** `h j k l`, `0 ^ $`, `w W b B e E`, `gg G`, `f/t/F/T` (+ `;`/`,`),
   `{`/`}`, `%`. Each tagged inclusive/exclusive and charwise/linewise (per
   `:help motion.txt`), because operators need that to compute the right range.
+- **Insert entry:** `i a I A o O` (and `c` lands in Insert). `Esc` back to
+  Normal steps the cursor left one column.
 - **Text objects:** `iw`/`aw`, and `i`/`a` for `" ' \`` and `() [] {} <>`.
 - **Operators:** `d`, `c` (delete then Insert), `y` (unnamed register + system
-  clipboard). Doubled forms `dd`/`cc`/`yy` are linewise.
+  clipboard). Doubled forms `dd`/`cc`/`yy` are linewise; shorthands `D`/`C`
+  (to end of line), `Y`/`S` (linewise), `x`/`X`, `r{char}`, `~`, `J`.
+- **Put:** `p`/`P` from the unnamed register (deletes and changes fill it too,
+  as in Vim), honoring the register's linewise flag.
+- **Undo/redo:** `u`/`Ctrl-r`. `InputState`'s `undo`/`redo` methods are
+  `pub(super)`, but the `Undo`/`Redo` *actions* are public (the `actions!`
+  block, re-exported from `gpui_component::input`) — dispatch them with
+  `window.dispatch_action` while the input is focused. Each
+  `replace_text_in_range` call is one history entry, so an operator edit undoes
+  as a unit.
 - **Surround:** `ysiw"`, `yss"`, motion-based `ys`, visual `S`, `cs"'`, `ds"`,
   for the bracket/quote pairs.
 
@@ -144,21 +160,33 @@ even if the first cut ignores it.
 - **Enable flag:** a `vim_mode` bool in the commit-editor config (`config.rs` + a
   Settings toggle by "Summary ruler"/"Body auto-wrap"). When on, `open_editor`
   starts in Normal.
-- **Key routing:** intercept in the existing `CommitEditor::on_capture_key`
-  (capture phase, before `InputState`). When `vim` is `Some` and mode ≠ Insert,
-  route the keystroke to the engine and `cx.stop_propagation()`. In Insert, only
-  catch `Esc`. Pending state (operator/`f`/surround) accumulates across keystrokes
-  like the status view's `pending_prefix` machinery.
-- **Commit gating:** commit fires on `PressEnter` (a subscription), not through
-  `on_capture_key`. In Normal mode a bare `Enter` must not commit (it's a motion);
-  gate it to Insert mode or the existing `⌘⏎`.
+- **Key routing** is two-channel, because gpui dispatches an Input-context
+  *keybinding's action* even when a capture-phase listener stops the
+  keystroke (the same reason main.rs overrides Root's `tab`):
+  - *Unbound keys* (letters, symbols, `Space`, `Esc`, ctrl chords) are
+    intercepted in the existing `CommitEditor::on_capture_key`: when `vim` is
+    `Some` and mode ≠ Insert, route to the engine and `cx.stop_propagation()`.
+    In Insert, only catch `Esc`. Unhandled printables are swallowed so they
+    can't insert.
+  - *Input-bound keys* (`Enter`, `Backspace`, `Delete`, `Tab`, arrows) are
+    overridden with our own `Vim*` actions bound in the `Input` context after
+    `gpui_component::init` (later bindings win). The handler feeds the engine
+    in Normal/Visual mode and re-dispatches the input's original action
+    (`input::Enter`, `input::Backspace`…) everywhere else — Insert mode, the
+    pickers, settings fields, Vim off — so those keep their behavior.
+  Pending state (operator/`f`/surround) accumulates across keystrokes like the
+  status view's `pending_prefix` machinery.
+- **Commit gating:** commit fires on `PressEnter { secondary: true }` (a
+  subscription) from `⌘⏎`, whose chord never reaches our handlers; a bare
+  `Enter` in Normal mode is consumed by the `Vim*` reroute as a motion.
 
 ## Rendering
 
 - **Mode indicator** (`NORMAL`/`INSERT`/`VISUAL`) in the editor header
   (`render_editor`), by the `⌘⏎ commit` / `⌥q reflow` hints.
-- **Visual selection**: draw a translucent rect via `bounds_for_range(anchor..
-  cursor)`; falls back to none if bounds aren't available (off-screen).
+- **Visual selection**: split `anchor..cursor` into per-line byte ranges and
+  draw a translucent rect per line via `range_to_bounds`; falls back to none if
+  bounds aren't available (not laid out / off-screen).
 - **Block cursor**: header indicator first; optional self-drawn block later.
 
 ## Testing
@@ -175,20 +203,25 @@ even if the first cut ignores it.
    flag (`MoveCursor` only, no edits).
 2. Operators + text objects (`d`/`c`/`y`, `iw`/`aw`, quote/bracket objects,
    linewise `dd`/`cc`/`yy`) via `replace_text_in_range` (real undo from day one).
-3. Visual mode + the `bounds_for_range` selection overlay.
+3. Visual mode + the `range_to_bounds` per-line selection overlay.
 4. Surround MVP.
 5. Block cursor; polish.
-6. Later: counts everywhere, `.`-repeat, registers/marks, `>`/`<`, search, a
-   minimal `:` line.
+6. Later: `.`-repeat, registers/marks, `>`/`<`, search, a minimal `:` line,
+   and mouse integration (a click should abort a pending operator, and a
+   native drag-selection should become — or at least clear on entering —
+   Visual mode; today the two selection models simply coexist).
 
 ## Risks / open questions
 
-- **UTF-16 boundary.** All `EntityInputHandler` edits/selection use UTF-16
-  offsets; a single conversion helper (byte↔UTF-16 over the rope) must be correct.
-- **Visual/block rendering.** `bounds_for_range` is only valid after layout and
+- **UTF-16 boundary.** Only the write path (`replace_text_in_range`) is UTF-16;
+  the single byte→UTF-16 conversion helper must be correct.
+- **Visual/block rendering.** `range_to_bounds` is only valid after layout and
   for on-screen ranges; the overlay must degrade gracefully while scrolling.
-- **Auto-wrap.** Body auto-wrap (`wrap_at_cursor`) and reflow (`⌥q`) edit the
-  buffer independently; compute an operator's resulting cursor against the
-  post-wrap text, or suspend auto-wrap during a Normal-mode edit.
+- **Auto-wrap.** *Decided:* suspend body auto-wrap while in Normal/Visual mode
+  (only wrap on `Change` events that arrive in Insert mode). `on_editor_changed`
+  rewrites the buffer with `set_value`, which sets `history.ignore` — the rewrap
+  is invisible to undo history, so letting it run after an operator edit could
+  make a later `u` restore mismatched offsets. Reflow (`⌥q`) stays available in
+  both modes as an explicit command.
 - **Scope.** Vim is bottomless — the phased MVP is the line. Keep the `Action`
   vocabulary small and let unhandled keys `Beep` rather than half-implementing.

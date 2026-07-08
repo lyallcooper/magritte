@@ -260,6 +260,14 @@ impl StatusView {
         self.keymap = keymap;
         warnings.extend(theme::config_value_warnings(&self.config, cx));
         self.reapply_theme(cx);
+        // Toggling Vim mode applies to an already-open commit editor too:
+        // turning it on starts in Normal, off returns to plain editing.
+        let vim_on = self.config.commit_vim_mode;
+        if let Some(ed) = self.editor_mut() {
+            if vim_on != ed.vim.is_some() {
+                ed.vim = vim_on.then(vim::VimState::new);
+            }
+        }
         if data_changed {
             self.refresh(cx);
         }

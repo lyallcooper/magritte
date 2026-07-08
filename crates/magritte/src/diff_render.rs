@@ -48,6 +48,29 @@ impl StatusView {
                     .items_center()
                     .gap_2()
                     .child(div().text_color(self.palette.section).child(title))
+                    .when_some(self.vim_indicator(ed), |el, (label, pending)| {
+                        // The Vim mode chip (NORMAL/INSERT/VISUAL) plus any
+                        // in-progress key sequence (`2d`, `ys`, `f`…).
+                        el.child(
+                            div()
+                                .px_1()
+                                .rounded(px(3.0))
+                                .bg(self.palette.visual)
+                                .text_color(match label {
+                                    "INSERT" => self.palette.added,
+                                    "VISUAL" | "V-LINE" => self.palette.modified,
+                                    _ => self.palette.fg,
+                                })
+                                .child(SharedString::from(label)),
+                        )
+                        .when_some(pending, |el, keys| {
+                            el.child(
+                                div()
+                                    .text_color(self.palette.dim)
+                                    .child(SharedString::from(keys)),
+                            )
+                        })
+                    })
                     .map(|el| {
                         if ed.confirming_cancel {
                             // Unsaved edits: confirm before discarding the message.
@@ -118,21 +141,19 @@ impl StatusView {
         // While the discard confirmation is up, disable the field so it grays
         // out — a clear cue that typing is paused until you answer y/n.
         let paused = ed.confirming_cancel;
+        // Vim mode paints its Visual selection and block cursor as an overlay
+        // sibling above the Input (InputState exposes no selection setter).
+        let message = |input: gpui::Div| {
+            input
+                .relative()
+                .child(Input::new(&ed.state).h_full().disabled(paused))
+                .children(self.vim_overlay(ed))
+        };
         if ed.diff.is_empty() {
-            root.child(
-                div()
-                    .flex_grow(1.0)
-                    .w_full()
-                    .child(Input::new(&ed.state).h_full().disabled(paused)),
-            )
+            root.child(message(div().flex_grow(1.0).w_full()))
         } else {
-            root.child(
-                div()
-                    .h(px(176.0))
-                    .w_full()
-                    .child(Input::new(&ed.state).h_full().disabled(paused)),
-            )
-            .child(self.render_commit_diff(ed, view))
+            root.child(message(div().h(px(176.0)).w_full()))
+                .child(self.render_commit_diff(ed, view))
         }
     }
 

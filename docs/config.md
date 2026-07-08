@@ -58,7 +58,8 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
-| `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72. |
+| `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72 (paused while in Vim Normal/Visual mode). |
+| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects, `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), and `u`/`Ctrl-r` undo. For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |

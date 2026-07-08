@@ -83,6 +83,10 @@ pub struct Config {
     /// Auto-hard-wrap the commit body at 72 columns as you type.
     #[serde(skip_serializing_if = "is_true")]
     pub commit_body_wrap: bool,
+    /// Modal Vim editing (Normal/Insert/Visual, operators, text objects,
+    /// surround) in the in-app commit editor.
+    #[serde(skip_serializing_if = "is_false")]
+    pub commit_vim_mode: bool,
     /// External GUI editor for "open file" (Return) and the config button.
     /// Either a CLI command (`code -w`, `zed`) or, on macOS, an application
     /// name opened via `open -a` (`Zed`, `Visual Studio Code`). Empty = open in
@@ -518,6 +522,7 @@ impl Default for Config {
             app_icon: String::new(),
             commit_title_ruler: true,
             commit_body_wrap: true,
+            commit_vim_mode: false,
             editor: String::new(),
             commit_in_editor: false,
             commit_editor: String::new(),
@@ -894,6 +899,12 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         "commit_body_wrap",
         config.commit_body_wrap,
         config.commit_body_wrap,
+    );
+    set_bool(
+        &mut doc,
+        "commit_vim_mode",
+        config.commit_vim_mode,
+        !config.commit_vim_mode,
     );
     set_string(&mut doc, "editor", &config.editor, config.editor.is_empty());
     set_bool(

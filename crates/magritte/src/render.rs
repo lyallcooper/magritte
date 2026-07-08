@@ -1215,6 +1215,43 @@ impl Render for StatusView {
                     this.copy_at_point(cx)
                 }),
             )
+            // Vim-mode reroutes of the Input's own bound keys: Vim Normal
+            // mode consumes them, everything else gets the original action
+            // back (see main.rs's binding block and vim/apply.rs).
+            .on_action(
+                cx.listener(|this, _: &VimEnter, window, cx| {
+                    this.vim_bound_key("enter", window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &VimShiftEnter, window, cx| {
+                this.vim_bound_key("shift-enter", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &VimBackspace, window, cx| {
+                this.vim_bound_key("backspace", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &VimDelete, window, cx| {
+                this.vim_bound_key("delete", window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &VimTab, window, cx| this.vim_bound_key("tab", window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &VimShiftTab, window, cx| {
+                this.vim_bound_key("shift-tab", window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &VimUp, window, cx| this.vim_bound_key("up", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &VimDown, window, cx| this.vim_bound_key("down", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &VimLeft, window, cx| this.vim_bound_key("left", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &VimRight, window, cx| {
+                    this.vim_bound_key("right", window, cx)
+                }),
+            )
             // Right-click menu actions, applied to the row at point / selection.
             .on_action(cx.listener(|this, _: &CtxStage, _window, cx| this.act(Op::Stage, cx)))
             .on_action(cx.listener(|this, _: &CtxUnstage, _window, cx| this.act(Op::Unstage, cx)))

@@ -38,6 +38,9 @@ pub(crate) struct CommitEditor {
     /// Collapsed File/Hunk header row indices in the preview diff, toggled by
     /// clicking a header (the preview has no cursor, so folding is mouse-driven).
     pub(crate) diff_collapsed: std::collections::HashSet<usize>,
+    /// Modal Vim editing state, when the `commit_vim_mode` setting is on
+    /// (`None` = ordinary editing). Opens in Normal mode.
+    pub(crate) vim: Option<vim::VimState>,
     /// Kept alive so the PressEnter subscription stays active.
     pub(crate) _sub: Subscription,
 }
@@ -155,7 +158,14 @@ impl StatusView {
         let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
-        let wrap = self.config.commit_body_wrap;
+        // Auto-wrap only applies to Insert-mode typing: the wrap rewrite goes
+        // through `set_value`, which bypasses undo history, so letting it run
+        // after a Vim operator edit would leave undo with stale offsets.
+        let wrap = self.config.commit_body_wrap
+            && self
+                .editor()
+                .and_then(|e| e.vim.as_ref())
+                .is_none_or(|v| v.in_insert());
         let ruler = self.config.commit_title_ruler;
         state.update(cx, |s, cx| {
             if wrap {
@@ -449,6 +459,7 @@ impl StatusView {
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             diff_collapsed: std::collections::HashSet::new(),
+            vim: self.config.commit_vim_mode.then(vim::VimState::new),
             _sub: sub,
         });
         // Stamp this editor instance so async loads started for it can't write
@@ -702,6 +713,12 @@ impl StatusView {
                 // input is paused and only y/n/esc do anything.
                 _ => self.flash_discard_prompt(cx),
             }
+            return;
+        }
+        // Vim mode intercepts (nearly) everything outside Insert mode; an
+        // idle-Normal Esc falls through to the cancel below.
+        if self.handle_vim_key(key, event, window, cx) {
+            cx.stop_propagation();
             return;
         }
         if key == "escape" {

@@ -974,6 +974,19 @@ impl StatusView {
                         |cfg, on| cfg.commit_body_wrap = on,
                     ),
                 ));
+                rows.push(toggle_field(
+                    "commit-vim-mode",
+                    "Vim mode",
+                    self.toggle_control(
+                        "commit-vim-mode",
+                        self.config.commit_vim_mode,
+                        "Modal Vim editing in the commit editor: Normal/Insert/Visual modes, \
+                         motions, text objects, d/c/y operators, and surround.",
+                        view,
+                        false,
+                        |cfg, on| cfg.commit_vim_mode = on,
+                    ),
+                ));
             }
             rows
         });
