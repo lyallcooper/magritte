@@ -193,11 +193,13 @@ even if the first cut ignores it.
   keeping the 50-col convention). `gqq` is Vim-literal — the current line
   only, so it breaks an overlong line onto new lines and is a no-op on one
   that fits; the paragraph form is `gqip`. Reflow respects structure:
-  indented lines are preformatted (kept verbatim, the git code-block
-  convention) and bullets (`- * + •`, `1.`/`1)`) re-wrap as their own items
-  with a hanging indent — auto-wrap shares the same shaping
-  (`wrap_prefixed`), so typing past 72 in a bullet or indented line
-  continues at the hanging indent. `⌥q` remains the whole-body reflow (also
+  bullets (`- * + •`, `1.`/`1)`) re-wrap as their own items with a hanging
+  indent, and indented lines rejoin and re-wrap at their own indentation —
+  except under the *whole-body* reflow (`⌥q`/`,q`), where they're
+  preformatted and kept verbatim (the git code-block convention; an
+  explicit `gq` on them means the user wants them formatted). Auto-wrap
+  shares the same shaping (`wrap_prefixed`), so typing past 72 in a bullet
+  or indented line continues at the hanging indent. `⌥q` remains the whole-body reflow (also
   on `,q`), applied as a minimal `replace_text_in_range` splice — so it's
   ⌘Z-able in plain mode and gets a Vim undo snapshot
   (`note_external_change`) in Vim mode.

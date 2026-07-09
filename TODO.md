@@ -222,3 +222,4 @@
 - [ ] The commit editor sometimes loads before the diff is ready, leading to pop-in and shift after it loads
 - [ ] It would be nice to allow users to resize the commit editor input box if they prefer more editor and less diff displayed. This setting should then be remembered per repo
 - [ ] It's not possible to dismiss the help transient on the commit editor in vim mode
+- [ ] Commit editor's "discard message?" should say "discard changes?" when appropriate (eg rewording)

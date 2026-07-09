@@ -121,7 +121,7 @@ impl StatusView {
                 }
             }
             let block = &text[start..end];
-            let reflowed = commit_text::reflow_lines(block, COMMIT_BODY_WIDTH);
+            let reflowed = commit_text::reflow_lines_joining(block, COMMIT_BODY_WIDTH);
             if reflowed == block {
                 return;
             }

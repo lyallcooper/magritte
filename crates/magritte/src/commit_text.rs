@@ -112,6 +112,18 @@ pub(crate) fn reflow_body(text: &str, width: usize) -> String {
 /// (`- * + •` or `1.`/`1)`) starts its own paragraph that re-wraps with a
 /// hanging indent, its continuation lines joined bullet-style.
 pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
+    reflow_block(block, width, true)
+}
+
+/// [`reflow_lines`] for an *explicit* range reflow (the `gq` family): the
+/// user pointed at these lines, so indented ones aren't preformatted — they
+/// rejoin their paragraph and re-wrap at the first line's indentation, like
+/// Vim's `gq`. The conservative verbatim rule stays for whole-body reflows.
+pub(crate) fn reflow_lines_joining(block: &str, width: usize) -> String {
+    reflow_block(block, width, false)
+}
+
+fn reflow_block(block: &str, width: usize, indented_verbatim: bool) -> String {
     // The open paragraph: the first line's prefix (a bullet marker or
     // nothing), the hanging prefix for wrapped continuations, and its lines.
     struct Para<'a> {
@@ -140,12 +152,22 @@ pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
             });
         } else if line.starts_with([' ', '\t']) {
             // Indented: a bullet's continuation joins it; anything else is
-            // purposeful indentation, kept as-is.
+            // purposeful indentation — kept as-is for whole-body reflows, or
+            // (for an explicit gq) joined as a paragraph at its own indent.
             match &mut para {
-                Some(p) if !p.cont.is_empty() => p.lines.push(line),
-                _ => {
+                Some(p) if !p.cont.is_empty() || !indented_verbatim => p.lines.push(line),
+                _ if indented_verbatim => {
                     flush(&mut out, &mut para, width);
                     out.push(line.to_string());
+                }
+                _ => {
+                    flush(&mut out, &mut para, width);
+                    let ws = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+                    para = Some(Para {
+                        first: ws.to_string(),
+                        cont: ws.to_string(),
+                        lines: vec![line],
+                    });
                 }
             }
         } else {
@@ -338,6 +360,20 @@ mod tests {
         let text = "s\n\n- one two three";
         let wrapped = wrap_at_cursor(text, text.len(), 12).unwrap();
         assert_eq!(wrapped.len() - text.len(), 2); // the hanging "  "
+    }
+
+    #[test]
+    fn reflow_joining_formats_indented_paragraphs() {
+        // Explicit gq: indented lines rejoin and rewrap at their indent…
+        assert_eq!(reflow_lines_joining("  aa\n  bb", 72), "  aa bb");
+        assert_eq!(
+            reflow_lines_joining("  one two three", 9),
+            "  one two\n  three"
+        );
+        // …while the whole-body reflow keeps them verbatim.
+        assert_eq!(reflow_lines("  aa\n  bb", 72), "  aa\n  bb");
+        // Bullets behave the same in both.
+        assert_eq!(reflow_lines_joining("- a\nb", 72), "- a b");
     }
 
     #[test]
