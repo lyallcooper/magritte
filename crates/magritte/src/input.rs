@@ -633,22 +633,34 @@ impl StatusView {
             "push-remote" => head(|h| RemoteTargets::from_head(h).push_remote)
                 .ok_or_else(|| "No push-remote configured for {push-remote}".to_string()),
             "default-branch" => self
-                .repo
-                .as_ref()
-                .and_then(|r| r.default_branch().ok().flatten())
+                .default_branch_cached()
+                .map(|(_, branch)| branch)
                 .ok_or_else(|| "No default branch found for {default-branch}".to_string()),
             // Resolved together with {default-branch}: the remote whose HEAD
             // named it, else the push-remote (when the default branch was only
             // found as a local mainline name) — so the pair can't disagree.
             "default-remote" => self
-                .repo
-                .as_ref()
-                .and_then(|r| r.default_branch_remote().ok().flatten())
+                .default_branch_cached()
                 .and_then(|(remote, _)| remote)
                 .or_else(|| head(|h| RemoteTargets::from_head(h).push_remote))
                 .ok_or_else(|| "No default remote found for {default-remote}".to_string()),
             _ => Err(format!("unknown placeholder {{{name}}}")),
         }
+    }
+
+    /// The memoized `{default-branch}`/`{default-remote}` resolution: it
+    /// shells out to git (remote HEADs, mainline probes), and placeholder
+    /// expansion runs per displayed label — resolve once and reuse until the
+    /// next status refresh clears it.
+    fn default_branch_cached(&self) -> Option<(Option<String>, String)> {
+        self.default_branch_cache
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                self.repo
+                    .as_ref()
+                    .and_then(|r| r.default_branch_remote().ok().flatten())
+            })
+            .clone()
     }
 
     /// Substitute the [`PLACEHOLDERS`](Self::PLACEHOLDERS) in a command against
@@ -868,7 +880,14 @@ impl StatusView {
         // Each entry carries its search corpus (title + hidden aliases, so
         // "yank" finds "Copy" and "add" finds "Stage") alongside the id (for
         // frecency ordering) and the displayed title.
-        let mut entries: Vec<(String, String, String)> = all_commands(&self.config)
+        // The key/id hints are resolved in this same pass, from each command's
+        // *raw* title: mapping the displayed label back through
+        // `raw_command_title` per row re-expanded every user command's
+        // placeholders per palette row — O(rows × commands) `{default-branch}`
+        // resolutions, each a git subprocess, which froze the open for seconds.
+        let bindings = self.screen_bindings();
+        type Entry = (String, String, String, Option<String>, Option<String>);
+        let mut entries: Vec<Entry> = all_commands(&self.config)
             .filter(|c| c.palette && (c.enabled)(self))
             .map(|c| {
                 // User `[[command]]` titles may carry placeholders ({branch},
@@ -879,35 +898,26 @@ impl StatusView {
                 } else {
                     format!("{} {}", title, c.aliases.join(" ")).to_lowercase()
                 };
-                (c.id.to_string(), title, search)
+                let keys = commands::command_keys(bindings, &self.config, c.title);
+                let id = commands::command_id_for_title(&self.config, c.title);
+                (c.id.to_string(), title, search, keys, id)
             })
             .collect();
         entries.sort_by(|a, b| {
             let (sa, sb) = (self.usage.score(&a.0), self.usage.score(&b.0));
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
+        let mut hints = std::collections::HashMap::new();
         let (choices, search): (Vec<String>, Vec<String>) = entries
             .into_iter()
-            .map(|(_, title, search)| (title, search))
-            .unzip();
-        // Precompute the key/id hints for every row now, instead of lazily on
-        // first paint — resolving them inside the palette's opening frame was
-        // part of its perceived open lag.
-        let hints: std::collections::HashMap<_, _> = choices
-            .iter()
-            .map(|label| {
-                let title = self.raw_command_title(label);
-                (
-                    SharedString::from(label.clone()),
-                    (
-                        commands::command_keys(self.screen_bindings(), &self.config, &title)
-                            .map(SharedString::from),
-                        commands::command_id_for_title(&self.config, &title)
-                            .map(SharedString::from),
-                    ),
-                )
+            .map(|(_, title, search, keys, id)| {
+                hints.insert(
+                    SharedString::from(title.clone()),
+                    (keys.map(SharedString::from), id.map(SharedString::from)),
+                );
+                (title, search)
             })
-            .collect();
+            .unzip();
         self.open_picker_searchable(
             PickerAction::RunCommand,
             choices,

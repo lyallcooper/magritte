@@ -180,6 +180,11 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
+/// A resolved default branch: the remote whose HEAD named it (None when it
+/// was only found as a local mainline name) and the branch, or None when
+/// nothing resolved. See `Repo::default_branch_remote`.
+type DefaultBranch = Option<(Option<String>, String)>;
+
 /// git's default diff context (`-U3`); the `+`/`-`/`0` keys adjust from here.
 const DEFAULT_DIFF_CONTEXT: usize = 3;
 /// How long a success notice lingers before auto-dismissing (seconds).
@@ -620,6 +625,10 @@ struct StatusView {
     /// The picker overlay child view — filtering notifies it instead of the
     /// whole status view (see `picker_render::PickerOverlay`).
     picker_overlay: Entity<picker_render::PickerOverlay>,
+    /// Memoized default-branch/remote resolution for the {default-branch} and
+    /// {default-remote} placeholders (outer None = not resolved since the
+    /// last refresh) — resolving shells out to git.
+    default_branch_cache: std::cell::RefCell<Option<DefaultBranch>>,
     /// Font/editor option lists for the settings screen — see [`SettingsCaches`].
     settings_caches: SettingsCaches,
     /// The bottom status bar's toast (message / copied value / keycaps / fade
@@ -745,6 +754,7 @@ impl StatusView {
                 let parent = cx.weak_entity();
                 cx.new(|_| picker_render::PickerOverlay { parent })
             },
+            default_branch_cache: std::cell::RefCell::new(None),
             conflicted: HashSet::new(),
             sequence: None,
             bisect: None,

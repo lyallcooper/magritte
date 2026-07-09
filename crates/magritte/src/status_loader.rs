@@ -23,6 +23,9 @@ impl StatusView {
 
     /// Reload status from scratch, invalidating any in-flight work.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        // Re-resolve the default branch lazily after each refresh (a fetch or
+        // remote change can move it).
+        *self.default_branch_cache.borrow_mut() = None;
         // Stamp the refresh so the focus-refresh throttle can tell how long it's
         // been since the status was last reloaded (by any path).
         self.last_refresh = Some(std::time::Instant::now());
