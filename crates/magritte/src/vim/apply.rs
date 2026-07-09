@@ -285,7 +285,9 @@ impl StatusView {
                     }
                 }
                 Action::Commit => self.submit_editor(window, cx),
-                Action::Quit => self.cancel_editor(window, cx),
+                // `:q!` bypasses the discard confirmation.
+                Action::Quit { force: true } => self.discard_editor(window, cx),
+                Action::Quit { force: false } => self.cancel_editor(window, cx),
                 Action::ReflowRange(range) => self.reflow_vim_range(range, window, cx),
                 Action::Beep => {}
             }

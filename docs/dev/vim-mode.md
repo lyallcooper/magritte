@@ -210,12 +210,25 @@ even if the first cut ignores it.
   replays the keys through `feed_vim`, re-inserts the text, and closes with
   `Esc` — so anything key-driven repeats, surround included.
 - **`/` search:** a `Pending::Search` prompt collects the pattern (shown
-  live in the mode bar), and the overlay highlights every match as it's
-  typed (incsearch-style, capped at 200). Patterns are regexes (Rust
+  live in the mode indicator), and the overlay highlights every match as
+  it's typed (incsearch-style, capped at 200). Patterns are regexes (Rust
   syntax) with smartcase — no *literal* uppercase means case-insensitive
   (escapes like `\W` don't count) — and an invalid or still-partial
   pattern simply matches nothing. `Enter` jumps (wrapping),
   `Esc`/empty-`Backspace` cancel, `n`/`N` repeat, `?` searches backward.
+- **`:` ex line:** a `Pending::Ex` prompt with the same editing as `/`
+  (chars append, `Backspace` edits and cancels when empty, `Esc` cancels),
+  executed on `Enter`: `:q`/`:q!` cancel (`!` skips the discard confirm),
+  `:w`/`:wq`/`:x` commit, a bare `:N` jumps to line N (clamped, like
+  `{count}G`), and `[range]s/pat/rep/[flags]` substitutes. The range is
+  the current line, `%`, `N,M` with `.`/`$` endpoints, or `'<,'>` — a
+  Visual-mode `:` leaves Visual and prefills that, remembering the
+  selected lines. `pat` is a plain regex (no smartcase; `i` flag for case,
+  `g` for every occurrence per line), `rep` takes Vim's `&`/`\0`–`\9`
+  backrefs (`\&`/`\\` for the literals), and `\/` escapes the delimiter.
+  One `Edit` covers the line span, cursor at the last changed line's first
+  non-blank; no match, a bad regex, an unknown flag, or any other command
+  beeps. `:` commands are never the `.`-repeatable change, matching Vim.
 - **`>`/`<` indent operators:** `>>`/`<<` on lines, `>{motion}`/objects,
   Visual `>`/`<`; one step is two spaces (the hanging-bullet width — Vim's
   8 would be wrong here); indent skips blank lines, dedent strips a step of
@@ -228,14 +241,16 @@ even if the first cut ignores it.
 
 ## Rendering
 
-- **Mode line** (`NORMAL`/`INSERT`/`VISUAL` plus the pending keys or search
-  prompt) under the message editor, above the diff preview
-  (`render_editor`), vim-style; the header hints show the vim keys
-  (`ZZ`/`ZQ`/`gq`).
+- **Mode indicator** (`NORMAL`/`INSERT`/`VISUAL` chip) as an overlay inside
+  the message box at its bottom-right corner, with the pending keys or the
+  `/`/`:` prompt text to the left of the chip; the header hints show the
+  vim keys (`ZZ`/`ZQ`/`gq`).
 - **Visual selection**: split `anchor..cursor` into per-line byte ranges and
   draw a translucent rect per line via `range_to_bounds`; falls back to none if
   bounds aren't available (not laid out / off-screen).
-- **Block cursor**: header indicator first; optional self-drawn block later.
+- **Block cursor**: drawn by the same overlay via
+  `range_to_bounds(cursor..next char)`, with a half-width stub on empty
+  lines and at EOF.
 
 ## Testing
 
@@ -254,7 +269,7 @@ even if the first cut ignores it.
 3. Visual mode + the `range_to_bounds` per-line selection overlay.
 4. Surround MVP.
 5. Block cursor; polish.
-6. Later: registers/marks and a minimal `:` line.
+6. Later: registers/marks.
 
 ## Risks / open questions
 

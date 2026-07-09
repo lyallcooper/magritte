@@ -93,6 +93,13 @@ enum Pending {
         query: String,
         back: bool,
     },
+    /// `:`: collecting the ex command line (same editing as `Search`).
+    /// `visual` is the selection's line range remembered by a Visual-mode
+    /// `:` for its `'<,'>` prefix.
+    Ex {
+        input: String,
+        visual: Option<(usize, usize)>,
+    },
 }
 
 /// The unnamed register: the last yanked or deleted text.
@@ -139,6 +146,10 @@ pub(crate) struct VimState {
     redos: Vec<(String, usize)>,
     /// Set by `u`/`C-r` so their own restoring edit isn't snapshotted.
     in_undo: bool,
+    /// Set by the Enter that runs a `:` command: its keys never become the
+    /// `.`-repeatable change (Vim's `.` repeats the last Normal-mode change,
+    /// never a `:` command — `:s` is repeated by `&`, which we don't have).
+    in_ex: bool,
 }
 
 impl VimState {
@@ -159,6 +170,7 @@ impl VimState {
             undos: Vec::new(),
             redos: Vec::new(),
             in_undo: false,
+            in_ex: false,
         }
     }
 
@@ -206,6 +218,10 @@ impl VimState {
             Pending::Search { query, back } => {
                 s.push(if *back { '?' } else { '/' });
                 s.push_str(query);
+            }
+            Pending::Ex { input, .. } => {
+                s.push(':');
+                s.push_str(input);
             }
         }
         (!s.is_empty()).then_some(s)
@@ -286,6 +302,8 @@ impl VimState {
                 // is neither snapshotted nor recorded as a repeatable change.
                 let was_undo = self.in_undo;
                 self.in_undo = false;
+                let was_ex = self.in_ex;
+                self.in_ex = false;
                 if was_undo {
                     self.recording.clear();
                 } else {
@@ -297,7 +315,11 @@ impl VimState {
                         self.redos.clear();
                     }
                     if !self.replaying {
-                        self.remember_change(cursor, edited, &actions);
+                        if was_ex {
+                            self.recording.clear();
+                        } else {
+                            self.remember_change(cursor, edited, &actions);
+                        }
                     }
                 }
                 actions
@@ -527,7 +549,7 @@ impl VimState {
                 self.pending = Pending::None;
                 return match key {
                     Key::Char('Z') => vec![Action::Commit],
-                    Key::Char('Q') => vec![Action::Quit],
+                    Key::Char('Q') => vec![Action::Quit { force: false }],
                     _ => self.beep(),
                 };
             }
@@ -535,7 +557,7 @@ impl VimState {
                 self.pending = Pending::None;
                 match key {
                     Key::Char(',') | Key::Char('c') => return vec![Action::Commit],
-                    Key::Char('k') => return vec![Action::Quit],
+                    Key::Char('k') => return vec![Action::Quit { force: false }],
                     // `,q`: reflow the whole message (the app skips the
                     // summary line, like ⌥q).
                     Key::Char('q') => return vec![Action::ReflowRange(0..text.len())],
@@ -583,6 +605,29 @@ impl VimState {
                             self.last_search = Some((query, back));
                         }
                         return self.search(text, cursor, back);
+                    }
+                    _ => return self.beep(),
+                }
+                return Vec::new();
+            }
+            Pending::Ex { mut input, visual } => {
+                match key {
+                    Key::Char(c) => {
+                        input.push(c);
+                        self.pending = Pending::Ex { input, visual };
+                    }
+                    Key::Backspace => {
+                        // Backspace on an empty line cancels, like Vim.
+                        if input.pop().is_some() {
+                            self.pending = Pending::Ex { input, visual };
+                        } else {
+                            self.pending = Pending::None;
+                        }
+                    }
+                    Key::Enter => {
+                        self.pending = Pending::None;
+                        self.in_ex = true;
+                        return self.ex_execute(text, cursor, &input, visual);
                     }
                     _ => return self.beep(),
                 }
@@ -941,6 +986,22 @@ impl VimState {
                     self.take_count();
                     return self.shift_lines(text, range, c == '<');
                 }
+                ':' => {
+                    // `:` leaves Visual and opens the prompt prefilled with
+                    // `'<,'>`, remembering the selection's line range.
+                    let range = self.visual_range(text, cursor);
+                    self.mode = Mode::Normal;
+                    self.take_count();
+                    let Some(range) = range else {
+                        return self.beep();
+                    };
+                    let last = prev_char(text, range.end).max(range.start);
+                    self.pending = Pending::Ex {
+                        input: "'<,'>".into(),
+                        visual: Some((line_of(text, range.start), line_of(text, last))),
+                    };
+                    return Vec::new();
+                }
                 _ => return self.beep(),
             }
         }
@@ -1085,6 +1146,14 @@ impl VimState {
                 };
                 Vec::new()
             }
+            ':' => {
+                self.take_count();
+                self.pending = Pending::Ex {
+                    input: String::new(),
+                    visual: None,
+                };
+                Vec::new()
+            }
             'n' | 'N' => {
                 self.take_count();
                 let Some(dir) = self.last_search.as_ref().map(|(_, back)| *back) else {
@@ -1133,6 +1202,120 @@ impl VimState {
         let pos = clamp_normal(text, pos);
         self.desired_col = Some(char_col(text, pos));
         vec![Action::MoveCursor(pos)]
+    }
+
+    // --- Ex (`:`) commands ----------------------------------------------
+
+    /// Execute a completed `:` line: `q`/`q!`/`w`/`wq`/`x`, a bare line
+    /// number, or `[range]s/pat/rep/[flags]`. Anything else beeps. `visual`
+    /// is the line pair a Visual-mode `:` remembered for `'<,'>`.
+    fn ex_execute(
+        &mut self,
+        text: &str,
+        cursor: usize,
+        input: &str,
+        visual: Option<(usize, usize)>,
+    ) -> Vec<Action> {
+        match input {
+            "q" => return vec![Action::Quit { force: false }],
+            "q!" => return vec![Action::Quit { force: true }],
+            "w" | "wq" | "x" => return vec![Action::Commit],
+            _ => {}
+        }
+        // A bare line number jumps to its first non-blank, clamped to the
+        // last line, like `{count}G`.
+        if !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()) {
+            let m = Motion::GotoLine(Some(input.parse().unwrap_or(usize::MAX).max(1)));
+            let Some(target) = motion::eval(text, cursor, 1, m, 0) else {
+                return self.beep();
+            };
+            self.after_move(text, m, target.pos);
+            return vec![Action::MoveCursor(clamp_normal(text, target.pos))];
+        }
+        // `[range]s/pat/rep/[flags]` — the only range-taking command.
+        let lines = line_count(text);
+        let current = line_of(text, cursor);
+        let (range, rest) = if let Some(rest) = input.strip_prefix('%') {
+            ((1, lines), rest)
+        } else if let Some(rest) = input.strip_prefix("'<,'>") {
+            // Only meaningful when the prompt was opened from Visual.
+            let Some(v) = visual else {
+                return self.beep();
+            };
+            (v, rest)
+        } else if let Some((a, rest)) = ex_addr(input, current, lines) {
+            match rest.strip_prefix(',') {
+                Some(rest) => match ex_addr(rest, current, lines) {
+                    Some((b, rest)) => ((a, b), rest),
+                    None => return self.beep(),
+                },
+                None => ((a, a), rest),
+            }
+        } else {
+            ((current, current), input)
+        };
+        let Some(body) = rest.strip_prefix("s/") else {
+            return self.beep();
+        };
+        let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
+        self.ex_substitute(text, a.min(b), a.max(b), body)
+    }
+
+    /// `:s/pat/rep/[flags]` over 1-based lines `first..=last`: one edit
+    /// replacing the covered line span, cursor at the first non-blank of the
+    /// last line with a match. No match in the range beeps (Vim's E486), as
+    /// does an invalid regex or an unknown flag.
+    fn ex_substitute(&mut self, text: &str, first: usize, last: usize, body: &str) -> Vec<Action> {
+        let (pat, rep, flags) = split_substitute(body);
+        let (mut global, mut icase) = (false, false);
+        for f in flags.chars() {
+            match f {
+                'g' => global = true,
+                'i' => icase = true,
+                _ => return self.beep(),
+            }
+        }
+        // No reuse of the last pattern (Vim's `:s//`), so empty is an error.
+        if pat.is_empty() {
+            return self.beep();
+        }
+        let Ok(re) = regex::RegexBuilder::new(&pat)
+            .case_insensitive(icase)
+            .build()
+        else {
+            return self.beep();
+        };
+        let rep = sub_replacement(&rep);
+        let start = line_offset(text, first);
+        let end = line_end(text, line_offset(text, last));
+        let mut out = String::with_capacity(end - start);
+        // Offset within `out` of the last line with a match, for the cursor.
+        let mut last_match = None;
+        for (i, line) in text[start..end].split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            if re.is_match(line) {
+                last_match = Some(out.len());
+                if global {
+                    out.push_str(&re.replace_all(line, rep.as_str()));
+                } else {
+                    out.push_str(&re.replace(line, rep.as_str()));
+                }
+            } else {
+                out.push_str(line);
+            }
+        }
+        let Some(line_at) = last_match else {
+            return self.beep();
+        };
+        let post = splice(text, &(start..end), &out);
+        let cursor = first_non_blank(&post, (start + line_at).min(post.len()));
+        vec![Action::Edit(EditOp {
+            range: start..end,
+            text: out,
+            cursor,
+        })]
     }
 
     // --- Motion / object resolution ------------------------------------
@@ -1976,6 +2159,105 @@ fn splice(text: &str, range: &Range<usize>, with: &str) -> String {
 /// there, else the line's last char.
 fn clamp_normal_after(post: &str, pos: usize) -> usize {
     clamp_normal(post, pos.min(post.len()))
+}
+
+/// 1-based line number containing `pos`.
+fn line_of(text: &str, pos: usize) -> usize {
+    text[..pos.min(text.len())].matches('\n').count() + 1
+}
+
+/// Total line count (a trailing newline opens an empty last line, matching
+/// `GotoLine`).
+fn line_count(text: &str) -> usize {
+    text.matches('\n').count() + 1
+}
+
+/// Byte offset of the start of 1-based `line` (clamps past the last line).
+fn line_offset(text: &str, line: usize) -> usize {
+    let mut at = 0;
+    for _ in 1..line {
+        match text[at..].find('\n') {
+            Some(i) => at += i + 1,
+            None => break,
+        }
+    }
+    at
+}
+
+/// One ex-range endpoint: a line number, `.` (the current line), or `$` (the
+/// last), returning the rest of the input.
+fn ex_addr(s: &str, current: usize, last: usize) -> Option<(usize, &str)> {
+    if let Some(rest) = s.strip_prefix('.') {
+        return Some((current, rest));
+    }
+    if let Some(rest) = s.strip_prefix('$') {
+        return Some((last, rest));
+    }
+    let digits = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (digits > 0).then(|| (s[..digits].parse().unwrap_or(usize::MAX), &s[digits..]))
+}
+
+/// Split the `pat/rep/flags` after `:s/` on unescaped `/`: `\/` is a literal
+/// delimiter inside either field; any other backslash pair passes through
+/// untouched (the pattern is regex syntax). The trailing delimiter is
+/// optional.
+fn split_substitute(body: &str) -> (String, String, String) {
+    let mut fields = [String::new(), String::new(), String::new()];
+    let mut at = 0;
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if at == 2 {
+            fields[2].push(c);
+        } else if c == '/' {
+            at += 1;
+        } else if c == '\\' {
+            match chars.next() {
+                Some('/') => fields[at].push('/'),
+                Some(d) => {
+                    fields[at].push('\\');
+                    fields[at].push(d);
+                }
+                None => fields[at].push('\\'),
+            }
+        } else {
+            fields[at].push(c);
+        }
+    }
+    let [pat, rep, flags] = fields;
+    (pat, rep, flags)
+}
+
+/// Translate a `:s` replacement into the regex crate's syntax: `&` and `\0`
+/// are the whole match, `\1`..`\9` capture groups — emitted as `${N}` so a
+/// trailing digit can't glue onto the reference — `\&` a literal `&`, `\\` a
+/// literal backslash. A literal `$` must become `$$`, which is the regex
+/// crate's only escape.
+fn sub_replacement(rep: &str) -> String {
+    let mut out = String::with_capacity(rep.len() + 4);
+    let mut chars = rep.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '$' => out.push_str("$$"),
+            '&' => out.push_str("${0}"),
+            '\\' => match chars.next() {
+                Some('&') => out.push('&'),
+                Some('\\') => out.push('\\'),
+                Some(d @ '0'..='9') => {
+                    out.push_str("${");
+                    out.push(d);
+                    out.push('}');
+                }
+                Some('$') => out.push_str("\\$$"),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            },
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Turn a motion landing into the operator's byte range, applying the

@@ -808,8 +808,8 @@ impl StatusView {
             }
             return;
         }
-        // Vim mode intercepts (nearly) everything outside Insert mode; an
-        // idle-Normal Esc falls through to the cancel below.
+        // Vim mode intercepts everything outside Insert mode — including an
+        // idle-Normal Esc, a quiet no-op there (cancel is ZQ / :q).
         if self.handle_vim_key(key, event, window, cx) {
             cx.stop_propagation();
             return;

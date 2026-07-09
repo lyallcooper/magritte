@@ -107,7 +107,7 @@ impl Buf {
                     self.vim.end_repeat();
                 }
             }
-            Action::Commit | Action::Quit | Action::ReflowRange(_) | Action::Beep => {}
+            Action::Commit | Action::Quit { .. } | Action::ReflowRange(_) | Action::Beep => {}
         }
         self.log.push(action);
     }
@@ -1224,7 +1224,10 @@ fn editor_commands() {
     let buf = run("|ab", "ZZ");
     assert!(buf.log.contains(&Action::Commit), "ZZ commits");
     let buf = run("|ab", "ZQ");
-    assert!(buf.log.contains(&Action::Quit), "ZQ cancels");
+    assert!(
+        buf.log.contains(&Action::Quit { force: false }),
+        "ZQ cancels"
+    );
     let buf = run("l1\nlo|ng", "gqq");
     assert!(
         buf.log
@@ -1322,7 +1325,10 @@ fn comma_leader() {
     let buf = run("|ab", ",c");
     assert!(buf.log.contains(&Action::Commit), ",c commits");
     let buf = run("|ab", ",k");
-    assert!(buf.log.contains(&Action::Quit), ",k cancels");
+    assert!(
+        buf.log.contains(&Action::Quit { force: false }),
+        ",k cancels"
+    );
     // Any other key after `,` falls back to reverse-find repeat, then runs.
     check("x a |x b x", "fx,l", "x a x| b x");
     // With an operator pending, `,` stays the reverse-find repeat.
@@ -1473,4 +1479,109 @@ fn indent_operators() {
     // Dot-repeat and undo ride the normal edit path.
     check("|ab", ">>..", "      |ab");
     check("|ab", ">>u", "|ab");
+}
+
+// --- Ex (':') commands -------------------------------------------------------
+
+#[test]
+fn ex_editor_commands() {
+    let buf = run("|ab", ":q<cr>");
+    assert!(buf.log.contains(&Action::Quit { force: false }), ":q quits");
+    let buf = run("|ab", ":q!<cr>");
+    assert!(
+        buf.log.contains(&Action::Quit { force: true }),
+        ":q! force-quits"
+    );
+    for keys in [":w<cr>", ":wq<cr>", ":x<cr>"] {
+        let buf = run("|ab", keys);
+        assert!(buf.log.contains(&Action::Commit), "{keys} commits");
+    }
+    check_beep("|ab", ":wx<cr>", "|ab"); // unknown command
+    check_beep("|ab", ":<cr>", "|ab"); // empty line
+}
+
+#[test]
+fn ex_line_jump() {
+    check("|ab\n  cd\nef", ":2<cr>", "ab\n  |cd\nef"); // first non-blank
+    check("ab\nc|d", ":1<cr>", "|ab\ncd");
+    check("|ab\ncd", ":100<cr>", "ab\n|cd"); // clamped to the last line
+}
+
+#[test]
+fn ex_prompt_editing() {
+    // Backspace edits the line; on an empty one it cancels the prompt.
+    check("|ab\ncd", ":x<bs>2<cr>", "ab\n|cd");
+    check("|ab\ncd", ":<bs>j", "ab\n|cd");
+    check("|ab\ncd", ":q<esc>j", "ab\n|cd"); // Esc cancels
+                                             // The prompt shows in the pending display as it is typed.
+    let buf = run("|ab", ":s/a");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":s/a"));
+}
+
+#[test]
+fn ex_substitute() {
+    // Current line, first occurrence per line; cursor at the changed line's
+    // first non-blank. The trailing delimiter is optional.
+    check("ab a|b\ncd", ":s/ab/xy/<cr>", "|xy ab\ncd");
+    check("a|b\ncd", ":s/ab/xy<cr>", "|xy\ncd");
+    // g substitutes every occurrence on the line; i ignores case (there is
+    // no smartcase — the pattern is a plain regex).
+    check("ab a|b\ncd", ":s/ab/xy/g<cr>", "|xy xy\ncd");
+    check("A|B ab\ncd", ":s/ab/xy/gi<cr>", "|xy xy\ncd");
+    check_beep("A|B\ncd", ":s/ab/xy/<cr>", "A|B\ncd");
+    // % is every line; cursor lands on the last changed line.
+    check("a|b\ncd ab", ":%s/ab/xy/<cr>", "xy\n|cd xy");
+    // N,M ranges, with . and $ endpoints.
+    check("a1\n|a2\na3\na4", ":1,2s/a/b/<cr>", "b1\n|b2\na3\na4");
+    check("a1\n|a2\na3\na4", ":.,$s/a/b/<cr>", "a1\nb2\nb3\n|b4");
+    check("|a1\na2\na3", ":2,3s/a/b/<cr>", "a1\nb2\n|b3");
+    check("|a1\na2\na3", ":2s/a/b/<cr>", "a1\n|b2\na3"); // single-line range
+}
+
+#[test]
+fn ex_substitute_replacement_refs() {
+    // & and \0 are the whole match; \1..\9 the capture groups.
+    check("|ab\ncd", ":s/ab/[&]/<cr>", "|[ab]\ncd");
+    check("|ab\ncd", ":s/ab/\\0\\0/<cr>", "|abab\ncd");
+    check("|ab cd", ":s/(a)(b)/\\2\\1/<cr>", "|ba cd");
+    // Group refs don't glue onto trailing digits.
+    check("|ab\ncd", ":s/(a)b/\\11/<cr>", "|a1\ncd");
+    // \& is a literal ampersand, \\ a literal backslash, $ stays literal.
+    check("|ab\ncd", ":s/ab/x\\&y/<cr>", "|x&y\ncd");
+    check("|ab\ncd", ":s/ab/x\\\\y/<cr>", "|x\\y\ncd");
+    check("|ab\ncd", ":s/ab/$5/<cr>", "|$5\ncd");
+    // \/ is the escaped delimiter, in the pattern and the replacement.
+    check("|a/b c", ":s/a\\/b/x/<cr>", "|x c");
+    check("|ab c", ":s/ab/x\\/y/<cr>", "|x/y c");
+}
+
+#[test]
+fn ex_substitute_errors() {
+    check_beep("|ab\ncd", ":s/zz/x/<cr>", "|ab\ncd"); // no match (E486)
+    check_beep("|ab\ncd", ":2s/ab/x/<cr>", "|ab\ncd"); // no match in the range
+    check_beep("|ab\ncd", ":s/(/x/<cr>", "|ab\ncd"); // invalid regex
+    check_beep("|ab\ncd", ":s/ab/x/z<cr>", "|ab\ncd"); // unknown flag
+    check_beep("|ab\ncd", ":s//x/<cr>", "|ab\ncd"); // empty pattern
+}
+
+#[test]
+fn ex_substitute_visual_range() {
+    // Visual ':' leaves Visual and pre-fills the prompt with '<,'>.
+    let buf = run("|a1\na2", "Vj:");
+    assert_eq!(buf.vim.mode(), N);
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":'<,'>"));
+    // The remembered range covers the selected lines, for V and v alike.
+    check("a1\n|a2\na3\na4", "Vj:s/a/b/<cr>", "a1\nb2\n|b3\na4");
+    check("a1\na|2\na3\na4", "vj:s/a/b/<cr>", "a1\nb2\n|b3\na4");
+    // '<,'> in a prompt that wasn't opened from Visual beeps.
+    check_beep("|a1\na2", ":'<lt>,'>s/a/b/<cr>", "|a1\na2");
+}
+
+#[test]
+fn ex_commands_are_not_dot_repeatable() {
+    // Vim's '.' repeats the last Normal-mode change, never a ':' command:
+    // after x then :s, '.' re-runs the x (verified against Vim 9.2).
+    check("a|b ab\ncd", "x:s/b/z/<cr>.", "| az\ncd");
+    // A ':' substitution is a single undo unit.
+    check("a|b\nab", ":%s/ab/xy/<cr>u", "a|b\nab");
 }

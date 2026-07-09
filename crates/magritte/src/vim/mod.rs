@@ -66,8 +66,9 @@ pub(crate) enum Action {
     Repeat,
     /// `ZZ` / `,,` / `,c`: submit the commit message.
     Commit,
-    /// `ZQ` / `,k`: cancel the editor (the app's discard-confirm flow applies).
-    Quit,
+    /// `ZQ` / `,k` / `:q`: cancel the editor (the app's discard-confirm flow
+    /// applies). `force` (`:q!`) skips the confirmation and discards.
+    Quit { force: bool },
     /// `gq{motion}` / `gqq` / visual `gq`: reflow these whole lines of the
     /// body at 72 columns (the app expands to line boundaries and skips the
     /// summary line).
