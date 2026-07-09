@@ -13,6 +13,24 @@ use crate::config;
 
 /// Label for the font-picker entry that follows the OS default monospace.
 pub(crate) const SYSTEM_FONT_LABEL: &str = "System Default";
+
+/// The platform's standard UI text size in px — the `font_size` default.
+/// macOS reports it via `NSFont.systemFontSize` (13 on current systems);
+/// elsewhere fall back to 13.
+pub(crate) fn system_font_size() -> u32 {
+    static SIZE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            use objc::{class, msg_send, sel, sel_impl};
+            let size: f64 = unsafe { msg_send![class!(NSFont), systemFontSize] };
+            if size.is_finite() && size > 0.0 {
+                return (size.round() as u32).clamp(9, 24);
+            }
+        }
+        13
+    })
+}
 /// Label for the UI-font entry that reuses the monospace font — the default, so
 /// the UI stays all-monospace until you opt into a proportional UI.
 pub(crate) const UI_FONT_DEFAULT_LABEL: &str = "Same as monospace";

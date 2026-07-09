@@ -53,7 +53,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Monospace font for code, diffs, and tabular rows. |
 | `ui_font` | font family | *(uses `font`)* | Proportional font for chrome (menus, headers, labels). Empty = monospace everywhere. |
-| `font_size` | px | `13` | Base font size; row heights and the commit editor's line height scale with it. Clamped to 9--24. |
+| `font_size` | px | *(system)* | Base font size; row heights and the commit editor's line height scale with it. Clamped to 9--24. Unset = the platform's standard UI text size (13 on macOS). |
 | `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | macOS only. The Dock (and Cmd-Tab) icon. Sets the running app's icon, not the Finder icon, which macOS keeps fixed to the bundle default. |
 | `editor` | command or app name | OS default opener | External editor for "open file" (`Return`) — see below. |
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |

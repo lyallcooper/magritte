@@ -69,12 +69,10 @@ pub struct Config {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub font: String,
     /// Base font size (px) for the whole UI; rows and the commit editor's
-    /// line height scale with it. Clamped to 9-24.
-    #[serde(
-        default = "default_font_size",
-        skip_serializing_if = "is_default_font_size"
-    )]
-    pub font_size: u32,
+    /// line height scale with it. Clamped to 9-24. Unset = the platform's
+    /// standard UI text size (13 on macOS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<u32>,
     /// Proportional UI font for prose chrome (menus, headings, labels). Empty =
     /// use the monospace `font` everywhere, as before.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -494,14 +492,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_font_size() -> u32 {
-    13
-}
-
-fn is_default_font_size(n: &u32) -> bool {
-    *n == default_font_size()
-}
-
 fn default_which_key_delay_ms() -> u64 {
     1000
 }
@@ -554,7 +544,7 @@ impl Default for Config {
             light_theme: String::new(),
             dark_theme: String::new(),
             font: String::new(),
-            font_size: default_font_size(),
+            font_size: None,
             ui_font: String::new(),
             app_icon: String::new(),
             commit_title_ruler: true,
@@ -917,8 +907,8 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
     set_int(
         &mut doc,
         "font_size",
-        config.font_size as i64,
-        is_default_font_size(&config.font_size),
+        config.font_size.unwrap_or_default() as i64,
+        config.font_size.is_none(),
     );
     set_string(
         &mut doc,

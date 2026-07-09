@@ -245,19 +245,34 @@ impl StatusView {
             )
             .searchable(true)
         });
-        // Font size choices (px); an off-list value from the config file is
-        // injected so it stays selectable rather than silently remapped.
+        // Font size choices (px), led by the platform default; an off-list
+        // value from the config file is injected so it stays selectable
+        // rather than silently remapped.
         let mut size_items: Vec<u32> = vec![10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24];
-        let cur_size = self.config.font_size.clamp(9, 24);
-        if !size_items.contains(&cur_size) {
-            size_items.push(cur_size);
-            size_items.sort_unstable();
+        let cur_size = self.config.font_size.map(|n| n.clamp(9, 24));
+        if let Some(cur) = cur_size {
+            if !size_items.contains(&cur) {
+                size_items.push(cur);
+                size_items.sort_unstable();
+            }
         }
-        let size_ix = size_items.iter().position(|&n| n == cur_size).unwrap_or(0);
-        let size_labels: Vec<SharedString> = size_items
-            .iter()
-            .map(|n| SharedString::from(format!("{n} px")))
-            .collect();
+        let size_ix = match cur_size {
+            None => 0,
+            Some(cur) => size_items
+                .iter()
+                .position(|&n| n == cur)
+                .map_or(0, |i| i + 1),
+        };
+        let mut size_labels: Vec<SharedString> = vec![SharedString::from(format!(
+            "{} ({} px)",
+            theme::SYSTEM_FONT_LABEL,
+            theme::system_font_size()
+        ))];
+        size_labels.extend(
+            size_items
+                .iter()
+                .map(|n| SharedString::from(format!("{n} px"))),
+        );
         let font_size = cx.new(|cx| SelectState::new(size_labels, row(size_ix), &mut *window, cx));
         // macOS: a dropdown of detected editor apps, led by "System Default"
         // (open in the OS default app). A command set via the config file that
@@ -391,8 +406,11 @@ impl StatusView {
                 this.apply_and_save(cx);
             }),
             Self::on_select_confirm(&font_size, window, cx, |this, label, cx| {
-                if let Ok(n) = label.trim_end_matches(" px").parse::<u32>() {
-                    this.edit_global(|c| c.font_size = n);
+                if label.starts_with(theme::SYSTEM_FONT_LABEL) {
+                    this.edit_global(|c| c.font_size = None);
+                    this.apply_and_save(cx);
+                } else if let Ok(n) = label.trim_end_matches(" px").parse::<u32>() {
+                    this.edit_global(|c| c.font_size = Some(n));
                     this.apply_and_save(cx);
                 }
             }),

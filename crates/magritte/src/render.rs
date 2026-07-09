@@ -136,9 +136,13 @@ pub(crate) fn offset_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>
 }
 
 impl StatusView {
-    /// The configured base font size (px), clamped sane.
+    /// The effective base font size (px): the configured size clamped sane,
+    /// or the platform's standard UI text size when unset.
     pub(crate) fn font_px(&self) -> f32 {
-        self.config.font_size.clamp(9, 24) as f32
+        self.config
+            .font_size
+            .map(|n| n.clamp(9, 24))
+            .unwrap_or_else(theme::system_font_size) as f32
     }
 
     /// One list row (status/diff/log/picker) — the fixed height `uniform_list`
