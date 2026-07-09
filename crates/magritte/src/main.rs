@@ -180,9 +180,6 @@ fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
-/// Fixed row height (points) so `uniform_list` can virtualize every row.
-const ROW_HEIGHT: f32 = 18.0;
-
 /// git's default diff context (`-U3`); the `+`/`-`/`0` keys adjust from here.
 const DEFAULT_DIFF_CONTEXT: usize = 3;
 /// How long a success notice lingers before auto-dismissing (seconds).

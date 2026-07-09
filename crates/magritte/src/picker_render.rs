@@ -66,8 +66,9 @@ impl StatusView {
         // only shrinks the matches) nor when async candidates load. A pure
         // value-entry prompt has no candidates and collapses instead.
         const MAX_VISIBLE: usize = 8;
+        let row_h = self.row_h();
         let rows = state.list.row_count();
-        let list_height = px(MAX_VISIBLE as f32 * ROW_HEIGHT);
+        let list_height = px(MAX_VISIBLE as f32 * row_h);
 
         let body = if !state.reserve_candidates {
             // Value entry has nothing to match — collapse the candidate area
@@ -86,7 +87,7 @@ impl StatusView {
                 .h(list_height)
                 .child(
                     div()
-                        .h(px(ROW_HEIGHT))
+                        .h(px(self.row_h()))
                         .pl(px(ROW_PAD_LEFT))
                         .flex()
                         .items_center()
@@ -149,7 +150,7 @@ impl StatusView {
                                         &view,
                                     )
                                 }
-                                None => div().h(px(ROW_HEIGHT)).into_any_element(),
+                                None => div().h(px(row_h)).into_any_element(),
                             })
                             .collect::<Vec<_>>()
                     }
@@ -248,7 +249,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .pl(px(ROW_PAD_LEFT))
             .cursor_pointer()

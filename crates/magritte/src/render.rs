@@ -136,6 +136,17 @@ pub(crate) fn offset_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>
 }
 
 impl StatusView {
+    /// The configured base font size (px), clamped sane.
+    pub(crate) fn font_px(&self) -> f32 {
+        self.config.font_size.clamp(9, 24) as f32
+    }
+
+    /// One list row (status/diff/log/picker) — the fixed height `uniform_list`
+    /// virtualizes with, scaled off the font size (18px at the 13px default).
+    pub(crate) fn row_h(&self) -> f32 {
+        (self.font_px() + 5.0).round()
+    }
+
     /// The bottom popup panel (picker / transient): full-width, top border,
     /// panel background, padded column.
     pub(crate) fn bottom_panel(&self) -> gpui::Div {
@@ -452,7 +463,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .when(clickable, |el| el.cursor_pointer())
             .pl(px(ROW_PAD_LEFT + row.indent as f32 * INDENT_STEP));
@@ -870,7 +881,8 @@ impl StatusView {
             // then wrap into the next column once it would grow past ~a quarter
             // of the window height, so the strip grows vertically before widening.
             let vh = window.viewport_size().height.as_f32();
-            let rows_per_col = (((vh / 4.0) / ROW_HEIGHT) as usize).clamp(1, entries.len().max(1));
+            let rows_per_col =
+                (((vh / 4.0) / self.row_h()) as usize).clamp(1, entries.len().max(1));
             let mut grid = div().flex().flex_row().items_start().gap_x_6();
             for chunk in entries.chunks(rows_per_col) {
                 let mut col = div().flex().flex_col().items_start().gap_1();
@@ -1245,7 +1257,7 @@ impl Render for StatusView {
             .size_full()
             .bg(self.palette.bg)
             .text_color(self.palette.fg)
-            .text_size(px(13.0))
+            .text_size(px(self.font_px()))
             // Proportional UI font is the base for prose chrome; code/diff/
             // tabular rows and the code views override back to monospace. When
             // no UI font is configured, `ui_font` equals `font`, so this is the
@@ -1348,9 +1360,12 @@ impl Render for StatusView {
                                 let Some(anchor) = v.selection.drag_anchor else {
                                     return;
                                 };
-                                let Some(ix) =
-                                    drag_row_beyond_list(&v.scroll, v.rows.len(), ev.position)
-                                else {
+                                let Some(ix) = drag_row_beyond_list(
+                                    &v.scroll,
+                                    v.rows.len(),
+                                    ev.position,
+                                    v.row_h(),
+                                ) else {
                                     return;
                                 };
                                 // Snap to a selectable row (headers/spacers pad

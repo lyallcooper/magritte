@@ -154,6 +154,10 @@ impl StatusView {
                         .h_full()
                         .pt_0()
                         .pb_0()
+                        // Row-height lines (like every list in the app): the
+                        // snugger leading also sits the first line against
+                        // the box's top edge.
+                        .line_height(px(self.row_h()))
                         .disabled(paused),
                 )
                 .children(self.vim_overlay(ed))
@@ -486,7 +490,7 @@ impl StatusView {
         sel: Option<Range<usize>>,
     ) -> (AnyElement, Option<TextLayout>) {
         let base = div()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .px_2()
             .flex()
@@ -843,6 +847,7 @@ impl StatusView {
                     return;
                 }
                 view.update(cx, |v, vcx| {
+                    let row_h = v.row_h();
                     let Some(fd) = v.flat_diff_mut() else {
                         return;
                     };
@@ -850,7 +855,8 @@ impl StatusView {
                         return;
                     };
                     let vis = fd.visible_rows();
-                    let Some(pos) = drag_row_beyond_list(&scroll, vis.len(), ev.position) else {
+                    let Some(pos) = drag_row_beyond_list(&scroll, vis.len(), ev.position, row_h)
+                    else {
                         return;
                     };
                     let Some(&ix) = vis.get(pos) else {

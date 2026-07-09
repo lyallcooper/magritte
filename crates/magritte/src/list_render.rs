@@ -117,7 +117,7 @@ impl StatusView {
 
     fn render_blame_row(&self, row: &blame_view::BlameRow, gutter: gpui::Pixels) -> AnyElement {
         let base = div()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .px_2()
             .flex()
@@ -243,7 +243,7 @@ impl StatusView {
                     self.palette.dim
                 };
                 div()
-                    .h(px(ROW_HEIGHT))
+                    .h(px(self.row_h()))
                     .w_full()
                     .flex()
                     .items_center()
@@ -281,7 +281,7 @@ impl StatusView {
                     .into_any_element()
             }
             GitLogRow::Output(line) => div()
-                .h(px(ROW_HEIGHT))
+                .h(px(self.row_h()))
                 .w_full()
                 .flex()
                 .items_center()
@@ -338,6 +338,7 @@ impl StatusView {
                         return;
                     }
                     view.update(cx, |v, vcx| {
+                        let row_h = v.row_h();
                         let Some(log) = v.log_mut() else {
                             return;
                         };
@@ -345,7 +346,7 @@ impl StatusView {
                             return;
                         };
                         let Some(ix) =
-                            drag_row_beyond_list(&scroll, log.entries.len(), ev.position)
+                            drag_row_beyond_list(&scroll, log.entries.len(), ev.position, row_h)
                         else {
                             return;
                         };
@@ -478,7 +479,7 @@ impl StatusView {
     ) -> AnyElement {
         if let RefsRow::Header(title) = row {
             return div()
-                .h(px(ROW_HEIGHT))
+                .h(px(self.row_h()))
                 .flex()
                 .items_center()
                 .px_2()
@@ -515,7 +516,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .px_2()
             .cursor_pointer()
@@ -625,7 +626,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .px_2()
             .cursor_pointer()
@@ -785,7 +786,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .w_full()
             .px_2()
             .cursor_pointer();
@@ -1040,7 +1041,7 @@ impl StatusView {
             .child(body)
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(self.font_px() - 1.0))
                     .text_color(self.palette.dim)
                     .child(SharedString::from(
                         "p pick · r/w reword · e edit · s squash · f fixup · d drop · j/k move · J/K reorder",
@@ -1063,7 +1064,7 @@ impl StatusView {
             .items_center()
             .gap_2()
             .px_2()
-            .h(px(ROW_HEIGHT))
+            .h(px(self.row_h()))
             .when(selected, |el| el.bg(self.palette.selection))
             .child(
                 div()

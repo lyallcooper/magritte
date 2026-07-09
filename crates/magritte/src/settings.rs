@@ -53,6 +53,7 @@ pub(crate) struct SettingsState {
     dark_theme: Entity<SelectState<SearchableVec<SharedString>>>,
     font: Entity<SelectState<SearchableVec<SharedString>>>,
     ui_font: Entity<SelectState<SearchableVec<SharedString>>>,
+    font_size: Entity<SelectState<Vec<SharedString>>>,
     /// External editor. macOS picks from a dropdown of detected editor apps
     /// (plus "System Default"); elsewhere it's a free-text command.
     #[cfg(target_os = "macos")]
@@ -64,7 +65,7 @@ pub(crate) struct SettingsState {
     /// Keymap preset (Evil/Vim vs Vanilla Emacs).
     keymap_preset: Entity<SelectState<Vec<SharedString>>>,
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
-    /// 4=ui_font, 5=editor, 6=keymap_preset, 7=commit_editor).
+    /// 4=ui_font, 5=font_size, 6=editor, 7=keymap_preset, 8=commit_editor).
     focus_ix: usize,
     scroll: ScrollHandle,
     /// Kept alive so the Confirm subscriptions stay active.
@@ -244,6 +245,20 @@ impl StatusView {
             )
             .searchable(true)
         });
+        // Font size choices (px); an off-list value from the config file is
+        // injected so it stays selectable rather than silently remapped.
+        let mut size_items: Vec<u32> = vec![10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24];
+        let cur_size = self.config.font_size.clamp(9, 24);
+        if !size_items.contains(&cur_size) {
+            size_items.push(cur_size);
+            size_items.sort_unstable();
+        }
+        let size_ix = size_items.iter().position(|&n| n == cur_size).unwrap_or(0);
+        let size_labels: Vec<SharedString> = size_items
+            .iter()
+            .map(|n| SharedString::from(format!("{n} px")))
+            .collect();
+        let font_size = cx.new(|cx| SelectState::new(size_labels, row(size_ix), &mut *window, cx));
         // macOS: a dropdown of detected editor apps, led by "System Default"
         // (open in the OS default app). A command set via the config file that
         // isn't a detected app is injected so it stays selectable, not lost.
@@ -375,6 +390,12 @@ impl StatusView {
                 this.ui_font = theme::resolve_ui_font(&this.config, cx);
                 this.apply_and_save(cx);
             }),
+            Self::on_select_confirm(&font_size, window, cx, |this, label, cx| {
+                if let Ok(n) = label.trim_end_matches(" px").parse::<u32>() {
+                    this.edit_global(|c| c.font_size = n);
+                    this.apply_and_save(cx);
+                }
+            }),
         ];
 
         appearance.update(cx, |st, cx| st.focus(window, cx));
@@ -384,6 +405,7 @@ impl StatusView {
             dark_theme,
             font,
             ui_font,
+            font_size,
             editor,
             commit_editor,
             keymap_preset,
@@ -588,7 +610,7 @@ impl StatusView {
     ) {
         // The commit-editor input renders only when commit_in_editor is on;
         // keep it out of the ring otherwise (a hidden control is a dead stop).
-        let ring = if self.config.commit_in_editor { 8 } else { 7 };
+        let ring = if self.config.commit_in_editor { 9 } else { 8 };
         let Some(s) = self.settings_mut() else {
             return;
         };
@@ -608,8 +630,12 @@ impl StatusView {
                 .update(cx, |st, cx| st.focus(window, cx)),
             3 => s.font.clone().update(cx, |st, cx| st.focus(window, cx)),
             4 => s.ui_font.clone().update(cx, |st, cx| st.focus(window, cx)),
-            5 => s.editor.clone().update(cx, |st, cx| st.focus(window, cx)),
-            6 => s
+            5 => s
+                .font_size
+                .clone()
+                .update(cx, |st, cx| st.focus(window, cx)),
+            6 => s.editor.clone().update(cx, |st, cx| st.focus(window, cx)),
+            7 => s
                 .keymap_preset
                 .clone()
                 .update(cx, |st, cx| st.focus(window, cx)),
@@ -809,6 +835,11 @@ impl StatusView {
                     Select::new(&s.ui_font)
                         .search_placeholder("Search fonts")
                         .into_any_element(),
+                ),
+                field(
+                    "font-size",
+                    "Font size",
+                    Select::new(&s.font_size).into_any_element(),
                 ),
             ];
             // The app-icon switcher sets the macOS Dock icon; no effect

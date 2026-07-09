@@ -307,7 +307,7 @@ impl StatusView {
             .px(px(4.0))
             .rounded(px(6.0))
             .bg(with_alpha(color, 0.15))
-            .text_size(px(11.0))
+            .text_size(px(self.font_px() - 2.0))
             .text_color(color)
             .child(text.into())
     }
@@ -593,7 +593,7 @@ impl StatusView {
                         .items_center()
                         .rounded(px(6.0))
                         .bg(with_alpha(self.palette.tag, 0.15))
-                        .text_size(px(11.0))
+                        .text_size(px(self.font_px() - 2.0))
                         .text_color(self.palette.tag)
                         .child(self.titlebar_action(
                             view,

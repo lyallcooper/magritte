@@ -200,7 +200,7 @@ impl StatusView {
             if key == "$" || (key == "4" && shift) {
                 return self.close_screen(window, cx);
             }
-            let page = page_rows(window);
+            let page = page_rows(window, self.row_h());
             let len = self.git_log_rows().len();
             // The pager has no cursor, so it scrolls via less-style keys rather
             // than the shared `nav_*`; translate a remapped motion to the key
@@ -238,7 +238,7 @@ impl StatusView {
             ) {
                 return self.close_screen(window, cx);
             }
-            let page = page_rows(window);
+            let page = page_rows(window, self.row_h());
             let cased = chord(&key, shift, false, false, false);
             let (skey, sshift) = match self
                 .screen_bindings()

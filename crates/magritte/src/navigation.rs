@@ -325,7 +325,7 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let page = page_rows(window) as isize;
+        let page = page_rows(window, self.row_h()) as isize;
         let amount = if full { page } else { (page / 2).max(1) };
         let delta = if down { amount } else { -amount };
         match self.screen {
@@ -932,11 +932,12 @@ pub(crate) fn list_move(
 
 // --- Scroll math for the read-only list views ------------------------------
 
-/// The viewport height in rows — a "page" for the scroll/paging keys.
-pub(crate) fn page_rows(window: &Window) -> usize {
+/// The viewport height in rows (at `row_h` px per row) — a "page" for the
+/// scroll/paging keys.
+pub(crate) fn page_rows(window: &Window, row_h: f32) -> usize {
     let height = window.viewport_size().height.as_f32();
     // Leave a few rows for the header/padding so paging keeps a little overlap.
-    ((height / ROW_HEIGHT) as usize).saturating_sub(3).max(1)
+    ((height / row_h) as usize).saturating_sub(3).max(1)
 }
 
 /// Apply a vi-style scroll key to a `uniform_list`, updating the caller-tracked
@@ -1003,6 +1004,7 @@ pub(crate) fn drag_row_beyond_list(
     handle: &UniformListScrollHandle,
     len: usize,
     position: gpui::Point<gpui::Pixels>,
+    row_h: f32,
 ) -> Option<usize> {
     if len == 0 {
         return None;
@@ -1013,7 +1015,7 @@ pub(crate) fn drag_row_beyond_list(
         (state.base_handle.bounds(), ix, offset)
     };
     let y = f32::from(position.y - bounds.top()) + f32::from(top_offset);
-    let raw = top_ix as isize + (y / ROW_HEIGHT).floor() as isize;
+    let raw = top_ix as isize + (y / row_h).floor() as isize;
     let inside_rows = position.y >= bounds.top()
         && position.y < bounds.bottom()
         && (0..len as isize).contains(&raw);
