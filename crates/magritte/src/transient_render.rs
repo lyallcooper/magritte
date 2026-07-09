@@ -8,33 +8,51 @@ use gpui_component::{Icon, IconName, Sizable};
 
 use crate::*;
 
-/// Rough rendered width (px) of one transient suffix cell — its keycap plus
+/// Rough rendered width (px) of a keycap label: one cap per space-separated
+/// step (each ~9px/char plus its border/padding), a bare dot for the `·`
+/// alternative separator, and the 4px gap between them.
+fn keys_px(keys: &str) -> f32 {
+    let mut w = 0.0;
+    for (i, step) in keys.split(' ').enumerate() {
+        if i > 0 {
+            w += 4.0;
+        }
+        w += if step == "·" {
+            7.0
+        } else {
+            step.chars().count() as f32 * 9.0 + 16.0
+        };
+    }
+    w
+}
+
+/// Rough rendered width (px) of one transient suffix cell — its keycaps plus
 /// description (and the git flag in parens for switches/options). Used to decide
 /// how many columns of a group fit the window; a slight over-estimate keeps text
 /// from overflowing. Tuned for the ~13px UI/mono fonts.
 fn suffix_cell_px(suffix: &Suffix) -> f32 {
-    // (key chars, text chars) — the flag in parens counts toward the text.
+    // (key label, text chars) — the flag in parens counts toward the text.
     let (key, text) = match suffix {
         Suffix::Switch(sw) => (
-            sw.key.chars().count(),
+            sw.key.as_str(),
             sw.description.chars().count() + sw.arg.chars().count() + 3,
         ),
         Suffix::Option(o) => (
-            o.key.chars().count(),
+            o.key,
             o.description.chars().count() + o.arg.chars().count() + 3,
         ),
-        Suffix::Action(a) => (a.key.chars().count(), a.description.chars().count()),
-        Suffix::Info(i) => (i.keys.chars().count(), i.description.chars().count()),
-        Suffix::Custom(c) => (c.key.chars().count(), c.description.chars().count()),
+        Suffix::Action(a) => (a.key, a.description.chars().count()),
+        Suffix::Info(i) => (i.keys.as_str(), i.description.chars().count()),
+        Suffix::Custom(c) => (c.key.as_str(), c.description.chars().count()),
         Suffix::Variable(v) => (
-            v.key.chars().count(),
+            v.key.as_str(),
             // description + the value/choices shown after it (rough).
             v.description.chars().count() + variable_value_width(v),
         ),
     };
-    // Keycap: ~9px/char plus its border/padding. Description: ~7px/char at 13px,
-    // plus the gap after the keycap and a little slack.
-    (key as f32 * 9.0 + 16.0) + 8.0 + (text as f32 * 7.0) + 12.0
+    // Description: ~7px/char at 13px, plus the gap after the keycaps and a
+    // little slack.
+    keys_px(key) + 8.0 + (text as f32 * 7.0) + 12.0
 }
 
 /// Rough char count of a config variable's rendered value/choices, so its cell
@@ -227,8 +245,15 @@ impl StatusView {
             any_command = true;
             // A tall command group (e.g. the `?` dispatch's "Commands") fans into
             // sub-columns just like an argument band, so it doesn't tower over
-            // the shorter groups beside it.
-            let k = group.suffixes.len().div_ceil(band_cap).max(1);
+            // the shorter groups beside it — but never into more columns than
+            // its widest row lets fit (a wide group stays tall instead of
+            // running off the right edge).
+            let k = group
+                .suffixes
+                .len()
+                .div_ceil(band_cap)
+                .max(1)
+                .min(fit_columns(group, avail));
             command_row = command_row.child(self.render_group(group, k, state, pending_dash, view));
         }
         if any_command {

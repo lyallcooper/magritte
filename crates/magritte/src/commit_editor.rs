@@ -937,10 +937,10 @@ impl StatusView {
             return;
         }
         ed.vim_hints = false;
+        // The same (configurable) delay as the app-wide prefix which-key.
+        let delay = Duration::from_millis(self.config.which_key_delay_ms);
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(VIM_WHICH_KEY_DELAY_MS))
-                .await;
+            cx.background_executor().timer(delay).await;
             this.update(cx, |this, cx| {
                 if !this.vim_hint_gen.is_current(gen) {
                     return;

@@ -23,10 +23,10 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
             group(
                 "Editor",
                 vec![
-                    info("ZZ :wq ,,", "Commit"),
-                    info("ZQ :q ,k", "Cancel"),
+                    info("Z Z · :wq · , ,", "Commit"),
+                    info("Z Q · :q · , k", "Cancel"),
                     info(":q!", "Discard without asking"),
-                    info("gq", "Reflow over a motion"),
+                    info("g q", "Reflow over a motion"),
                 ],
             ),
             group(
@@ -38,7 +38,7 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
                     info("> <", "Indent / dedent"),
                     info("u ctrl-r", "Undo / redo"),
                     info(".", "Repeat last change"),
-                    info("ys cs ds", "Surround add / change / delete"),
+                    info("y s · c s · d s", "Surround add / change / delete"),
                 ],
             ),
             group(

@@ -106,7 +106,7 @@ impl StatusView {
                             let vim = ed.vim.is_some();
                             el.child(self.key_action(
                                 "editor-commit",
-                                if vim { "ZZ" } else { "cmd-enter" },
+                                if vim { "Z Z" } else { "cmd-enter" },
                                 submit_label,
                                 view,
                                 Self::submit_editor,
@@ -122,7 +122,7 @@ impl StatusView {
                             })
                             .child(self.key_action(
                                 "editor-cancel",
-                                if vim { "ZQ" } else { "esc" },
+                                if vim { "Z Q" } else { "esc" },
                                 "cancel",
                                 view,
                                 Self::cancel_editor,

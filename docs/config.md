@@ -64,7 +64,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
 | `keymap_preset` | `"evil"` / `"vanilla"` | `evil` | Built-in keymap family to layer before `[keymap]` overrides — see *Keymap*. (`"evil-collection"` is accepted as an alias.) |
-| `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key — see *Keymap*. |
+| `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key (and after a pending Vim sequence in the commit editor) — see *Keymap*. |
 | `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.

@@ -1174,10 +1174,10 @@ impl VimState {
                     ("b", "Back a word"),
                     ("$", "To line end"),
                     ("0", "To line start"),
-                    ("gg G", "First / last line"),
+                    ("g g · G", "First / last line"),
                     ("f t", "Find / till a char"),
-                    ("iw aw", "Inner / around word"),
-                    ("i\" i( ip", "Quotes / parens / paragraph"),
+                    ("i w · a w", "Inner / around word"),
+                    ("i \" · i ( · i p", "Quotes / parens / paragraph"),
                 ]));
                 rows
             }
@@ -1225,7 +1225,13 @@ impl VimState {
                     .filter_map(|(seq, cmd)| {
                         seq.strip_prefix(typed.as_str())
                             .filter(|rest| !rest.is_empty())
-                            .map(|rest| (rest.to_string(), cmd.describe().to_string()))
+                            .map(|rest| {
+                                // One keycap per remaining keystroke, like
+                                // every other sequence label.
+                                let keys =
+                                    rest.chars().map(String::from).collect::<Vec<_>>().join(" ");
+                                (keys, cmd.describe().to_string())
+                            })
                     })
                     .collect();
                 rows.truncate(10);

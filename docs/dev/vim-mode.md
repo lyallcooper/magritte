@@ -301,7 +301,7 @@ even if the first cut ignores it.
 - **Which-key**: once a multi-key sequence (operator-pending, the
   `g`/`Z`/`z`/`,` prefixes, surround, `i`/`a` objects, or a user-map
   prefix — not the `/`/`:` prompts or a bare count) has sat pending for
-  ~600ms, a compact panel of its continuations appears above the mode
+  `which_key_delay_ms` (the app-wide which-key delay), a compact panel of its continuations appears above the mode
   indicator. The engine owns the rows (`which_key_hints`: static tables
   per pending state, capped at ~10 — a hint, not a manual — with a user
   prefix listing its own sequences); the app owns the timing (a

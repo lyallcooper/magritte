@@ -197,9 +197,6 @@ const FOCUS_REFRESH_COOLDOWN_MS: u64 = 5000;
 /// How long the commit editor's discard-prompt flash stays lit after an
 /// ignored keypress.
 const CONFIRM_FLASH_MS: u64 = 400;
-/// How long a Vim multi-key sequence sits pending before the which-key panel
-/// of its continuations appears in the commit editor.
-const VIM_WHICH_KEY_DELAY_MS: u64 = 600;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";

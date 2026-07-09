@@ -273,8 +273,10 @@ pub(crate) fn format_keys(key: &str) -> String {
 
 /// A keyboard key badge: one keycap per keystroke *step*. A chord is a single
 /// cap with the modifier glyphs prefixed to the key (`[⌘x]`, `[⌃⏎]`); a sequence
-/// renders each step spaced (`[g] [r]`, `[⌃x] [⌃c]`). `font` is the monospace
-/// family; `ui_font` draws the glyphs.
+/// renders each step spaced (`[g] [r]`, `[⌃x] [⌃c]`). A `·` step draws as a
+/// bare dot instead of a cap — the separator between alternative bindings in
+/// one label (`Z Z · :wq`), needed since a space already means "next step".
+/// `font` is the monospace family; `ui_font` draws the glyphs.
 pub(crate) fn key_chip(
     key: &str,
     color: Hsla,
@@ -283,7 +285,15 @@ pub(crate) fn key_chip(
 ) -> AnyElement {
     let mut row = div().flex().items_center().gap(px(4.0));
     for step in key.split(' ') {
-        row = row.child(chord_caps(step, color, font, ui_font));
+        if step == "·" {
+            row = row.child(
+                div()
+                    .text_color(with_alpha(color, 0.6))
+                    .child(SharedString::from("·")),
+            );
+        } else {
+            row = row.child(chord_caps(step, color, font, ui_font));
+        }
     }
     row.into_any_element()
 }
