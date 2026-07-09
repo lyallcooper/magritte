@@ -1258,6 +1258,19 @@ fn search_basic() {
     check("é|✓\nx é✓", "/é✓<cr>", "é✓\nx |é✓");
 }
 
+#[test]
+fn search_smartcase() {
+    // An all-lowercase query matches case-insensitively…
+    check("|ab CD ab", "/cd<cr>", "ab |CD ab");
+    check("ab CD a|b", "?cd<cr>", "ab |CD ab");
+    check("|ab CD cd", "/cd<cr>n", "ab CD |cd");
+    // …any uppercase makes it exact.
+    check("|ab cd CD", "/CD<cr>", "ab cd |CD");
+    check_beep("|ab cd", "/CD<cr>", "|ab cd");
+    // Multibyte case folding.
+    check("|x É y", "/é<cr>", "x |É y");
+}
+
 // --- Underscore, comma leader, gq operator ---------------------------------
 
 #[test]

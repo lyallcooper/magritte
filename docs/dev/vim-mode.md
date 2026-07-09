@@ -197,8 +197,9 @@ even if the first cut ignores it.
   `Esc` — so anything key-driven repeats, surround included.
 - **`/` search:** a `Pending::Search` prompt collects the query (shown live
   in the mode bar), and the overlay highlights every match as it's typed
-  (incsearch-style, capped at 200). `Enter` jumps — literal substring,
-  case-sensitive, wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N`
+  (incsearch-style, capped at 200). `Enter` jumps — a literal substring
+  with smartcase (an all-lowercase query matches any case, any uppercase
+  makes it exact), wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N`
   repeat, `?` searches backward.
 
 ## Rendering

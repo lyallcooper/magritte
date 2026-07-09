@@ -294,16 +294,16 @@ impl StatusView {
                             at = next_char(&text, le.max(at));
                         }
                     }
-                    // Incremental search: highlight every match of the query
-                    // being typed at the `/`/`?` prompt (capped, in case a
-                    // one-char query floods a long message).
+                    // Incremental search: highlight every (smartcase) match
+                    // of the query being typed at the `/`/`?` prompt (capped,
+                    // in case a one-char query floods a long message).
                     if let Some(q) = vim.search_query() {
                         let mut from = 0;
                         for _ in 0..200 {
-                            let Some(i) = text[from..].find(q) else {
+                            let Some((m0, mlen)) = super::search_from(&text, q, from) else {
                                 break;
                             };
-                            let (m0, m1) = (from + i, from + i + q.len());
+                            let m1 = m0 + mlen;
                             let mut at = m0;
                             while at < m1 {
                                 let le = line_end(&text, at).min(m1);

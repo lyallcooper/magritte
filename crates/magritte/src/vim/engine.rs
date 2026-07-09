@@ -1000,21 +1000,32 @@ impl VimState {
         }
     }
 
-    /// Jump to the next occurrence of the last search query — a literal,
-    /// case-sensitive substring — wrapping around the buffer like Vim's
-    /// default 'wrapscan'.
+    /// Jump to the next occurrence of the last search query — a literal
+    /// substring with Vim 'smartcase' (all-lowercase matches any case) —
+    /// wrapping around the buffer like Vim's default 'wrapscan'.
     fn search(&mut self, text: &str, cursor: usize, back: bool) -> Vec<Action> {
         let Some((query, _)) = self.last_search.clone() else {
             return self.beep();
         };
         let found = if back {
-            text[..cursor].rfind(&query).or_else(|| text.rfind(&query))
+            // Last match before the cursor, else the last match anywhere.
+            let (mut before, mut any) = (None, None);
+            let mut pos = 0;
+            while let Some((s0, _)) = search_from(text, &query, pos) {
+                if s0 < cursor {
+                    before = Some(s0);
+                }
+                any = Some(s0);
+                if s0 >= text.len() {
+                    break;
+                }
+                pos = next_char(text, s0);
+            }
+            before.or(any)
         } else {
-            let from = next_char(text, cursor);
-            text[from..]
-                .find(&query)
-                .map(|i| from + i)
-                .or_else(|| text.find(&query))
+            search_from(text, &query, next_char(text, cursor))
+                .or_else(|| search_from(text, &query, 0))
+                .map(|(s0, _)| s0)
         };
         let Some(pos) = found else {
             return self.beep();
