@@ -723,7 +723,9 @@ impl VimState {
         }
         if consumer == Consumer::Reflow {
             match c {
-                // `gqq`: the current `count` lines, like `dd`.
+                // `gqq`: the current `count` lines, like Vim — an overlong
+                // line breaks onto new lines (nothing joins upward; the
+                // paragraph form is `gqip`).
                 'q' => {
                     self.pending = Pending::None;
                     let count = self.take_count().max(1);
@@ -1197,10 +1199,11 @@ impl VimState {
             }
             Consumer::Op { op, .. } => {
                 // An inner block covering whole lines operates linewise
-                // (`ci{` on a multiline block leaves an empty line).
+                // (`ci{` on a multiline block leaves an empty line; `dip`
+                // deletes lines).
                 let linewise = matches!(
                     obj,
-                    '(' | ')' | 'b' | '[' | ']' | '{' | '}' | 'B' | '<' | '>'
+                    '(' | ')' | 'b' | '[' | ']' | '{' | '}' | 'B' | '<' | '>' | 'p'
                 ) && range.start < range.end
                     && range.start == line_start(text, range.start)
                     && range.end == line_start(text, range.end);

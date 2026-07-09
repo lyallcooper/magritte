@@ -203,11 +203,14 @@ impl StatusView {
                 if let Some(wrapped) =
                     commit_text::wrap_at_cursor(&value, offset, COMMIT_BODY_WIDTH)
                 {
-                    // Wrapping only turns a space into a newline, so the cursor's
-                    // byte offset is unchanged. The splice keeps the wrap inside
-                    // the undo history (grouped with the typing that caused it),
-                    // so ⌘Z can't restore stale offsets.
-                    splice_value(s, &wrapped, offset, window, cx);
+                    // The cursor sits at the line's end, after every byte the
+                    // wrap inserts (the break itself is length-neutral; a
+                    // hanging indent adds bytes), so it shifts by the length
+                    // delta. The splice keeps the wrap inside the undo history
+                    // (grouped with the typing that caused it), so ⌘Z can't
+                    // restore stale offsets.
+                    let cursor = offset + (wrapped.len() - value.len());
+                    splice_value(s, &wrapped, cursor, window, cx);
                 }
             }
             // Diagnostics carry their own copy of the text for position math;

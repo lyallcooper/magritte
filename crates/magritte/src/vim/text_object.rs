@@ -5,9 +5,11 @@ use super::*;
 use std::ops::Range;
 
 /// Resolve a text object at `cursor`. `around` is `a` vs `i`; `obj` is the
-/// object key: `w`/`W` (word/WORD), `"` `'` `` ` `` (quotes), and the bracket
-/// pairs `( ) b`, `[ ]`, `{ } B`, `< >`. `count` repeats word objects
-/// (`2aw`) and selects enclosing pairs for brackets (`2i(` = one pair out).
+/// object key: `w`/`W` (word/WORD), `s` (sentence), `p` (paragraph), `t`
+/// (tag block), `"` `'` `` ` `` (quotes), and the bracket pairs `( ) b`,
+/// `[ ]`, `{ } B`, `< >` — the full `:help text-objects` set. `count`
+/// repeats word/sentence/paragraph objects and selects enclosing pairs for
+/// brackets and tags (`2i(` = one pair out).
 ///
 /// Returns `None` when there is no such object at the cursor (Vim beeps):
 /// no quote pair on the line, cursor not inside (or on) a matching bracket
@@ -24,6 +26,9 @@ pub(super) fn text_object(
     match obj {
         'w' => word_object(text, cursor, around, false, count),
         'W' => word_object(text, cursor, around, true, count),
+        'p' => paragraph_object(text, cursor, around, count),
+        's' => sentence_object(text, cursor, around, count),
+        't' => tag_object(text, cursor, around, count),
         '"' | '\'' | '`' => quote_object(text, cursor, around, obj, count),
         '(' | ')' | 'b' => bracket_object(text, cursor, around, '(', ')', count),
         '[' | ']' => bracket_object(text, cursor, around, '[', ']', count),
@@ -132,6 +137,198 @@ fn word_object(
 
 fn is_line_blank(text: &str, pos: usize) -> bool {
     matches!(char_at(text, pos), Some(' ' | '\t'))
+}
+
+// --- Sentences --------------------------------------------------------------
+
+/// `is`/`as` (`:help sentence`): a sentence ends at `.`, `!` or `?` —
+/// followed by any closing `)]"'` — before whitespace or the paragraph's
+/// end. `is` is the sentence text; `as` adds the trailing whitespace (or the
+/// leading whitespace when none trails). `count` extends over following
+/// sentences. Paragraphs (blank-line blocks) bound the search.
+fn sentence_object(text: &str, cursor: usize, around: bool, count: usize) -> Option<Range<usize>> {
+    // The enclosing paragraph, as a char range without the trailing newline.
+    let para = paragraph_object(text, cursor, false, 1)?;
+    if text[para.clone()].trim().is_empty() {
+        return None; // on a blank block: no sentence
+    }
+    let pe = para.end - usize::from(text[..para.end].ends_with('\n'));
+    let ps = para.start;
+    // Sentence starts within [ps..pe): ps, then after each end's whitespace.
+    let mut starts = vec![ps];
+    let mut it = text[ps..pe].char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        if !matches!(c, '.' | '!' | '?') {
+            continue;
+        }
+        let mut at = ps + i + c.len_utf8();
+        while matches!(char_at(text, at), Some(')' | ']' | '"' | '\'')) && at < pe {
+            at = next_char(text, at);
+        }
+        if at >= pe || matches!(char_at(text, at), Some(' ' | '\t' | '\n')) {
+            while at < pe && matches!(char_at(text, at), Some(' ' | '\t' | '\n')) {
+                at = next_char(text, at);
+            }
+            if at < pe {
+                starts.push(at);
+            }
+            while it.peek().is_some_and(|&(j, _)| ps + j < at) {
+                it.next();
+            }
+        }
+    }
+    let cursor = cursor.clamp(ps, pe.max(ps));
+    let idx = starts.iter().rposition(|&s| s <= cursor).unwrap_or(0);
+    let start = starts[idx];
+    let last = (idx + count.max(1) - 1).min(starts.len() - 1);
+    // The sentence runs to the next start (or the paragraph end); `is` trims
+    // the trailing whitespace back off.
+    let mut end = starts.get(last + 1).copied().unwrap_or(pe);
+    let with_trailing_ws =
+        end > start && matches!(char_at(text, prev_char(text, end)), Some(' ' | '\t' | '\n'));
+    if !around || !with_trailing_ws {
+        while end > start && matches!(char_at(text, prev_char(text, end)), Some(' ' | '\t' | '\n'))
+        {
+            end = prev_char(text, end);
+        }
+    }
+    let mut start = start;
+    if around && !with_trailing_ws {
+        // No trailing whitespace to take: the leading run joins instead.
+        while start > ps
+            && matches!(
+                char_at(text, prev_char(text, start)),
+                Some(' ' | '\t' | '\n')
+            )
+        {
+            start = prev_char(text, start);
+        }
+    }
+    Some(start..end)
+}
+
+// --- Tags -------------------------------------------------------------------
+
+/// `it`/`at` (`:help tag-blocks`): the innermost `<tag>…</tag>` pair around
+/// the cursor, `count - 1` levels further out. Tags pair by name with
+/// nesting; self-closing (`<br/>`) and non-tags (`<!--`, `<?`) don't count.
+fn tag_object(text: &str, cursor: usize, around: bool, count: usize) -> Option<Range<usize>> {
+    // (open range incl. brackets, close range incl. brackets)
+    let mut pairs: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    let mut stack: Vec<(&str, Range<usize>)> = Vec::new();
+    let mut at = 0;
+    while let Some(i) = text[at..].find('<') {
+        let start = at + i;
+        let Some(j) = text[start..].find('>') else {
+            break;
+        };
+        let end = start + j + 1; // past the '>'
+        let inner = &text[start + 1..end - 1];
+        at = end;
+        if let Some(name) = inner.strip_prefix('/') {
+            // A closer: match the nearest same-named opener; anything opened
+            // above it is abandoned (unclosed), like Vim.
+            let name = name.trim();
+            if let Some(pos) = stack.iter().rposition(|(n, _)| *n == name) {
+                let (_, open) = stack.swap_remove(pos);
+                stack.truncate(pos);
+                pairs.push((open, start..end));
+            }
+        } else if !inner.ends_with('/') && !inner.starts_with(['!', '?']) {
+            let name = inner.split([' ', '\t', '\n']).next().unwrap_or("");
+            if !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':')
+            {
+                stack.push((name, start..end));
+            }
+        }
+    }
+    // Enclosing pairs, innermost (smallest span) first.
+    let mut enclosing: Vec<&(Range<usize>, Range<usize>)> = pairs
+        .iter()
+        .filter(|(open, close)| open.start <= cursor && cursor < close.end)
+        .collect();
+    enclosing.sort_by_key(|(open, close)| close.end - open.start);
+    let (open, close) = enclosing.get(count.max(1) - 1)?;
+    Some(if around {
+        open.start..close.end
+    } else {
+        open.end..close.start
+    })
+}
+
+// --- Paragraphs -------------------------------------------------------------
+
+/// `ip`/`ap` (`:help ip`): whole lines. `ip` is the block of contiguous
+/// non-blank lines around the cursor (or the blank block, when on one);
+/// `count` extends over following alternating blocks. `ap` adds the blank
+/// lines after the paragraph — or the ones before it when none follow.
+fn paragraph_object(text: &str, cursor: usize, around: bool, count: usize) -> Option<Range<usize>> {
+    if text.is_empty() {
+        return None;
+    }
+    let blank = |at: usize| -> bool { text[at..line_end(text, at)].trim().is_empty() };
+    // Step to the next line's start; None at the last line.
+    let next_line = |at: usize| -> Option<usize> {
+        let le = line_end(text, at);
+        (le < text.len()).then(|| le + 1)
+    };
+    // Walk `start` up while the previous line matches the cursor line's kind.
+    let kind = blank(line_start(text, cursor));
+    let mut start = line_start(text, cursor);
+    while start > 0 {
+        let prev = line_start(text, start - 1);
+        if blank(prev) != kind {
+            break;
+        }
+        start = prev;
+    }
+    // Extend down over this block, then `count - 1` more alternating blocks.
+    let mut at = line_start(text, cursor);
+    let mut block = kind;
+    let mut blocks_left = count.max(1);
+    loop {
+        match next_line(at) {
+            Some(n) if blank(n) == block => at = n,
+            Some(n) => {
+                blocks_left -= 1;
+                if blocks_left == 0 {
+                    break;
+                }
+                block = blank(n);
+                at = n;
+            }
+            None => break,
+        }
+    }
+    let mut end = line_end(text, at);
+    end += usize::from(end < text.len());
+    if around {
+        if kind {
+            // On blanks: `ap` takes the blank block plus the following
+            // paragraph.
+            while end < text.len() && !blank(end) {
+                end = line_end(text, end);
+                end += usize::from(end < text.len());
+            }
+        } else {
+            // Trailing blank lines join; when none do, leading ones.
+            let mut grew = false;
+            while end < text.len() && blank(end) {
+                end = line_end(text, end);
+                end += usize::from(end < text.len());
+                grew = true;
+            }
+            if !grew {
+                while start > 0 && blank(line_start(text, start - 1)) {
+                    start = line_start(text, start - 1);
+                }
+            }
+        }
+    }
+    Some(start..end)
 }
 
 /// Start of the word-object unit containing `pos` (`pos` must be on a char

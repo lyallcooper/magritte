@@ -135,7 +135,9 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
   `:help motion.txt`), because operators need that to compute the right range.
 - **Insert entry:** `i a I A o O` (and `c` lands in Insert). `Esc` back to
   Normal steps the cursor left one column.
-- **Text objects:** `iw`/`aw`, and `i`/`a` for `" ' \`` and `() [] {} <>`.
+- **Text objects:** the full `:help text-objects` set — `iw`/`aw` (+ `W`),
+  `is`/`as` (sentences), `ip`/`ap` (paragraphs, linewise), `it`/`at` (tag
+  blocks), and `i`/`a` for `" ' \`` and `() [] {} <>`.
 - **Operators:** `d`, `c` (delete then Insert), `y` (unnamed register + system
   clipboard). Doubled forms `dd`/`cc`/`yy` are linewise; shorthands `D`/`C`
   (to end of line), `Y`/`S` (linewise), `x`/`X`, `r{char}`, `~`, `J`.
@@ -188,12 +190,17 @@ even if the first cut ignores it.
   `gq{motion}`/`gq{object}` the covered lines, Visual `gq` the selection —
   each emits `Action::ReflowRange`, which the app expands to whole lines,
   reflows at 72 columns, and splices (the summary line is always skipped,
-  keeping the 50-col convention). Reflow respects structure: indented lines
-  are preformatted (kept verbatim, the git code-block convention) and
-  bullets (`- * + •`, `1.`/`1)`) re-wrap as their own items with a hanging
-  indent. `⌥q` remains the whole-body reflow (also on `,q`), applied as a
-  minimal `replace_text_in_range` splice — so it's ⌘Z-able in plain mode
-  and gets a Vim undo snapshot (`note_external_change`) in Vim mode.
+  keeping the 50-col convention). `gqq` is Vim-literal — the current line
+  only, so it breaks an overlong line onto new lines and is a no-op on one
+  that fits; the paragraph form is `gqip`. Reflow respects structure:
+  indented lines are preformatted (kept verbatim, the git code-block
+  convention) and bullets (`- * + •`, `1.`/`1)`) re-wrap as their own items
+  with a hanging indent — auto-wrap shares the same shaping
+  (`wrap_prefixed`), so typing past 72 in a bullet or indented line
+  continues at the hanging indent. `⌥q` remains the whole-body reflow (also
+  on `,q`), applied as a minimal `replace_text_in_range` splice — so it's
+  ⌘Z-able in plain mode and gets a Vim undo snapshot
+  (`note_external_change`) in Vim mode.
 - **`.` repeat:** the engine records each change's keys (`recording` →
   `last_change`), plus the text an Insert session typed — captured at `Esc`
   as the slice between the insert-entry point and the exit cursor

@@ -1329,6 +1329,60 @@ fn gq_reflow_targets() {
 }
 
 #[test]
+fn paragraph_objects() {
+    // ip: the contiguous non-blank block, whole lines.
+    check("aa\nb|b\n\ncc", "dip", "|\ncc");
+    // ap adds the trailing blank lines — or the leading ones when none trail.
+    check("aa\nb|b\n\ncc", "dap", "|cc");
+    check("\n\naa\nb|b", "dap", "|");
+    // ip on a blank block takes the blanks; ap adds the following paragraph.
+    check("aa\n|\n\nbb", "dip", "aa\n|bb");
+    check("aa\n|\n\nbb", "dap", "aa\n|");
+    // cip clears the block and enters Insert.
+    check_i("aa\nb|b\n\ncc", "cip", "|\n\ncc");
+    // gqip reflows the paragraph.
+    let buf = run("s\n\n|a b\nc d", "gqip");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if *r == (3..10))),
+        "gqip covers the paragraph: {:?}",
+        buf.log
+    );
+}
+
+#[test]
+fn sentence_objects() {
+    check("One two. Thr|ee four. Five.", "dis", "One two. | Five.");
+    check("One two. Thr|ee four. Five.", "das", "One two. |Five.");
+    // `as` on the last sentence takes the leading whitespace instead.
+    check("One two. Fi|ve.", "das", "One two|.");
+    check("One two. Fi|ve.", "dis", "One two.| ");
+    // Closing quotes/brackets belong to the sentence; count extends.
+    check("(One.) Tw|o. Three.", "d2is", "(One.)| ");
+    check_i("|One. Two.", "cis", "| Two.");
+    // Sentences stop at the paragraph.
+    check("A|a bb\n\ncc", "dis", "|\n\ncc");
+}
+
+#[test]
+fn tag_objects() {
+    check("x <b>bo|ld</b> y", "dit", "x <b>|</b> y");
+    check("x <b>bo|ld</b> y", "dat", "x | y");
+    check_i("x <b>bo|ld</b> y", "cit", "x <b>|</b> y");
+    // Nested same-name tags pair by depth; count goes out.
+    check("<i>a <i>|b</i> c</i>", "dit", "<i>a <i>|</i> c</i>");
+    check("<i>a <i>|b</i> c</i>", "d2it", "<i>|</i>");
+    // Attributes on the opener; cursor on a tag counts as inside.
+    check("<a href=x>li|nk</a>", "dit", "<a href=x>|</a>");
+    check("<b|>text</b>", "dit", "<b>|</b>");
+    // Self-closing and non-tags don't pair.
+    check_beep("a <br/> |b", "dit", "a <br/> |b");
+    check("<b>a <br/> |b</b>", "dat", "|");
+    check_beep("1 |< 2 > 3", "dit", "1 |< 2 > 3");
+}
+
+#[test]
 fn comma_q_reflows_whole_message() {
     let buf = run("s\n|ab cd", ",q");
     assert!(

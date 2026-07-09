@@ -37,12 +37,38 @@ fn wrap_line(line: &str, width: usize) -> Vec<String> {
     pieces
 }
 
+/// Wrap `content` at `width`, prefixing the first piece with `first` and the
+/// rest with `cont` (the hanging indent); both prefixes count against the
+/// width. The shared shaping under auto-wrap and reflow.
+fn wrap_prefixed(first: &str, cont: &str, content: &str, width: usize) -> Vec<String> {
+    let used = first.chars().count().max(cont.chars().count());
+    let inner = width.saturating_sub(used).max(1);
+    wrap_line(content, inner)
+        .into_iter()
+        .enumerate()
+        .map(|(i, piece)| format!("{}{piece}", if i == 0 { first } else { cont }))
+        .collect()
+}
+
+/// A line's wrap prefixes: a bullet keeps a hanging indent for its
+/// continuations; an indented line keeps its own indentation; a plain line
+/// has none. Returns the first-line prefix (a byte slice of `line`) and the
+/// continuation prefix.
+fn wrap_prefixes(line: &str) -> (&str, String) {
+    if let Some(marker) = bullet_marker(line) {
+        return (marker, " ".repeat(marker.chars().count()));
+    }
+    let ws = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+    (ws, ws.to_string())
+}
+
 /// Auto-wrap the commit body *only when the cursor is at the end of an
 /// over-long line* — i.e. while typing at the end of a line — so that editing
 /// in the middle of the message never reflows text under the user. The summary
-/// (line 0) is never wrapped. Returns the rewrapped text when a wrap happened.
-/// `cursor` is a byte offset (as the input reports it); because wrapping only
-/// turns a space into a newline, that offset stays valid in the result.
+/// (line 0) is never wrapped, and bullets/indented lines wrap with their
+/// hanging indent preserved (see [`wrap_prefixes`]). Returns the rewrapped
+/// text when a wrap happened; the cursor (at the line's end) lands at
+/// `offset + (new.len() - old.len())` — every inserted byte precedes it.
 pub(crate) fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<String> {
     let mut line_start = 0; // byte offset of the current line's first char
     for (i, line) in text.split('\n').enumerate() {
@@ -53,7 +79,8 @@ pub(crate) fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<
             if cursor != line_end || i == 0 || line.chars().count() <= width {
                 return None;
             }
-            let pieces = wrap_line(line, width);
+            let (first, cont) = wrap_prefixes(line);
+            let pieces = wrap_prefixed(first, &cont, &line[first.len()..], width);
             if pieces.len() <= 1 {
                 return None; // unbreakable (e.g. a single long word)
             }
@@ -98,11 +125,7 @@ pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
         let Some(p) = para.take() else { return };
         let collapsed = p.lines.join(" ");
         let collapsed = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
-        let inner = width.saturating_sub(p.first.chars().count()).max(1);
-        for (i, piece) in wrap_line(&collapsed, inner).into_iter().enumerate() {
-            let prefix = if i == 0 { &p.first } else { &p.cont };
-            out.push(format!("{prefix}{piece}"));
-        }
+        out.extend(wrap_prefixed(&p.first, &p.cont, &collapsed, width));
     }
     for line in block.split('\n') {
         if line.trim().is_empty() {
@@ -299,6 +322,22 @@ mod tests {
         let text = "summary\n\npara one here\n\npara two here";
         let reflowed = reflow_body(text, 72);
         assert_eq!(reflowed, "summary\n\npara one here\n\npara two here");
+    }
+
+    #[test]
+    fn wrap_at_cursor_keeps_bullet_and_indent_prefixes() {
+        // A long bullet wraps with a hanging indent…
+        let text = "s\n\n- one two three";
+        let wrapped = wrap_at_cursor(text, text.len(), 12).unwrap();
+        assert_eq!(wrapped, "s\n\n- one two\n  three");
+        // …and an indented line keeps its indentation on the continuation.
+        let text = "s\n\n  aa bb cc";
+        let wrapped = wrap_at_cursor(text, text.len(), 7).unwrap();
+        assert_eq!(wrapped, "s\n\n  aa bb\n  cc");
+        // The cursor (at the line end) shifts by the inserted-prefix bytes.
+        let text = "s\n\n- one two three";
+        let wrapped = wrap_at_cursor(text, text.len(), 12).unwrap();
+        assert_eq!(wrapped.len() - text.len(), 2); // the hanging "  "
     }
 
     #[test]
