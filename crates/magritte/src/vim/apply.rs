@@ -382,88 +382,97 @@ impl StatusView {
         Some(
             gpui::canvas(
                 |_, _, _| {},
-                move |_, _, window, cx| {
-                    let s = state.read(cx);
-                    let text = s.text().to_string();
-                    let cursor = s.cursor();
-                    // Zero-width rects are only meaningful for genuinely
-                    // empty cells (empty line, EOF) — for a non-empty range
-                    // they mean the line is scrolled out of view, and
-                    // widening would paint a phantom stub at the viewport
-                    // edge.
-                    let paint = |window: &mut Window, b: Bounds<Pixels>, empty: bool, color| {
-                        if b.size.width > px(0.0) {
-                            window.paint_quad(gpui::fill(b, color));
-                        } else if empty {
-                            window.paint_quad(gpui::fill(widen(b), color));
-                        }
-                    };
-                    if let Some(range) = vim.visual_range(&text, cursor) {
-                        let mut at = range.start;
-                        while at < range.end {
-                            let le = line_end(&text, at).min(range.end);
-                            if let Some(b) = s.range_to_bounds(&(at..le)) {
-                                paint(window, b, at == le, selection_bg);
+                move |bounds, _, window, cx| {
+                    // Clip to the overlay's own bounds: right after a resize
+                    // (or with the cursor line scrolled out) range_to_bounds
+                    // can report rects past the box's edge, and an unmasked
+                    // quad would paint over the diff below.
+                    window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                        let s = state.read(cx);
+                        let text = s.text().to_string();
+                        let cursor = s.cursor();
+                        // Zero-width rects are only meaningful for genuinely
+                        // empty cells (empty line, EOF) — for a non-empty range
+                        // they mean the line is scrolled out of view, and
+                        // widening would paint a phantom stub at the viewport
+                        // edge.
+                        let paint = |window: &mut Window, b: Bounds<Pixels>, empty: bool, color| {
+                            if b.size.width > px(0.0) {
+                                window.paint_quad(gpui::fill(b, color));
+                            } else if empty {
+                                window.paint_quad(gpui::fill(widen(b), color));
                             }
-                            at = next_char(&text, le.max(at));
-                        }
-                    }
-                    // Blockwise selection: one rect per covered line (lines
-                    // the block overhangs yield empty ranges — nothing).
-                    if let Some(ranges) = vim.block_ranges(&text, cursor) {
-                        for r in ranges {
-                            if r.start < r.end {
-                                if let Some(b) = s.range_to_bounds(&r) {
-                                    paint(window, b, false, selection_bg);
-                                }
-                            }
-                        }
-                    }
-                    // Incremental search: highlight every (smartcase regex)
-                    // match of the pattern being typed at the `/`/`?` prompt
-                    // (capped, in case a one-char query floods the message).
-                    if let Some(re) = vim.search_query().and_then(super::compile_search) {
-                        let mut from = 0;
-                        for _ in 0..200 {
-                            let Some((m0, mlen)) = re.find_from(&text, from) else {
-                                break;
-                            };
-                            let m1 = m0 + mlen;
-                            let mut at = m0;
-                            while at < m1 {
-                                let le = line_end(&text, at).min(m1);
+                        };
+                        if let Some(range) = vim.visual_range(&text, cursor) {
+                            let mut at = range.start;
+                            while at < range.end {
+                                let le = line_end(&text, at).min(range.end);
                                 if let Some(b) = s.range_to_bounds(&(at..le)) {
-                                    paint(window, b, false, search_bg);
+                                    paint(window, b, at == le, selection_bg);
                                 }
                                 at = next_char(&text, le.max(at));
                             }
-                            from = next_char(&text, m0);
                         }
-                    }
-                    // Live `:s` preview: what the substitution being typed
-                    // would touch (first match per line, all with `g`).
-                    // Matches never span lines, so one rect each suffices.
-                    for r in vim.ex_matches(&text, cursor) {
-                        if let Some(b) = s.range_to_bounds(&r) {
-                            paint(window, b, false, search_bg);
+                        // Blockwise selection: one rect per covered line (lines
+                        // the block overhangs yield empty ranges — nothing).
+                        if let Some(ranges) = vim.block_ranges(&text, cursor) {
+                            for r in ranges {
+                                if r.start < r.end {
+                                    if let Some(b) = s.range_to_bounds(&r) {
+                                        paint(window, b, false, selection_bg);
+                                    }
+                                }
+                            }
                         }
-                    }
-                    // Block cursor: the cell of the char under the cursor, or
-                    // a half-width stub on empty lines / EOF.
-                    let c0 = clamp_normal(&text, cursor);
-                    let c1 = next_char(&text, c0);
-                    let cell = if text[c0..c1.min(text.len())].starts_with('\n') || c0 == c1 {
-                        c0..c0
-                    } else {
-                        c0..c1
-                    };
-                    if let Some(b) = s.range_to_bounds(&(cell.clone())) {
-                        paint(window, b, cell.is_empty(), cursor_bg);
-                    }
+                        // Incremental search: highlight every (smartcase regex)
+                        // match of the pattern being typed at the `/`/`?` prompt
+                        // (capped, in case a one-char query floods the message).
+                        if let Some(re) = vim.search_query().and_then(super::compile_search) {
+                            let mut from = 0;
+                            for _ in 0..200 {
+                                let Some((m0, mlen)) = re.find_from(&text, from) else {
+                                    break;
+                                };
+                                let m1 = m0 + mlen;
+                                let mut at = m0;
+                                while at < m1 {
+                                    let le = line_end(&text, at).min(m1);
+                                    if let Some(b) = s.range_to_bounds(&(at..le)) {
+                                        paint(window, b, false, search_bg);
+                                    }
+                                    at = next_char(&text, le.max(at));
+                                }
+                                from = next_char(&text, m0);
+                            }
+                        }
+                        // Live `:s` preview: what the substitution being typed
+                        // would touch (first match per line, all with `g`).
+                        // Matches never span lines, so one rect each suffices.
+                        for r in vim.ex_matches(&text, cursor) {
+                            if let Some(b) = s.range_to_bounds(&r) {
+                                paint(window, b, false, search_bg);
+                            }
+                        }
+                        // Block cursor: the cell of the char under the cursor, or
+                        // a half-width stub on empty lines / EOF.
+                        let c0 = clamp_normal(&text, cursor);
+                        let c1 = next_char(&text, c0);
+                        let cell = if text[c0..c1.min(text.len())].starts_with('\n') || c0 == c1 {
+                            c0..c0
+                        } else {
+                            c0..c1
+                        };
+                        if let Some(b) = s.range_to_bounds(&(cell.clone())) {
+                            paint(window, b, cell.is_empty(), cursor_bg);
+                        }
+                    });
                 },
             )
+            // inset_0 (not size_full): an absolute canvas needs explicit
+            // insets for its layout bounds to span the box — and the bounds
+            // are what the paint closure masks to.
             .absolute()
-            .size_full()
+            .inset_0()
             .into_any_element(),
         )
     }

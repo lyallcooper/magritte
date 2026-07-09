@@ -378,8 +378,9 @@ impl StatusView {
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
-                // Opaque: the panel floats over the message text.
-                .bg(self.palette.bg.blend(self.palette.selection))
+                // Opaque (the panel floats over the message text), matching
+                // the bottom transient panel's fill.
+                .bg(self.palette.bg.blend(self.palette.panel))
                 .border_1()
                 .border_color(self.palette.border)
                 .text_xs()

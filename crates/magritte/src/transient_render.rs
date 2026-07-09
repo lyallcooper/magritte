@@ -4,6 +4,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, Window};
+use gpui_component::{Icon, IconName, Sizable};
 
 use crate::*;
 
@@ -256,6 +257,36 @@ impl StatusView {
             .max_h(px(max_h))
             .overflow_y_scroll()
             .gap_2()
+            .relative()
+            // An explicit ✕ at the top-right — Esc/q already close, this makes
+            // it discoverable (and mouse-only usable). Behaves like Esc, so a
+            // Configure sub-transient pops back to its parent.
+            .child(
+                div()
+                    .id("transient-close")
+                    .absolute()
+                    .top(px(8.0))
+                    .right(px(12.0))
+                    .cursor_pointer()
+                    .text_color(self.palette.dim)
+                    .hover(|s| s.text_color(self.palette.fg))
+                    .on_mouse_down(MouseButton::Left, {
+                        let v = view.clone();
+                        move |_, window, cx| {
+                            cx.stop_propagation();
+                            v.update(cx, |this, cx| match this.popup {
+                                Some(Popup::Transient(_)) => {
+                                    this.handle_transient_key("escape", window, cx)
+                                }
+                                _ => {
+                                    this.popup = None;
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .child(Icon::new(IconName::Close).small()),
+            )
             .when(saving, |el| {
                 let mut row = div()
                     .flex()

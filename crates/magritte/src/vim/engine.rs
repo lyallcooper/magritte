@@ -1159,6 +1159,15 @@ impl VimState {
                 if let Some(key) = line_key {
                     rows.push((key, "Whole line".to_string()));
                 }
+                // `s` after the operator is the surround family (ys/ds/cs).
+                if let Consumer::Op { op, .. } = consumer {
+                    let surround = match op {
+                        Op::Yank => "Add surround",
+                        Op::Delete => "Delete surround",
+                        Op::Change => "Change surround",
+                    };
+                    rows.push(("s".to_string(), surround.to_string()));
+                }
                 rows.extend(own(&[
                     ("w", "To next word"),
                     ("e", "To word end"),
