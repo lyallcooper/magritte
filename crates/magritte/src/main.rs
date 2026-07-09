@@ -56,6 +56,7 @@ mod picker_render;
 mod rebase_flow;
 mod refs_view;
 mod render;
+mod resolve_view;
 mod row_build;
 mod settings;
 mod staging;
@@ -111,6 +112,7 @@ actions!(
         CtxStage,
         CtxUnstage,
         CtxDiscard,
+        CtxResolve,
         CtxTakeOurs,
         CtxTakeTheirs,
         CtxCopy
@@ -380,6 +382,9 @@ enum Screen {
         path: String,
         rows: Rc<Vec<blame_view::BlameRow>>,
     },
+    /// The conflict-resolution view (`e` on a conflicted file, the smerge
+    /// analog): the parsed file with per-conflict keep-ours/theirs/both/base.
+    Resolve(resolve_view::ResolveView),
 }
 
 /// A data-free tag for each [`Screen`] — its *keymap context*. Every command
@@ -400,6 +405,7 @@ pub(crate) enum ScreenKind {
     Refs,
     Worktree,
     Blame,
+    Resolve,
 }
 
 impl ScreenKind {
@@ -416,6 +422,7 @@ impl ScreenKind {
         ScreenKind::Refs,
         ScreenKind::Worktree,
         ScreenKind::Blame,
+        ScreenKind::Resolve,
     ];
 }
 
@@ -890,6 +897,7 @@ impl StatusView {
             Screen::Refs(_) => ScreenKind::Refs,
             Screen::Worktree(_) => ScreenKind::Worktree,
             Screen::Blame { .. } => ScreenKind::Blame,
+            Screen::Resolve(_) => ScreenKind::Resolve,
         }
     }
 
@@ -907,6 +915,7 @@ impl StatusView {
             ScreenKind::Refs => Some("refs"),
             ScreenKind::Worktree => Some("worktree"),
             ScreenKind::Blame => Some("blame"),
+            ScreenKind::Resolve => Some("resolve"),
         }
     }
 

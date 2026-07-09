@@ -294,6 +294,9 @@ pub(crate) enum Confirm {
     CustomShell { command: String, refresh: bool },
     /// Drop the stash at point (`x` on a stash row): on `y`, drop the reference.
     DropStash(String),
+    /// The resolve view finished its last conflict: on `y`, stage the carried
+    /// path (marking it resolved) and return to the status view.
+    StageResolved(String),
     /// Remove the worktree at point in the browser: on `y`, `git worktree
     /// remove` its path (non-force, so git refuses a dirty worktree).
     RemoveWorktree(String),
@@ -593,10 +596,10 @@ impl StatusView {
         self.resolver().diff_for_ref(file)
     }
 
-    /// Whether `path` is an unmerged (conflicted) entry. Conflict resolution
-    /// isn't supported in-app yet, so ordinary stage/unstage/discard is refused
-    /// on these — `git add` would silently mark a conflict resolved (markers and
-    /// all), and a discard could lose work.
+    /// Whether `path` is an unmerged (conflicted) entry. Ordinary
+    /// stage/unstage/discard is refused on these — `git add` would silently
+    /// mark a conflict resolved (markers and all), and a discard could lose
+    /// work; resolution goes through take-ours/theirs or the resolve view (`e`).
     pub(crate) fn is_conflicted(&self, path: &str) -> bool {
         // O(1) against the set refreshed in `rebuild_rows`.
         self.conflicted.contains(path)
@@ -1002,6 +1005,17 @@ impl StatusView {
             }
             Some((_, Confirm::DropStash(reference))) => {
                 self.run_stash_action(StashAction::Drop, reference, cx)
+            }
+            Some((_, Confirm::StageResolved(path))) => {
+                if matches!(self.screen, Screen::Resolve(_)) {
+                    self.close_resolve(window, cx);
+                }
+                self.run_job(
+                    &format!("Staging {path}…"),
+                    "Resolved",
+                    move |repo| repo.stage_file(&path).map(|()| String::new()),
+                    cx,
+                );
             }
             Some((_, Confirm::RemoveWorktree(path))) => self.remove_worktree(path, cx),
             Some((_, Confirm::StageAll)) => self.run_action(Action::StageAll, cx),

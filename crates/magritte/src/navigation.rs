@@ -625,12 +625,13 @@ impl StatusView {
         }
     }
 
-    /// One keystroke on a pager screen (the `$` command log or blame — no
-    /// cursor): a registry verb bound at the full chord dispatches (`close`,
-    /// the log's toggle-queries); anything else scrolls less-style, with a
-    /// keymap-resolved motion translated to the key [`apply_scroll_key`]
-    /// understands. Resolving the full chord keeps modifier bindings (the
-    /// default `ctrl-n`/`ctrl-p`, or a user remap) driving the pager too.
+    /// One keystroke on a pager screen (the `$` command log, blame, or the
+    /// resolve view): a registry verb bound at the full chord dispatches
+    /// (`close`, the log's toggle-queries, the resolve view's keep/next
+    /// verbs); anything else scrolls less-style, with a keymap-resolved motion
+    /// translated to the key [`apply_scroll_key`] understands. Resolving the
+    /// full chord keeps modifier bindings (the default `ctrl-n`/`ctrl-p`, or a
+    /// user remap) driving the pager too.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn pager_key(
         &mut self,
@@ -643,12 +644,8 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let chorded = chord(key, shift, ctrl, alt, cmd);
-        let bound = self
-            .screen_bindings()
-            .get(&chorded)
-            .and_then(|v| v.first())
-            .map(String::as_str);
-        let (skey, sshift) = match bound {
+        let bound = self.resolve_binding(&chorded);
+        let (skey, sshift) = match bound.as_deref() {
             Some("close") => {
                 // A first Esc/q clears an active mouse selection; the next
                 // closes (like the flat-diff views).
@@ -658,22 +655,39 @@ impl StatusView {
                 }
                 return self.close_screen(window, cx);
             }
-            Some("git-log-toggle-queries") => return self.toggle_git_log_all(window, cx),
             Some("yank") => return self.copy_pager_selection(cx),
             Some("move-down") => ("j", false),
             Some("move-up") => ("k", false),
             Some("goto-bottom") => ("g", true),
             Some("goto-top") => ("g", false),
+            // Any other screen-scoped verb (the log's toggle-queries, the
+            // resolve view's keep/next/undo family) dispatches; global
+            // commands and the remaining motions fall through to scrolling.
+            Some(id)
+                if commands()
+                    .iter()
+                    .any(|c| c.id == id && c.contexts != ScreenSet::ALL) =>
+            {
+                let id = id.to_string();
+                return self.invoke_command(&id, window, cx);
+            }
             _ => (key, shift),
         };
         let page = page_rows(window, self.row_h());
         let len = match &self.screen {
             Screen::GitLog { .. } => self.git_log_rows().len(),
             Screen::Blame { rows, .. } => rows.len(),
+            Screen::Resolve(rv) => rv.rows.len(),
             _ => return,
         };
-        if let Screen::GitLog { view, .. } | Screen::Blame { view, .. } = &mut self.screen {
-            apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
+        match &mut self.screen {
+            Screen::GitLog { view, .. } | Screen::Blame { view, .. } => {
+                apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
+            }
+            Screen::Resolve(rv) => {
+                apply_scroll_key(&rv.scroll, &mut rv.top, len, skey, sshift, ctrl, page);
+            }
+            _ => {}
         }
         cx.notify();
     }

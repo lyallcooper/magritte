@@ -1860,7 +1860,10 @@ impl StatusView {
             self.copy_flat_diff_selection(cx);
         } else if self.log().is_some() {
             self.copy_log_commit(cx);
-        } else if matches!(self.screen, Screen::GitLog { .. } | Screen::Blame { .. }) {
+        } else if matches!(
+            self.screen,
+            Screen::GitLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
+        ) {
             self.copy_pager_selection(cx);
         } else if self.char_sel.is_some_and(|c| !c.is_empty()) {
             // A mouse char selection wins over the row's commit/stash value.

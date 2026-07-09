@@ -776,9 +776,11 @@ impl StatusView {
                     let conflicted = self.is_conflicted(target_path(target));
                     let (ours_label, theirs_label) = self.conflict_side_labels();
                     el.context_menu(move |mut menu, _window, _cx| {
-                        // A conflicted file resolves by taking a whole side.
+                        // A conflicted file resolves per-conflict in the
+                        // resolve view, or by taking a whole side.
                         if conflicted {
                             menu = menu
+                                .menu("Resolve…", Box::new(CtxResolve))
                                 .menu(ours_label, Box::new(CtxTakeOurs))
                                 .menu(theirs_label, Box::new(CtxTakeTheirs))
                                 .separator();
@@ -1244,6 +1246,9 @@ impl Render for StatusView {
             .on_action(cx.listener(|this, _: &CtxStage, _window, cx| this.act(Op::Stage, cx)))
             .on_action(cx.listener(|this, _: &CtxUnstage, _window, cx| this.act(Op::Unstage, cx)))
             .on_action(cx.listener(|this, _: &CtxDiscard, _window, cx| this.act(Op::Discard, cx)))
+            .on_action(
+                cx.listener(|this, _: &CtxResolve, _window, cx| this.open_resolve_conflicts(cx)),
+            )
             .on_action(cx.listener(|this, _: &CtxTakeOurs, _window, cx| {
                 this.resolve_at_point(ConflictSide::Ours, cx)
             }))
@@ -1309,6 +1314,7 @@ impl Render for StatusView {
                 self.render_blame(scroll, path, rows, &view)
                     .into_any_element(),
             ),
+            Screen::Resolve(rv) => Some(self.render_resolve(rv, &view).into_any_element()),
             Screen::Status => None,
         };
         if let Some(screen_el) = screen_el {

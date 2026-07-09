@@ -548,6 +548,7 @@ pub(crate) fn commands() -> &'static [Command] {
                 ScreenKind::Refs,
                 ScreenKind::Worktree,
                 ScreenKind::Blame,
+                ScreenKind::Resolve,
             ]),
             title: "Back",
             aliases: &[],
@@ -818,6 +819,66 @@ pub(crate) fn commands() -> &'static [Command] {
             ScreenSet::of(&[ScreenKind::GitLog]),
             "a",
             |t, w, cx| t.toggle_git_log_all(w, cx)
+        ),
+        // Conflict-resolution view verbs (smerge's keep-upper/lower/all/base and
+        // next/prev): applied to the conflict at the cursor; each keep rewrites
+        // the file on disk. `B` only offers where a diff3 base exists.
+        verb!(
+            "resolve-next",
+            "Next conflict",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "n",
+            |t, _w, cx| t.resolve_move(1, cx)
+        ),
+        verb!(
+            "resolve-prev",
+            "Previous conflict",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "p",
+            |t, _w, cx| t.resolve_move(-1, cx)
+        ),
+        verb!(
+            "resolve-ours",
+            "Keep ours",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "o",
+            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Ours, cx)
+        ),
+        verb!(
+            "resolve-theirs",
+            "Keep theirs",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "t",
+            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Theirs, cx)
+        ),
+        verb!(
+            "resolve-both",
+            "Keep both",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "b",
+            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Both, cx)
+        ),
+        verb!(
+            "resolve-base",
+            "Keep base",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "B",
+            |t: &StatusView| t.resolve_current_has_base(),
+            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Base, cx)
+        ),
+        verb!(
+            "resolve-undo",
+            "Undo choice",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "u",
+            |t, _w, cx| t.resolve_undo(cx)
+        ),
+        verb!(
+            "resolve-open-editor",
+            "Open in editor",
+            ScreenSet::of(&[ScreenKind::Resolve]),
+            "enter",
+            |t, _w, cx| t.resolve_open_editor(cx)
         ),
         top!(
             "worktree",
@@ -1353,6 +1414,24 @@ pub(crate) fn commands() -> &'static [Command] {
                 }
             }
         ),
+        // Resolve the conflicted file at point conflict-by-conflict (magit puts
+        // `e`, ediff-dwim, on a conflicted file; ours opens the smerge-style
+        // in-app view). At-point gated, so `e` stays free elsewhere; offered in
+        // the palette whenever the cursor is on a conflicted file.
+        Command {
+            id: "resolve-conflicts",
+            contexts: STATUS,
+            title: "Resolve conflicts",
+            aliases: &["merge conflicts", "smerge", "unmerged"],
+            category: Category::Commands,
+            key: Some("e"),
+            menu: false,
+            palette: true,
+            enabled: |t| t.point_conflicted_path().is_some(),
+            at_point: true,
+            leaf: None,
+            run: |t, _w, cx| t.open_resolve_conflicts(cx),
+        },
         // The buffer's revision (evil `y b`, magit-copy-buffer-revision):
         // palette-only, bound to `yb` in the evil preset.
         Command {
@@ -2467,6 +2546,7 @@ const SECONDARY_MENU_SCREENS: &[ScreenKind] = &[
     ScreenKind::Refs,
     ScreenKind::Worktree,
     ScreenKind::Blame,
+    ScreenKind::Resolve,
 ];
 
 /// Build a secondary screen's `?` menu from the registry: its scoped verbs (the
@@ -2500,8 +2580,12 @@ fn derived_screen_menu(view: &StatusView, kind: ScreenKind, copy_key: &str) -> T
         }
     }
     // Copy: the global yank, shown under its preset key on the screens where it
-    // copies something meaningful (the pager and the todo editor have nothing).
-    if !matches!(kind, ScreenKind::GitLog | ScreenKind::RebaseTodo) {
+    // copies something meaningful (the pager, the todo editor, and the resolve
+    // view have nothing).
+    if !matches!(
+        kind,
+        ScreenKind::GitLog | ScreenKind::RebaseTodo | ScreenKind::Resolve
+    ) {
         commands_group.push(Suffix::Info(transient::Info {
             keys: copy_key.to_string(),
             description: "Copy".to_string(),

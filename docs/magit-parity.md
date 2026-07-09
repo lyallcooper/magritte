@@ -84,7 +84,7 @@ Magit's dispatch is itself a transient; ours is the `?` help menu plus the
 | `C` | clone | ✗ |
 | `d` | diff | ✓ |
 | `D` | diff-refresh | ✗ |
-| `e` / `E` | ediff-dwim / ediff | N/A |
+| `e` / `E` | ediff-dwim / ediff | ≈ `e` on a conflicted file opens the in-app resolve view (smerge-style per-conflict ours/theirs/both/base), not ediff |
 | `f` / `F` | fetch / pull | ✓ |
 | `h` | magit-info (manual) | ≈ ours is the `?` menu itself; no manual |
 | `H` | describe-section | N/A |
@@ -518,10 +518,13 @@ git-variable widget for its ref variables. Low demand.
 **Cherry (`Y`)** ✗ — `git cherry -v` listing (commits not equivalent to
 upstream); a variant of our log screen.
 
-**Ediff (`E`/`e`)** N/A as such — the standalone analog is a real
-merge-conflict resolution view (today we only offer take-ours/theirs via the
-context menu). **Mergetool** ✗ — launching `git mergetool --gui` per
-conflicted file is meaningful standalone.
+**Ediff (`E`/`e`)** ≈ — the standalone analog is the in-app resolve view:
+`e` on a conflicted file lists its conflicts with ours/base/theirs blocks
+tinted; `o`/`t`/`b`/`B` keep ours/theirs/both/base per conflict (smerge's
+semantics, not ediff's three-window session), `n`/`p` move between conflicts,
+`u` undoes, and resolving the last conflict offers to stage the file.
+**Mergetool** ✗ — launching `git mergetool --gui` per conflicted file is
+meaningful standalone.
 
 **File-dispatch** mostly N/A (buffer-centric entry point, blob navigation);
 `K` untrack is done (act-at-point on a file row); the rest (rename, file log,
@@ -659,7 +662,7 @@ of it exists. `SPC` preview is now covered (as a returning overlay).
 | `u` committed change | **reverses it in the index** (`magit-unstage-committed` t) — the "extract a change from HEAD" flow | `u` in the commit view reverse-stages the file/hunk at point into the index | ✓ (commit view; status view has no committed changes) |
 | `k`/`x` discard untracked | delete → **system trash**, confirm | system trash, confirm (git clean fallback when unavailable) | ✓ |
 | `k`/`x` discard unstaged/staged | confirm; entry-dispatched | mirrors magit exactly (incl. partial-discard `.rej` reporting) | ✓ |
-| `k` conflicted hunk | smerge-keep-current + per-hunk smerge keys | keyboard verbs refused; take-ours/theirs via right-click only | ∂ |
+| `k` conflicted hunk | smerge-keep-current + per-hunk smerge keys | staging verbs refused; `e` opens the per-conflict resolve view (o/t/b/B), take-ours/theirs whole-file via right-click | ≈ |
 | `v` reverse at point | reverse staged/committed hunk/file/region in worktree | commit/diff view: reverse the file / hunk / region at point in the worktree (evil `-` / vanilla `v`, per preset). Status-view unstaged/staged reverse still ✗ (covered by discard/unstage) | ✓ committed (incl. region) |
 | `a` apply at point | apply committed hunk/file to worktree; untracked file → am; prefix = 3-way | commit/diff view: apply the file / hunk / region at point to the worktree (`a`); no `am`/3-way | ∂ committed (incl. region) done; am/3-way ✗ |
 
@@ -834,8 +837,8 @@ Grouped by kind, roughly ordered within each group.
 1. (Done: blame view, bisect, patch create/apply + `git am` — see their
    entries for remaining depth.)
 2. Clone/init (needs the no-repo app state).
-3. Conflict-resolution view beyond take-ours/theirs (the ediff analog),
-   and/or `git mergetool` launching.
+3. (Done: the smerge-style resolve view — `e` on a conflicted file.
+   Remaining depth: intra-conflict word diffs, `git mergetool` launching.)
 4. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
 
 **Deliberate deviations to keep (document, don't "fix")**

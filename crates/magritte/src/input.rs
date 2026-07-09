@@ -209,6 +209,14 @@ impl StatusView {
             return self.pager_key(&key, shift, ctrl, alt, cmd, window, cx);
         }
 
+        // The conflict-resolution view: its keep/next/undo verbs are registry
+        // commands scoped to the Resolve context (dispatched by `pager_key`);
+        // everything else scrolls pager-style (j/k lines, C-d/C-u pages) — the
+        // conflict cursor moves with `n`/`p`, not the motion keys.
+        if matches!(self.screen, Screen::Resolve(_)) {
+            return self.pager_key(&key, shift, ctrl, alt, cmd, window, cx);
+        }
+
         // The interactive-rebase todo editor: set an action, reorder, then start.
         if self.rebase_todo().is_some() {
             // While the "discard edits?" confirmation is up, capture y / n / esc.
@@ -470,6 +478,7 @@ impl StatusView {
             ScreenKind::Refs => self.close_refs(window, cx),
             ScreenKind::Worktree => self.close_worktrees(window, cx),
             ScreenKind::Blame => self.close_blame(window, cx),
+            ScreenKind::Resolve => self.close_resolve(window, cx),
             ScreenKind::Settings => self.close_settings(window, cx),
             ScreenKind::Status | ScreenKind::Editor => {}
         }

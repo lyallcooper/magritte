@@ -43,7 +43,7 @@ pub use bisect::{Bisect, BisectMark};
 pub use blame::BlameLine;
 pub use branch::LocalBranch;
 pub use commit::{CommitMetadata, CommitMode};
-pub use conflict::ConflictSide;
+pub use conflict::{ConflictSide, Resolution};
 pub use diff::{DiffLine, DiffSource, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use ignore::IgnoreDest;
