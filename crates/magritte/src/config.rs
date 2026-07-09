@@ -904,12 +904,14 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         config.dark_theme.is_empty(),
     );
     set_string(&mut doc, "font", &config.font, config.font.is_empty());
-    set_int(
-        &mut doc,
-        "font_size",
-        config.font_size.unwrap_or_default() as i64,
-        config.font_size.is_none(),
-    );
+    // Unset removes the key outright: set_setting's omit only skips writing
+    // when the key is absent, and there is no "unset" number to write.
+    match config.font_size {
+        Some(n) => set_int(&mut doc, "font_size", n as i64, false),
+        None => {
+            doc.as_table_mut().remove("font_size");
+        }
+    }
     set_string(
         &mut doc,
         "ui_font",
@@ -1033,6 +1035,28 @@ fn set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_size_unset_removes_the_key() {
+        let path = std::env::temp_dir().join("magritte-font-size-save-test.toml");
+        std::fs::write(&path, "font_size = 16\n").unwrap();
+
+        let mut cfg = Config {
+            font_size: Some(15),
+            ..Config::default()
+        };
+        save_settings_at(&path, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("font_size = 15"));
+
+        // Back to the system default: the key is removed, not written as 0
+        // (set_setting keeps an existing key, which once wrote a bogus 0).
+        cfg.font_size = None;
+        save_settings_at(&path, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("font_size"), "saved: {saved}");
+        let _ = std::fs::remove_file(path);
+    }
+
     use super::*;
 
     fn val(s: &str) -> toml::Value {

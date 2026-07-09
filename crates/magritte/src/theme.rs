@@ -17,6 +17,16 @@ pub(crate) const SYSTEM_FONT_LABEL: &str = "System Default";
 /// The platform's standard UI text size in px — the `font_size` default.
 /// macOS reports it via `NSFont.systemFontSize` (13 on current systems);
 /// elsewhere fall back to 13.
+/// The effective base font size (px): the configured size clamped sane, or
+/// the platform's standard UI text size when unset. `0` counts as unset (an
+/// early build wrote it for "system default"; it also reads naturally).
+pub(crate) fn effective_font_size(cfg: &config::Config) -> u32 {
+    cfg.font_size
+        .filter(|&n| n != 0)
+        .map(|n| n.clamp(9, 24))
+        .unwrap_or_else(system_font_size)
+}
+
 pub(crate) fn system_font_size() -> u32 {
     static SIZE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| {
@@ -124,6 +134,7 @@ pub(crate) fn apply_appearance(cfg: &config::Config, cx: &mut App) {
     };
     let light = pick(cfg.light_theme(), config::DEFAULT_LIGHT_THEME);
     let dark = pick(cfg.dark_theme(), config::DEFAULT_DARK_THEME);
+    let size = effective_font_size(cfg) as f32;
     {
         let theme = gpui_component::Theme::global_mut(cx);
         if let Some(t) = light {
@@ -132,6 +143,12 @@ pub(crate) fn apply_appearance(cfg: &config::Config, cx: &mut App) {
         if let Some(t) = dark {
             theme.dark_theme = t;
         }
+        // The component widgets (Select, switches, …) size in rems, and the
+        // Root sets the window rem size from `theme.font_size` — scale it
+        // with the configured size so they track it. The 16/13 ratio keeps
+        // today's proportions at the 13px default (rem stays 16 there).
+        theme.font_size = gpui::px((size * 16.0 / 13.0).round());
+        theme.mono_font_size = gpui::px(size);
     }
     gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
 }

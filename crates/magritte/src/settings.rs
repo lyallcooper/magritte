@@ -249,7 +249,11 @@ impl StatusView {
         // value from the config file is injected so it stays selectable
         // rather than silently remapped.
         let mut size_items: Vec<u32> = vec![10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24];
-        let cur_size = self.config.font_size.map(|n| n.clamp(9, 24));
+        let cur_size = self
+            .config
+            .font_size
+            .filter(|&n| n != 0)
+            .map(|n| n.clamp(9, 24));
         if let Some(cur) = cur_size {
             if !size_items.contains(&cur) {
                 size_items.push(cur);
