@@ -980,9 +980,7 @@ impl StatusView {
                     self.toggle_control(
                         "commit-vim-mode",
                         self.config.commit_vim_mode,
-                        "Modal Vim editing in the commit editor: Normal/Insert/Visual modes, \
-                         motions, text objects, d/c/y operators, surround, . repeat, and \
-                         / search. ZZ commits, ZQ cancels, gq reflows.",
+                        "Vim emulation in the commit editor. Commit with ZZ, cancel with ZQ.",
                         view,
                         false,
                         |cfg, on| cfg.commit_vim_mode = on,

@@ -8,6 +8,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, TextLayout};
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::spinner::Spinner;
+use gpui_component::Sizable;
 
 use crate::render::{color_run, offset_at, StyleRuns};
 use crate::*;
@@ -139,7 +141,8 @@ impl StatusView {
             let wrapped = input
                 .relative()
                 .child(Input::new(&ed.state).h_full().disabled(paused))
-                .children(self.vim_overlay(ed));
+                .children(self.vim_overlay(ed))
+                .children(self.vim_indicator_overlay(ed));
             if !vim_active {
                 return wrapped;
             }
@@ -156,13 +159,10 @@ impl StatusView {
         // async diff landing doesn't shift the layout; the divider drags to
         // resize the message box (persisted per repo).
         if !ed.diff_expected {
-            return root
-                .child(message(div().flex_grow(1.0).w_full()))
-                .children(self.vim_mode_bar(ed));
+            return root.child(message(div().flex_grow(1.0).w_full()));
         }
         let root = root
             .child(message(div().h(px(self.editor_message_height)).w_full()))
-            .children(self.vim_mode_bar(ed))
             .child(self.editor_resize_divider(view))
             .child(self.render_commit_diff(ed, view));
         // The drag handlers live on the editor root so the divider keeps
@@ -193,17 +193,41 @@ impl StatusView {
         })
     }
 
-    /// The draggable divider between the message box and the diff preview.
-    fn editor_resize_divider(&self, view: &Entity<Self>) -> gpui::Div {
+    /// The draggable divider between the message box and the diff preview: a
+    /// full-width hairline with a centered grip pill that brightens when the
+    /// divider is hovered.
+    fn editor_resize_divider(&self, view: &Entity<Self>) -> impl IntoElement {
+        const GRIP_GROUP: &str = "editor-resize-divider";
         let v = view.clone();
+        let grip = self.palette.dim.opacity(0.4);
+        let grip_hover = self.palette.dim;
         div()
+            .id("editor-resize-divider")
+            .group(GRIP_GROUP)
             .w_full()
-            .h(px(5.0))
-            .my(px(-2.0))
+            .h(px(9.0))
+            .my(px(-4.0))
             .flex()
             .items_center()
+            .justify_center()
             .cursor_ns_resize()
-            .child(div().w_full().h(px(1.0)).bg(self.palette.border))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(4.0))
+                    .left_0()
+                    .w_full()
+                    .h(px(1.0))
+                    .bg(self.palette.border),
+            )
+            .child(
+                div()
+                    .w(px(36.0))
+                    .h(px(4.0))
+                    .rounded_full()
+                    .bg(grip)
+                    .group_hover(GRIP_GROUP, move |s| s.bg(grip_hover)),
+            )
             .on_mouse_down(MouseButton::Left, {
                 move |ev: &gpui::MouseDownEvent, _window, cx: &mut App| {
                     v.update(cx, |this, _cx| {
@@ -214,16 +238,27 @@ impl StatusView {
             })
     }
 
-    /// The Vim mode line under the message editor (above the diff preview):
-    /// the mode chip (NORMAL/INSERT/VISUAL) plus the in-progress key sequence
-    /// or search prompt (`2d`, `ys`, `/quer`…).
-    fn vim_mode_bar(&self, ed: &CommitEditor) -> Option<gpui::Div> {
+    /// The Vim mode indicator overlaid at the message box's bottom-right: the
+    /// in-progress key sequence or search prompt (`2d`, `ys`, `/quer`…) to the
+    /// left of the mode chip (NORMAL/INSERT/VISUAL). No mouse listeners, so
+    /// clicks pass through to the input; inset clear of its scrollbar.
+    fn vim_indicator_overlay(&self, ed: &CommitEditor) -> Option<gpui::Div> {
         let (label, pending) = self.vim_indicator(ed)?;
         Some(
             div()
+                .absolute()
+                .bottom(px(8.0))
+                .right(px(16.0))
                 .flex()
                 .items_center()
                 .gap_2()
+                .when_some(pending, |el, keys| {
+                    el.child(
+                        div()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(keys)),
+                    )
+                })
                 .child(
                     div()
                         .px_1()
@@ -235,26 +270,33 @@ impl StatusView {
                             _ => self.palette.fg,
                         })
                         .child(SharedString::from(label)),
-                )
-                .when_some(pending, |el, keys| {
-                    el.child(
-                        div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from(keys)),
-                    )
-                }),
+                ),
         )
     }
 
     /// The read-only, scrollable staged-diff preview shown below the message.
     pub(crate) fn render_commit_diff(&self, ed: &CommitEditor, view: &Entity<Self>) -> gpui::Div {
+        if ed.diff_loading {
+            return div()
+                .w_full()
+                .flex_grow(1.0)
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(Spinner::new().small().color(self.palette.dim))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(self.palette.dim)
+                        .child("loading diff"),
+                );
+        }
         let count = commit_diff_view::visible_diff_rows(&ed.diff, &ed.diff_collapsed).len();
         div()
             .relative()
             .w_full()
             .flex_grow(1.0)
-            .border_t_1()
-            .border_color(self.palette.border)
             .child(
                 uniform_list("commit-diff", count, {
                     let view = view.clone();
