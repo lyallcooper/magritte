@@ -3,6 +3,7 @@
 //! files live inside the already-discovered `.git/magritte` scope directories.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -57,11 +58,59 @@ pub(crate) fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> 
     Ok(())
 }
 
+/// A repository in the recent list and when it was last opened (unix
+/// seconds).
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecentRepo {
+    pub path: PathBuf,
+    pub last_used: u64,
+}
+
+/// How long a repository stays in the recent list after its last use.
+const RECENT_REPOS_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// Recently opened repositories, most recent first — the Dock menu's list.
 #[derive(Serialize, Deserialize, Default)]
 pub struct RecentRepos {
     #[serde(default)]
+    pub entries: Vec<RecentRepo>,
+    /// Legacy shape (bare paths, no timestamp). Migrated into `entries` on
+    /// load and never written back.
+    #[serde(default, skip_serializing)]
     pub paths: Vec<PathBuf>,
+}
+
+impl RecentRepos {
+    /// Load the recent-repos file, migrating any legacy bare paths (each
+    /// gets `last_used` set to now, so it gets a fresh 30 days) and pruning
+    /// entries past [`RECENT_REPOS_MAX_AGE`]. Callers should use this rather
+    /// than `load_toml_or_default` directly, so stale entries drop out on
+    /// the next load rather than only on the next save.
+    pub fn load(path: &Path) -> RecentRepos {
+        let mut recents: RecentRepos = load_toml_or_default(path);
+        if !recents.paths.is_empty() {
+            let now = unix_now();
+            recents
+                .entries
+                .extend(recents.paths.drain(..).map(|path| RecentRepo {
+                    path,
+                    last_used: now,
+                }));
+        }
+        let now = unix_now();
+        recents
+            .entries
+            .retain(|e| now.saturating_sub(e.last_used) <= RECENT_REPOS_MAX_AGE.as_secs());
+        recents
+    }
+}
+
+/// Current time as unix seconds; 0 if the clock is somehow before the epoch.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Per-worktree persisted status fold state. Sections are expanded by default,
@@ -136,5 +185,72 @@ mod tests {
         let state: WindowState = toml::from_str("x = 1\ny = 2\nwidth = 3\nheight = 4\n").unwrap();
         assert_eq!(state.mode, WindowMode::Windowed);
         assert_eq!(state.display_uuid, None);
+    }
+
+    #[test]
+    fn recent_repos_migrates_legacy_paths() {
+        let path = std::env::temp_dir().join("magritte-recent-repos-legacy-test.toml");
+        std::fs::write(&path, "paths = [\"/tmp/a\", \"/tmp/b\"]\n").unwrap();
+
+        let recents = RecentRepos::load(&path);
+        assert_eq!(recents.entries.len(), 2);
+        assert_eq!(recents.entries[0].path, PathBuf::from("/tmp/a"));
+        assert_eq!(recents.entries[1].path, PathBuf::from("/tmp/b"));
+        assert!(recents.entries.iter().all(|e| e.last_used > 0));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recent_repos_prunes_entries_older_than_30_days() {
+        let path = std::env::temp_dir().join("magritte-recent-repos-prune-test.toml");
+        let now = unix_now();
+        save_toml(
+            &path,
+            &RecentRepos {
+                entries: vec![
+                    RecentRepo {
+                        path: PathBuf::from("/tmp/stale"),
+                        last_used: now - 31 * 24 * 60 * 60,
+                    },
+                    RecentRepo {
+                        path: PathBuf::from("/tmp/fresh"),
+                        last_used: now,
+                    },
+                ],
+                paths: Vec::new(),
+            },
+        );
+
+        let recents = RecentRepos::load(&path);
+        assert_eq!(recents.entries.len(), 1);
+        assert_eq!(recents.entries[0].path, PathBuf::from("/tmp/fresh"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recent_repos_round_trips_new_format() {
+        let path = std::env::temp_dir().join("magritte-recent-repos-roundtrip-test.toml");
+        let last_used = unix_now();
+        save_toml(
+            &path,
+            &RecentRepos {
+                entries: vec![RecentRepo {
+                    path: PathBuf::from("/tmp/repo"),
+                    last_used,
+                }],
+                paths: Vec::new(),
+            },
+        );
+
+        let recents = RecentRepos::load(&path);
+        assert_eq!(recents.entries.len(), 1);
+        assert_eq!(recents.entries[0].path, PathBuf::from("/tmp/repo"));
+        assert_eq!(recents.entries[0].last_used, last_used);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(!contents.contains("paths"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

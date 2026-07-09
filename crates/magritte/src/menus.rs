@@ -43,10 +43,16 @@ pub(crate) fn note_recent_repo(path: &Path, cx: &mut App) {
     let Some(file) = state::global_path(state::RECENT_REPOS_FILE) else {
         return;
     };
-    let mut recents: state::RecentRepos = state::load_toml_or_default(&file);
-    recents.paths.retain(|p| p != path);
-    recents.paths.insert(0, path.to_path_buf());
-    recents.paths.truncate(MAX_RECENT_REPOS);
+    let mut recents = state::RecentRepos::load(&file);
+    recents.entries.retain(|e| e.path != path);
+    recents.entries.insert(
+        0,
+        state::RecentRepo {
+            path: path.to_path_buf(),
+            last_used: state::unix_now(),
+        },
+    );
+    recents.entries.truncate(MAX_RECENT_REPOS);
     state::save_toml(&file, &recents);
     set_dock_menu(&recents, cx);
 }
@@ -56,15 +62,21 @@ pub(crate) fn note_recent_repo(path: &Path, cx: &mut App) {
 /// skipped.
 fn set_dock_menu(recents: &state::RecentRepos, cx: &mut App) {
     let mut items: Vec<MenuItem> = recents
-        .paths
+        .entries
         .iter()
-        .filter(|p| p.is_dir())
-        .map(|p| {
-            let name = p
+        .filter(|e| e.path.is_dir())
+        .map(|e| {
+            let name = e
+                .path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.display().to_string());
-            MenuItem::action(name, OpenRecent { path: p.clone() })
+                .unwrap_or_else(|| e.path.display().to_string());
+            MenuItem::action(
+                name,
+                OpenRecent {
+                    path: e.path.clone(),
+                },
+            )
         })
         .collect();
     if !items.is_empty() {
@@ -316,7 +328,7 @@ pub(crate) fn install(cx: &mut App) {
         Menu::new("Help").items([MenuItem::action("Magritte Help", HelpMenu)]),
     ]);
     let recents = state::global_path(state::RECENT_REPOS_FILE)
-        .map(|p| state::load_toml_or_default(&p))
+        .map(|p| state::RecentRepos::load(&p))
         .unwrap_or_default();
     set_dock_menu(&recents, cx);
 }
