@@ -5,11 +5,9 @@
 
 use gpui::prelude::*;
 use gpui::{Context, UniformListScrollHandle, Window};
-use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity};
+use gpui_component::highlighter::{Diagnostic, DiagnosticSeverity, HighlightTheme};
 use gpui_component::input::{InputEvent, InputState, Position};
 use magritte_core::{Change, CommitMode, DiffSource, FileDiff, LineKind};
-
-use std::rc::Rc;
 
 use crate::*;
 
@@ -42,6 +40,9 @@ pub(crate) struct CommitEditor {
     /// at open time, so the split layout can be reserved before the async
     /// diff lands (no pop-in shift). Tag messages have no diff.
     pub(crate) diff_expected: bool,
+    /// The async diff load hasn't landed yet (renders the loading spinner in
+    /// the reserved diff area; distinguishes "loading" from "loaded empty").
+    pub(crate) diff_loading: bool,
     /// Modal Vim editing state, when the `commit_vim_mode` setting is on
     /// (`None` = ordinary editing). Opens in Normal mode.
     pub(crate) vim: Option<Box<vim::VimState>>,
@@ -96,9 +97,22 @@ pub(crate) enum CommitDiffRow {
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
-    Line { kind: LineKind, spans: Rc<[Span]> },
+    /// `Arc` so rows can be built on the background executor.
+    Line { kind: LineKind, spans: Arc<[Span]> },
     /// A dim status note (e.g. when the staged diff couldn't be loaded).
     Note(String),
+}
+
+/// The theme inputs [`diff_rows`] needs, snapshotted on the UI thread so row
+/// building — including tree-sitter highlighting — can run on the background
+/// executor (the highlight theme is plain shared data).
+#[derive(Clone)]
+pub(crate) struct DiffStyle {
+    pub(crate) theme: Arc<HighlightTheme>,
+    /// Fallback text color for unstyled spans.
+    pub(crate) default: Hsla,
+    pub(crate) fg: Hsla,
+    pub(crate) dim: Hsla,
 }
 
 /// Apply `new` to the input as one minimal edit (longest common prefix and
@@ -128,6 +142,64 @@ fn splice_value(
         window,
         cx,
     );
+}
+
+/// Flatten loaded file diffs (each paired with its detected language) into
+/// displayable rows with syntax highlighting. Shared by the commit editor's
+/// preview and the commit/diff detail views. Free of UI state so it runs on
+/// the background executor — callers snapshot a [`DiffStyle`] on the UI thread
+/// first (see [`StatusView::diff_style`]).
+pub(crate) fn diff_rows(
+    files: &[(Arc<FileDiff>, Option<&'static str>)],
+    style: &DiffStyle,
+) -> Vec<CommitDiffRow> {
+    // highlight_diff caps each *file*, but a commit touching many files could
+    // still parse ~100k lines in one build. Past this aggregate budget, later
+    // files render unhighlighted to bound the build's cost.
+    const HIGHLIGHT_LINE_BUDGET: usize = 20_000;
+    let mut budget = HIGHLIGHT_LINE_BUDGET;
+    let mut rows = Vec::new();
+    for (diff, lang) in files {
+        rows.push(CommitDiffRow::File {
+            change: file_change(diff),
+            path: diff.display_path().to_string(),
+        });
+        let hl = match lang {
+            Some(l) if !diff.is_binary && budget > 0 => {
+                let lines: usize = diff.hunks.iter().map(|h| h.lines.len()).sum();
+                budget = budget.saturating_sub(lines);
+                Some(highlight::highlight_diff(
+                    diff,
+                    l,
+                    &style.theme,
+                    style.default,
+                ))
+            }
+            _ => None,
+        };
+        for (hi, hunk) in diff.hunks.iter().enumerate() {
+            rows.push(CommitDiffRow::Hunk(status_label::hunk_header_text(hunk)));
+            for (li, line) in hunk.lines.iter().enumerate() {
+                let spans = hl
+                    .as_ref()
+                    .and_then(|h| h.get(&(hi, li)))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let color = if line.kind == LineKind::NoNewline {
+                            style.dim
+                        } else {
+                            style.fg
+                        };
+                        Arc::from(vec![(line.content.clone(), color)])
+                    });
+                rows.push(CommitDiffRow::Line {
+                    kind: line.kind,
+                    spans,
+                });
+            }
+        }
+    }
+    rows
 }
 
 /// The status-style change kind for a diff'd file (magit's "modified"/"new
@@ -508,6 +580,7 @@ impl StatusView {
             args,
             after_submit,
             diff_expected,
+            diff_loading: diff_expected,
             mouse_selecting: false,
             initial: String::new(),
             confirming_cancel: false,
@@ -570,11 +643,12 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Load the diff to preview in the open editor, in the background, and
-    /// flatten it (with syntax highlighting) for read-only display. Create/amend
-    /// show the staged diff being committed (or, with `--all`, every tracked
-    /// change vs HEAD that the commit will include); reword shows the diff of the
-    /// commit it's renaming (HEAD's own changes), since it makes no tree change.
+    /// Load the diff to preview in the open editor and flatten it (with syntax
+    /// highlighting) for read-only display — all on the background executor, so
+    /// typing stays responsive while a big diff builds. Create/amend show the
+    /// staged diff being committed (or, with `--all`, every tracked change vs
+    /// HEAD that the commit will include); reword shows the diff of the commit
+    /// it's renaming (HEAD's own changes), since it makes no tree change.
     pub(crate) fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
@@ -588,8 +662,9 @@ impl StatusView {
         let gen = self.screen_gen.current();
         let reword = ed.mode == CommitMode::Reword;
         let also_unstaged = ed.args.iter().any(|a| a == "--all");
+        let style = self.diff_style(cx);
         cx.spawn(async move |this, cx| {
-            let files = cx
+            let rows = cx
                 .background_executor()
                 .spawn(async move {
                     let loaded = if reword {
@@ -604,7 +679,7 @@ impl StatusView {
                     };
                     match loaded {
                         Ok(diffs) => {
-                            let mapped = diffs
+                            let files = diffs
                                 .into_iter()
                                 .map(|d| {
                                     let (head, tail) =
@@ -614,26 +689,18 @@ impl StatusView {
                                     (Arc::new(d), lang)
                                 })
                                 .collect::<Vec<_>>();
-                            (mapped, None)
+                            diff_rows(&files, &style)
                         }
-                        Err(e) => (Vec::new(), Some(e.to_string())),
+                        Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
                     }
                 })
                 .await;
-            let (files, error) = files;
             this.update(cx, |this, cx| {
                 if !this.screen_gen.is_current(gen) || this.editor().is_none() {
                     return; // this editor closed (or was replaced) before the diff loaded
                 }
-                if let Some(err) = error {
-                    if let Some(ed) = this.editor_mut() {
-                        ed.diff = vec![CommitDiffRow::Note(format!("diff unavailable: {err}"))];
-                    }
-                    cx.notify();
-                    return;
-                }
-                let rows = this.diff_rows(&files, cx);
                 if let Some(ed) = this.editor_mut() {
+                    ed.diff_loading = false;
                     ed.diff = rows;
                 }
                 cx.notify();
@@ -654,59 +721,15 @@ impl StatusView {
         }
     }
 
-    /// Flatten loaded file diffs (each paired with its detected language) into
-    /// displayable rows with syntax highlighting. Shared by the commit editor's
-    /// preview and the log's commit-detail view.
-    pub(crate) fn diff_rows(
-        &self,
-        files: &[(Arc<FileDiff>, Option<&'static str>)],
-        cx: &mut Context<Self>,
-    ) -> Vec<CommitDiffRow> {
-        // Highlighting runs here on the UI thread; highlight_diff caps each
-        // *file*, but a commit touching many files could still parse ~100k
-        // lines in one build. Past this aggregate budget, later files render
-        // unhighlighted rather than hitching the frame.
-        const HIGHLIGHT_LINE_BUDGET: usize = 20_000;
-        let mut budget = HIGHLIGHT_LINE_BUDGET;
-        let default = cx.theme().foreground;
-        let (fg, dim) = (self.palette.fg, self.palette.dim);
-        let mut rows = Vec::new();
-        for (diff, lang) in files {
-            rows.push(CommitDiffRow::File {
-                change: file_change(diff),
-                path: diff.display_path().to_string(),
-            });
-            let hl = match lang {
-                Some(l) if !diff.is_binary && budget > 0 => {
-                    let lines: usize = diff.hunks.iter().map(|h| h.lines.len()).sum();
-                    budget = budget.saturating_sub(lines);
-                    Some(highlight::highlight_diff(diff, l, cx, default))
-                }
-                _ => None,
-            };
-            for (hi, hunk) in diff.hunks.iter().enumerate() {
-                rows.push(CommitDiffRow::Hunk(status_label::hunk_header_text(hunk)));
-                for (li, line) in hunk.lines.iter().enumerate() {
-                    let spans = hl
-                        .as_ref()
-                        .and_then(|h| h.get(&(hi, li)))
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            let color = if line.kind == LineKind::NoNewline {
-                                dim
-                            } else {
-                                fg
-                            };
-                            Rc::from(vec![(line.content.clone(), color)])
-                        });
-                    rows.push(CommitDiffRow::Line {
-                        kind: line.kind,
-                        spans,
-                    });
-                }
-            }
+    /// Snapshot the active theme's diff-row style — the handoff point between
+    /// the UI thread (which owns the theme) and a background [`diff_rows`] build.
+    pub(crate) fn diff_style(&self, cx: &App) -> DiffStyle {
+        DiffStyle {
+            theme: cx.theme().highlight_theme.clone(),
+            default: cx.theme().foreground,
+            fg: self.palette.fg,
+            dim: self.palette.dim,
         }
-        rows
     }
 
     /// Capture-phase handler: Escape cancels the editor. (Enter is consumed by

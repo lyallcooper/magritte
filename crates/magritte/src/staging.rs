@@ -233,7 +233,7 @@ pub(crate) enum RowKind {
         kind: LineKind,
         /// Syntax-highlighted (or fallback) content runs, shared with the
         /// highlight cache (see [`FileHighlights`]).
-        spans: Rc<[Span]>,
+        spans: Arc<[Span]>,
     },
     /// A commit row in a non-file section (unpushed/unpulled/recent): dim short
     /// hash, ref labels, and subject, like the log view. `hash` (full) drives

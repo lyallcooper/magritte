@@ -4,7 +4,6 @@
 //! row/text constructors the builders and copy paths share.
 
 use std::collections::HashSet;
-use std::rc::Rc;
 
 use gpui::Hsla;
 use magritte_core::{CommitMetadata, DiffSource, EntryKind, LogEntry, Stash, Status};
@@ -726,7 +725,7 @@ impl StatusRows<'_> {
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
                         // Use cached highlight spans if present, else a single
                         // fallback span in the default color.
-                        let spans: Rc<[Span]> = file_hl
+                        let spans: Arc<[Span]> = file_hl
                             .and_then(|h| h.get(&(hunk_ix, line_ix)))
                             .cloned()
                             .unwrap_or_else(|| {
@@ -735,7 +734,7 @@ impl StatusRows<'_> {
                                 } else {
                                     self.palette.fg
                                 };
-                                Rc::from(vec![(line.content.clone(), color)])
+                                Arc::from(vec![(line.content.clone(), color)])
                             });
                         rows.push(Row {
                             indent: 2,

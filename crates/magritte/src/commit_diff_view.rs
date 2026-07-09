@@ -401,51 +401,108 @@ impl StatusView {
             return;
         }
         cx.notify();
+        let style = self.diff_style(cx);
         cx.spawn(async move |this, cx| {
-            let loaded = cx
+            // Stage 1: the metadata and message (fast git calls) — shown as
+            // soon as they land, so the header/message never wait on the diff.
+            let repo_meta = repo.clone();
+            let rev_meta = rev.clone();
+            let meta = cx
                 .background_executor()
                 .spawn(async move {
-                    let metadata = repo.commit_metadata(&rev)?;
-                    let message = repo.commit_message(&rev)?;
-                    let files = repo.diff_commit_with(&rev, &args, &paths).map(|diffs| {
-                        diffs
-                            .into_iter()
-                            .map(|d| {
-                                let (head, tail) =
-                                    file_head_tail(&repo.workdir().join(d.display_path()));
-                                let lang =
-                                    highlight::detect_language(d.display_path(), &head, &tail);
-                                (Arc::new(d), lang)
-                            })
-                            .collect::<Vec<_>>()
-                    })?;
-                    Ok::<_, magritte_core::Error>(CommitCacheEntry {
-                        metadata,
-                        message,
-                        files,
-                    })
+                    let metadata = repo_meta.commit_metadata(&rev_meta)?;
+                    let message = repo_meta.commit_message(&rev_meta)?;
+                    Ok::<_, magritte_core::Error>((metadata, message))
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                // Bail if a newer screen load superseded this one, or the view
-                // was closed before the diff arrived.
-                if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
-                    return;
-                }
-                let loaded = match loaded {
-                    Ok(loaded) => loaded,
-                    Err(e) => {
+            let (metadata, message) = match meta {
+                Ok(meta) => meta,
+                Err(e) => {
+                    this.update(cx, |this, cx| {
+                        if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
+                            return;
+                        }
                         if let Some(cv) = this.commit_view_mut() {
                             cv.body.set_rows(vec![CommitDiffRow::Note(format!(
                                 "diff unavailable: {e}"
                             ))]);
                         }
                         cx.notify();
-                        return;
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let details = commit_metadata_lines(&metadata);
+            let stage1 = {
+                let mut rows = commit_detail_rows(&details, &message, &[], &style);
+                rows.push(CommitDiffRow::Note("Loading diff…".to_string()));
+                rows
+            };
+            let live = this
+                .update(cx, |this, cx| {
+                    // Bail if a newer screen load superseded this one, or the
+                    // view was closed before the metadata arrived (also skips
+                    // stage 2 — its result could only be dropped).
+                    if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
+                        return false;
                     }
-                };
-                this.commit_cache.insert(key, loaded.clone());
-                this.populate_commit_view(&loaded, cx);
+                    this.install_commit_rows(stage1, Vec::new());
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !live {
+                return;
+            }
+            // Stage 2: the diff itself, flattened + highlighted off-thread.
+            let message_bg = message.clone();
+            let built = cx
+                .background_executor()
+                .spawn(async move {
+                    match repo.diff_commit_with(&rev, &args, &paths) {
+                        Ok(diffs) => {
+                            let files = diffs
+                                .into_iter()
+                                .map(|d| {
+                                    let (head, tail) =
+                                        file_head_tail(&repo.workdir().join(d.display_path()));
+                                    let lang =
+                                        highlight::detect_language(d.display_path(), &head, &tail);
+                                    (Arc::new(d), lang)
+                                })
+                                .collect::<Vec<_>>();
+                            let rows = commit_detail_rows(&details, &message_bg, &files, &style);
+                            (Some(files), rows)
+                        }
+                        Err(e) => {
+                            // Keep the header/message; only the diff failed.
+                            let mut rows = commit_detail_rows(&details, &message_bg, &[], &style);
+                            rows.push(CommitDiffRow::Note(format!("diff unavailable: {e}")));
+                            (None, rows)
+                        }
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
+                    return;
+                }
+                let (files, rows) = built;
+                if let Some(files) = files {
+                    let flat: Vec<Arc<FileDiff>> = files.iter().map(|(f, _)| f.clone()).collect();
+                    this.commit_cache.insert(
+                        key,
+                        CommitCacheEntry {
+                            metadata,
+                            message,
+                            files,
+                        },
+                    );
+                    this.install_commit_rows(rows, flat);
+                } else {
+                    this.install_commit_rows(rows, Vec::new());
+                }
                 cx.notify();
             })
             .ok();
@@ -459,14 +516,21 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let details = commit_metadata_lines(&entry.metadata);
-        let rows = self.commit_detail_rows(&details, &entry.message, &entry.files, cx);
-        let expanded = self.commit_details_expanded;
+        let style = self.diff_style(cx);
+        let rows = commit_detail_rows(&details, &entry.message, &entry.files, &style);
         let files: Vec<Arc<FileDiff>> = entry.files.iter().map(|(f, _)| f.clone()).collect();
+        self.install_commit_rows(rows, files);
+    }
+
+    /// Install a built row set (and the matching structured diffs) into the
+    /// open commit view, applying the persisted Details fold preference — the
+    /// Details section starts collapsed unless this repo's preference says
+    /// otherwise (per repo, not per commit).
+    fn install_commit_rows(&mut self, rows: Vec<CommitDiffRow>, files: Vec<Arc<FileDiff>>) {
+        let expanded = self.commit_details_expanded;
         if let Some(cv) = self.commit_view_mut() {
             cv.body.set_rows(rows);
             cv.body.collapsed.clear();
-            // The Details section starts collapsed unless this repo's persisted
-            // preference says otherwise (per repo, not per commit).
             if !expanded {
                 if let Some(ix) = cv
                     .body
@@ -497,8 +561,9 @@ impl StatusView {
             back,
         };
         cx.notify();
+        let style = self.diff_style(cx);
         cx.spawn(async move |this, cx| {
-            let loaded = cx
+            let built = cx
                 .background_executor()
                 .spawn(async move {
                     let diffs = match request {
@@ -511,33 +576,18 @@ impl StatusView {
                             repo.diff_range(&range, &args, &paths)
                         }
                     }?;
-                    Ok::<_, magritte_core::Error>(
-                        diffs
-                            .into_iter()
-                            .map(|d| {
-                                let (head, tail) =
-                                    file_head_tail(&repo.workdir().join(d.display_path()));
-                                let lang =
-                                    highlight::detect_language(d.display_path(), &head, &tail);
-                                (Arc::new(d), lang)
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if !this.screen_gen.is_current(gen) || this.diff_view().is_none() {
-                    return;
-                }
-                let files: Vec<Arc<FileDiff>> = match &loaded {
-                    Ok(fs) => fs.iter().map(|(f, _)| f.clone()).collect(),
-                    Err(_) => Vec::new(),
-                };
-                let rows = match loaded {
-                    Ok(files) if files.is_empty() => {
+                    let files = diffs
+                        .into_iter()
+                        .map(|d| {
+                            let (head, tail) =
+                                file_head_tail(&repo.workdir().join(d.display_path()));
+                            let lang = highlight::detect_language(d.display_path(), &head, &tail);
+                            (Arc::new(d), lang)
+                        })
+                        .collect::<Vec<_>>();
+                    let rows = if files.is_empty() {
                         vec![CommitDiffRow::Note("No changes".to_string())]
-                    }
-                    Ok(files) => {
+                    } else {
                         // Lead with the diffstat overview, like the commit view.
                         let mut rows = Vec::new();
                         let stat = diffstat_block(&files);
@@ -545,10 +595,25 @@ impl StatusView {
                             rows.extend(stat);
                             rows.push(CommitDiffRow::Note(String::new()));
                         }
-                        rows.extend(this.diff_rows(&files, cx));
+                        rows.extend(diff_rows(&files, &style));
                         rows
-                    }
-                    Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                    };
+                    Ok::<_, magritte_core::Error>((files, rows))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) || this.diff_view().is_none() {
+                    return;
+                }
+                let (files, rows) = match built {
+                    Ok((files, rows)) => (
+                        files.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>(),
+                        rows,
+                    ),
+                    Err(e) => (
+                        Vec::new(),
+                        vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                    ),
                 };
                 if let Some(dv) = this.diff_view_mut() {
                     dv.body.set_rows(rows);
@@ -560,53 +625,6 @@ impl StatusView {
             .ok();
         })
         .detach();
-    }
-
-    pub(crate) fn commit_detail_rows(
-        &self,
-        details: &[String],
-        message: &str,
-        files: &[(Arc<FileDiff>, Option<&'static str>)],
-        cx: &mut Context<Self>,
-    ) -> Vec<CommitDiffRow> {
-        // The metadata (author/committer/dates/refs) leads, under a foldable
-        // "Details" header — present by default, collapsed by default; the
-        // caller applies the persisted expanded state. ("Commit <sha>" lives
-        // in the view header, not the body.)
-        let mut rows = Vec::new();
-        if !details.is_empty() {
-            rows.push(CommitDiffRow::DetailsHeader);
-            rows.extend(details.iter().cloned().map(CommitDiffRow::Detail));
-            rows.push(CommitDiffRow::Note(String::new()));
-        }
-        let mut lines = message.lines();
-        // The subject (summary) as the first selectable message line, so it can
-        // be selected/copied like the rest of the message.
-        if let Some(subject) = lines.next() {
-            rows.push(CommitDiffRow::Message(subject.to_string()));
-        }
-        // The body, after an optional blank line separating it from the subject.
-        let mut body = lines.peekable();
-        if matches!(body.peek(), Some(&"")) {
-            body.next();
-        }
-        if body.peek().is_some() {
-            rows.push(CommitDiffRow::Note(String::new()));
-            for line in body {
-                rows.push(CommitDiffRow::Message(line.to_string()));
-            }
-        }
-        if !rows.is_empty() {
-            rows.push(CommitDiffRow::Note(String::new()));
-        }
-        // The diffstat block above the files (magit's overview).
-        let stat = diffstat_block(files);
-        if !stat.is_empty() {
-            rows.extend(stat);
-            rows.push(CommitDiffRow::Note(String::new()));
-        }
-        rows.extend(self.diff_rows(files, cx));
-        rows
     }
 
     /// The structured per-file diffs of the active flattened-diff screen (commit
@@ -861,7 +879,54 @@ impl StatusView {
     }
 }
 
-/// Added/removed line counts for one file diff.
+/// The full body of a commit's detail view: metadata under a foldable
+/// "Details" header, the message, the diffstat overview, then the flattened
+/// diff. Free of UI state so it runs on the background executor — callers
+/// snapshot a [`DiffStyle`] on the UI thread first. ("Commit <sha>" lives in
+/// the view header, not the body; the caller applies the persisted Details
+/// fold state.)
+pub(crate) fn commit_detail_rows(
+    details: &[String],
+    message: &str,
+    files: &[(Arc<FileDiff>, Option<&'static str>)],
+    style: &DiffStyle,
+) -> Vec<CommitDiffRow> {
+    let mut rows = Vec::new();
+    if !details.is_empty() {
+        rows.push(CommitDiffRow::DetailsHeader);
+        rows.extend(details.iter().cloned().map(CommitDiffRow::Detail));
+        rows.push(CommitDiffRow::Note(String::new()));
+    }
+    let mut lines = message.lines();
+    // The subject (summary) as the first selectable message line, so it can
+    // be selected/copied like the rest of the message.
+    if let Some(subject) = lines.next() {
+        rows.push(CommitDiffRow::Message(subject.to_string()));
+    }
+    // The body, after an optional blank line separating it from the subject.
+    let mut body = lines.peekable();
+    if matches!(body.peek(), Some(&"")) {
+        body.next();
+    }
+    if body.peek().is_some() {
+        rows.push(CommitDiffRow::Note(String::new()));
+        for line in body {
+            rows.push(CommitDiffRow::Message(line.to_string()));
+        }
+    }
+    if !rows.is_empty() {
+        rows.push(CommitDiffRow::Note(String::new()));
+    }
+    // The diffstat block above the files (magit's overview).
+    let stat = diffstat_block(files);
+    if !stat.is_empty() {
+        rows.extend(stat);
+        rows.push(CommitDiffRow::Note(String::new()));
+    }
+    rows.extend(diff_rows(files, style));
+    rows
+}
+
 /// The full-row indices visible given a set of collapsed File/Hunk headers:
 /// lines under a collapsed hunk, and hunks/lines under a collapsed file, are
 /// hidden. Shared by the flat-diff views and the commit editor's preview.
@@ -938,6 +1003,7 @@ pub(crate) fn fold_header_for(rows: &[CommitDiffRow], ix: usize) -> Option<usize
     }
 }
 
+/// Added/removed line counts for one file diff.
 pub(crate) fn file_line_counts(diff: &FileDiff) -> (usize, usize) {
     let (mut added, mut removed) = (0usize, 0usize);
     for hunk in &diff.hunks {
@@ -999,12 +1065,12 @@ mod tests {
     use crate::commit_editor::CommitDiffRow;
     use magritte_core::{Change, LineKind};
     use std::collections::HashSet;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn line() -> CommitDiffRow {
         CommitDiffRow::Line {
             kind: LineKind::Context,
-            spans: Rc::from(Vec::new()),
+            spans: Arc::from(Vec::new()),
         }
     }
 

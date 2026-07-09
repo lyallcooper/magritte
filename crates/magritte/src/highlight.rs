@@ -10,21 +10,23 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
-use gpui::{App, Hsla};
-use gpui_component::highlighter::{LanguageConfig, LanguageRegistry, SyntaxHighlighter};
-use gpui_component::{ActiveTheme, Rope};
+use gpui::Hsla;
+use gpui_component::highlighter::{
+    HighlightTheme, LanguageConfig, LanguageRegistry, SyntaxHighlighter,
+};
+use gpui_component::Rope;
 use magritte_core::{FileDiff, LineKind};
 
 /// A run of text with a resolved color.
 pub type Span = (String, Hsla);
 
 /// Highlighted spans for each `(hunk_index, line_index)` of a file diff.
-/// Values are shared (`Rc`) with the row model, so a rebuild clones a handle
-/// per line instead of re-copying every span.
-pub type FileHighlights = HashMap<(usize, usize), Rc<[Span]>>;
+/// Values are shared (`Arc`) with the row model — a rebuild clones a handle
+/// per line instead of re-copying every span — and can cross threads, so rows
+/// can be built on the background executor.
+pub type FileHighlights = HashMap<(usize, usize), Arc<[Span]>>;
 
 fn register_extra_highlight_queries() {
     static REGISTER: Once = Once::new();
@@ -279,23 +281,28 @@ pub fn language_from_shebang(line: &str) -> Option<&'static str> {
 }
 
 /// A diff larger than this (total lines across hunks) is rendered as plain
-/// text rather than syntax-highlighted, so a huge file never blocks the UI
-/// thread parsing it. Highlighting runs in the foreground (the gpui-component
-/// tree-sitter highlighter isn't trivially `Send`), so a cap is how we keep
-/// expanding a big file responsive.
+/// text rather than syntax-highlighted. The status view still highlights on
+/// the UI thread (per expanded file), so the cap keeps expanding a big file
+/// responsive there; the commit/diff views highlight on the background
+/// executor, where the cap just bounds wasted parse work.
 const MAX_HIGHLIGHT_LINES: usize = 2000;
 
-/// Highlight every line of a file diff. `default` is the fallback text color
-/// for unstyled spans (context, gaps between tokens). Returns an empty map for
-/// diffs over [`MAX_HIGHLIGHT_LINES`], so the caller falls back to plain text.
-pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> FileHighlights {
+/// Highlight every line of a file diff. `theme` is the resolved highlight
+/// theme (plain shared data, so this can run on the background executor);
+/// `default` is the fallback text color for unstyled spans (context, gaps
+/// between tokens). Returns an empty map for diffs over
+/// [`MAX_HIGHLIGHT_LINES`], so the caller falls back to plain text.
+pub fn highlight_diff(
+    file: &FileDiff,
+    lang: &str,
+    theme: &HighlightTheme,
+    default: Hsla,
+) -> FileHighlights {
     let total_lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
     if total_lines > MAX_HIGHLIGHT_LINES {
         return FileHighlights::new();
     }
     register_extra_highlight_queries();
-    let theme = cx.theme();
-    let hl_theme = &theme.highlight_theme;
     let mut highlighter = SyntaxHighlighter::new(lang);
     let mut out = FileHighlights::new();
 
@@ -341,8 +348,8 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
             highlighter.update(None, &Rope::from(new_block.as_str()), None);
             for (line_ix, on_new, range) in &placements {
                 if *on_new {
-                    let spans = line_spans(&highlighter, &new_block, range, hl_theme, default);
-                    out.insert((hunk_ix, *line_ix), Rc::from(spans));
+                    let spans = line_spans(&highlighter, &new_block, range, theme, default);
+                    out.insert((hunk_ix, *line_ix), Arc::from(spans));
                 }
             }
         }
@@ -350,8 +357,8 @@ pub fn highlight_diff(file: &FileDiff, lang: &str, cx: &App, default: Hsla) -> F
             highlighter.update(None, &Rope::from(old_block.as_str()), None);
             for (line_ix, on_new, range) in &placements {
                 if !*on_new {
-                    let spans = line_spans(&highlighter, &old_block, range, hl_theme, default);
-                    out.insert((hunk_ix, *line_ix), Rc::from(spans));
+                    let spans = line_spans(&highlighter, &old_block, range, theme, default);
+                    out.insert((hunk_ix, *line_ix), Arc::from(spans));
                 }
             }
         }
@@ -365,7 +372,7 @@ fn line_spans(
     highlighter: &SyntaxHighlighter,
     block: &str,
     range: &Range<usize>,
-    hl_theme: &gpui_component::highlighter::HighlightTheme,
+    hl_theme: &HighlightTheme,
     default: Hsla,
 ) -> Vec<Span> {
     let mut runs = highlighter.styles(range, hl_theme);

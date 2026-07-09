@@ -15,8 +15,10 @@ impl StatusView {
     /// are re-read.
     pub(crate) fn recompute_highlights(&mut self, cx: &mut Context<Self>) {
         let default = cx.theme().foreground;
-        self.diff_cache
-            .recompute_highlights(|diff, lang| highlight::highlight_diff(diff, lang, cx, default));
+        let theme = cx.theme().highlight_theme.clone();
+        self.diff_cache.recompute_highlights(|diff, lang| {
+            highlight::highlight_diff(diff, lang, &theme, default)
+        });
     }
 
     /// Reload status from scratch, invalidating any in-flight work.
@@ -444,7 +446,8 @@ impl StatusView {
                     if !diff.is_binary {
                         if let Some(lang) = lang {
                             let default = cx.theme().foreground;
-                            let hl = highlight::highlight_diff(diff, lang, cx, default);
+                            let theme = cx.theme().highlight_theme.clone();
+                            let hl = highlight::highlight_diff(diff, lang, &theme, default);
                             this.diff_cache.set_highlight(key.clone(), hl);
                         }
                     }
