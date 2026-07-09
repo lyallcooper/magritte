@@ -1614,6 +1614,8 @@ impl StatusView {
             self.copy_flat_diff_selection(cx);
         } else if self.log().is_some() {
             self.copy_log_commit(cx);
+        } else if matches!(self.screen, Screen::GitLog { .. } | Screen::Blame { .. }) {
+            self.copy_pager_selection(cx);
         } else if self.char_sel.is_some_and(|c| !c.is_empty()) {
             // A mouse char selection wins over the row's commit/stash value.
             self.copy_selection(cx);
@@ -1631,6 +1633,42 @@ impl StatusView {
             self.copy_to_clipboard(reference, cx);
         } else {
             self.copy_selection(cx);
+        }
+    }
+
+    /// Copy the mouse selection on a pager screen (the `$` command log or
+    /// blame), joined across rows; a notice when nothing is selected.
+    pub(crate) fn copy_pager_selection(&mut self, cx: &mut Context<Self>) {
+        let text = self
+            .pager_sel
+            .char_sel
+            .filter(|c| !c.is_empty())
+            .map(|sel| {
+                let row_text: Box<dyn Fn(usize) -> Option<String>> = match &self.screen {
+                    Screen::GitLog { .. } => {
+                        let rows = self.git_log_rows();
+                        Box::new(move |ix| rows.get(ix).map(list_render::git_log_row_text))
+                    }
+                    Screen::Blame { rows, .. } => {
+                        let rows = rows.clone();
+                        Box::new(move |ix| rows.get(ix).map(list_render::blame_row_text))
+                    }
+                    _ => Box::new(|_| None),
+                };
+                sel.rows()
+                    .filter_map(|ix| {
+                        let text = row_text(ix)?;
+                        sel.slice_on(ix, &text).map(str::to_string)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+        match text {
+            Some(text) if !text.is_empty() => {
+                self.pager_sel.char_sel = None;
+                self.copy_to_clipboard(text, cx);
+            }
+            _ => self.set_status("Nothing selected".to_string(), true, cx),
         }
     }
 

@@ -629,16 +629,20 @@ impl StatusView {
     /// text — for a diff line that's its content, without the `+`/`-` prefix.
     /// Exits visual mode (like an evil yank).
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        // A mouse char selection (within one row's text) takes precedence.
+        // A mouse char selection takes precedence; it may span rows (rows
+        // without selectable text — section headers — contribute nothing).
         if let Some(sel) = self.char_sel.filter(|c| !c.is_empty()) {
-            let slice = self
-                .rows
-                .get(sel.row)
-                .and_then(|row| self.selectable_row_text(row))
-                .map(|(text, _)| sel.slice(&text).to_string());
-            if let Some(text) = slice {
+            let parts: Vec<String> = sel
+                .rows()
+                .filter_map(|ix| {
+                    let (text, _) = self.selectable_row_text(self.rows.get(ix)?)?;
+                    sel.slice_on(ix, &text).map(str::to_string)
+                })
+                .collect();
+            if !parts.is_empty() {
                 self.char_sel = None;
-                self.copy_to_clipboard(text, cx);
+                self.selection.visual = None;
+                self.copy_to_clipboard(parts.join("\n"), cx);
                 return;
             }
         }

@@ -55,14 +55,18 @@ impl StatusView {
             .selection
             .visual
             .and_then(|anchor| self.anchor_at(anchor));
-        let char_anchor = self
-            .char_sel
-            .and_then(|sel| self.anchor_at(sel.row).map(|a| (a, sel)));
+        let char_anchor = self.char_sel.and_then(|sel| {
+            let a = self.anchor_at(sel.anchor.0)?;
+            let c = self.anchor_at(sel.cursor.0)?;
+            Some((a, c, sel))
+        });
         self.rebuild_preserving_selection();
         self.selection.visual = visual_anchor.and_then(|a| self.relocate_exact(&a));
-        self.char_sel = char_anchor.and_then(|(a, sel)| {
-            self.relocate_exact(&a)
-                .map(|row| CharSelection { row, ..sel })
+        self.char_sel = char_anchor.and_then(|(a, c, sel)| {
+            Some(CharSelection {
+                anchor: (self.relocate_exact(&a)?, sel.anchor.1),
+                cursor: (self.relocate_exact(&c)?, sel.cursor.1),
+            })
         });
     }
 

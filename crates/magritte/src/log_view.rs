@@ -165,6 +165,7 @@ impl StatusView {
         let scroll = UniformListScrollHandle::new();
         let last = self.git_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
+        self.pager_sel = PagerSelection::default();
         self.screen = Screen::GitLog {
             view: ScrollView { scroll, top: last },
             show_all: false,
@@ -704,14 +705,20 @@ impl StatusView {
 
     /// Copy the full hash of the commit selected in the log.
     pub(crate) fn copy_log_commit(&mut self, cx: &mut Context<Self>) {
-        // A mouse char selection (within a row's text) wins over the hash.
+        // A mouse char selection wins over the hash; it may span rows.
         let char_text = self.log().and_then(|l| l.char_sel).and_then(|sel| {
             if sel.is_empty() {
                 return None;
             }
-            let entry = self.log()?.entries.get(sel.row)?;
-            let (text, _) = self.log_row_text(sel.row, entry);
-            Some(sel.slice(&text).to_string())
+            let entries = &self.log()?.entries;
+            let parts: Vec<String> = sel
+                .rows()
+                .filter_map(|ix| {
+                    let (text, _) = self.log_row_text(ix, entries.get(ix)?);
+                    sel.slice_on(ix, &text).map(str::to_string)
+                })
+                .collect();
+            (!parts.is_empty()).then(|| parts.join("\n"))
         });
         if let Some(text) = char_text {
             if let Some(log) = self.log_mut() {

@@ -3,10 +3,10 @@
 //! `impl StatusView` like the other view slices.
 
 use gpui::prelude::FluentBuilder;
-use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement};
+use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, TextLayout};
 use gpui_component::menu::ContextMenuExt;
 
-use crate::render::{offset_at, push_run, push_styled, word_range, StyleRuns};
+use crate::render::{color_run, offset_at, push_run, push_styled, word_range, StyleRuns};
 use crate::*;
 
 fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
@@ -15,6 +15,35 @@ fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
         format!("{millis}ms")
     } else {
         format!("{:.1}s", elapsed.as_secs_f64())
+    }
+}
+
+/// The canonical selectable text of a `$`-log row (what render lays out and
+/// copy yields): the command line past the sigil gutter, its elapsed column
+/// space-padded for the monospace grid; an output line verbatim.
+pub(crate) fn git_log_row_text(row: &GitLogRow) -> String {
+    match row {
+        GitLogRow::Command {
+            elapsed,
+            prog,
+            args,
+            ..
+        } => format!("{elapsed:<5} {prog} {args}"),
+        GitLogRow::Output(line) => line.clone(),
+    }
+}
+
+/// The canonical selectable text of a blame row: the annotation line, or the
+/// file line's content (without the line-number gutter).
+pub(crate) fn blame_row_text(row: &blame_view::BlameRow) -> String {
+    match row {
+        blame_view::BlameRow::Annotation {
+            short,
+            author,
+            date,
+            summary,
+        } => format!("{short}  {author}  {date}  {summary}"),
+        blame_view::BlameRow::Line { text, .. } => text.clone(),
     }
 }
 
@@ -37,7 +66,9 @@ impl StatusView {
                     let this = view.read(cx);
                     let rows = this.git_log_rows();
                     range
-                        .filter_map(|ix| rows.get(ix).map(|r| this.render_git_log_row(r)))
+                        .filter_map(|ix| {
+                            rows.get(ix).map(|r| this.render_git_log_row(ix, r, &view))
+                        })
                         .collect::<Vec<_>>()
                 }
             })
@@ -91,7 +122,10 @@ impl StatusView {
                             .len();
                         let gutter = px(this.ch_px(digits.max(4) as f32) + 6.0);
                         range
-                            .filter_map(|ix| rows.get(ix).map(|r| this.render_blame_row(r, gutter)))
+                            .filter_map(|ix| {
+                                rows.get(ix)
+                                    .map(|r| this.render_blame_row(ix, r, gutter, &view))
+                            })
                             .collect::<Vec<_>>()
                     }
                     _ => Vec::new(),
@@ -115,8 +149,76 @@ impl StatusView {
             .child(body)
     }
 
-    fn render_blame_row(&self, row: &blame_view::BlameRow, gutter: gpui::Pixels) -> AnyElement {
+    /// Wire a pager row for mouse text selection: the shared [`DragState`]
+    /// transitions against `pager_sel`, with the row's text layout for
+    /// pixel↔offset hit-testing.
+    fn pager_selectable(
+        &self,
+        el: gpui::Stateful<gpui::Div>,
+        ix: usize,
+        layout: TextLayout,
+        view: &Entity<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (down_layout, move_layout) = (layout.clone(), layout);
+        let (v_down, v_move, v_up, v_click) =
+            (view.clone(), view.clone(), view.clone(), view.clone());
+        el.on_mouse_down(MouseButton::Left, {
+            move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                let offset = offset_at(&down_layout, ev.position);
+                v_down.update(cx, |v, vcx| {
+                    if v.popup.is_some() {
+                        return;
+                    }
+                    v.click_hit_selectable = true;
+                    v.pager_sel.drag().mouse_down(ix, Some(offset));
+                    vcx.notify();
+                });
+            }
+        })
+        .on_mouse_move({
+            move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                let offset = offset_at(&move_layout, ev.position);
+                v_move.update(cx, |v, vcx| {
+                    if v.pager_sel.drag().mouse_move(ix, Some(offset)) {
+                        vcx.notify();
+                    }
+                });
+            }
+        })
+        .on_mouse_up(MouseButton::Left, {
+            move |_, _window, cx: &mut App| {
+                v_up.update(cx, |v, vcx| {
+                    if v.pager_sel.drag().mouse_up() {
+                        vcx.notify();
+                    }
+                });
+            }
+        })
+        .on_click({
+            move |_: &gpui::ClickEvent, _window, cx: &mut App| {
+                v_click.update(cx, |v, vcx| {
+                    if v.pager_sel.char_click {
+                        v.pager_sel.char_click = false;
+                        v.pager_sel.char_sel = None;
+                        vcx.notify();
+                    }
+                });
+            }
+        })
+    }
+
+    fn render_blame_row(
+        &self,
+        ix: usize,
+        row: &blame_view::BlameRow,
+        gutter: gpui::Pixels,
+        view: &Entity<Self>,
+    ) -> AnyElement {
         let base = div()
+            .id(("blame-row", ix))
             .h(px(self.row_h()))
             .w_full()
             .px_2()
@@ -124,38 +226,46 @@ impl StatusView {
             .items_center()
             .gap_2()
             .overflow_hidden();
+        let sel = self.pager_sel.char_sel.and_then(|c| c.range_on(ix));
         match row {
             // A full-width inline annotation above each commit run: sha, author,
             // date, and the commit summary (magit's inline blame).
-            blame_view::BlameRow::Annotation {
-                short,
-                author,
-                date,
-                summary,
-            } => base
-                .bg(self.palette.banner)
-                .text_color(self.palette.dim)
-                .child(SharedString::from(format!(
-                    "{short}  {author}  {date}  {summary}"
-                )))
-                .into_any_element(),
-            blame_view::BlameRow::Line { line_no, text } => base
-                .child(
-                    div()
-                        .w(gutter)
-                        .flex_shrink_0()
+            blame_view::BlameRow::Annotation { .. } => {
+                let (styled, layout) = self.selectable_text(blame_row_text(row), Vec::new(), sel);
+                self.pager_selectable(
+                    base.bg(self.palette.banner)
                         .text_color(self.palette.dim)
-                        .child(SharedString::from(line_no.to_string())),
+                        .child(styled),
+                    ix,
+                    layout,
+                    view,
                 )
-                .child(
-                    div()
-                        .flex_grow(1.0)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(self.palette.fg)
-                        .child(SharedString::from(text.clone())),
+                .into_any_element()
+            }
+            blame_view::BlameRow::Line { line_no, .. } => {
+                let (styled, layout) = self.selectable_text(blame_row_text(row), Vec::new(), sel);
+                self.pager_selectable(
+                    base.child(
+                        div()
+                            .w(gutter)
+                            .flex_shrink_0()
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from(line_no.to_string())),
+                    )
+                    .child(
+                        div()
+                            .flex_grow(1.0)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(self.palette.fg)
+                            .child(styled),
+                    ),
+                    ix,
+                    layout,
+                    view,
                 )
-                .into_any_element(),
+                .into_any_element()
+            }
         }
     }
 
@@ -214,16 +324,24 @@ impl StatusView {
 
     /// One row of the git command log: either a command (success/failure sigil,
     /// dim `git` prefix, arguments reddened on failure) or a dim, indented line
-    /// of that command's stderr output.
-    pub(crate) fn render_git_log_row(&self, row: &GitLogRow) -> AnyElement {
+    /// of that command's stderr output. The text past the sigil gutter is one
+    /// selectable string (see [`git_log_row_text`]) so it drag-selects/copies.
+    pub(crate) fn render_git_log_row(
+        &self,
+        ix: usize,
+        row: &GitLogRow,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let sel = self.pager_sel.char_sel.and_then(|c| c.range_on(ix));
+        let text = git_log_row_text(row);
         match row {
             GitLogRow::Command {
-                elapsed,
                 slow,
                 very_slow,
                 prog,
                 args,
                 ok,
+                ..
             } => {
                 let (sigil, sigil_color) = if *ok {
                     ("✓", self.palette.added)
@@ -242,55 +360,58 @@ impl StatusView {
                 } else {
                     self.palette.dim
                 };
-                div()
-                    .h(px(self.row_h()))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w(px(12.0))
-                            .flex_shrink_0()
-                            .text_color(sigil_color)
-                            .child(SharedString::from(sigil)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    // Fits "999ms" at any font size.
-                                    .w(px(self.ch_px(5.5)))
-                                    .flex_shrink_0()
-                                    .text_color(elapsed_color)
-                                    .child(SharedString::from(elapsed.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_color(self.palette.dim)
-                                    .child(SharedString::from(prog.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_color(args_color)
-                                    .child(SharedString::from(args.clone())),
-                            ),
-                    )
-                    .into_any_element()
+                // Offsets into the canonical text: `elapsed prog args` with the
+                // elapsed column space-padded (monospace keeps it aligned).
+                let elapsed_end = text.len() - prog.len() - args.len() - 2;
+                let prog_end = elapsed_end + 1 + prog.len();
+                let runs = vec![
+                    color_run(0..elapsed_end, elapsed_color),
+                    color_run(elapsed_end..prog_end, self.palette.dim),
+                    color_run(prog_end..text.len(), args_color),
+                ];
+                let (styled, layout) = self.selectable_text(text, runs, sel);
+                self.pager_selectable(
+                    div()
+                        .id(("git-log-row", ix))
+                        .h(px(self.row_h()))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(12.0))
+                                .flex_shrink_0()
+                                .text_color(sigil_color)
+                                .child(SharedString::from(sigil)),
+                        )
+                        .child(styled),
+                    ix,
+                    layout,
+                    view,
+                )
+                .into_any_element()
             }
-            GitLogRow::Output(line) => div()
-                .h(px(self.row_h()))
-                .w_full()
-                .flex()
-                .items_center()
-                // Indent past the sigil gutter so output nests under its command.
-                .pl(px(24.0))
-                .text_color(self.palette.dim)
-                .child(SharedString::from(line.clone()))
-                .into_any_element(),
+            GitLogRow::Output(_) => {
+                let (styled, layout) = self.selectable_text(text, Vec::new(), sel);
+                self.pager_selectable(
+                    div()
+                        .id(("git-log-row", ix))
+                        .h(px(self.row_h()))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        // Indent past the sigil gutter so output nests under
+                        // its command.
+                        .pl(px(24.0))
+                        .text_color(self.palette.dim)
+                        .child(styled),
+                    ix,
+                    layout,
+                    view,
+                )
+                .into_any_element()
+            }
         }
     }
 
@@ -784,18 +905,21 @@ impl StatusView {
         selected: bool,
         view: &Entity<Self>,
     ) -> AnyElement {
-        // The char selection within this row's text, if it owns one.
+        // The char-selection range covering this row (partial on the endpoint
+        // rows, whole rows between).
         let sel = self
             .log()
             .and_then(|l| l.char_sel)
-            .filter(|c| c.row == ix && !c.is_empty())
-            .map(|c| c.range());
+            .and_then(|c| c.range_on(ix));
         let owns_char = sel.is_some();
-        // Whether this row is in the line-wise region (a drag that spanned rows).
-        let in_region = self
-            .log()
-            .and_then(|l| l.visual.map(|a| (a.min(l.selected), a.max(l.selected))))
-            .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
+        // Whether this row is in the line-wise region (a drag that spanned
+        // rows without text anchoring, or keyboard `v`). A char selection
+        // paints per-char instead.
+        let in_region = !owns_char
+            && self
+                .log()
+                .and_then(|l| l.visual.map(|a| (a.min(l.selected), a.max(l.selected))))
+                .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
         let mut row = div()
             .id(("log-row", ix))
             .flex()
@@ -920,19 +1044,16 @@ impl StatusView {
                             let inside = if let Some(anchor) = log.visual {
                                 let (lo, hi) = (anchor.min(log.selected), anchor.max(log.selected));
                                 ix >= lo && ix <= hi
-                            } else if let Some(c) = log.char_sel.filter(|c| !c.is_empty()) {
-                                let r = c.range();
-                                c.row == ix && offset >= r.start && offset <= r.end
+                            } else if let Some(c) = log.char_sel {
+                                c.range_on(ix)
+                                    .is_some_and(|r| offset >= r.start && offset <= r.end)
                             } else {
                                 false
                             };
                             if !inside {
                                 log.char_click = false;
-                                log.char_sel = (!word.is_empty()).then_some(CharSelection {
-                                    row: ix,
-                                    anchor: word.start,
-                                    cursor: word.end,
-                                });
+                                log.char_sel = (!word.is_empty())
+                                    .then(|| CharSelection::on_row(ix, word.start, word.end));
                                 log.selected = ix;
                                 vcx.notify();
                             }

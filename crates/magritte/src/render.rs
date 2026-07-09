@@ -454,15 +454,15 @@ impl StatusView {
         let row_id = SharedString::from(format!("status-row-{ix}"));
         let selected = ix == self.selected && row.selectable;
         let clickable = row.selectable || row.fold.is_some();
-        let in_region = self
-            .visual_range()
-            .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
-        // A row mid-char-selection paints its char range instead of the full-row
-        // cursor wash (so the selection shows), and keeps its diff tint.
-        let owns_char = self.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
-        let char_range = self
-            .char_sel
-            .and_then(|c| (c.row == ix && !c.is_empty()).then(|| c.range()));
+        // A row covered by the char selection paints its char range instead of
+        // the full-row region/cursor wash (so the selection shows), and keeps
+        // its diff tint.
+        let char_range = self.char_sel.and_then(|c| c.range_on(ix));
+        let owns_char = char_range.is_some();
+        let in_region = !owns_char
+            && self
+                .visual_range()
+                .is_some_and(|(lo, hi)| ix >= lo && ix <= hi);
         let wash = selected && !owns_char;
 
         let mut el = div()
@@ -751,12 +751,11 @@ impl StatusView {
                         let inside = if let Some(anchor) = v.selection.visual {
                             let (lo, hi) = (anchor.min(v.selected), anchor.max(v.selected));
                             ix >= lo && ix <= hi
-                        } else if let Some(c) = v.char_sel.filter(|c| !c.is_empty()) {
-                            let r = c.range();
-                            c.row == ix
-                                && hit
-                                    .as_ref()
+                        } else if let Some(c) = v.char_sel {
+                            c.range_on(ix).is_some_and(|r| {
+                                hit.as_ref()
                                     .is_some_and(|(_, o)| *o >= r.start && *o <= r.end)
+                            })
                         } else {
                             false
                         };
@@ -764,11 +763,7 @@ impl StatusView {
                             v.selection.visual = None;
                             v.selected = ix;
                             v.char_sel = hit.and_then(|(w, _)| {
-                                (!w.is_empty()).then_some(CharSelection {
-                                    row: ix,
-                                    anchor: w.start,
-                                    cursor: w.end,
-                                })
+                                (!w.is_empty()).then(|| CharSelection::on_row(ix, w.start, w.end))
                             });
                             vcx.notify();
                         }

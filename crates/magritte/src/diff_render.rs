@@ -719,11 +719,9 @@ impl StatusView {
                             .filter_map(|pos| visible.get(pos).copied())
                             .filter_map(|ix| fd.rows.get(ix).map(|row| (ix, row)))
                             .map(|(ix, row)| {
-                                // The char-selection range within this row (only the
-                                // row that owns a non-empty selection paints one).
-                                let sel = fd.char_sel.and_then(|c| {
-                                    (c.row == ix && !c.is_empty()).then(|| c.range())
-                                });
+                                // The char-selection range covering this row (partial
+                                // on the endpoint rows, whole rows between).
+                                let sel = fd.char_sel.and_then(|c| c.range_on(ix));
                                 // A row mid-char-selection skips the full-row cursor
                                 // wash so the char-range background stays visible; it
                                 // *is* still the cursor row, just painted per-char.
@@ -907,7 +905,7 @@ impl StatusView {
             color_run(0..label, self.palette.dim),
             color_run(label..text.len(), self.palette.fg),
         ];
-        let sel = cv.header_sel.filter(|c| !c.is_empty()).map(|c| c.range());
+        let sel = cv.header_sel.and_then(|c| c.range_on(0));
         let (styled, layout) = self.selectable_text(text, runs, sel);
         let (down_layout, move_layout) = (layout.clone(), layout);
         let (v_down, v_move, v_up) = (view.clone(), view.clone(), view.clone());
@@ -965,11 +963,7 @@ impl StatusView {
                                 return;
                             };
                             let offset = offset_at(&move_layout, ev.position);
-                            let sel = CharSelection {
-                                row: 0,
-                                anchor,
-                                cursor: offset,
-                            };
+                            let sel = CharSelection::on_row(0, anchor, offset);
                             if cv.header_sel != Some(sel) {
                                 cv.header_sel = Some(sel);
                                 vcx.notify();

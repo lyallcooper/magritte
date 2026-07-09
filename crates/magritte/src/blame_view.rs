@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use gpui::{Context, UniformListScrollHandle, Window};
 
-use crate::{Screen, ScrollView, StatusView};
+use crate::{PagerSelection, Screen, ScrollView, StatusView};
 
 /// A row in the blame pager: an inline commit annotation (shown once per commit
 /// run, magit-style) or a file line with its number.
@@ -61,6 +61,7 @@ impl StatusView {
                             text: l.text,
                         });
                     }
+                    this.pager_sel = PagerSelection::default();
                     this.screen = Screen::Blame {
                         view: ScrollView {
                             scroll: UniformListScrollHandle::new(),

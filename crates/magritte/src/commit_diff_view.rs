@@ -890,7 +890,10 @@ impl StatusView {
         // selection, then the line-wise selection.
         if let Some(cv) = self.commit_view_mut() {
             if let Some(sel) = cv.header_sel.filter(|c| !c.is_empty()) {
-                let text = sel.slice(&format!("Commit {}", cv.rev)).to_string();
+                let text = sel
+                    .slice_on(0, &format!("Commit {}", cv.rev))
+                    .unwrap_or_default()
+                    .to_string();
                 cv.header_sel = None;
                 self.copy_to_clipboard(text, cx);
                 return;
@@ -900,13 +903,20 @@ impl StatusView {
             return;
         };
         let text = if let Some(sel) = fd.char_sel.filter(|c| !c.is_empty()) {
-            let row_text = fd
-                .rows
-                .get(sel.row)
-                .map(commit_row_text)
-                .unwrap_or_default();
+            // Only on-screen rows: a selection dragged across a collapsed
+            // fold shouldn't copy the hidden lines.
+            let visible = fd.visible_rows();
+            let parts: Vec<String> = sel
+                .rows()
+                .filter(|ix| visible.contains(ix))
+                .filter_map(|ix| {
+                    let text = commit_row_text(fd.rows.get(ix)?);
+                    sel.slice_on(ix, &text).map(str::to_string)
+                })
+                .collect();
             fd.char_sel = None;
-            sel.slice(&row_text).to_string()
+            fd.visual = None;
+            parts.join("\n")
         } else {
             let text = fd.selection_text();
             fd.visual = None;

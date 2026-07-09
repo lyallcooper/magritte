@@ -30,24 +30,35 @@ pub(crate) struct Selection {
     pub(crate) char_click: bool,
 }
 
-/// A character-range selection within a single row's text, in byte offsets into
-/// that row's rendered text. Drives sub-line mouse selection in the read-only
-/// diff views; at most one is active, and it yields to the line-wise
-/// [`Selection`] the moment a drag spans rows.
+/// A character-range selection over a view's rows, its endpoints as
+/// `(row index, byte offset)` into each row's rendered text. Drives sub-line
+/// mouse selection in the read-only views; a drag may span rows — the rows
+/// between the endpoints select whole. At most one is active per view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CharSelection {
-    /// The row (index into the view's row list) the selection lives on.
-    pub(crate) row: usize,
-    /// Byte offset the drag anchored at.
-    pub(crate) anchor: usize,
-    /// Byte offset the drag currently reaches.
-    pub(crate) cursor: usize,
+    /// Where the drag anchored.
+    pub(crate) anchor: (usize, usize),
+    /// Where the drag currently reaches.
+    pub(crate) cursor: (usize, usize),
 }
 
 impl CharSelection {
-    /// The selected byte range, `low..high`.
-    pub(crate) fn range(&self) -> std::ops::Range<usize> {
-        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
+    /// A selection within one row's text (a word select, the header line).
+    pub(crate) fn on_row(row: usize, anchor: usize, cursor: usize) -> Self {
+        CharSelection {
+            anchor: (row, anchor),
+            cursor: (row, cursor),
+        }
+    }
+
+    /// The earlier endpoint (row-major order).
+    fn start(&self) -> (usize, usize) {
+        self.anchor.min(self.cursor)
+    }
+
+    /// The later endpoint (row-major order).
+    fn end(&self) -> (usize, usize) {
+        self.anchor.max(self.cursor)
     }
 
     /// Whether nothing is actually selected (anchor == cursor).
@@ -55,12 +66,35 @@ impl CharSelection {
         self.anchor == self.cursor
     }
 
-    /// The selected slice of `text`, clamped to char boundaries within bounds.
-    pub(crate) fn slice<'a>(&self, text: &'a str) -> &'a str {
-        let range = self.range();
+    /// The rows the selection touches, first..=last.
+    pub(crate) fn rows(&self) -> std::ops::RangeInclusive<usize> {
+        self.start().0..=self.end().0
+    }
+
+    /// The selected byte range on row `ix`: partial on an endpoint row, the
+    /// whole line between (`usize::MAX`, which the render/copy paths clamp to
+    /// the row's length). `None` when the row isn't covered or the selection
+    /// is empty.
+    pub(crate) fn range_on(&self, ix: usize) -> Option<std::ops::Range<usize>> {
+        if self.is_empty() {
+            return None;
+        }
+        let (start, end) = (self.start(), self.end());
+        if ix < start.0 || ix > end.0 {
+            return None;
+        }
+        let lo = if ix == start.0 { start.1 } else { 0 };
+        let hi = if ix == end.0 { end.1 } else { usize::MAX };
+        Some(lo..hi)
+    }
+
+    /// The selected slice of row `ix`'s text, clamped to char boundaries
+    /// within bounds. `None` when the row isn't covered.
+    pub(crate) fn slice_on<'a>(&self, ix: usize, text: &'a str) -> Option<&'a str> {
+        let range = self.range_on(ix)?;
         let start = clamp_boundary(text, range.start);
         let end = clamp_boundary(text, range.end.max(start));
-        &text[start..end]
+        Some(&text[start..end])
     }
 }
 
@@ -102,7 +136,7 @@ impl DragState<'_> {
     /// row is selectable text): arm a drag there, clearing any prior
     /// selection. The caller repaints.
     pub(crate) fn mouse_down(&mut self, ix: usize, offset: Option<usize>) {
-        *self.char_click = self.char_sel.is_some_and(|c| c.row == ix && !c.is_empty());
+        *self.char_click = self.char_sel.is_some_and(|c| c.range_on(ix).is_some());
         *self.char_sel = None;
         *self.visual = None;
         *self.drag_anchor = Some(ix);
@@ -110,51 +144,51 @@ impl DragState<'_> {
         *self.selected = ix;
     }
 
-    /// A held drag reaching row `ix` / byte `offset`. Char-wise while it stays
-    /// on the anchor's text, line-wise once it spans rows; returning to the
-    /// anchor re-engages char-wise (or collapses to the row when the anchor
-    /// isn't text). Returns whether anything changed (repaint).
+    /// A held drag reaching row `ix` / byte `offset`. A drag anchored on
+    /// selectable text selects char-wise — across rows too, the endpoints as
+    /// (row, offset); a row without text along the way pins to its start. A
+    /// drag anchored on a non-text row selects line-wise. Returns whether
+    /// anything changed (repaint).
     pub(crate) fn mouse_move(&mut self, ix: usize, offset: Option<usize>) -> bool {
         let Some(anchor) = *self.drag_anchor else {
             return false;
         };
-        if ix == anchor {
-            return match (*self.char_anchor, offset) {
-                (Some(a), Some(cursor)) => {
-                    let sel = CharSelection {
-                        row: anchor,
-                        anchor: a,
-                        cursor,
-                    };
-                    if *self.char_sel == Some(sel) && self.visual.is_none() {
-                        return false;
-                    }
-                    *self.visual = None;
-                    *self.char_sel = Some(sel);
-                    *self.selected = anchor;
-                    true
-                }
-                _ => {
-                    if self.visual.is_some() || *self.selected != anchor {
-                        *self.visual = None;
-                        *self.char_sel = None;
-                        *self.selected = anchor;
-                        true
-                    } else {
-                        false
-                    }
-                }
+        if let Some(a) = *self.char_anchor {
+            let sel = CharSelection {
+                anchor: (anchor, a),
+                cursor: (ix, offset.unwrap_or(0)),
             };
+            // The line-wise region mirrors the spanned rows, so acting on the
+            // region (stage/unstage/discard the dragged rows) works from a
+            // char drag too; rendering shows only the char highlight.
+            let visual = (ix != anchor).then_some(anchor);
+            if *self.char_sel == Some(sel) && *self.visual == visual && *self.selected == ix {
+                return false;
+            }
+            *self.char_sel = Some(sel);
+            *self.visual = visual;
+            *self.selected = ix;
+            return true;
         }
-        // Spanned rows → line-wise region. The char anchor is kept so a return
-        // to the origin row re-engages char-wise selection.
-        if *self.selected == ix && *self.visual == Some(anchor) && self.char_sel.is_none() {
-            return false;
+        if ix == anchor {
+            if self.visual.is_some() || *self.selected != anchor {
+                *self.visual = None;
+                *self.char_sel = None;
+                *self.selected = anchor;
+                true
+            } else {
+                false
+            }
+        } else {
+            // Spanned rows → line-wise region.
+            if *self.selected == ix && *self.visual == Some(anchor) && self.char_sel.is_none() {
+                return false;
+            }
+            *self.char_sel = None;
+            *self.visual = Some(anchor);
+            *self.selected = ix;
+            true
         }
-        *self.char_sel = None;
-        *self.visual = Some(anchor);
-        *self.selected = ix;
-        true
     }
 
     /// Button release: disarm the drag (the selection itself stays). Returns
@@ -587,8 +621,17 @@ impl StatusView {
             .and_then(|v| v.first())
             .map(String::as_str);
         let (skey, sshift) = match bound {
-            Some("close") => return self.close_screen(window, cx),
+            Some("close") => {
+                // A first Esc/q clears an active mouse selection; the next
+                // closes (like the flat-diff views).
+                if self.pager_sel.char_sel.take().is_some() {
+                    cx.notify();
+                    return;
+                }
+                return self.close_screen(window, cx);
+            }
             Some("git-log-toggle-queries") => return self.toggle_git_log_all(window, cx),
+            Some("yank") => return self.copy_pager_selection(cx),
             Some("move-down") => ("j", false),
             Some("move-up") => ("k", false),
             Some("goto-bottom") => ("g", true),
@@ -1270,47 +1313,28 @@ mod tests {
     #[test]
     fn char_range_normalizes_regardless_of_drag_direction() {
         // Forward and backward drags over the same span select the same range.
-        let forward = CharSelection {
-            row: 3,
-            anchor: 2,
-            cursor: 7,
-        };
-        let backward = CharSelection {
-            row: 3,
-            anchor: 7,
-            cursor: 2,
-        };
-        assert_eq!(forward.range(), 2..7);
-        assert_eq!(backward.range(), 2..7);
+        let forward = CharSelection::on_row(3, 2, 7);
+        let backward = CharSelection::on_row(3, 7, 2);
+        assert_eq!(forward.range_on(3), Some(2..7));
+        assert_eq!(backward.range_on(3), Some(2..7));
         assert!(!forward.is_empty());
+        assert_eq!(forward.range_on(2), None);
     }
 
     #[test]
-    fn empty_selection_has_empty_range() {
-        let sel = CharSelection {
-            row: 1,
-            anchor: 5,
-            cursor: 5,
-        };
+    fn empty_selection_covers_nothing() {
+        let sel = CharSelection::on_row(1, 5, 5);
         assert!(sel.is_empty());
-        assert_eq!(sel.range(), 5..5);
+        assert_eq!(sel.range_on(1), None);
     }
 
     #[test]
     fn slice_extracts_the_selected_text_and_clamps_bounds() {
-        let sel = CharSelection {
-            row: 0,
-            anchor: 6,
-            cursor: 2,
-        };
-        assert_eq!(sel.slice("hello world"), "llo ");
+        let sel = CharSelection::on_row(0, 6, 2);
+        assert_eq!(sel.slice_on(0, "hello world"), Some("llo "));
         // A cursor past the end clamps to the string's length.
-        let past_end = CharSelection {
-            row: 0,
-            anchor: 0,
-            cursor: 999,
-        };
-        assert_eq!(past_end.slice("hi"), "hi");
+        let past_end = CharSelection::on_row(0, 0, 999);
+        assert_eq!(past_end.slice_on(0, "hi"), Some("hi"));
     }
 
     #[test]
@@ -1318,11 +1342,65 @@ mod tests {
         // "café" — the 'é' is two bytes (3..5). An offset landing mid-char snaps
         // back to a boundary rather than panicking.
         let text = "café";
-        let sel = CharSelection {
-            row: 0,
-            anchor: 0,
-            cursor: 4,
+        let sel = CharSelection::on_row(0, 0, 4);
+        assert_eq!(sel.slice_on(0, text), Some("caf"));
+    }
+
+    #[test]
+    fn cross_row_selection_covers_partial_ends_and_whole_middles() {
+        // Drag from (2, 4) to (5, 3), either direction.
+        for sel in [
+            CharSelection {
+                anchor: (2, 4),
+                cursor: (5, 3),
+            },
+            CharSelection {
+                anchor: (5, 3),
+                cursor: (2, 4),
+            },
+        ] {
+            assert_eq!(sel.rows(), 2..=5);
+            assert_eq!(sel.range_on(1), None);
+            assert_eq!(sel.range_on(2), Some(4..usize::MAX));
+            assert_eq!(sel.range_on(3), Some(0..usize::MAX));
+            assert_eq!(sel.range_on(5), Some(0..3));
+            assert_eq!(sel.range_on(6), None);
+            // A middle row slices whole; the endpoint rows partially.
+            assert_eq!(sel.slice_on(3, "whole line"), Some("whole line"));
+            assert_eq!(sel.slice_on(2, "tail selected"), Some(" selected"));
+            assert_eq!(sel.slice_on(5, "head only"), Some("hea"));
+        }
+    }
+
+    #[test]
+    fn cross_row_drag_builds_a_char_selection_and_mirrors_the_region() {
+        let (mut visual, mut char_sel, mut drag_anchor, mut char_anchor) = (None, None, None, None);
+        let (mut char_click, mut selected) = (false, 0usize);
+        let mut drag = DragState {
+            visual: &mut visual,
+            char_sel: &mut char_sel,
+            drag_anchor: &mut drag_anchor,
+            char_anchor: &mut char_anchor,
+            char_click: &mut char_click,
+            selected: &mut selected,
         };
-        assert_eq!(sel.slice(text), "caf");
+        drag.mouse_down(1, Some(4));
+        assert!(drag.mouse_move(3, Some(2)));
+        assert_eq!(
+            *drag.char_sel,
+            Some(CharSelection {
+                anchor: (1, 4),
+                cursor: (3, 2),
+            })
+        );
+        // The line-wise region mirrors the rows so act-on-region works.
+        assert_eq!(*drag.visual, Some(1));
+        assert_eq!(*drag.selected, 3);
+        // Returning to the anchor row collapses back to a single-row range.
+        assert!(drag.mouse_move(1, Some(9)));
+        assert_eq!(*drag.char_sel, Some(CharSelection::on_row(1, 4, 9)));
+        assert_eq!(*drag.visual, None);
+        assert!(drag.mouse_up());
+        assert_eq!(char_sel, Some(CharSelection::on_row(1, 4, 9)));
     }
 }

@@ -175,6 +175,33 @@ struct ScrollView {
     top: usize,
 }
 
+/// Mouse text selection for the cursor-less pager screens (the `$` command
+/// log and blame): the char selection plus the bookkeeping [`DragState`]
+/// expects. The line-wise `visual`/`selected` fields exist only to satisfy
+/// the shared state machine — a pager has no region actions or cursor.
+#[derive(Default)]
+pub(crate) struct PagerSelection {
+    pub(crate) char_sel: Option<CharSelection>,
+    visual: Option<usize>,
+    selected: usize,
+    drag_anchor: Option<usize>,
+    char_anchor: Option<usize>,
+    pub(crate) char_click: bool,
+}
+
+impl PagerSelection {
+    pub(crate) fn drag(&mut self) -> DragState<'_> {
+        DragState {
+            visual: &mut self.visual,
+            char_sel: &mut self.char_sel,
+            drag_anchor: &mut self.drag_anchor,
+            char_anchor: &mut self.char_anchor,
+            char_click: &mut self.char_click,
+            selected: &mut self.selected,
+        }
+    }
+}
+
 fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color.a = alpha;
     color
@@ -537,6 +564,9 @@ struct StatusView {
     /// immediately on focus unless a refresh happened within the cooldown, so
     /// rapid app-switching doesn't re-run a full status each time.
     last_refresh: Option<std::time::Instant>,
+    /// Text selection on the cursor-less pager screens (`$` log, blame);
+    /// reset whenever one of them opens.
+    pager_sel: PagerSelection,
     /// Whether this session already evaluated the slow-status fsmonitor hint,
     /// so one slow refresh can't queue several checks.
     fsmonitor_hint_checked: bool,
@@ -794,6 +824,7 @@ impl StatusView {
             busy: false,
             busy_gen: Generation::default(),
             last_refresh: None,
+            pager_sel: PagerSelection::default(),
             fsmonitor_hint_checked: false,
             pending_prefix: None,
             prefix_gen: Generation::default(),
