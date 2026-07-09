@@ -100,8 +100,8 @@ impl Buf {
             Action::Yank(s) => self.clipboard = Some(s.clone()),
             // `.`: replay like the app layer does — feed the recorded keys,
             // re-type the captured Insert text, close with Esc.
-            Action::Repeat => {
-                if let Some((keys, typed)) = self.vim.begin_repeat() {
+            Action::Repeat(count) => {
+                if let Some((keys, typed)) = self.vim.begin_repeat(*count) {
                     for k in keys {
                         self.feed_key(k);
                     }
@@ -407,6 +407,11 @@ fn motions_find_till() {
         // deferred reverse-find first.
         ("hello w|orld", "Fo,l", "hello wo|rld"),
         ("|axbxcxd", "2tx", "ax|bxcxd"),
+        // A count on `;` suppresses the adjacent-target skip (probed: `tx`
+        // then `2;` stops before the 2nd x, not the 3rd).
+        ("|axbxcxd", "tx2;", "ax|bxcxd"),
+        ("|axbxcxdxe", "tx3;", "axbx|cxdxe"),
+        ("axbxcx|d", "Tx2;", "axbx|cxd"),
     ] {
         check(spec, keys, want);
     }
@@ -1012,6 +1017,44 @@ fn block_replace() {
 }
 
 #[test]
+fn block_shift() {
+    for (spec, keys, want) in [
+        // >/< shift at the block's *left edge*, not the line start
+        // (`:help v_b_>`, probed with sw=2); cursor to the block-left
+        // column of the top line.
+        ("ab|cdef\nabcdef", "<c-v>j>", "ab|  cdef\nab  cdef"),
+        ("|abcdef\nabcdef", "<c-v>j>", "|  abcdef\n  abcdef"),
+        ("ab|cdef\nabcdef", "<c-v>j2>", "ab|    cdef\nab    cdef"),
+        // Short lines take the blanks at their end; empty lines are skipped.
+        (
+            "ab|cdef\nab\nabcdef",
+            "<c-v>jj>",
+            "ab|  cdef\nab  \nab  cdef",
+        ),
+        ("ab|cdef\n\nabcdef", "<c-v>jj>", "ab|  cdef\n\nab  cdef"),
+        // < strips whitespace at the block's left column…
+        ("|  abcd\n  abcd", "<c-v>j<lt>", "|abcd\nabcd"),
+        ("|\tab\n\tcd", "<c-v>j<lt>", "|ab\ncd"),
+        // …and is a quiet no-op where there is none.
+        ("  |abcd\n  abcd", "<c-v>j<lt>", "  |abcd\n  abcd"),
+    ] {
+        check(spec, keys, want);
+    }
+}
+
+#[test]
+fn block_corner_swap() {
+    // O swaps the corners horizontally: the cursor keeps its row and takes
+    // the anchor's column (probed).
+    check_full("a|bcd\nefgh", "<c-v>jlO", "abcd\ne|fgh", VB, Some(false));
+    // Further motion extends from the swapped corner.
+    check_clip("a|bcd\nefgh", "<c-v>jlOly", "ab|cd\nefgh", "c\ng");
+    // Outside block mode O swaps fully, like o.
+    check_full("a|bcd", "vllO", "a|bcd", V, Some(false));
+    check("ab|cdef", "vlOhd", "a|ef");
+}
+
+#[test]
 fn block_dot_repeat() {
     // '.' replays the recorded keys, so a block delete repeats relative to
     // the new cursor position.
@@ -1382,7 +1425,7 @@ fn fuzz_no_panic() {
     ];
     let pool: Vec<Key> = {
         let mut p: Vec<Key> =
-            "hjkl0^$wbeWBE gG fFtT;,{}%xXsSrRdcyvVpPuJoOiIaA~\"'()[]{}<>bBqz1290+-"
+            "hjkl0^$wbeWBE gG fFtT;,{}%xXsSrRdcyvVpPuJoOiIaA~\"'()[]{}<>bBqzZ1290+-.:/?_!"
                 .chars()
                 .map(Key::Char)
                 .collect();
@@ -1521,6 +1564,23 @@ fn aw_trailing_blanks_cross_newline() {
     check("ab|  \ncd ef", "daw", "ab| ef");
 }
 
+#[test]
+fn aw_on_empty_line() {
+    // From an empty line `aw` runs through the following word, covering
+    // whole lines; a following empty line joins instead (probed against
+    // Vim 9.2).
+    check_clip("aa\n|\nbb\ncc", "daw", "aa\n|cc", "\nbb\n");
+    check("aa\n|\nbb cc", "daw", "aa\n| cc");
+    check_clip("aa\n|\n  bb", "daw", "|aa", "\n  bb\n");
+    check("aa\n|\n\nbb", "daw", "aa\n|bb");
+    check("aa\n|\n\n\nbb", "daw", "aa\n|\nbb");
+    check("aa\n|\n \nbb", "daw", "|aa");
+    check("aa\n|\nbb\ncc", "2daw", "|aa");
+    check("aa\n|\nbb\ncc", "cawX<esc>", "aa\n|X\ncc");
+    check_beep("aa\n|", "daw", "aa\n|"); // empty last line: no word
+    check_beep("aa\n|\n ", "daw", "aa\n|\n ");
+}
+
 // --- Dot repeat, editor commands, and search --------------------------------
 
 #[test]
@@ -1534,6 +1594,36 @@ fn dot_repeat_simple() {
                                    // `.` re-deletes.
     let buf = run("a|bcd", "xu.");
     assert_eq!(buf.text, "acd");
+}
+
+#[test]
+fn dot_repeat_count_replaces() {
+    // A count on `.` replaces the change's own counts, wherever they were
+    // typed (probed: Vim's redo buffer keeps one leading count).
+    check("|abcdefgh", "2x3.", "|fgh");
+    check("|abcdefgh", "2x.", "|efgh"); // no new count: the old one holds
+    check("|a b c d e f g h", "d2w3.", "|f g h");
+    check("|a b c d e f g h", "2d2w2.", "|g h");
+    check("|zzzz", "3ix<esc>2.", "xxx|xxzzzz");
+}
+
+#[test]
+fn insert_entry_counts() {
+    // A count on an Insert-entry command repeats the typed text on Esc;
+    // `o`/`O` open a line per repetition (all probed).
+    check("|zz", "3ix<esc>", "xx|xzz");
+    check("|zz", "3axy<esc>", "zxyxyx|yz");
+    check("|zz", "3Ix<esc>", "xx|xzz");
+    check("|zz", "3Ax<esc>", "zzxx|x");
+    check("|zz", "3oab<esc>", "zz\nab\nab\na|b");
+    check("|zz", "3Oab<esc>", "ab\nab\na|b\nzz");
+    check("|zz", "3o<esc>", "zz\n\n\n|");
+    // A multi-line insert repeats whole.
+    check("|zz", "3ia<cr>b<esc>", "a\nba\nba\n|bzz");
+    check("|zz", "3oa<cr>b<esc>", "zz\na\nb\na\nb\na\n|b");
+    // Without a count nothing changes; a plain insert doesn't repeat.
+    check("|zz", "1ix<esc>", "|xzz");
+    check("|zz", "3i<esc>", "|zz");
 }
 
 #[test]
@@ -1938,6 +2028,25 @@ fn ex_errors_echo_messages() {
         assert_eq!(buf.error(), Some(want), "{keys}");
         assert_eq!(show(&buf.text, buf.cursor), "|ab", "{keys}: must not edit");
     }
+}
+
+#[test]
+fn prompt_unhandled_keys_keep_input() {
+    // An unhandled key at the `/`/`?`/`:` prompt (arrows, stray Ctrl
+    // chords…) beeps but must not destroy the typed line.
+    let mut buf = run("|ab cd", "/c");
+    buf.feed("<left>");
+    assert!(buf.beeped());
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/c"));
+    buf.feed("d<cr>");
+    assert_eq!(show(&buf.text, buf.cursor), "ab |cd");
+
+    let mut buf = run("|ab\ncd", ":2");
+    buf.feed("<c-x>");
+    assert!(buf.beeped());
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":2"));
+    buf.feed("<cr>");
+    assert_eq!(show(&buf.text, buf.cursor), "ab\n|cd");
 }
 
 #[test]

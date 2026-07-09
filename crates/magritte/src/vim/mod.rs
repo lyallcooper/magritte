@@ -70,8 +70,9 @@ pub(crate) enum Action {
     /// `.`: replay the last change. The app fetches it with
     /// [`VimState::begin_repeat`], feeds the recorded keys back through
     /// `handle_key`, re-inserts the captured Insert-mode text, and closes
-    /// with [`VimState::end_repeat`].
-    Repeat,
+    /// with [`VimState::end_repeat`]. A count typed before `.` replaces the
+    /// change's own counts (`2x` then `3.` deletes three chars).
+    Repeat(Option<usize>),
     /// `ZZ` / `,,` / `,c`: submit the commit message.
     Commit,
     /// `ZQ` / `,k` / `:q`: cancel the editor (the app's discard-confirm flow
@@ -355,6 +356,22 @@ pub(super) fn offset_at_col(text: &str, line_pos: usize, col: usize) -> usize {
         at = start + i;
     }
     at // col past the line: its last char
+}
+
+/// Byte offset of char column `col` on the line containing `line_pos`,
+/// clamped to the line's end. Unlike [`offset_at_col`], which clamps to the
+/// last char for Normal-mode cursors, this can land one past it — block
+/// edges and insertions live between chars.
+pub(super) fn offset_of_col(text: &str, line_pos: usize, col: usize) -> usize {
+    let end = line_end(text, line_pos);
+    let mut at = line_start(text, line_pos);
+    for _ in 0..col {
+        if at >= end {
+            break;
+        }
+        at = next_char(text, at);
+    }
+    at
 }
 
 /// A compiled `/`-search pattern: a regex (Rust syntax) with Vim

@@ -7,11 +7,28 @@
 //! exclusive-motion adjustments (an exclusive motion ending in column 1 backs
 //! up to the previous line end and turns inclusive; if the start is also in
 //! the indent it turns linewise) and the `cw`-acts-like-`ce` special case.
+//!
+//! Separable slices live in submodules as `impl VimState` blocks over the
+//! same state: the blockwise geometry/operators (`block`), the `:` command
+//! line (`ex`), the plain edit builders (`edit`), and the which-key rows
+//! (`hints`).
 
 use super::motion;
 use super::surround;
 use super::text_object;
 use super::*;
+
+mod block;
+mod edit;
+mod ex;
+mod hints;
+
+use block::{block_replicate, BlockInsert};
+use ex::{hist_step, push_hist};
+
+/// One `>`/`<` indent step: two spaces (the hanging-bullet width; Vim's
+/// 'shiftwidth' default of 8 is wrong for commit messages).
+const STEP: &str = "  ";
 
 /// The three operators. `Change` is delete-then-Insert.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,51 +153,13 @@ impl Register {
     }
 }
 
-/// A pending blockwise Insert session (`c`/`I`/`A` in Visual Block): the Esc
-/// that ends it replays the typed text onto the block's other lines.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct BlockInsert {
-    /// 1-based line numbers to replicate onto (the rows below the top one).
-    rows: Range<usize>,
-    /// Char column to insert at; `None` appends at each line's end (`$`-`A`).
-    col: Option<usize>,
-    /// Pad shorter lines with spaces to reach `col` (`A`); otherwise skip
-    /// lines that don't reach it (`I`/`c`).
-    pad: bool,
-    /// Column the cursor lands on after the replication (the block's left
-    /// edge for `I`/`A`); `None` keeps the plain Esc step-left (`c`).
-    exit_col: Option<usize>,
-}
-
-/// A resolved blockwise selection: the per-line byte ranges plus the char
-/// columns that define the rectangle.
-struct BlockGeom {
-    /// One range per covered line, top to bottom (empty on lines the block
-    /// overhangs).
-    ranges: Vec<Range<usize>>,
-    /// Leftmost and rightmost char columns, both inside the block.
-    left: usize,
-    right: usize,
-    /// `$`-extended: the block runs to each line's end (`:help v_b_dollar`).
-    to_eol: bool,
-    /// 1-based line numbers covered (end exclusive).
-    rows: Range<usize>,
-}
-
-impl BlockGeom {
-    /// The register's column width: the rectangle's, or the widest segment
-    /// for a `$` block.
-    fn width(&self, text: &str) -> usize {
-        if self.to_eol {
-            self.ranges
-                .iter()
-                .map(|r| text[r.clone()].chars().count())
-                .max()
-                .unwrap_or(0)
-        } else {
-            self.right - self.left + 1
-        }
-    }
+/// A count on an Insert-entry command (`3i`, `2o`…): what the closing Esc
+/// needs to repeat the typed text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct InsertRepeat {
+    count: usize,
+    /// `o`/`O`: each repetition goes on its own new line.
+    line: bool,
 }
 
 /// All cross-keystroke Vim state for one editor. Create with [`VimState::new`]
@@ -209,14 +188,19 @@ pub(crate) struct VimState {
     last_search: Option<(String, bool)>,
     /// Keys of the command in progress, kept while a multi-key sequence (or
     /// an Insert session it opened) is still running — the candidate for
-    /// [`Self::last_change`].
-    recording: Vec<Key>,
+    /// [`Self::last_change`]. The flag marks count digits, which a count on
+    /// `.` replaces.
+    recording: Vec<(Key, bool)>,
     /// The last buffer-changing command for `.`: its keys, plus the text the
     /// Insert session it opened typed (captured between entry and Esc).
-    last_change: Option<(Vec<Key>, String)>,
+    last_change: Option<(Vec<(Key, bool)>, String)>,
     /// Where Insert-mode typing began, for the `.` text capture and the
     /// blockwise replication.
     insert_entry: Option<usize>,
+    /// A count typed before `i`/`a`/`o`/`O`…: the Esc ending the session
+    /// re-inserts the typed text `count - 1` more times (`line` for `o`/`O`,
+    /// where each repetition opens its own line).
+    insert_repeat: Option<InsertRepeat>,
     /// Set by a blockwise `c`/`I`/`A`: the Esc ending the session replicates
     /// the typed text onto the block's other lines.
     block_insert: Option<BlockInsert>,
@@ -251,6 +235,12 @@ impl VimState {
         Self::with_user_map(Vec::new())
     }
 
+    /// Swap the `[vim.keymap]` sequences in place (a live config edit) —
+    /// mode, pending state, registers, and Vim-level undo all survive.
+    pub(crate) fn set_user_map(&mut self, user_map: Vec<(String, UserCmd)>) {
+        self.user_map = user_map;
+    }
+
     /// Fresh state in Normal mode, with the user's `[vim.keymap]` sequences
     /// active.
     pub(crate) fn with_user_map(user_map: Vec<(String, UserCmd)>) -> Self {
@@ -267,6 +257,7 @@ impl VimState {
             recording: Vec::new(),
             last_change: None,
             insert_entry: None,
+            insert_repeat: None,
             block_insert: None,
             replaying: false,
             undos: Vec::new(),
@@ -369,63 +360,6 @@ impl VimState {
         matches!(self.pending, Pending::Search { .. } | Pending::Ex { .. })
     }
 
-    /// Live matches of the substitution being typed at the `:` prompt — the
-    /// byte ranges `[range]s/pat…` would touch (first per line, every one
-    /// once a `g` flag is typed), for the incremental highlight. Empty while
-    /// the line isn't an `s` command or its pattern is empty/invalid.
-    pub(crate) fn ex_matches(&self, text: &str, cursor: usize) -> Vec<Range<usize>> {
-        const CAP: usize = 200;
-        let Pending::Ex { input, visual } = &self.pending else {
-            return Vec::new();
-        };
-        let lines = line_count(text);
-        let current = line_of(text, clamp_normal(text, cursor));
-        let Ok((range, rest)) = ex_range(input, current, lines, *visual) else {
-            return Vec::new();
-        };
-        let Some(body) = rest.strip_prefix("s/") else {
-            return Vec::new();
-        };
-        let (pat, _, flags) = split_substitute(body);
-        let (mut global, mut icase) = (false, false);
-        for f in flags.chars() {
-            match f {
-                'g' => global = true,
-                'i' => icase = true,
-                _ => return Vec::new(),
-            }
-        }
-        if pat.is_empty() {
-            return Vec::new();
-        }
-        let Ok(re) = regex::RegexBuilder::new(&pat)
-            .case_insensitive(icase)
-            .build()
-        else {
-            return Vec::new();
-        };
-        let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
-        let start = line_offset(text, a.min(b));
-        let end = line_end(text, line_offset(text, a.max(b)));
-        let mut out = Vec::new();
-        let mut at = start;
-        for line in text[start..end].split('\n') {
-            for m in re.find_iter(line) {
-                if m.start() < m.end() {
-                    out.push(at + m.start()..at + m.end());
-                }
-                if !global || out.len() >= CAP {
-                    break;
-                }
-            }
-            if out.len() >= CAP {
-                break;
-            }
-            at += line.len() + 1;
-        }
-        out
-    }
-
     /// The Visual selection as a byte range (for the overlay and operators):
     /// charwise includes both endpoint chars; linewise covers whole lines
     /// including the trailing newline. `None` outside Visual and for a
@@ -454,64 +388,6 @@ impl VimState {
         }
     }
 
-    /// The blockwise selection's per-line byte ranges, top to bottom (for the
-    /// overlay and the block operators): the char-column rectangle between
-    /// the anchor and the cursor, clamped per line. A line shorter than the
-    /// left column yields an empty range at its end. `None` outside Visual
-    /// Block.
-    pub(crate) fn block_ranges(&self, text: &str, cursor: usize) -> Option<Vec<Range<usize>>> {
-        self.block_geom(text, cursor).map(|g| g.ranges)
-    }
-
-    fn block_geom(&self, text: &str, cursor: usize) -> Option<BlockGeom> {
-        if self.mode
-            != (Mode::Visual {
-                kind: VisualKind::Block,
-            })
-        {
-            return None;
-        }
-        let a = clamp_normal(text, self.anchor);
-        let c = clamp_normal(text, cursor);
-        let to_eol = self.desired_col == Some(usize::MAX);
-        // The cursor corner aims at the sticky column: on a line shorter
-        // than curswant it sits one past the last char (probed: `C-v` at
-        // column 5, `j` onto a 2-char line, `d` deletes columns 3-5).
-        let actual = char_col(text, c);
-        let line_chars = char_col(text, line_end(text, c));
-        let ccol = self
-            .desired_col
-            .unwrap_or(actual)
-            .min(line_chars)
-            .max(actual);
-        let acol = char_col(text, a);
-        let (left, right) = (acol.min(ccol), acol.max(ccol));
-        let (lo, hi) = (a.min(c), a.max(c));
-        let mut ranges = Vec::new();
-        let last_line = line_start(text, hi);
-        let mut at = line_start(text, lo);
-        loop {
-            let start = offset_of_col(text, at, left);
-            let end = if to_eol {
-                line_end(text, at)
-            } else {
-                offset_of_col(text, at, right + 1)
-            };
-            ranges.push(start..end);
-            if at >= last_line {
-                break;
-            }
-            at = line_end(text, at) + 1;
-        }
-        Some(BlockGeom {
-            ranges,
-            left,
-            right,
-            to_eol,
-            rows: line_of(text, lo)..line_of(text, hi) + 1,
-        })
-    }
-
     /// Feed one keystroke. `text`/`cursor` are the buffer's current contents
     /// and cursor byte offset; the returned actions describe what to do to the
     /// buffer. Read [`VimState::mode`] afterwards for the indicator/routing.
@@ -521,7 +397,7 @@ impl VimState {
             Mode::Normal | Mode::Visual { .. } => {
                 let cursor = clamp_normal(text, cursor);
                 if !self.replaying {
-                    self.recording.push(key);
+                    self.recording.push((key, false));
                 }
                 let actions = self.key_modal(text, cursor, key);
                 let edited = actions
@@ -639,6 +515,7 @@ impl VimState {
         };
         let mut pos = clamp_normal(text, step_left);
         let mut actions = Vec::new();
+        let repeat = self.insert_repeat.take();
         // A blockwise `c`/`I`/`A` session: replay the typed text onto the
         // block's other lines. Vim skips the replication when the insert
         // spans lines (probed); `I`/`A` land on the block's top-left.
@@ -655,19 +532,53 @@ impl VimState {
                     }));
                 }
             }
+        } else if let Some(InsertRepeat { count, line }) = repeat {
+            // A counted Insert entry: re-insert the typed text after the
+            // session's end, each `o`/`O` repetition on its own line (probed:
+            // `3oab<Esc>` opens three `ab` lines; a multi-line insert repeats
+            // whole). The cursor takes the usual step-left from the very end.
+            let unit = if line {
+                format!("\n{typed}")
+            } else {
+                typed.clone()
+            };
+            if !unit.is_empty() {
+                let extra = unit.repeat(count - 1);
+                let post = splice(text, &(cursor..cursor), &extra);
+                let end = cursor + extra.len();
+                let stepped = if end > line_start(&post, end) {
+                    prev_char(&post, end)
+                } else {
+                    end
+                };
+                pos = clamp_normal(&post, stepped);
+                actions.push(Action::Edit(EditOp {
+                    range: cursor..cursor,
+                    text: extra,
+                    cursor: pos,
+                }));
+            }
         }
         actions.push(Action::MoveCursor(pos));
         actions
     }
 
     /// Start a `.` replay: the recorded keys and the Insert text to re-type.
-    /// [`Self::end_repeat`] must be called after feeding them back.
-    pub(crate) fn begin_repeat(&mut self) -> Option<(Vec<Key>, String)> {
-        let change = self.last_change.clone();
-        if change.is_some() {
-            self.replaying = true;
-        }
-        change
+    /// A `count` from `{count}.` replaces the change's own counts, like Vim's
+    /// redo buffer. [`Self::end_repeat`] must be called after feeding them
+    /// back.
+    pub(crate) fn begin_repeat(&mut self, count: Option<usize>) -> Option<(Vec<Key>, String)> {
+        let (keys, typed) = self.last_change.clone()?;
+        self.replaying = true;
+        let keys = match count {
+            None => keys.into_iter().map(|(k, _)| k).collect(),
+            Some(n) => {
+                let mut out: Vec<Key> = n.to_string().chars().map(Key::Char).collect();
+                out.extend(keys.into_iter().filter(|(_, c)| !c).map(|(k, _)| k));
+                out
+            }
+        };
+        Some((keys, typed))
     }
 
     pub(crate) fn end_repeat(&mut self) {
@@ -937,7 +848,9 @@ impl VimState {
                         }
                         return self.search(text, cursor, back);
                     }
-                    _ => return self.beep(),
+                    // An unhandled key must not destroy the typed query:
+                    // beep, keeping the prompt (self.pending still holds it).
+                    _ => return vec![Action::Beep],
                 }
                 return Vec::new();
             }
@@ -984,7 +897,8 @@ impl VimState {
                         self.in_ex = true;
                         return self.ex_execute(text, cursor, &input, visual);
                     }
-                    _ => return self.beep(),
+                    // Beep without wiping the typed command line, as above.
+                    _ => return vec![Action::Beep],
                 }
                 return Vec::new();
             }
@@ -1009,6 +923,10 @@ impl VimState {
             if c.is_ascii_digit() && (c != '0' || !self.count.is_empty()) {
                 if self.count.len() < 9 {
                     self.count.push(c);
+                }
+                // Mark it in the `.` recording: a count on `.` replaces these.
+                if let Some(last) = self.recording.last_mut() {
+                    last.1 = true;
                 }
                 return Vec::new();
             }
@@ -1130,119 +1048,6 @@ impl VimState {
             return Vec::new();
         }
         self.beep()
-    }
-
-    /// The which-key rows for the current pending state: `(keys, description)`
-    /// pairs for the most useful continuations — a hint, not a manual, so each
-    /// state stays at ~10 rows. Empty when nothing multi-key is pending,
-    /// including the `/`/`?`/`:` prompts and a bare count. A pending
-    /// `[vim.keymap]` prefix lists its own continuations.
-    pub(crate) fn which_key_hints(&self) -> Vec<(String, String)> {
-        let own = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
-            rows.iter()
-                .map(|(k, d)| (k.to_string(), d.to_string()))
-                .collect()
-        };
-        match &self.pending {
-            Pending::AwaitMotion(consumer) => {
-                // The operator's own doubled key is its linewise form.
-                let line_key = match consumer {
-                    Consumer::Op { op, .. } => Some(op.key().to_string()),
-                    Consumer::SurroundAdd => Some("s".to_string()),
-                    Consumer::Reflow => Some("q".to_string()),
-                    Consumer::Shift { dedent, .. } => {
-                        Some(if *dedent { "<" } else { ">" }.to_string())
-                    }
-                    Consumer::Move => None,
-                };
-                let mut rows: Vec<(String, String)> = Vec::new();
-                if let Some(key) = line_key {
-                    rows.push((key, "Whole line".to_string()));
-                }
-                // `s` after the operator is the surround family (ys/ds/cs).
-                if let Consumer::Op { op, .. } = consumer {
-                    let surround = match op {
-                        Op::Yank => "Add surround",
-                        Op::Delete => "Delete surround",
-                        Op::Change => "Change surround",
-                    };
-                    rows.push(("s".to_string(), surround.to_string()));
-                }
-                rows.extend(own(&[
-                    ("w", "To next word"),
-                    ("e", "To word end"),
-                    ("b", "Back a word"),
-                    ("$", "To line end"),
-                    ("0", "To line start"),
-                    ("g g · G", "First / last line"),
-                    ("f t", "Find / till a char"),
-                    ("i w · a w", "Inner / around word"),
-                    ("i \" · i ( · i p", "Quotes / parens / paragraph"),
-                ]));
-                rows
-            }
-            Pending::Object { .. } => own(&[
-                ("w W", "Word"),
-                ("s", "Sentence"),
-                ("p", "Paragraph"),
-                ("\" ' `", "Quoted string"),
-                ("( [ {", "Bracket block"),
-                ("t", "Tag block"),
-            ]),
-            Pending::G(consumer) => {
-                let mut rows = vec![("g".to_string(), "First line".to_string())];
-                if *consumer == Consumer::Move {
-                    rows.push(("q".to_string(), "Reflow operator".to_string()));
-                }
-                rows
-            }
-            Pending::Z => own(&[("Z", "Commit"), ("Q", "Cancel")]),
-            Pending::Zscroll => own(&[
-                ("z", "Center cursor line"),
-                ("t", "Cursor line to top"),
-                ("b", "Cursor line to bottom"),
-            ]),
-            Pending::Comma => own(&[
-                (",", "Commit"),
-                ("c", "Commit"),
-                ("k", "Cancel"),
-                ("q", "Reflow message"),
-            ]),
-            Pending::SurroundChar { .. } | Pending::SurroundChangeTo { .. } => own(&[
-                ("\" ' `", "Quotes"),
-                ("( [ { <", "Brackets, inner spaces"),
-                (") ] } >", "Brackets, snug"),
-            ]),
-            Pending::SurroundDelete | Pending::SurroundChangeFrom => own(&[
-                ("\" ' `", "Quotes"),
-                ("( [ { <", "Nearest bracket pair"),
-                ("t", "Tag"),
-            ]),
-            Pending::User(typed) => {
-                let mut rows: Vec<(String, String)> = self
-                    .user_map
-                    .iter()
-                    .filter_map(|(seq, cmd)| {
-                        seq.strip_prefix(typed.as_str())
-                            .filter(|rest| !rest.is_empty())
-                            .map(|rest| {
-                                // One keycap per remaining keystroke, like
-                                // every other sequence label.
-                                let keys =
-                                    rest.chars().map(String::from).collect::<Vec<_>>().join(" ");
-                                (keys, cmd.describe().to_string())
-                            })
-                    })
-                    .collect();
-                rows.truncate(10);
-                rows
-            }
-            Pending::Find { .. }
-            | Pending::Replace
-            | Pending::Search { .. }
-            | Pending::Ex { .. }
-            | Pending::None => Vec::new(),
-        }
     }
 
     /// Commands that aren't motions or digit/pending input.
@@ -1397,6 +1202,19 @@ impl VimState {
                     'C' => return self.block_op_eol(text, cursor, Op::Change),
                     'I' => return self.block_insert_cmd(text, cursor, false),
                     'A' => return self.block_insert_cmd(text, cursor, true),
+                    '>' | '<' => return self.block_shift(text, cursor, c == '<'),
+                    // `O` swaps the corners horizontally (`o` swaps fully).
+                    'O' => {
+                        let a = clamp_normal(text, self.anchor);
+                        let c0 = clamp_normal(text, cursor);
+                        let (acol, ccol) = (char_col(text, a), char_col(text, c0));
+                        self.anchor = offset_of_col(text, a, ccol);
+                        self.desired_col = Some(acol);
+                        return vec![Action::MoveCursor(clamp_normal(
+                            text,
+                            offset_of_col(text, c0, acol),
+                        ))];
+                    }
                     _ => {}
                 }
             }
@@ -1460,7 +1278,8 @@ impl VimState {
                     };
                     return Vec::new();
                 }
-                'o' => {
+                // `O` is the same as `o` outside Visual Block (handled above).
+                'o' | 'O' => {
                     let a = self.anchor;
                     self.anchor = clamp_normal(text, cursor);
                     return vec![Action::MoveCursor(clamp_normal(text, a))];
@@ -1694,11 +1513,11 @@ impl VimState {
                 Vec::new()
             }
             '.' => {
-                self.take_count();
+                let count = self.take_count();
                 if self.last_change.is_none() {
                     return self.beep();
                 }
-                vec![Action::Repeat]
+                vec![Action::Repeat((count > 0).then_some(count))]
             }
             'Z' => {
                 self.take_count();
@@ -1775,107 +1594,6 @@ impl VimState {
         let pos = clamp_normal(text, pos);
         self.desired_col = Some(char_col(text, pos));
         vec![Action::MoveCursor(pos)]
-    }
-
-    // --- Ex (`:`) commands ----------------------------------------------
-
-    /// Execute a completed `:` line: `q`/`q!`/`w`/`wq`/`x`, `help`, a bare
-    /// line number, or `[range]s/pat/rep/[flags]`. Anything else echoes an
-    /// error. `visual` is the line pair a Visual-mode `:` remembered for
-    /// `'<,'>`.
-    fn ex_execute(
-        &mut self,
-        text: &str,
-        cursor: usize,
-        input: &str,
-        visual: Option<(usize, usize)>,
-    ) -> Vec<Action> {
-        match input {
-            "q" => return vec![Action::Quit { force: false }],
-            "q!" => return vec![Action::Quit { force: true }],
-            "w" | "wq" | "x" => return vec![Action::Commit],
-            "h" | "help" => return vec![Action::Help],
-            _ => {}
-        }
-        // A bare line number jumps to its first non-blank, clamped to the
-        // last line, like `{count}G`.
-        if !input.is_empty() && input.bytes().all(|b| b.is_ascii_digit()) {
-            let m = Motion::GotoLine(Some(input.parse().unwrap_or(usize::MAX).max(1)));
-            let Some(target) = motion::eval(text, cursor, 1, m, 0) else {
-                return self.beep();
-            };
-            self.after_move(text, m, target.pos);
-            return vec![Action::MoveCursor(clamp_normal(text, target.pos))];
-        }
-        // `[range]s/pat/rep/[flags]` — the only range-taking command.
-        let lines = line_count(text);
-        let current = line_of(text, cursor);
-        let (range, rest) = match ex_range(input, current, lines, visual) {
-            Ok(parsed) => parsed,
-            Err(msg) => return self.err(msg),
-        };
-        let Some(body) = rest.strip_prefix("s/") else {
-            return self.err(format!("Not an editor command: {input}"));
-        };
-        let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
-        self.ex_substitute(text, a.min(b), a.max(b), body)
-    }
-
-    /// `:s/pat/rep/[flags]` over 1-based lines `first..=last`: one edit
-    /// replacing the covered line span, cursor at the first non-blank of the
-    /// last line with a match. No match in the range is an error (Vim's
-    /// E486), as is an invalid regex or an unknown flag.
-    fn ex_substitute(&mut self, text: &str, first: usize, last: usize, body: &str) -> Vec<Action> {
-        let (pat, rep, flags) = split_substitute(body);
-        let (mut global, mut icase) = (false, false);
-        for f in flags.chars() {
-            match f {
-                'g' => global = true,
-                'i' => icase = true,
-                _ => return self.err(format!("Trailing characters: {flags}")),
-            }
-        }
-        // No reuse of the last pattern (Vim's `:s//`), so empty is an error.
-        if pat.is_empty() {
-            return self.err("Empty pattern".into());
-        }
-        let Ok(re) = regex::RegexBuilder::new(&pat)
-            .case_insensitive(icase)
-            .build()
-        else {
-            return self.err(format!("Invalid pattern: {pat}"));
-        };
-        let rep = sub_replacement(&rep);
-        let start = line_offset(text, first);
-        let end = line_end(text, line_offset(text, last));
-        let mut out = String::with_capacity(end - start);
-        // Offset within `out` of the last line with a match, for the cursor.
-        let mut last_match = None;
-        for (i, line) in text[start..end].split('\n').enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            if re.is_match(line) {
-                last_match = Some(out.len());
-                if global {
-                    out.push_str(&re.replace_all(line, rep.as_str()));
-                } else {
-                    out.push_str(&re.replace(line, rep.as_str()));
-                }
-            } else {
-                out.push_str(line);
-            }
-        }
-        let Some(line_at) = last_match else {
-            return self.err(format!("Pattern not found: {pat}"));
-        };
-        let post = splice(text, &(start..end), &out);
-        let cursor = first_non_blank(&post, (start + line_at).min(post.len()));
-        vec![Action::Edit(EditOp {
-            range: start..end,
-            text: out,
-            cursor,
-        })]
     }
 
     // --- Motion / object resolution ------------------------------------
@@ -2023,13 +1741,22 @@ impl VimState {
             Consumer::Op { op, .. } => {
                 // An inner block covering whole lines operates linewise
                 // (`ci{` on a multiline block leaves an empty line; `dip`
-                // deletes lines).
-                let linewise = matches!(
-                    obj,
-                    '(' | ')' | 'b' | '[' | ']' | '{' | '}' | 'B' | '<' | '>' | 'p'
-                ) && range.start < range.end
+                // deletes lines). So does `aw` from an empty line, whose
+                // object is whole lines — including one ending at EOF
+                // (probed: `daw` there leaves no empty last line behind).
+                let whole_lines = range.start < range.end
                     && range.start == line_start(text, range.start)
                     && range.end == line_start(text, range.end);
+                let linewise = match obj {
+                    '(' | ')' | 'b' | '[' | ']' | '{' | '}' | 'B' | '<' | '>' | 'p' => whole_lines,
+                    'w' | 'W' if char_at(text, cursor) == Some('\n') => {
+                        whole_lines
+                            || (range.start < range.end
+                                && range.start == line_start(text, range.start)
+                                && range.end == text.len())
+                    }
+                    _ => false,
+                };
                 self.op_on_range(text, op, range, linewise, cursor)
             }
             Consumer::SurroundAdd => {
@@ -2220,154 +1947,18 @@ impl VimState {
         self.op_on_range(text, op, range.clone(), linewise, range.start)
     }
 
-    // --- Blockwise (Visual Block) operators --------------------------------
-
-    fn block_op(&mut self, text: &str, cursor: usize, op: Op) -> Vec<Action> {
-        let Some(geom) = self.block_geom(text, cursor) else {
-            return self.beep();
-        };
-        self.mode = Mode::Normal;
-        self.take_count();
-        self.block_apply(text, geom, op)
-    }
-
-    /// Blockwise `D`/`C`: the block extends to each line's end first.
-    fn block_op_eol(&mut self, text: &str, cursor: usize, op: Op) -> Vec<Action> {
-        self.desired_col = Some(usize::MAX);
-        self.block_op(text, cursor, op)
-    }
-
-    /// Apply an operator to a resolved block: one edit spanning the covered
-    /// lines, the segments into the register as a block, the cursor at the
-    /// block's top-left.
-    fn block_apply(&mut self, text: &str, geom: BlockGeom, op: Op) -> Vec<Action> {
-        // The cursor lands at the top-left; the sticky column re-anchors
-        // there (probed: a yank isn't an edit, so handle_key won't reset it).
-        self.desired_col = None;
-        let segments: Vec<&str> = geom.ranges.iter().map(|r| &text[r.clone()]).collect();
-        let reg_text = segments.join("\n");
-        self.register = Some(Register {
-            text: reg_text.clone(),
-            kind: RegKind::Block {
-                width: geom.width(text),
-            },
-        });
-        let top_left = geom.ranges[0].start;
-        if op == Op::Yank {
-            return vec![
-                Action::Yank(reg_text),
-                Action::MoveCursor(clamp_normal(text, top_left)),
-            ];
-        }
-        let (range, out) = block_splice(text, &geom.ranges, |_| String::new());
-        let changed = out != text[range.clone()];
-        let mut actions = vec![Action::Yank(reg_text)];
-        if op == Op::Change {
-            // Insert at the top-left; the Esc ending the session replicates
-            // the typed text onto the block's other lines.
-            self.block_insert = Some(BlockInsert {
-                rows: geom.rows.start + 1..geom.rows.end,
-                col: Some(geom.left),
-                pad: false,
-                exit_col: None,
-            });
-            self.mode = Mode::Insert;
-            if changed {
-                actions.push(Action::Edit(EditOp {
-                    range,
-                    text: out,
-                    cursor: top_left,
-                }));
-            } else {
-                actions.push(Action::MoveCursor(top_left.min(text.len())));
-            }
-        } else if changed {
-            let post = splice(text, &range, &out);
-            actions.push(Action::Edit(EditOp {
-                range,
-                text: out,
-                cursor: clamp_normal_after(&post, top_left),
-            }));
-        } else {
-            // The block overhangs every line: nothing to delete.
-            actions.push(Action::MoveCursor(clamp_normal(text, top_left)));
-        }
-        actions
-    }
-
-    /// Blockwise `r`: every char inside the rectangle becomes `c`; the
-    /// cursor lands on the block's top-left.
-    fn block_replace(&mut self, text: &str, geom: BlockGeom, c: char) -> Vec<Action> {
-        let (range, out) = block_splice(text, &geom.ranges, |seg| seg.chars().map(|_| c).collect());
-        let top_left = geom.ranges[0].start;
-        if out == text[range.clone()] {
-            return vec![Action::MoveCursor(clamp_normal(text, top_left))];
-        }
-        let post = splice(text, &range, &out);
-        vec![Action::Edit(EditOp {
-            range,
-            text: out,
-            cursor: clamp_normal_after(&post, top_left),
-        })]
-    }
-
-    /// Blockwise `I`/`A`: Insert at the block's left edge, or just past its
-    /// right one (`$`-blocks append at each line's end); the Esc closing the
-    /// session replicates the typed text onto the other lines.
-    fn block_insert_cmd(&mut self, text: &str, cursor: usize, append: bool) -> Vec<Action> {
-        let Some(geom) = self.block_geom(text, cursor) else {
-            return self.beep();
-        };
-        self.mode = Mode::Insert;
-        self.take_count();
-        let rows = geom.rows.start + 1..geom.rows.end;
-        let top = geom.ranges[0].start;
-        if !append {
-            // The top line always reaches the left column (each corner sits
-            // on its own line); shorter lines below are skipped at Esc.
-            self.block_insert = Some(BlockInsert {
-                rows,
-                col: Some(geom.left),
-                pad: false,
-                exit_col: Some(geom.left),
-            });
-            return vec![Action::MoveCursor(top.min(text.len()))];
-        }
-        if geom.to_eol {
-            self.block_insert = Some(BlockInsert {
-                rows,
-                col: None,
-                pad: false,
-                exit_col: Some(geom.left),
-            });
-            return vec![Action::MoveCursor(line_end(text, top))];
-        }
-        let col = geom.right + 1;
-        self.block_insert = Some(BlockInsert {
-            rows,
-            col: Some(col),
-            pad: true,
-            exit_col: Some(geom.left),
-        });
-        let le = line_end(text, top);
-        let chars = char_col(text, le);
-        if chars < col {
-            // Pad the top line out to the block's right edge first (the
-            // lines below pad at Esc).
-            let pad: String = " ".repeat(col - chars);
-            return vec![Action::Edit(EditOp {
-                range: le..le,
-                text: pad.clone(),
-                cursor: le + pad.len(),
-            })];
-        }
-        vec![Action::MoveCursor(offset_of_col(text, top, col))]
-    }
-
     // --- Simple edits ------------------------------------------------------
 
     fn enter_insert(&mut self, text: &str, cursor: usize, c: char) -> Vec<Action> {
-        self.take_count();
+        let count = self.take_count().max(1);
+        if count > 1 {
+            // The Esc closing the session re-inserts the typed text
+            // `count - 1` more times (`3ix<Esc>` leaves `xxx`).
+            self.insert_repeat = Some(InsertRepeat {
+                count,
+                line: matches!(c, 'o' | 'O'),
+            });
+        }
         self.mode = Mode::Insert;
         match c {
             'i' => Vec::new(),
@@ -2401,392 +1992,6 @@ impl VimState {
             }
             _ => unreachable!(),
         }
-    }
-
-    fn delete_chars_forward(&mut self, text: &str, cursor: usize, count: usize) -> Vec<Action> {
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                break;
-            }
-            to = next_char(text, to);
-        }
-        if to == cursor {
-            return self.beep();
-        }
-        let yanked = text[cursor..to].to_string();
-        self.register = Some(Register::charwise(yanked.clone()));
-        let post = splice(text, &(cursor..to), "");
-        vec![
-            Action::Yank(yanked),
-            Action::Edit(EditOp {
-                range: cursor..to,
-                text: String::new(),
-                cursor: clamp_normal_after(&post, cursor),
-            }),
-        ]
-    }
-
-    fn delete_chars_backward(&mut self, text: &str, cursor: usize, count: usize) -> Vec<Action> {
-        let start = line_start(text, cursor);
-        let mut from = cursor;
-        for _ in 0..count {
-            if from <= start {
-                break;
-            }
-            from = prev_char(text, from);
-        }
-        if from == cursor {
-            return self.beep();
-        }
-        let yanked = text[from..cursor].to_string();
-        self.register = Some(Register::charwise(yanked.clone()));
-        vec![
-            Action::Yank(yanked),
-            Action::Edit(EditOp {
-                range: from..cursor,
-                text: String::new(),
-                cursor: from,
-            }),
-        ]
-    }
-
-    fn replace_chars(&mut self, text: &str, cursor: usize, c: char, count: usize) -> Vec<Action> {
-        // `r` fails when there aren't `count` chars left on the line.
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                return self.beep();
-            }
-            to = next_char(text, to);
-        }
-        // `{count}r<CR>` replaces all `count` chars with a single line break,
-        // cursor at the start of the new line (`:help r`).
-        let (replacement, cursor_after) = if c == '\n' {
-            ("\n".to_string(), cursor + 1)
-        } else {
-            let replacement: String = std::iter::repeat_n(c, count).collect();
-            let after = cursor + replacement.len() - c.len_utf8();
-            (replacement, after)
-        };
-        vec![Action::Edit(EditOp {
-            range: cursor..to,
-            text: replacement,
-            cursor: cursor_after,
-        })]
-    }
-
-    fn toggle_case(&mut self, text: &str, cursor: usize, count: usize) -> Vec<Action> {
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                break;
-            }
-            to = next_char(text, to);
-        }
-        if to == cursor {
-            return self.beep();
-        }
-        let toggled: String = text[cursor..to]
-            .chars()
-            .flat_map(toggle_char_case)
-            .collect();
-        let post = splice(text, &(cursor..to), &toggled);
-        let after = clamp_normal(&post, cursor + toggled.len());
-        vec![Action::Edit(EditOp {
-            range: cursor..to,
-            text: toggled,
-            cursor: after,
-        })]
-    }
-
-    /// `>`/`<`: shift the whole lines covered by `range` by one indent step
-    /// (two spaces — the hanging-bullet width; Vim's 'shiftwidth' default of
-    /// 8 is wrong for commit messages). Indent skips blank lines, like Vim;
-    /// dedent strips up to one step of spaces or a tab.
-    fn shift_lines(&mut self, text: &str, range: Range<usize>, dedent: bool) -> Vec<Action> {
-        const STEP: &str = "  ";
-        let start = line_start(text, range.start.min(text.len()));
-        let last = prev_char(text, range.end.min(text.len())).max(range.start);
-        let end = line_end(text, last.max(start));
-        let mut shifted = String::with_capacity(end - start + STEP.len() * 4);
-        for (i, line) in text[start..end].split('\n').enumerate() {
-            if i > 0 {
-                shifted.push('\n');
-            }
-            if dedent {
-                let trimmed = line
-                    .strip_prefix(STEP)
-                    .or_else(|| line.strip_prefix('\t'))
-                    .or_else(|| line.strip_prefix(' '))
-                    .unwrap_or(line);
-                shifted.push_str(trimmed);
-            } else if line.trim().is_empty() {
-                shifted.push_str(line);
-            } else {
-                shifted.push_str(STEP);
-                shifted.push_str(line);
-            }
-        }
-        if shifted == text[start..end] {
-            // Nothing to dedent: park on the first non-blank, like Vim's
-            // silent `<<` on an unindented line.
-            return vec![Action::MoveCursor(first_non_blank(text, start))];
-        }
-        let post = splice(text, &(start..end), &shifted);
-        let cursor = first_non_blank(&post, start.min(post.len()));
-        vec![Action::Edit(EditOp {
-            range: start..end,
-            text: shifted,
-            cursor,
-        })]
-    }
-
-    /// Join the lines covered by `range` (at least the cursor's line and the
-    /// next): each newline (plus the following line's indent) becomes one
-    /// space, unless the text before it already ends in whitespace.
-    fn join_range(&mut self, text: &str, range: Range<usize>) -> Vec<Action> {
-        let start = line_start(text, range.start);
-        let mut end = line_end(text, range.end.max(range.start));
-        // A charwise range within one line still joins it with the next.
-        if line_end(text, start) == end && end < text.len() {
-            end = line_end(text, next_char(text, end));
-        }
-        if line_end(text, start) == end {
-            return self.beep(); // nothing to join with
-        }
-        let mut joined = String::new();
-        let mut cursor_after = None;
-        let mut rest = start;
-        while rest < end {
-            let le = line_end(text, rest);
-            joined.push_str(&text[rest..le]);
-            if le >= end {
-                break;
-            }
-            // Skip the newline and the next line's leading blanks.
-            let mut next = le + 1;
-            while matches!(char_at(text, next), Some(' ' | '\t')) {
-                next = next_char(text, next);
-            }
-            cursor_after = Some(start + joined.len());
-            // One space at the seam — unless the left side already ends in
-            // whitespace or there is nothing to join on the right (a blank or
-            // empty line at the end contributes nothing, like Vim).
-            if !joined.is_empty()
-                && !joined.ends_with([' ', '\t'])
-                && char_at(text, next).is_some_and(|c| c != '\n')
-            {
-                joined.push(' ');
-            }
-            rest = next;
-        }
-        let cursor = cursor_after.unwrap_or(start);
-        let post = splice(text, &(start..end), &joined);
-        vec![Action::Edit(EditOp {
-            range: start..end,
-            text: joined,
-            cursor: clamp_normal(&post, cursor),
-        })]
-    }
-
-    /// Visual `p`/`P`: the selection is replaced by the register, honoring
-    /// each side's linewise-ness, and the replaced text takes the register's
-    /// place (Vim's swap idiom).
-    fn visual_put(
-        &mut self,
-        text: &str,
-        range: Range<usize>,
-        sel_linewise: bool,
-        reg: Register,
-    ) -> Vec<Action> {
-        let cut = text[range.clone()].to_string();
-        let sel_had_newline = cut.ends_with('\n');
-        let cut = if sel_linewise && !sel_had_newline {
-            format!("{cut}\n")
-        } else {
-            cut
-        };
-        self.register = Some(Register {
-            text: cut.clone(),
-            kind: if sel_linewise {
-                RegKind::Line
-            } else {
-                RegKind::Char
-            },
-        });
-        // A linewise register pastes as whole lines (splitting a charwise
-        // selection's line); a charwise register over a linewise selection
-        // becomes its own line. Match the selection's trailing-newline
-        // presence so an EOF paste doesn't grow a stray empty line.
-        let reg_linewise = reg.kind == RegKind::Line;
-        let mut pasted = match (reg_linewise, sel_linewise) {
-            (false, false) => reg.text.clone(),
-            (true, false) => format!("\n{}", reg.text),
-            (false, true) => format!("{}\n", reg.text),
-            (true, true) => reg.text.clone(),
-        };
-        if sel_linewise && !sel_had_newline {
-            // A linewise selection ending at EOF has no trailing newline to
-            // give back; don't grow a stray empty last line.
-            if let Some(s) = pasted.strip_suffix('\n') {
-                pasted = s.to_string();
-            }
-        }
-        let post = splice(text, &range, &pasted);
-        let cursor = if reg_linewise || sel_linewise {
-            // First non-blank of the first pasted line.
-            let first = range.start + usize::from(pasted.starts_with('\n'));
-            first_non_blank(&post, first.min(post.len()))
-        } else {
-            // Charwise over charwise: the last pasted char.
-            let end = range.start + pasted.len();
-            clamp_normal(
-                &post,
-                if end > range.start {
-                    prev_char(&post, end)
-                } else {
-                    range.start
-                },
-            )
-        };
-        vec![
-            Action::Yank(cut),
-            Action::Edit(EditOp {
-                range,
-                text: pasted,
-                cursor,
-            }),
-        ]
-    }
-
-    fn put(&mut self, text: &str, cursor: usize, count: usize, after: bool) -> Vec<Action> {
-        let Some(reg) = self.register.clone() else {
-            return self.beep();
-        };
-        // Cap the expansion so an absurd count can't OOM the app.
-        const PUT_LIMIT: usize = 4 << 20;
-        let count = count.min((PUT_LIMIT / reg.text.len().max(1)).max(1));
-        if let RegKind::Block { width } = reg.kind {
-            return self.put_block(text, cursor, &reg.text, width, count, after);
-        }
-        let body = reg.text.repeat(count);
-        if reg.kind == RegKind::Line {
-            let at = if after {
-                let le = line_end(text, cursor);
-                (le + usize::from(le < text.len())).min(text.len())
-            } else {
-                line_start(text, cursor)
-            };
-            // Pasting after the last line (no trailing newline): lead with a
-            // newline and drop the register's trailing one.
-            let (range, pasted) =
-                if after && at == text.len() && !text.ends_with('\n') && !text.is_empty() {
-                    (
-                        at..at,
-                        format!("\n{}", body.strip_suffix('\n').unwrap_or(&body)),
-                    )
-                } else {
-                    (at..at, body)
-                };
-            let first_line = at + usize::from(pasted.starts_with('\n'));
-            let post = splice(text, &range, &pasted);
-            let cursor = first_non_blank(&post, first_line.min(post.len()));
-            vec![Action::Edit(EditOp {
-                range,
-                text: pasted,
-                cursor,
-            })]
-        } else {
-            let at = if after && char_at(text, cursor).is_some_and(|c| c != '\n') {
-                next_char(text, cursor)
-            } else {
-                cursor
-            };
-            let post = splice(text, &(at..at), &body);
-            // Cursor on the last char of the pasted text.
-            let cursor = clamp_normal(&post, prev_char(&post, at + body.len()).max(at));
-            vec![Action::Edit(EditOp {
-                range: at..at,
-                text: body,
-                cursor,
-            })]
-        }
-    }
-
-    /// Paste a blockwise register: each segment lands at the same char
-    /// column on successive lines (`p` one column right of the cursor, like
-    /// charwise `p`; `P` at it), with shorter lines space-padded out to the
-    /// column, missing lines created, segments padded to the block width
-    /// when text follows them, and a count repeating each segment
-    /// horizontally. Cursor at the paste's top-left. (All probed.)
-    fn put_block(
-        &mut self,
-        text: &str,
-        cursor: usize,
-        reg: &str,
-        width: usize,
-        count: usize,
-        after: bool,
-    ) -> Vec<Action> {
-        let at = if after && char_at(text, cursor).is_some_and(|c| c != '\n') {
-            next_char(text, cursor)
-        } else {
-            cursor
-        };
-        let col = char_col(text, at);
-        let width = width.saturating_mul(count);
-        let start = line_start(text, at);
-        let mut out = String::new();
-        let mut end = start;
-        let mut line = Some(start);
-        for (i, seg) in reg.split('\n').enumerate() {
-            let seg = seg.repeat(count);
-            if i > 0 {
-                out.push('\n');
-            }
-            let Some(at_line) = line else {
-                // Past the last line: create one, padded out to the column.
-                if !seg.is_empty() {
-                    out.extend(std::iter::repeat_n(' ', col));
-                    out.push_str(&seg);
-                }
-                continue;
-            };
-            let le = line_end(text, at_line);
-            let chars = char_col(text, le);
-            if chars >= col {
-                let ins = offset_of_col(text, at_line, col);
-                out.push_str(&text[at_line..ins]);
-                out.push_str(&seg);
-                if ins < le {
-                    // Text follows: pad the segment to the block width so
-                    // the columns stay aligned.
-                    out.extend(std::iter::repeat_n(
-                        ' ',
-                        width.saturating_sub(seg.chars().count()),
-                    ));
-                }
-                out.push_str(&text[ins..le]);
-            } else {
-                out.push_str(&text[at_line..le]);
-                if !seg.is_empty() {
-                    out.extend(std::iter::repeat_n(' ', col - chars));
-                    out.push_str(&seg);
-                }
-            }
-            end = le;
-            line = (le < text.len()).then(|| le + 1);
-        }
-        let post = splice(text, &(start..end), &out);
-        vec![Action::Edit(EditOp {
-            range: start..end,
-            text: out,
-            cursor: clamp_normal(&post, at),
-        })]
     }
 
     // --- Small state helpers ---------------------------------------------
@@ -2823,88 +2028,6 @@ impl VimState {
         self.clear_pending();
         vec![Action::Error(msg)]
     }
-}
-
-/// Step a prompt through its history: `older` is Up/`C-p`. Returns the new
-/// line, or None when there's nowhere to go (empty history, already at the
-/// oldest, or Down on the live line). Browsing starts by stashing the live
-/// line; Down past the newest entry restores it.
-fn hist_step(
-    hist: &[String],
-    ix: &mut Option<usize>,
-    stash: &mut String,
-    current: &str,
-    older: bool,
-) -> Option<String> {
-    if older {
-        let next = match *ix {
-            None if hist.is_empty() => return None,
-            None => {
-                *stash = current.to_string();
-                hist.len() - 1
-            }
-            Some(0) => return None,
-            Some(i) => i - 1,
-        };
-        *ix = Some(next);
-        Some(hist[next].clone())
-    } else {
-        match *ix {
-            None => None,
-            Some(i) if i + 1 >= hist.len() => {
-                *ix = None;
-                Some(std::mem::take(stash))
-            }
-            Some(i) => {
-                *ix = Some(i + 1);
-                Some(hist[i + 1].clone())
-            }
-        }
-    }
-}
-
-/// Append an executed prompt line to its history (consecutive repeats and
-/// anything past 50 entries dropped).
-fn push_hist(hist: &mut Vec<String>, line: &str) {
-    if hist.last().map(String::as_str) == Some(line) {
-        return;
-    }
-    hist.push(line.to_string());
-    if hist.len() > 50 {
-        hist.remove(0);
-    }
-}
-
-/// Parse the optional leading `[range]` of an ex command — `%`, `'<,'>`
-/// (only meaningful with a Visual-remembered line pair), or one or two
-/// addresses (`N`, `.`, `$`) separated by `,` — returning the 1-based line
-/// pair and the rest of the line. No range means the current line. `Err` is
-/// the message to echo.
-fn ex_range(
-    input: &str,
-    current: usize,
-    lines: usize,
-    visual: Option<(usize, usize)>,
-) -> Result<((usize, usize), &str), String> {
-    if let Some(rest) = input.strip_prefix('%') {
-        return Ok(((1, lines), rest));
-    }
-    if let Some(rest) = input.strip_prefix("'<,'>") {
-        return match visual {
-            Some(v) => Ok((v, rest)),
-            None => Err("Mark not set".into()),
-        };
-    }
-    if let Some((a, rest)) = ex_addr(input, current, lines) {
-        return match rest.strip_prefix(',') {
-            Some(rest) => match ex_addr(rest, current, lines) {
-                Some((b, rest)) => Ok(((a, b), rest)),
-                None => Err("Invalid range".into()),
-            },
-            None => Ok(((a, a), rest)),
-        };
-    }
-    Ok(((current, current), input))
 }
 
 /// Multiply the counts typed before and after an operator (`2d3w` = 6 words).
@@ -3020,85 +2143,6 @@ fn consumer_keys(c: &Consumer) -> String {
     }
 }
 
-/// Byte offset of char column `col` on the line containing `line_pos`,
-/// clamped to the line's end. Unlike [`offset_at_col`], which clamps to the
-/// last char for Normal-mode cursors, this can land one past it — block
-/// edges and insertions live between chars.
-fn offset_of_col(text: &str, line_pos: usize, col: usize) -> usize {
-    let end = line_end(text, line_pos);
-    let mut at = line_start(text, line_pos);
-    for _ in 0..col {
-        if at >= end {
-            break;
-        }
-        at = next_char(text, at);
-    }
-    at
-}
-
-/// Rebuild a block's covered line span with each segment mapped through `f`,
-/// returning the span and its replacement.
-fn block_splice(
-    text: &str,
-    ranges: &[Range<usize>],
-    f: impl Fn(&str) -> String,
-) -> (Range<usize>, String) {
-    let start = line_start(text, ranges[0].start);
-    let end = line_end(text, ranges.last().unwrap().start);
-    let mut out = String::with_capacity(end - start);
-    for (i, seg) in ranges.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(&text[line_start(text, seg.start)..seg.start]);
-        out.push_str(&f(&text[seg.clone()]));
-        out.push_str(&text[seg.end..line_end(text, seg.start)]);
-    }
-    (start..end, out)
-}
-
-/// The replication edit closing a blockwise insert session: `typed` inserted
-/// on each of `bi.rows` at `bi.col` (space-padded or skipped on lines that
-/// don't reach it, per `bi.pad`), or appended at each line's end for
-/// `col: None`. `None` when nothing changes.
-fn block_replicate(text: &str, bi: &BlockInsert, typed: &str) -> Option<(Range<usize>, String)> {
-    let first = bi.rows.start;
-    let last = (bi.rows.end.saturating_sub(1)).min(line_count(text));
-    if first > last {
-        return None;
-    }
-    let start = line_offset(text, first);
-    let end = line_end(text, line_offset(text, last));
-    let mut out = String::with_capacity(end - start + typed.len() * (last - first + 1));
-    for (i, line) in text[start..end].split('\n').enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        match bi.col {
-            None => {
-                out.push_str(line);
-                out.push_str(typed);
-            }
-            Some(col) => {
-                let chars = line.chars().count();
-                if chars >= col {
-                    let at = line.char_indices().nth(col).map_or(line.len(), |(b, _)| b);
-                    out.push_str(&line[..at]);
-                    out.push_str(typed);
-                    out.push_str(&line[at..]);
-                } else if bi.pad {
-                    out.push_str(line);
-                    out.extend(std::iter::repeat_n(' ', col - chars));
-                    out.push_str(typed);
-                } else {
-                    out.push_str(line);
-                }
-            }
-        }
-    }
-    (out != text[start..end]).then_some((start..end, out))
-}
-
 /// The buffer after replacing `range` with `with` (for computing post-edit
 /// cursor positions).
 fn splice(text: &str, range: &Range<usize>, with: &str) -> String {
@@ -3136,82 +2180,6 @@ fn line_offset(text: &str, line: usize) -> usize {
         }
     }
     at
-}
-
-/// One ex-range endpoint: a line number, `.` (the current line), or `$` (the
-/// last), returning the rest of the input.
-fn ex_addr(s: &str, current: usize, last: usize) -> Option<(usize, &str)> {
-    if let Some(rest) = s.strip_prefix('.') {
-        return Some((current, rest));
-    }
-    if let Some(rest) = s.strip_prefix('$') {
-        return Some((last, rest));
-    }
-    let digits = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-    (digits > 0).then(|| (s[..digits].parse().unwrap_or(usize::MAX), &s[digits..]))
-}
-
-/// Split the `pat/rep/flags` after `:s/` on unescaped `/`: `\/` is a literal
-/// delimiter inside either field; any other backslash pair passes through
-/// untouched (the pattern is regex syntax). The trailing delimiter is
-/// optional.
-fn split_substitute(body: &str) -> (String, String, String) {
-    let mut fields = [String::new(), String::new(), String::new()];
-    let mut at = 0;
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        if at == 2 {
-            fields[2].push(c);
-        } else if c == '/' {
-            at += 1;
-        } else if c == '\\' {
-            match chars.next() {
-                Some('/') => fields[at].push('/'),
-                Some(d) => {
-                    fields[at].push('\\');
-                    fields[at].push(d);
-                }
-                None => fields[at].push('\\'),
-            }
-        } else {
-            fields[at].push(c);
-        }
-    }
-    let [pat, rep, flags] = fields;
-    (pat, rep, flags)
-}
-
-/// Translate a `:s` replacement into the regex crate's syntax: `&` and `\0`
-/// are the whole match, `\1`..`\9` capture groups — emitted as `${N}` so a
-/// trailing digit can't glue onto the reference — `\&` a literal `&`, `\\` a
-/// literal backslash. A literal `$` must become `$$`, which is the regex
-/// crate's only escape.
-fn sub_replacement(rep: &str) -> String {
-    let mut out = String::with_capacity(rep.len() + 4);
-    let mut chars = rep.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '$' => out.push_str("$$"),
-            '&' => out.push_str("${0}"),
-            '\\' => match chars.next() {
-                Some('&') => out.push('&'),
-                Some('\\') => out.push('\\'),
-                Some(d @ '0'..='9') => {
-                    out.push_str("${");
-                    out.push(d);
-                    out.push('}');
-                }
-                Some('$') => out.push_str("\\$$"),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => out.push('\\'),
-            },
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Turn a motion landing into the operator's byte range, applying the

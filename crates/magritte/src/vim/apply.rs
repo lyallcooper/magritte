@@ -99,9 +99,7 @@ impl StatusView {
         cx.notify();
     }
 
-    /// `gq{target}`: reflow the target's whole lines at the body width. The
-    /// summary line never reflows (the 50-col convention), matching the ⌥q
-    /// whole-body reflow.
+    /// `gq{target}`: apply [`reflow_edit`] to the editor's buffer.
     fn reflow_vim_range(
         &mut self,
         range: std::ops::Range<usize>,
@@ -113,34 +111,19 @@ impl StatusView {
         };
         state.update(cx, |s, cx| {
             let text = s.text().to_string();
-            let mut start = line_start(&text, range.start.min(text.len()));
-            // The range's end is exclusive (a linewise range ends just past
-            // its trailing newline), so the last covered line is the one
-            // holding the char before it.
-            let last = prev_char(&text, range.end.min(text.len())).max(range.start);
-            let end = line_end(&text, last);
-            if start == 0 {
-                // Skip the summary line.
-                match text.find('\n') {
-                    Some(nl) if nl < end => start = nl + 1,
-                    _ => return,
-                }
-            }
-            let block = &text[start..end];
-            let reflowed = commit_text::reflow_lines_joining(block, COMMIT_BODY_WIDTH);
-            if reflowed == block {
+            let Some((span, reflowed, cursor)) = reflow_edit(&text, range, COMMIT_BODY_WIDTH)
+            else {
                 return;
-            }
+            };
             s.replace_text_in_range(
-                Some(commit_text::byte_range_to_utf16(&text, &(start..end))),
+                Some(commit_text::byte_range_to_utf16(&text, &span)),
                 &reflowed,
                 window,
                 cx,
             );
             let post = s.text().to_string();
-            let cursor = first_non_blank(&post, start.min(post.len()));
             s.set_cursor_position(
-                commit_text::byte_offset_to_position(&post, cursor),
+                commit_text::byte_offset_to_position(&post, cursor.min(post.len())),
                 window,
                 cx,
             );
@@ -171,9 +154,10 @@ impl StatusView {
     }
 
     /// The release: a completed drag-selection becomes a Visual selection
-    /// (anchor at its start, cursor on its last char, the native selection
-    /// dropped in favor of the Vim overlay); a plain click just places the
-    /// cursor. Either way focus goes back to the view.
+    /// (anchor at the press point — a leftward drag anchors at the right
+    /// end, like Vim — the native selection dropped in favor of the Vim
+    /// overlay); a plain click just places the cursor. Either way focus goes
+    /// back to the view.
     pub(crate) fn vim_mouse_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editor_mut() else {
             return;
@@ -186,17 +170,24 @@ impl StatusView {
         if in_insert {
             return;
         }
-        let (text, sel) = {
+        let (text, sel, caret) = {
             let s = state.read(cx);
-            (s.text().to_string(), s.selected_range())
+            (s.text().to_string(), s.selected_range(), s.cursor())
         };
         if sel.start < sel.end {
+            // `selected_range` is normalized; the caret sits at the drag's
+            // release end, so a caret at the start means a leftward drag.
+            let (anchor, cursor) = if caret == sel.start {
+                (prev_char(&text, sel.end), sel.start)
+            } else {
+                (sel.start, prev_char(&text, sel.end))
+            };
+            let cursor = clamp_normal(&text, cursor);
             if let Some(vim) = self.editor_mut().and_then(|e| e.vim.as_mut()) {
-                vim.begin_visual(&text, sel.start);
+                vim.begin_visual(&text, anchor);
             }
             state.update(cx, |s, cx| {
                 s.unselect(window, cx);
-                let cursor = clamp_normal(&text, prev_char(&text, sel.end));
                 s.set_cursor_position(
                     commit_text::byte_offset_to_position(&text, cursor),
                     window,
@@ -273,11 +264,11 @@ impl StatusView {
                     );
                 }),
                 Action::Yank(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-                Action::Repeat => {
+                Action::Repeat(count) => {
                     let repeat = self
                         .editor_mut()
                         .and_then(|e| e.vim.as_mut())
-                        .and_then(|vim| vim.begin_repeat());
+                        .and_then(|vim| vim.begin_repeat(count));
                     if let Some((keys, typed)) = repeat {
                         for k in keys {
                             self.feed_vim(k, window, cx);
@@ -478,6 +469,38 @@ impl StatusView {
     }
 }
 
+/// The edit a `gq`/`,q` reflow of `range` should make: expand to whole lines
+/// and reflow them at `width`, returning the byte span to replace, its
+/// replacement, and the post-edit cursor (the reflowed block's first
+/// non-blank). The summary line never reflows (the 50-col convention),
+/// matching the ⌥q whole-body reflow. `None` when nothing changes.
+fn reflow_edit(
+    text: &str,
+    range: std::ops::Range<usize>,
+    width: usize,
+) -> Option<(std::ops::Range<usize>, String, usize)> {
+    let mut start = line_start(text, range.start.min(text.len()));
+    // The range's end is exclusive (a linewise range ends just past its
+    // trailing newline), so the last covered line is the one holding the
+    // char before it.
+    let last = prev_char(text, range.end.min(text.len())).max(range.start);
+    let end = line_end(text, last);
+    if start == 0 {
+        // Skip the summary line.
+        match text.find('\n') {
+            Some(nl) if nl < end => start = nl + 1,
+            _ => return None,
+        }
+    }
+    let block = &text[start..end];
+    let reflowed = commit_text::reflow_lines_joining(block, width);
+    if reflowed == block {
+        return None;
+    }
+    let cursor = first_non_blank(&reflowed, 0) + start;
+    Some((start..end, reflowed, cursor))
+}
+
 /// Zero-width rects (empty lines, EOF) get a half-cell stub so they stay
 /// visible.
 fn widen(b: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -526,6 +549,8 @@ fn single_char(s: &str) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
+    use super::reflow_edit;
+
     #[test]
     fn utf16_ranges() {
         // "a𝄞b": 𝄞 is 4 bytes, 2 UTF-16 units.
@@ -533,5 +558,55 @@ mod tests {
         assert_eq!(super::commit_text::byte_range_to_utf16(t, &(0..1)), 0..1);
         assert_eq!(super::commit_text::byte_range_to_utf16(t, &(1..5)), 1..3);
         assert_eq!(super::commit_text::byte_range_to_utf16(t, &(5..6)), 3..4);
+    }
+
+    #[test]
+    fn reflow_edit_expands_to_whole_lines() {
+        // A mid-line range reflows the whole covered lines; the cursor lands
+        // on the block's first non-blank.
+        let text = "summary\naa bb\ncc\n";
+        let (span, out, cursor) = reflow_edit(text, 11..15, 72).unwrap();
+        assert_eq!(span, 8..16); // "aa bb\ncc", whole lines
+        assert_eq!(out, "aa bb cc");
+        assert_eq!(cursor, 8);
+    }
+
+    #[test]
+    fn reflow_edit_linewise_end_excludes_next_line() {
+        // A linewise range ends just past its trailing newline: the line at
+        // that offset is not part of the target.
+        let text = "s\naa bb\ncc dd\n";
+        let (span, out, _) = reflow_edit(text, 2..8, 3).unwrap();
+        assert_eq!(span, 2..7); // "aa bb" only, not "cc dd"
+        assert_eq!(out, "aa\nbb");
+    }
+
+    #[test]
+    fn reflow_edit_skips_summary_line() {
+        // A range touching the summary starts below it…
+        let text = "long summary\nbb cc\n";
+        let (span, out, cursor) = reflow_edit(text, 0..19, 3).unwrap();
+        assert_eq!(span, 13..18);
+        assert_eq!(out, "bb\ncc");
+        assert_eq!(cursor, 13);
+        // …and a summary-only range reflows nothing.
+        assert_eq!(reflow_edit("long summary\nbody", 0..5, 3), None);
+        assert_eq!(reflow_edit("summary only", 0..12, 3), None);
+    }
+
+    #[test]
+    fn reflow_edit_noop_returns_none() {
+        assert_eq!(reflow_edit("s\nshort line\n", 2..12, 72), None);
+        assert_eq!(reflow_edit("", 0..0, 72), None);
+    }
+
+    #[test]
+    fn reflow_edit_cursor_at_first_non_blank() {
+        // A hanging bullet keeps its indent; the cursor sits on the marker.
+        let text = "s\n- aa bb cc\n";
+        let (span, out, cursor) = reflow_edit(text, 2..12, 7).unwrap();
+        assert_eq!(span, 2..12);
+        assert_eq!(out, "- aa bb\n  cc");
+        assert_eq!(cursor, 2);
     }
 }

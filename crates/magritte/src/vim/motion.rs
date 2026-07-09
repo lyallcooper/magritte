@@ -303,8 +303,10 @@ fn find(
                 .filter(|&(_, c)| c == ch)
                 .map(|(i, _)| from + i);
             let mut first = found.next()?;
-            if till && repeat && prev_char(text, first) == cursor {
-                first = found.next()?; // `;` skips an adjacent target (`:help ;`)
+            // `;` skips an adjacent target (`:help ;`) — but only without a
+            // count (probed: `tx` then `2;` stops before the 2nd x, not 3rd).
+            if till && repeat && count == 1 && prev_char(text, first) == cursor {
+                first = found.next()?;
             }
             let pos = std::iter::once(first).chain(found).nth(count - 1)?;
             let pos = if till { prev_char(text, pos) } else { pos };
@@ -319,7 +321,7 @@ fn find(
                 .filter(|&(_, c)| c == ch)
                 .map(|(i, _)| start + i);
             let mut first = found.next()?;
-            if till && repeat && next_char(text, first) == cursor {
+            if till && repeat && count == 1 && next_char(text, first) == cursor {
                 first = found.next()?;
             }
             let pos = std::iter::once(first).chain(found).nth(count - 1)?;
@@ -668,6 +670,22 @@ mod tests {
             ),
             ("abxbx", 1, 1, fnd(TillFwd, 'x', true), Some((3, Inclusive))),
             ("abxb", 1, 1, fnd(TillFwd, 'x', true), None),
+            // ...but a count suppresses the skip (probed: `tx` then `2;`
+            // stops before the 2nd x, not the 3rd).
+            (
+                "axbxcxd",
+                0,
+                2,
+                fnd(TillFwd, 'x', true),
+                Some((2, Inclusive)),
+            ),
+            (
+                "axbxcxd",
+                6,
+                2,
+                fnd(TillBack, 'x', true),
+                Some((4, Exclusive)),
+            ),
             (
                 "abcabc",
                 5,

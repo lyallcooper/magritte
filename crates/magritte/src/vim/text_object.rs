@@ -53,26 +53,44 @@ fn word_object(
     big: bool,
     count: usize,
 ) -> Option<Range<usize>> {
-    // On an empty line (or the empty last line): `aw` takes its newline —
-    // the one under the cursor, or the preceding one at EOF — while `iw`
-    // selects nothing (`diw` there is a no-op in Vim, `daw` joins).
+    // On the empty last line at EOF there is no word: `iw` selects nothing
+    // and `aw` fails (Vim beeps).
     let Some(c) = char_at(text, cursor) else {
-        if text.is_empty() {
+        if text.is_empty() || around {
             return None;
         }
+        return Some(cursor..cursor);
+    };
+    if c == '\n' {
+        // On an empty line, `iw` selects nothing (`diw` is a no-op in Vim).
         if !around {
             return Some(cursor..cursor);
         }
-        return text
-            .ends_with('\n')
-            .then(|| prev_char(text, cursor)..cursor);
-    };
-    if c == '\n' {
-        return Some(if around {
-            cursor..next_char(text, cursor)
-        } else {
-            cursor..cursor
-        });
+        // `aw` (probed against Vim 9.2): a following empty line joins the
+        // cursor's and the object stops there; otherwise it runs through any
+        // blanks to the end of the following word (`count` times) — plus
+        // that word's newline, so the operator treats it linewise (see
+        // `resolve_object`). No word to reach is a failed object.
+        let mut end = next_char(text, cursor);
+        if char_at(text, end) == Some('\n') {
+            return Some(cursor..next_char(text, end));
+        }
+        for i in 0..count {
+            while matches!(char_at(text, end), Some(' ' | '\t' | '\n')) {
+                end = next_char(text, end);
+            }
+            if char_at(text, end).is_none() {
+                if i == 0 {
+                    return None;
+                }
+                break;
+            }
+            end = unit_end(text, end, big);
+        }
+        if char_at(text, end) == Some('\n') {
+            end = next_char(text, end);
+        }
+        return Some(cursor..end);
     }
     let start = unit_start(text, cursor, big);
     let mut end = unit_end(text, start, big);
@@ -575,9 +593,20 @@ mod tests {
             ("x  a b", 1, 2, Some((1, 6))),   // on blanks, count 2
             ("ab  ", 2, 1, Some((2, 4))),     // blanks with no word after
             ("ab  \ncd", 2, 1, Some((2, 7))), // trailing blanks cross the newline
-            ("a\n\nb", 2, 1, Some((2, 3))),   // empty line
-            ("a b c", 0, 2, Some((0, 4))),    // 2aw: two words + trailing
-            ("a b", 0, 2, Some((0, 3))),      // 2aw at line end: no blanks left
+            // From an empty line: through the following word, taking its
+            // newline; a following empty line joins instead (probed).
+            ("a\n\nb", 2, 1, Some((2, 4))),
+            ("aa\n\nbb\ncc", 3, 1, Some((3, 7))),
+            ("aa\n\nbb cc", 3, 1, Some((3, 6))), // stops before the blank
+            ("aa\n\n  bb", 3, 1, Some((3, 8))),  // leading blanks join
+            ("aa\n\n \nbb", 3, 1, Some((3, 8))), // ...across a blank line
+            ("aa\n\n\nbb", 3, 1, Some((3, 5))),  // next line empty: just the pair
+            ("aa\n\n\n\nbb", 3, 1, Some((3, 5))),
+            ("aa\n\nbb\ncc", 3, 2, Some((3, 9))), // 2aw: the next word too
+            ("aa\n\n ", 3, 1, None),              // no word to reach
+            ("aa\n", 3, 1, None),                 // empty last line at EOF
+            ("a b c", 0, 2, Some((0, 4))),        // 2aw: two words + trailing
+            ("a b", 0, 2, Some((0, 3))),          // 2aw at line end: no blanks left
             ("foo.bar", 0, 2, Some((0, 4))),
             ("é ✓", 0, 1, Some((0, 3))),
         ] {
