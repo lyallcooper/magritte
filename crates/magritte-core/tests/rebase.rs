@@ -218,3 +218,48 @@ fn autosquash_ignores_a_no_autosquash_switch() {
         .unwrap();
     assert_eq!(subjects(&t), ["A", "base"], "fixup still folded into A");
 }
+
+/// `r e` must round-trip instructions the todo editor doesn't model: an `exec`
+/// stays attached to its commit through a reword, and still runs.
+#[test]
+fn edit_todo_preserves_unmodeled_instructions() {
+    let (t, base) = three_commits();
+    let repo = open(&t);
+    let a = t.git(["rev-parse", "HEAD~2"]);
+    let b = t.git(["rev-parse", "HEAD~1"]);
+    let c = t.git(["rev-parse", "HEAD"]);
+
+    // Pause at an edit stop on A, with an exec between B and C.
+    let todo = format!("edit {a}\npick {b}\nexec touch ran-exec\npick {c}\n");
+    repo.run_with_sequence_editor(&todo, &["rebase".to_string(), "-i".to_string(), base])
+        .unwrap();
+
+    let mut steps = repo.rebase_current_todo().unwrap();
+    assert_eq!(steps.len(), 2, "picks of B and C remain");
+    steps[0].action = RebaseAction::Reword; // written as an app-managed edit stop
+
+    repo.rebase_edit_todo(&steps).unwrap();
+
+    let written = std::fs::read_to_string(
+        repo.git_dir()
+            .unwrap()
+            .join("rebase-merge")
+            .join("git-rebase-todo"),
+    )
+    .unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert!(
+        lines[0].starts_with("edit ") && lines[0].contains(&b[..7]),
+        "reword written as edit: {written}"
+    );
+    assert_eq!(lines[1], "exec touch ran-exec", "exec survived: {written}");
+    assert!(lines[2].starts_with("pick "), "C still picked: {written}");
+
+    // The merged plan still runs: continue past A, then past B's edit stop;
+    // the exec fires and C lands.
+    let kind = magritte_core::SequenceKind::Rebase;
+    repo.sequence_continue(kind).unwrap();
+    repo.sequence_continue(kind).unwrap();
+    assert!(t.path().join("ran-exec").exists(), "exec instruction ran");
+    assert_eq!(subjects(&t), ["C", "B", "A", "base"]);
+}

@@ -44,15 +44,31 @@ impl StatusView {
                 };
                 self.resolve_remote(t, targets.push_remote.clone(), switches, window, cx);
             }
-            PushUpstream => {
-                let t = Transfer::Push {
-                    branch,
-                    set_upstream: targets.upstream.is_none(),
-                    save_push_remote: false,
-                };
-                let remote = targets.upstream.as_ref().map(|u| u.remote.clone());
-                self.resolve_remote(t, remote, switches, window, cx);
-            }
+            PushUpstream => match &targets.upstream {
+                // magit pushes the current branch to the upstream branch itself
+                // (`git push <remote> <branch>:refs/heads/<merge>`), not to a
+                // same-named branch on the upstream's remote.
+                Some(u) => {
+                    let remote = u.remote.clone();
+                    let target = upstream_push_refspec_target(&u.branch);
+                    self.run_job(
+                        "Pushing…",
+                        "Pushed",
+                        move |repo| repo.push_ref(&remote, &branch, &target, &switches),
+                        cx,
+                    );
+                }
+                // No upstream yet: push the branch somewhere and set it as the
+                // upstream, like magit's set-and-push fallback.
+                None => {
+                    let t = Transfer::Push {
+                        branch,
+                        set_upstream: true,
+                        save_push_remote: false,
+                    };
+                    self.resolve_remote(t, None, switches, window, cx);
+                }
+            },
             PushElsewhere => {
                 // Choose (or type a new) remote branch to push the current
                 // branch to.
@@ -266,5 +282,26 @@ impl StatusView {
             move |repo| repo.fetch_all(&switches),
             cx,
         );
+    }
+}
+
+/// The refspec destination for a push to the configured upstream: the fully
+/// qualified `refs/heads/<branch>` merge ref, like magit — an unqualified name
+/// would fail if the branch no longer exists on the remote.
+fn upstream_push_refspec_target(upstream_branch: &str) -> String {
+    format!("refs/heads/{upstream_branch}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upstream_push_refspec_target;
+
+    #[test]
+    fn upstream_push_targets_the_upstream_merge_ref() {
+        // `p u` on `fix` tracking `origin/main` must push `fix:refs/heads/main`
+        // (magit-push-current-to-upstream), never `origin fix`.
+        assert_eq!(upstream_push_refspec_target("main"), "refs/heads/main");
+        // A slashed upstream branch name qualifies the same way.
+        assert_eq!(upstream_push_refspec_target("feat/x"), "refs/heads/feat/x");
     }
 }

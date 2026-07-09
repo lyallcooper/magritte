@@ -12,6 +12,7 @@ use crate::config;
 pub const FOLDS_FILE: &str = "folds.toml";
 pub const WINDOW_FILE: &str = "window.toml";
 pub const RECENT_REPOS_FILE: &str = "recent-repos.toml";
+pub const COMMIT_MESSAGES_FILE: &str = "commit-messages.toml";
 
 pub fn global_path(file: &str) -> Option<PathBuf> {
     config::path().map(|p| p.with_file_name(file))
@@ -105,6 +106,31 @@ impl RecentRepos {
     }
 }
 
+/// Commit messages rescued from a failed commit or a discarded editor, newest
+/// first — magit's `log-edit-comment-ring`. Per worktree, next to `folds.toml`.
+#[derive(Serialize, Deserialize, Default)]
+pub struct CommitMessageRing {
+    #[serde(default)]
+    pub messages: Vec<String>,
+}
+
+/// How many rescued messages the ring keeps.
+pub const COMMIT_MESSAGE_RING_CAP: usize = 10;
+
+impl CommitMessageRing {
+    pub fn load(path: &Path) -> Self {
+        load_toml_or_default(path)
+    }
+
+    /// Insert `message` as the newest entry, dropping any identical older one
+    /// (like magit's ring dedupe) and anything past the cap.
+    pub fn push(&mut self, message: String) {
+        self.messages.retain(|m| m != &message);
+        self.messages.insert(0, message);
+        self.messages.truncate(COMMIT_MESSAGE_RING_CAP);
+    }
+}
+
 /// Current time as unix seconds; 0 if the clock is somehow before the epoch.
 pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
@@ -178,6 +204,26 @@ mod tests {
             vec!["staged", "ignored"]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn commit_message_ring_dedupes_caps_and_round_trips() {
+        let mut ring = CommitMessageRing::default();
+        for i in 0..12 {
+            ring.push(format!("msg {i}"));
+        }
+        assert_eq!(ring.messages.len(), COMMIT_MESSAGE_RING_CAP);
+        assert_eq!(ring.messages[0], "msg 11");
+        // Re-pushing an existing message moves it to the front, no duplicate.
+        ring.push("msg 5".into());
+        assert_eq!(ring.messages[0], "msg 5");
+        assert_eq!(ring.messages.iter().filter(|m| *m == "msg 5").count(), 1);
+
+        let path = std::env::temp_dir().join("magritte-commit-messages-test.toml");
+        save_toml(&path, &ring);
+        let loaded = CommitMessageRing::load(&path);
+        assert_eq!(loaded.messages, ring.messages);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

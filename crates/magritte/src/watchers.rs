@@ -234,6 +234,7 @@ impl StatusView {
         let fetch_changed = self.config.fetch != cfg.fetch;
         let update_check_changed = self.config.check_for_updates != cfg.check_for_updates;
         let app_icon_changed = self.config.app_icon != cfg.app_icon;
+        let vim_keymap_changed = self.config.vim.keymap != cfg.vim.keymap;
         // Some settings change *fetched data*, not just how it's painted — the
         // title-bar tag segment (and commit ref labels), which status sections
         // are populated, and the recent-commit count. Those need a refresh to
@@ -269,7 +270,7 @@ impl StatusView {
             .editor_mut()
             .filter(|ed| vim_on != ed.vim.is_some())
             .map(|ed| {
-                ed.vim = vim_on.then(|| Box::new(vim::VimState::with_user_map(user_map)));
+                ed.vim = vim_on.then(|| Box::new(vim::VimState::with_user_map(user_map.clone())));
                 ed.state.clone()
             });
         if let Some(state) = toggled {
@@ -277,6 +278,13 @@ impl StatusView {
                 self.focus.focus(window, cx);
             } else {
                 state.read(cx).focus_handle(cx).focus(window, cx);
+            }
+        } else if vim_on && vim_keymap_changed {
+            // Vim stayed on but `[vim.keymap]` changed: swap the map in
+            // place, so the edited binding applies without closing the
+            // editor and without resetting mode/pending/Vim-level undo.
+            if let Some(vim) = self.editor_mut().and_then(|ed| ed.vim.as_mut()) {
+                vim.set_user_map(user_map);
             }
         }
         if data_changed {
@@ -310,6 +318,9 @@ impl StatusView {
         self.palette = Palette::from_theme(cx);
         self.recompute_highlights(cx);
         self.rebuild_rows();
+        // The flat-diff surfaces (commit/diff view, editor preview) bake theme
+        // colors into their Line spans at load time; rebuild those too.
+        self.restyle_diff_screens(cx);
         cx.notify();
     }
 

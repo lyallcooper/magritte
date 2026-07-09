@@ -147,6 +147,13 @@ impl StatusView {
         (self.font_px() + 5.0).round()
     }
 
+    /// Width (px) of `chars` monospace characters at the current font size —
+    /// for fixed text-column widths that must track `font_size` like `row_h`
+    /// does (0.62em/char, the ~8px advance of the 13px default).
+    pub(crate) fn ch_px(&self, chars: f32) -> f32 {
+        (self.font_px() * 0.62 * chars).round()
+    }
+
     /// The bottom popup panel (picker / transient): full-width, top border,
     /// panel background, padded column.
     pub(crate) fn bottom_panel(&self) -> gpui::Div {
@@ -548,7 +555,9 @@ impl StatusView {
                 if !status.is_empty() {
                     el = el.child(
                         div()
-                            .w(px(STATUS_COL_WIDTH))
+                            // The constant is the 13px-default width; scale it
+                            // with the font so the column fits larger sizes.
+                            .w(px(STATUS_COL_WIDTH * self.font_px() / 13.0))
                             .flex_shrink_0()
                             .text_color(*status_color)
                             .child(SharedString::from(status.clone())),
@@ -1142,6 +1151,12 @@ impl Render for StatusView {
         if !owns_focus_elsewhere && !self.focus.is_focused(window) {
             self.focus.focus(window, cx);
         }
+        // The component theme is process-global; another repo window may have
+        // applied its own config since this one last painted. Re-apply ours so
+        // every window paints with its own theme/font settings.
+        if !theme::appearance_applied(&self.config, cx) {
+            self.reapply_theme(cx);
+        }
         self.palette = Palette::from_theme(cx);
 
         let view = cx.entity();
@@ -1207,7 +1222,10 @@ impl Render for StatusView {
                     this.run_dispatch("shift-tab", window, cx);
                 }
             }))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, cx| {
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                // Write out any debounced settings edit before the entity goes
+                // away with the window (the pending timer could no longer save).
+                this.flush_settings_save(cx);
                 // Quit when closing the last window (no windowless lingering).
                 let last = cx.windows().len() <= 1;
                 window.remove_window();

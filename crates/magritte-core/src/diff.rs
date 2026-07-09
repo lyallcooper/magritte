@@ -30,12 +30,24 @@ pub enum LineKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
-    /// Line content without the leading origin character or trailing newline.
+    /// Line content without the leading origin character or trailing newline,
+    /// decoded lossily for display (file content need not be UTF-8).
     pub content: String,
+    /// The original content bytes, kept only when they aren't valid UTF-8
+    /// (`content` then holds replacement characters), so reconstructed patches
+    /// carry the file's real bytes instead of U+FFFD.
+    pub raw: Option<Vec<u8>>,
     /// 1-based line number on the old side, if this line exists there.
     pub old_lineno: Option<u32>,
     /// 1-based line number on the new side, if this line exists there.
     pub new_lineno: Option<u32>,
+}
+
+impl DiffLine {
+    /// The content's original bytes, for byte-exact patch reconstruction.
+    pub fn content_bytes(&self) -> &[u8] {
+        self.raw.as_deref().unwrap_or(self.content.as_bytes())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +85,10 @@ pub struct FileDiff {
     /// Header lines from `diff --git` up to (not including) the first hunk.
     /// Preserved verbatim so patches can be reconstructed for staging.
     pub header_lines: Vec<String>,
+    /// The raw header bytes (newline-terminated), kept only when some header
+    /// line isn't valid UTF-8 (a non-UTF-8 path under `core.quotepath=false`),
+    /// so reconstructed patches keep the original path bytes.
+    pub header_raw: Option<Vec<u8>>,
     pub hunks: Vec<Hunk>,
 }
 
@@ -265,19 +281,41 @@ impl Repo {
     }
 }
 
-/// Parse the (UTF-8 lossy) output of `git diff` into zero or more file diffs.
+/// One line of raw diff output paired with its (lossy) UTF-8 decoding. Parsing
+/// works on the decoded text; the raw bytes are kept so patch reconstruction
+/// can round-trip non-UTF-8 file content.
+struct Line<'a> {
+    raw: &'a [u8],
+    text: std::borrow::Cow<'a, str>,
+}
+
+impl Line<'_> {
+    /// Whether decoding lost bytes (the raw line isn't valid UTF-8).
+    fn lossy(&self) -> bool {
+        matches!(self.text, std::borrow::Cow::Owned(_))
+    }
+}
+
+/// Parse the output of `git diff` into zero or more file diffs. Content is
+/// decoded lossily for display, but the original bytes of any non-UTF-8 line
+/// are preserved for patch reconstruction.
 pub fn parse_diff(bytes: &[u8]) -> Result<Vec<FileDiff>> {
-    let text = String::from_utf8_lossy(bytes);
     let mut files = Vec::new();
-    // Split on '\n' manually rather than `str::lines()`: `lines()` strips a
+    // Split on '\n' manually rather than a lines iterator that strips a
     // trailing '\r', which would silently drop the carriage return from the
     // content of CRLF files and corrupt reconstructed patches. We trim a single
     // trailing newline first so we don't emit a spurious empty final line.
-    let body = text.strip_suffix('\n').unwrap_or(&text);
-    let mut lines = body.split('\n').peekable();
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let mut lines = body
+        .split(|&b| b == b'\n')
+        .map(|raw| Line {
+            raw,
+            text: String::from_utf8_lossy(raw),
+        })
+        .peekable();
 
-    while let Some(&line) = lines.peek() {
-        if line.starts_with("diff --git ") {
+    while let Some(line) = lines.peek() {
+        if line.text.starts_with("diff --git ") {
             files.push(parse_file(&mut lines)?);
         } else {
             // Skip anything that isn't an ordinary file record — including a
@@ -297,52 +335,62 @@ fn is_file_boundary(line: &str) -> bool {
 
 fn parse_file<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<FileDiff>
 where
-    I: Iterator<Item = &'a str>,
+    I: Iterator<Item = Line<'a>>,
 {
     let mut file = FileDiff::default();
+    let mut header_raw = Vec::new();
+    let mut header_lossy = false;
     let header = lines.next().expect("caller verified diff --git line");
-    file.header_lines.push(header.to_string());
+    header_raw.extend_from_slice(header.raw);
+    header_raw.push(b'\n');
+    header_lossy |= header.lossy();
+    file.header_lines.push(header.text.clone().into_owned());
     // Provisional paths from the `diff --git a/<x> b/<y>` line; refined below by
     // the more reliable `---`/`+++`/`rename` lines.
-    if let Some((old, new)) = split_diff_git_paths(header) {
+    if let Some((old, new)) = split_diff_git_paths(&header.text) {
         file.old_path = old;
         file.new_path = new;
     }
 
     // Extended header lines, until the first hunk or the next file.
-    while let Some(&line) = lines.peek() {
-        if line.starts_with("@@") || is_file_boundary(line) {
+    while let Some(line) = lines.peek() {
+        if line.text.starts_with("@@") || is_file_boundary(&line.text) {
             break;
         }
         let line = lines.next().unwrap();
-        file.header_lines.push(line.to_string());
+        header_raw.extend_from_slice(line.raw);
+        header_raw.push(b'\n');
+        header_lossy |= line.lossy();
+        let text = line.text.as_ref();
+        file.header_lines.push(text.to_string());
 
-        if line.starts_with("new file mode ") {
+        if text.starts_with("new file mode ") {
             file.is_new = true;
-        } else if line.starts_with("deleted file mode ") {
+        } else if text.starts_with("deleted file mode ") {
             file.is_deleted = true;
-        } else if let Some(path) = line.strip_prefix("rename from ") {
+        } else if let Some(path) = text.strip_prefix("rename from ") {
             file.old_path = unquote_path(path);
-        } else if let Some(path) = line.strip_prefix("rename to ") {
+        } else if let Some(path) = text.strip_prefix("rename to ") {
             file.new_path = unquote_path(path);
-        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+        } else if text.starts_with("Binary files ") || text.starts_with("GIT binary patch") {
             file.is_binary = true;
-        } else if let Some(path) = line.strip_prefix("--- ") {
+        } else if let Some(path) = text.strip_prefix("--- ") {
             if let Some(p) = strip_diff_path(path) {
                 file.old_path = p;
             }
-        } else if let Some(path) = line.strip_prefix("+++ ") {
+        } else if let Some(path) = text.strip_prefix("+++ ") {
             if let Some(p) = strip_diff_path(path) {
                 file.new_path = p;
             }
         }
     }
+    file.header_raw = header_lossy.then_some(header_raw);
 
     // Hunks.
-    while let Some(&line) = lines.peek() {
-        if is_file_boundary(line) {
+    while let Some(line) = lines.peek() {
+        if is_file_boundary(&line.text) {
             break;
-        } else if line.starts_with("@@") {
+        } else if line.text.starts_with("@@") {
             file.hunks.push(parse_hunk(lines)?);
         } else {
             // Stray line between hunks (shouldn't happen); skip defensively.
@@ -355,10 +403,11 @@ where
 
 fn parse_hunk<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<Hunk>
 where
-    I: Iterator<Item = &'a str>,
+    I: Iterator<Item = Line<'a>>,
 {
     let header = lines.next().expect("caller verified @@ line");
-    let (old_start, old_count, new_start, new_count, section_heading) = parse_hunk_header(header)?;
+    let (old_start, old_count, new_start, new_count, section_heading) =
+        parse_hunk_header(&header.text)?;
 
     let mut hunk = Hunk {
         old_start,
@@ -372,25 +421,37 @@ where
     let mut old_no = old_start;
     let mut new_no = new_start;
 
-    while let Some(&line) = lines.peek() {
+    while let Some(line) = lines.peek() {
         // A hunk ends at the next hunk, the next file, or end of input.
-        if line.starts_with("@@") || is_file_boundary(line) {
+        if line.text.starts_with("@@") || is_file_boundary(&line.text) {
             break;
         }
         let line = lines.next().unwrap();
-        let (kind, content) = match line.as_bytes().first() {
-            Some(b' ') => (LineKind::Context, &line[1..]),
-            Some(b'+') => (LineKind::Added, &line[1..]),
-            Some(b'-') => (LineKind::Removed, &line[1..]),
-            Some(b'\\') => (LineKind::NoNewline, line), // "\ No newline at end of file"
+        // The origin character is always ASCII, so it's safe to test (and
+        // strip) on the raw bytes even when the content isn't UTF-8.
+        let (kind, skip) = match line.raw.first() {
+            Some(b' ') => (LineKind::Context, 1),
+            Some(b'+') => (LineKind::Added, 1),
+            Some(b'-') => (LineKind::Removed, 1),
+            Some(b'\\') => (LineKind::NoNewline, 0), // "\ No newline at end of file"
             // An empty line inside a hunk represents a blank context line.
-            None => (LineKind::Context, line),
+            None => (LineKind::Context, 0),
             _ => {
                 return Err(Error::Parse {
                     context: "diff hunk line",
-                    line: line.to_string(),
+                    line: line.text.into_owned(),
                 })
             }
+        };
+        let raw_content = &line.raw[skip..];
+        // Lossy decoding for display; keep the original bytes only when they
+        // aren't valid UTF-8, so patches can be rebuilt byte-exactly.
+        let (content, raw) = match std::str::from_utf8(raw_content) {
+            Ok(s) => (s.to_string(), None),
+            Err(_) => (
+                String::from_utf8_lossy(raw_content).into_owned(),
+                Some(raw_content.to_vec()),
+            ),
         };
 
         let (old_lineno, new_lineno) = match kind {
@@ -416,7 +477,8 @@ where
 
         hunk.lines.push(DiffLine {
             kind,
-            content: content.to_string(),
+            content,
+            raw,
             old_lineno,
             new_lineno,
         });

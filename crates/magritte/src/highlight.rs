@@ -285,7 +285,7 @@ pub fn language_from_shebang(line: &str) -> Option<&'static str> {
 /// the UI thread (per expanded file), so the cap keeps expanding a big file
 /// responsive there; the commit/diff views highlight on the background
 /// executor, where the cap just bounds wasted parse work.
-const MAX_HIGHLIGHT_LINES: usize = 2000;
+pub const MAX_HIGHLIGHT_LINES: usize = 2000;
 
 /// Highlight every line of a file diff. `theme` is the resolved highlight
 /// theme (plain shared data, so this can run on the background executor);

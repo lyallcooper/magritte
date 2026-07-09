@@ -165,8 +165,21 @@ impl StatusView {
             self.settings_caches.editors = editors::text_editors();
         }
         // Lead with a "System Default" entry (maps to an empty config value, so
-        // it follows the OS monospace); the rest are concrete families.
+        // it follows the OS monospace); the rest are concrete families. A
+        // configured family missing from the detected list (a repo-overlay
+        // font, or one the monospace-trait probe misses) is injected so it
+        // stays selectable rather than misreported as "System Default".
         let mut font_items: Vec<SharedString> = vec![SharedString::from(theme::SYSTEM_FONT_LABEL)];
+        let cur_font = self.config.font.as_str();
+        if !cur_font.is_empty()
+            && !self
+                .settings_caches
+                .mono_fonts
+                .iter()
+                .any(|n| n.as_ref() == cur_font)
+        {
+            font_items.push(SharedString::from(cur_font.to_string()));
+        }
         font_items.extend(self.settings_caches.mono_fonts.iter().cloned());
         let font_ix = if self.config.font.is_empty() {
             0
@@ -184,6 +197,18 @@ impl StatusView {
             SharedString::from(theme::UI_FONT_DEFAULT_LABEL),
             SharedString::from(theme::SYSTEM_FONT_LABEL),
         ];
+        // Same off-list injection as the monospace picker.
+        let cur_ui_font = self.config.ui_font.as_str();
+        if !cur_ui_font.is_empty()
+            && cur_ui_font != theme::SYSTEM_UI_FONT
+            && !self
+                .settings_caches
+                .ui_fonts
+                .iter()
+                .any(|n| n.as_ref() == cur_ui_font)
+        {
+            ui_font_items.push(SharedString::from(cur_ui_font.to_string()));
+        }
         ui_font_items.extend(self.settings_caches.ui_fonts.iter().cloned());
         let ui_font_ix = match self.config.ui_font.as_str() {
             "" => 0,
@@ -542,7 +567,7 @@ impl StatusView {
     ) -> AnyElement {
         let switch = Switch::new(id).checked(checked).on_click({
             let view = view.clone();
-            move |on, _window, cx| {
+            move |on, window, cx| {
                 let on = *on;
                 view.update(cx, |this, cx| {
                     // Apply to both the live merged config and the global-only
@@ -551,6 +576,9 @@ impl StatusView {
                     set(&mut this.config, on);
                     set(&mut this.config_global, on);
                     this.save_global_config(cx);
+                    // A toggle can hide the commit-editor input; pull a focus
+                    // stranded on it back into the Tab ring.
+                    this.clamp_settings_focus(window, cx);
                     if refetch {
                         this.refresh(cx);
                     } else {
@@ -618,25 +646,92 @@ impl StatusView {
     pub(crate) fn save_global_config(&mut self, cx: &mut Context<Self>) {
         if let Err(e) = config::save_settings(&self.config_global) {
             self.set_status(e, false, cx);
+            return;
+        }
+        self.notice_repo_override(cx);
+    }
+
+    /// After persisting a global edit, detect the repo overlay reasserting a
+    /// field the edit changed: adopt the effective merged config (so the file
+    /// watcher's reload sees no difference — no "Settings reloaded" toast and
+    /// no settings-form rebuild that would reset focus) and say explicitly
+    /// that the repo config overrides the edit, instead of letting the value
+    /// silently snap back.
+    fn notice_repo_override(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml")) else {
+            return;
+        };
+        if !path.exists() {
+            return;
+        }
+        let (merged, warning) = config::load_merged(Some(&path));
+        if warning.is_some() || merged == self.config {
+            return;
+        }
+        self.config = merged;
+        self.font = theme::resolve_font(&self.config, cx);
+        self.ui_font = theme::resolve_ui_font(&self.config, cx);
+        self.keymap = build_keymap(&self.config).0;
+        self.reapply_theme(cx);
+        self.set_status(
+            "Saved to the global config, but overridden by this repo's config".to_string(),
+            false,
+            cx,
+        );
+    }
+
+    /// The number of Tab-focusable settings controls. The commit-editor input
+    /// renders only when commit_in_editor is on; keep it out of the ring
+    /// otherwise (a hidden control is a dead stop).
+    fn settings_focus_ring(&self) -> usize {
+        if self.config.commit_in_editor {
+            9
+        } else {
+            8
+        }
+    }
+
+    /// Pull a focus stranded past the ring's end back onto a visible control —
+    /// toggling the external commit editor off hides its input while the
+    /// (invisible) InputState would otherwise keep keyboard focus.
+    fn clamp_settings_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ring = self.settings_focus_ring();
+        let stranded = self
+            .settings_mut()
+            .filter(|s| s.focus_ix >= ring)
+            .map(|s| s.focus_ix = ring - 1)
+            .is_some();
+        if stranded {
+            self.focus_settings_control(window, cx);
         }
     }
 
     /// Tab moves focus to the next settings control, cycling through every one
-    /// of them (the dropdowns have distinct `SelectState` types and the editor
-    /// fields are `Select`/`Input`, so each arm focuses its own entity).
+    /// of them.
     pub(crate) fn cycle_settings_focus(
         &mut self,
         forward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The commit-editor input renders only when commit_in_editor is on;
-        // keep it out of the ring otherwise (a hidden control is a dead stop).
-        let ring = if self.config.commit_in_editor { 9 } else { 8 };
+        let ring = self.settings_focus_ring();
         let Some(s) = self.settings_mut() else {
             return;
         };
+        // The ring may have shrunk under the focus (commit-editor toggled off);
+        // re-enter it from the last visible control.
+        s.focus_ix = s.focus_ix.min(ring - 1);
         s.focus_ix = (s.focus_ix + if forward { 1 } else { ring - 1 }) % ring;
+        self.focus_settings_control(window, cx);
+    }
+
+    /// Focus the settings control at the current `focus_ix` (the dropdowns have
+    /// distinct `SelectState` types and the editor fields are `Select`/`Input`,
+    /// so each arm focuses its own entity).
+    fn focus_settings_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.settings_mut() else {
+            return;
+        };
         match s.focus_ix {
             0 => s
                 .appearance
@@ -672,14 +767,21 @@ impl StatusView {
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Flush any pending debounced save so closing can't drop the tail of a
         // free-text edit.
+        self.flush_settings_save(cx);
+        self.screen = Screen::Status;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Write out a pending debounced settings save immediately (cancelling the
+    /// outstanding timer) — closing the settings screen or the window must not
+    /// drop the tail of a free-text edit.
+    pub(crate) fn flush_settings_save(&mut self, cx: &mut Context<Self>) {
         if self.settings_save_pending {
             self.settings_save_gen.bump(); // cancel the outstanding timer
             self.settings_save_pending = false;
             self.save_global_config(cx);
         }
-        self.screen = Screen::Status;
-        self.focus.focus(window, cx);
-        cx.notify();
     }
 
     /// Persist the global config, debounced: the free-text settings inputs

@@ -152,7 +152,7 @@ impl Repo {
     pub fn apply_file_to(&self, file: &FileDiff, target: ApplyTarget, reverse: bool) -> Result<()> {
         let mut patch = file_header(file);
         for hunk in &file.hunks {
-            patch.push_str(&hunk_block(hunk, &all_change_indices(hunk), reverse));
+            patch.extend_from_slice(&hunk_block(hunk, &all_change_indices(hunk), reverse));
         }
         self.apply_patch(&patch, target, reverse)
     }
@@ -196,20 +196,20 @@ impl Repo {
     }
 
     /// Apply a unidiff patch via `git apply`.
-    pub fn apply_patch(&self, patch: &str, target: ApplyTarget, reverse: bool) -> Result<()> {
+    pub fn apply_patch(&self, patch: &[u8], target: ApplyTarget, reverse: bool) -> Result<()> {
         self.run_apply(patch, target, reverse, false)
     }
 
     /// Dry-run a patch apply (`git apply --check`) without modifying anything.
     /// Used to verify every action in a multi-file batch applies before any of
     /// them mutates the repo.
-    pub fn check_patch(&self, patch: &str, target: ApplyTarget, reverse: bool) -> Result<()> {
+    pub fn check_patch(&self, patch: &[u8], target: ApplyTarget, reverse: bool) -> Result<()> {
         self.run_apply(patch, target, reverse, true)
     }
 
     fn run_apply(
         &self,
-        patch: &str,
+        patch: &[u8],
         target: ApplyTarget,
         reverse: bool,
         check_only: bool,
@@ -232,11 +232,11 @@ impl Repo {
     /// reads it there when given no file arguments). `--recount` lets git infer
     /// hunk line counts from the patch body; our `build_patch` also computes
     /// them, but this is a cheap robustness margin.
-    fn git_apply(&self, patch: &str, flags: &[&str]) -> Result<()> {
+    fn git_apply(&self, patch: &[u8], flags: &[&str]) -> Result<()> {
         let mut args: Vec<&str> = vec!["apply"];
         args.extend_from_slice(flags);
         args.push("--recount");
-        self.run_with_input(args, patch.as_bytes())?;
+        self.run_with_input(args, patch)?;
         Ok(())
     }
 
@@ -259,7 +259,7 @@ impl Repo {
     /// In that last case the index delta is removed first; if the working-tree
     /// `--reject` then exits non-zero, some hunks were left as `.rej` and we
     /// report the *partial* discard rather than silently treating it as success.
-    fn discard_apply(&self, patch: &str, source: DiffSource, path: &str) -> Result<()> {
+    fn discard_apply(&self, patch: &[u8], source: DiffSource, path: &str) -> Result<()> {
         match source {
             DiffSource::Unstaged => self.git_apply(patch, &["--reverse"]),
             DiffSource::Staged => {
@@ -428,13 +428,15 @@ fn all_change_indices(hunk: &Hunk) -> Vec<usize> {
         .collect()
 }
 
-/// Build a unidiff patch for the selected lines of a single hunk.
+/// Build a unidiff patch for the selected lines of a single hunk. Patches are
+/// bytes, not strings: file content need not be UTF-8, and the patch must
+/// carry the original bytes for `git apply` to match and stage them.
 ///
 /// See the module docs for the forward/reverse selection rules. When `selected`
 /// contains every changed line this reproduces the original hunk verbatim.
-pub fn build_patch(file: &FileDiff, hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
+pub fn build_patch(file: &FileDiff, hunk: &Hunk, selected: &[usize], reverse: bool) -> Vec<u8> {
     let mut out = file_header(file);
-    out.push_str(&hunk_block(hunk, selected, reverse));
+    out.extend_from_slice(&hunk_block(hunk, selected, reverse));
     out
 }
 
@@ -445,60 +447,63 @@ pub fn build_file_patch(
     file: &FileDiff,
     selections: &[(usize, Vec<usize>)],
     reverse: bool,
-) -> String {
+) -> Vec<u8> {
     let mut out = file_header(file);
     for (hunk_ix, selected) in selections {
         if let Some(hunk) = file.hunks.get(*hunk_ix) {
-            out.push_str(&hunk_block(hunk, selected, reverse));
+            out.extend_from_slice(&hunk_block(hunk, selected, reverse));
         }
     }
     out
 }
 
-fn file_header(file: &FileDiff) -> String {
-    let mut out = String::new();
+fn file_header(file: &FileDiff) -> Vec<u8> {
+    if let Some(raw) = &file.header_raw {
+        return raw.clone();
+    }
+    let mut out = Vec::new();
     for header in &file.header_lines {
-        out.push_str(header);
-        out.push('\n');
+        out.extend_from_slice(header.as_bytes());
+        out.push(b'\n');
     }
     out
 }
 
 /// Build the `@@ ... @@` header and body for one hunk given the selected lines.
-fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
+fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> Vec<u8> {
     // Selected indices are usually already sorted (they're built by scanning
     // the hunk); sort a copy so membership is a binary search, keeping a
     // whole-hunk apply on a huge hunk linear rather than quadratic.
     let mut selected = selected.to_vec();
     selected.sort_unstable();
-    let mut body = String::new();
+    let mut body: Vec<u8> = Vec::new();
     let mut old_count: u32 = 0;
     let mut new_count: u32 = 0;
     let mut prev_emitted = false;
 
-    let emit = |body: &mut String, sign: char, content: &str| {
+    let emit = |body: &mut Vec<u8>, sign: u8, content: &[u8]| {
         body.push(sign);
-        body.push_str(content);
-        body.push('\n');
+        body.extend_from_slice(content);
+        body.push(b'\n');
     };
 
     for (i, line) in hunk.lines.iter().enumerate() {
         let is_selected = selected.binary_search(&i).is_ok();
         match line.kind {
             LineKind::Context => {
-                emit(&mut body, ' ', &line.content);
+                emit(&mut body, b' ', line.content_bytes());
                 old_count += 1;
                 new_count += 1;
                 prev_emitted = true;
             }
             LineKind::Added => {
                 if is_selected {
-                    emit(&mut body, '+', &line.content);
+                    emit(&mut body, b'+', line.content_bytes());
                     new_count += 1;
                     prev_emitted = true;
                 } else if reverse {
                     // Preserve the line on both sides so the apply leaves it.
-                    emit(&mut body, ' ', &line.content);
+                    emit(&mut body, b' ', line.content_bytes());
                     old_count += 1;
                     new_count += 1;
                     prev_emitted = true;
@@ -508,14 +513,14 @@ fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
             }
             LineKind::Removed => {
                 if is_selected {
-                    emit(&mut body, '-', &line.content);
+                    emit(&mut body, b'-', line.content_bytes());
                     old_count += 1;
                     prev_emitted = true;
                 } else if reverse {
                     prev_emitted = false; // drop
                 } else {
                     // forward: keep as context so the line stays in the index.
-                    emit(&mut body, ' ', &line.content);
+                    emit(&mut body, b' ', line.content_bytes());
                     old_count += 1;
                     new_count += 1;
                     prev_emitted = true;
@@ -523,8 +528,8 @@ fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
             }
             LineKind::NoNewline => {
                 if prev_emitted {
-                    body.push_str(&line.content);
-                    body.push('\n');
+                    body.extend_from_slice(line.content_bytes());
+                    body.push(b'\n');
                 }
             }
         }
@@ -538,7 +543,8 @@ fn hunk_block(hunk: &Hunk, selected: &[usize], reverse: bool) -> String {
     let mut block = format!(
         "@@ -{},{} +{},{} @@{}\n",
         hunk.old_start, old_count, hunk.new_start, new_count, heading
-    );
-    block.push_str(&body);
+    )
+    .into_bytes();
+    block.extend_from_slice(&body);
     block
 }

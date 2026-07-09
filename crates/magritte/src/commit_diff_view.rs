@@ -79,9 +79,34 @@ impl FlatDiff {
         self.visible_cache.borrow_mut().take();
     }
 
-    /// Replace the row model, resetting the projection cache.
+    /// Replace the row model, resetting the projection cache. A shrink can
+    /// strand the cursor/anchor past the new end (e.g. the error path
+    /// replacing a seeded body), so both clamp to the last row.
     pub(crate) fn set_rows(&mut self, rows: Vec<CommitDiffRow>) {
         self.rows = rows;
+        let last = self.rows.len().saturating_sub(1);
+        self.selected = self.selected.min(last);
+        self.visual = self.visual.map(|a| a.min(last));
+        self.invalidate_visible();
+    }
+
+    /// Replace the diff tail of the row model (everything from the first file
+    /// header) with freshly built rows, preserving fold/cursor state — for a
+    /// live theme change, whose caller rebuilds from the same files so the row
+    /// shape is unchanged. No-op while no diff has loaded.
+    pub(crate) fn replace_diff_rows(&mut self, diff_rows: Vec<CommitDiffRow>) {
+        let Some(first) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, CommitDiffRow::File { .. }))
+        else {
+            return;
+        };
+        self.rows.truncate(first);
+        self.rows.extend(diff_rows);
+        let last = self.rows.len().saturating_sub(1);
+        self.selected = self.selected.min(last);
+        self.visual = self.visual.map(|a| a.min(last));
         self.invalidate_visible();
     }
 
@@ -154,6 +179,7 @@ impl FlatDiff {
             None => (self.selected, self.selected),
         };
         let hi = hi.min(self.rows.len() - 1);
+        let lo = lo.min(hi);
         self.rows[lo..=hi]
             .iter()
             .map(commit_row_text)
@@ -398,6 +424,10 @@ impl StatusView {
         if let Some(cached) = self.commit_cache.get(&key).cloned() {
             self.populate_commit_view(&cached, cx);
             cx.notify();
+            // The diff is immutable but the "Refs:" decorations are not
+            // (branches/tags move between opens) — refresh the cheap metadata
+            // in the background and re-render if it changed.
+            self.refresh_cached_commit_metadata(key, cached, gen, cx);
             return;
         }
         cx.notify();
@@ -503,6 +533,54 @@ impl StatusView {
                 } else {
                     this.install_commit_rows(rows, Vec::new());
                 }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Re-fetch a cache-hit commit's metadata off-thread; when its refs moved,
+    /// rebuild the rows around the cached message/diff, refresh the cache
+    /// entry, and reinstall. Dropped if the view was superseded meanwhile.
+    fn refresh_cached_commit_metadata(
+        &mut self,
+        key: CommitCacheKey,
+        cached: CommitCacheEntry,
+        gen: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let rev = key.rev.clone();
+        let style = self.diff_style(cx);
+        let entry = cached.clone();
+        cx.spawn(async move |this, cx| {
+            let built = cx
+                .background_executor()
+                .spawn(async move {
+                    let metadata = repo.commit_metadata(&rev).ok()?;
+                    if metadata.refs == cached.metadata.refs {
+                        return None;
+                    }
+                    let details = commit_metadata_lines(&metadata);
+                    let rows = commit_detail_rows(&details, &cached.message, &cached.files, &style);
+                    Some((metadata, rows))
+                })
+                .await;
+            let Some((metadata, rows)) = built else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) || this.commit_view().is_none() {
+                    return;
+                }
+                let files: Vec<Arc<FileDiff>> =
+                    entry.files.iter().map(|(f, _)| f.clone()).collect();
+                this.commit_cache
+                    .insert(key, CommitCacheEntry { metadata, ..entry });
+                this.install_commit_rows(rows, files);
                 cx.notify();
             })
             .ok();
@@ -638,31 +716,10 @@ impl StatusView {
     }
 
     /// The (file, hunk) the active flattened-diff cursor is on, for the apply
-    /// engine. `hunk` is `None` when the cursor sits on a file header (act on
-    /// the whole file) or above the diff (no target → `None`). Indices match
-    /// `active_diff_files` and each file's `hunks`, since the rows are built in
-    /// that order.
+    /// engine — see [`flat_diff_target_at`].
     fn flat_diff_apply_target(&self) -> Option<(usize, Option<usize>)> {
         let fd = self.flat_diff()?;
-        let cursor = fd.selected;
-        let mut file_ix: Option<usize> = None;
-        let mut hunk_ix: Option<usize> = None;
-        for (ix, row) in fd.rows.iter().enumerate() {
-            match row {
-                CommitDiffRow::File { .. } => {
-                    file_ix = Some(file_ix.map_or(0, |f| f + 1));
-                    hunk_ix = None;
-                }
-                CommitDiffRow::Hunk(_) => {
-                    hunk_ix = Some(hunk_ix.map_or(0, |h| h + 1));
-                }
-                _ => {}
-            }
-            if ix == cursor {
-                break;
-            }
-        }
-        file_ix.map(|f| (f, hunk_ix))
+        flat_diff_target_at(&fd.rows, fd.selected)
     }
 
     /// What the apply engine acts on: a whole file, a whole hunk, or a set of
@@ -858,6 +915,60 @@ impl StatusView {
         self.copy_to_clipboard(text, cx);
     }
 
+    /// Rebuild the baked-in colors of any open flattened-diff surface after a
+    /// live theme change: diff `Line` spans snapshot theme colors at build
+    /// time (via [`DiffStyle`]), so the open commit/diff view's diff rows are
+    /// rebuilt from their retained file diffs — fold and cursor state survive,
+    /// since the row shape is unchanged — and the commit editor's preview is
+    /// reloaded. Everything else repaints from the live palette.
+    pub(crate) fn restyle_diff_screens(&mut self, cx: &mut Context<Self>) {
+        if self.editor().is_some() {
+            self.load_commit_diff(cx);
+            return;
+        }
+        let files: Vec<Arc<FileDiff>> = match &self.screen {
+            Screen::Commit { view, .. } => view.files.clone(),
+            Screen::Diff { view, .. } => view.files.clone(),
+            _ => return,
+        };
+        if files.is_empty() {
+            return; // still loading (or no diff): nothing baked to restyle
+        }
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.screen_gen.current();
+        let style = self.diff_style(cx);
+        cx.spawn(async move |this, cx| {
+            let rows = cx
+                .background_executor()
+                .spawn(async move {
+                    let pairs = files
+                        .into_iter()
+                        .map(|d| {
+                            let (head, tail) =
+                                file_head_tail(&repo.workdir().join(d.display_path()));
+                            let lang = highlight::detect_language(d.display_path(), &head, &tail);
+                            (d, lang)
+                        })
+                        .collect::<Vec<_>>();
+                    diff_rows(&pairs, &style)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) {
+                    return;
+                }
+                if let Some(fd) = this.flat_diff_mut() {
+                    fd.replace_diff_rows(rows);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Toggle the Details fold (`a`), persisting the preference per repo so
     /// the next commit opens the same way.
     pub(crate) fn toggle_commit_details(&mut self, cx: &mut Context<Self>) {
@@ -877,6 +988,40 @@ impl StatusView {
             cx.notify();
         }
     }
+}
+
+/// The (file, hunk) the flattened-diff cursor at `cursor` acts on. `hunk` is
+/// `None` when the cursor sits on a file header or diffstat entry (act on the
+/// whole file); the whole result is `None` above the diff. Indices match the
+/// view's `files` (and each file's `hunks`), since the rows are built in that
+/// order — including the diffstat lines, one per file (magit treats each stat
+/// line as that file's section, so apply/reverse there acts on the file).
+fn flat_diff_target_at(rows: &[CommitDiffRow], cursor: usize) -> Option<(usize, Option<usize>)> {
+    if let Some(CommitDiffRow::StatLine { .. }) = rows.get(cursor) {
+        let stat_ix = rows[..cursor]
+            .iter()
+            .filter(|r| matches!(r, CommitDiffRow::StatLine { .. }))
+            .count();
+        return Some((stat_ix, None));
+    }
+    let mut file_ix: Option<usize> = None;
+    let mut hunk_ix: Option<usize> = None;
+    for (ix, row) in rows.iter().enumerate() {
+        match row {
+            CommitDiffRow::File { .. } => {
+                file_ix = Some(file_ix.map_or(0, |f| f + 1));
+                hunk_ix = None;
+            }
+            CommitDiffRow::Hunk(_) => {
+                hunk_ix = Some(hunk_ix.map_or(0, |h| h + 1));
+            }
+            _ => {}
+        }
+        if ix == cursor {
+            break;
+        }
+    }
+    file_ix.map(|f| (f, hunk_ix))
 }
 
 /// The full body of a commit's detail view: metadata under a foldable
@@ -1061,7 +1206,7 @@ pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fold_header_for, visible_diff_rows};
+    use super::{flat_diff_target_at, fold_header_for, visible_diff_rows, FlatDiff};
     use crate::commit_editor::CommitDiffRow;
     use magritte_core::{Change, LineKind};
     use std::collections::HashSet;
@@ -1142,6 +1287,39 @@ mod tests {
             visible_diff_rows(&rows, &collapsed(&[0, 8])),
             vec![0, 3, 4, 5, 6, 7, 8]
         );
+    }
+
+    #[test]
+    fn selection_text_survives_shrinking_set_rows() {
+        let mut fd = FlatDiff::loading();
+        fd.set_rows(vec![
+            CommitDiffRow::Note("a".into()),
+            CommitDiffRow::Note("b".into()),
+            CommitDiffRow::Note("c".into()),
+        ]);
+        fd.selected = 2;
+        fd.visual = Some(2);
+        // The error path replaces the seeded body with a single note without
+        // the cursor moving first; copying must not slice out of bounds.
+        fd.set_rows(vec![CommitDiffRow::Note("only".into())]);
+        assert_eq!(fd.selection_text(), "only");
+        assert_eq!(fd.selected, 0);
+        assert_eq!(fd.visual, Some(0));
+    }
+
+    #[test]
+    fn apply_target_resolves_diffstat_lines_to_their_file() {
+        let rows = sample();
+        // Diffstat entries stand for their file sections (magit parity).
+        assert_eq!(flat_diff_target_at(&rows, 1), Some((0, None))); // stat "a"
+        assert_eq!(flat_diff_target_at(&rows, 2), Some((1, None))); // stat "b"
+                                                                    // The summary header and rows above the diff have no target.
+        assert_eq!(flat_diff_target_at(&rows, 0), None);
+        assert_eq!(flat_diff_target_at(&rows, 3), None);
+        // File/hunk/line rows resolve as before.
+        assert_eq!(flat_diff_target_at(&rows, 4), Some((0, None)));
+        assert_eq!(flat_diff_target_at(&rows, 6), Some((0, Some(0))));
+        assert_eq!(flat_diff_target_at(&rows, 10), Some((1, Some(0))));
     }
 
     #[test]

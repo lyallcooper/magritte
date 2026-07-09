@@ -14,9 +14,6 @@ use crate::config;
 /// Label for the font-picker entry that follows the OS default monospace.
 pub(crate) const SYSTEM_FONT_LABEL: &str = "System Default";
 
-/// The platform's standard UI text size in px — the `font_size` default.
-/// macOS reports it via `NSFont.systemFontSize` (13 on current systems);
-/// elsewhere fall back to 13.
 /// The effective base font size (px): the configured size clamped sane, or
 /// the platform's standard UI text size when unset. `0` counts as unset (an
 /// early build wrote it for "system default"; it also reads naturally).
@@ -27,6 +24,9 @@ pub(crate) fn effective_font_size(cfg: &config::Config) -> u32 {
         .unwrap_or_else(system_font_size)
 }
 
+/// The platform's standard UI text size in px — the `font_size` default.
+/// macOS reports it via `NSFont.systemFontSize` (13 on current systems);
+/// elsewhere fall back to 13.
 pub(crate) fn system_font_size() -> u32 {
     static SIZE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *SIZE.get_or_init(|| {
@@ -151,6 +151,33 @@ pub(crate) fn apply_appearance(cfg: &config::Config, cx: &mut App) {
         theme.mono_font_size = gpui::px(size);
     }
     gpui_component::Theme::change(effective_mode(cfg, cx), None, cx);
+}
+
+/// Whether the process-global component theme currently reflects `cfg`. The
+/// theme is one process-wide global, so with several repo windows open the
+/// last-applied config wins everywhere; each window checks this as it renders
+/// and re-applies its own config when another window's has landed since —
+/// keeping per-repo appearance/font overrides correct per window.
+pub(crate) fn appearance_applied(cfg: &config::Config, cx: &App) -> bool {
+    let registry = gpui_component::ThemeRegistry::global(cx);
+    // Mirror `apply_appearance`'s name resolution (including its fallback); an
+    // unknown name that resolves to nothing would not have been applied.
+    let want = |name: &str, fallback: &str| {
+        registry
+            .themes()
+            .get(name)
+            .or_else(|| registry.themes().get(fallback))
+            .map(|t| t.name.clone())
+    };
+    let light = want(cfg.light_theme(), config::DEFAULT_LIGHT_THEME);
+    let dark = want(cfg.dark_theme(), config::DEFAULT_DARK_THEME);
+    let size = effective_font_size(cfg) as f32;
+    let theme = gpui_component::Theme::global(cx);
+    light.is_none_or(|name| name == theme.light_theme.name)
+        && dark.is_none_or(|name| name == theme.dark_theme.name)
+        && theme.font_size == gpui::px((size * 16.0 / 13.0).round())
+        && theme.mono_font_size == gpui::px(size)
+        && theme.mode == effective_mode(cfg, cx)
 }
 
 /// Config *values* worth warning about on load: an unknown appearance mode, or a

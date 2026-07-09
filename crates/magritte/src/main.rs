@@ -637,6 +637,9 @@ struct StatusView {
     /// Bumped per async picker open, stamped onto the picker, so a late
     /// candidate load only fills the picker it was started for.
     picker_gen: Generation,
+    /// Stamps a transient open that's waiting on its config-variable load, so
+    /// a superseded or cancelled open can't install its popup late.
+    transient_open_gen: Generation,
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
     /// Memoized `$`-log rows, keyed on (command-log sequence, show-all) — see
@@ -820,6 +823,7 @@ impl StatusView {
                 ..StatusToast::default()
             },
             picker_gen: Generation::default(),
+            transient_open_gen: Generation::default(),
             confirm: None,
             git_log_cache: GitLogCache::default(),
             focus: cx.focus_handle(),
@@ -960,12 +964,6 @@ impl StatusView {
     fn rebase_todo_mut(&mut self) -> Option<&mut RebaseTodoView> {
         match &mut self.screen {
             Screen::RebaseTodo(r) => Some(r),
-            _ => None,
-        }
-    }
-    fn git_log_mut(&mut self) -> Option<&mut ScrollView> {
-        match &mut self.screen {
-            Screen::GitLog { view, .. } => Some(view),
             _ => None,
         }
     }
@@ -1187,7 +1185,31 @@ fn main() {
         theme::apply_appearance(&cfg, cx);
         // Standard macOS app shortcuts. Quit is global; Close Window runs on
         // the focused view (so it has a Window to remove).
-        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        cx.on_action(|_: &Quit, cx: &mut App| {
+            // A settings edit may still sit in its save debounce; flush every
+            // window's pending save so quitting can't drop the tail of it.
+            let windows: Vec<_> = cx
+                .global::<GlobalRepoWindows>()
+                .0
+                .borrow()
+                .values()
+                .cloned()
+                .collect();
+            for window in windows {
+                window
+                    .update(cx, |root, _window, cx| {
+                        let Ok(root) = root.downcast::<gpui_component::Root>() else {
+                            return;
+                        };
+                        let Ok(view) = root.read(cx).view().clone().downcast::<StatusView>() else {
+                            return;
+                        };
+                        view.update(cx, |view, cx| view.flush_settings_save(cx));
+                    })
+                    .ok();
+            }
+            cx.quit();
+        });
         cx.bind_keys([
             // Our tab binding, in our context, outranks Root's focus-nav tab.
             KeyBinding::new("tab", ToggleFold, Some(STATUS_CONTEXT)),
@@ -1901,6 +1923,136 @@ mod tests {
             "`?` menu rows with no run_dispatch handler (add them to DISPATCH_KEYS \
              or OVERRIDES): {missing_handler:?}"
         );
+    }
+
+    /// Every `?`-menu row must be *pressable*, in both presets: its shown key,
+    /// fed through the same classification the Dispatch popup's key handler
+    /// applies — the full chord (modifiers included) against prefix entry and
+    /// keymap resolution — reaches a command. Catches a shown-but-dead row
+    /// like vanilla's modifier-keyed `ctrl-w` Copy, which the key-set
+    /// comparison above (evil-only, membership-only) cannot.
+    #[test]
+    fn dispatch_menu_keys_dispatch_in_both_presets() {
+        for preset in [
+            config::KeymapPreset::EvilCollection,
+            config::KeymapPreset::Vanilla,
+        ] {
+            let config = config::Config {
+                keymap_preset: preset,
+                ..config::Config::default()
+            };
+            let km = status_km(&config);
+            for group in dispatch_menu(&km, &config).groups {
+                for suffix in group.suffixes {
+                    let Suffix::Info(info) = suffix else { continue };
+                    let key = info.keys;
+                    if key.contains(' ') {
+                        // A multi-key row resolves through the prefix machinery:
+                        // its first step must classify as a prefix, and the full
+                        // sequence must be bound.
+                        let lead = format!("{} ", key.split(' ').next().unwrap());
+                        assert!(
+                            km.keys().any(|k| k.starts_with(&lead)),
+                            "{preset:?}: menu row `{key}` ({}) doesn't start a prefix",
+                            info.description
+                        );
+                        assert!(
+                            km.contains_key(&key),
+                            "{preset:?}: menu row `{key}` ({}) has no binding",
+                            info.description
+                        );
+                        continue;
+                    }
+                    // A single-key row: the shown key must be exactly the chord
+                    // a keypress produces (so the popup handler, which matches
+                    // the full chord, sees it)…
+                    assert_eq!(
+                        canonical_keystroke(&key),
+                        key,
+                        "{preset:?}: menu row `{key}` isn't in canonical chord form",
+                    );
+                    // …and it must resolve — a keymap binding, or `:` (whose
+                    // run_dispatch falls back to the palette).
+                    assert!(
+                        km.contains_key(&key) || key == ":",
+                        "{preset:?}: menu row `{key}` ({}) dispatches nothing",
+                        info.description
+                    );
+                }
+            }
+        }
+    }
+
+    /// Runtime dispatch resolves a shared key by scanning its candidates in
+    /// priority order (at-point verbs first) for the first whose `enabled`
+    /// holds — `resolve_binding`'s pure core, `first_enabled_candidate`. Pin
+    /// the ordering `build_keymap` produces and the scan's outcome for the
+    /// shared keys (`a`, Return, the preset drop/discard key), in both presets.
+    #[test]
+    fn shared_keys_resolve_by_target_enablement() {
+        use crate::input::first_enabled_candidate;
+        let at_point = |id: &str| commands().iter().any(|c| c.id == id && c.at_point);
+        for preset in [
+            config::KeymapPreset::EvilCollection,
+            config::KeymapPreset::Vanilla,
+        ] {
+            let config = config::Config {
+                keymap_preset: preset,
+                ..config::Config::default()
+            };
+            let km = status_km(&config);
+            // Every key's candidate list puts its at-point verbs before the
+            // general commands, so the target-gated scan tries them first.
+            for (key, cands) in &km {
+                if let Some(pos) = cands.iter().position(|id| !at_point(id)) {
+                    assert!(
+                        cands[pos..].iter().all(|id| !at_point(id)),
+                        "{preset:?}: key `{key}` orders a general command before \
+                         an at-point verb: {cands:?}"
+                    );
+                }
+            }
+            // `a`: cherry-apply on a commit row, stash apply on a stash row —
+            // and nothing on a file row (no general command claims `a`).
+            let a = km.get("a").unwrap();
+            let commit_row = |id: &str| id == "commit-apply";
+            let stash_row = |id: &str| id == "stash-row-apply";
+            assert_eq!(first_enabled_candidate(a, commit_row), Some("commit-apply"));
+            assert_eq!(
+                first_enabled_candidate(a, stash_row),
+                Some("stash-row-apply")
+            );
+            assert_eq!(first_enabled_candidate(a, |_| false), None);
+            // Return: show the commit/stash at point, else open the file.
+            let enter = km.get("enter").unwrap();
+            let always = |id: &str| {
+                commands()
+                    .iter()
+                    .find(|c| c.id == id)
+                    .is_some_and(|c| !c.at_point)
+            };
+            assert_eq!(
+                first_enabled_candidate(enter, |id| id == "open-commit" || always(id)),
+                Some("open-commit")
+            );
+            assert_eq!(
+                first_enabled_candidate(enter, |id| id == "stash-show" || always(id)),
+                Some("stash-show")
+            );
+            assert_eq!(first_enabled_candidate(enter, always), Some("open-file"));
+            // The preset drop/discard key: drop the stash at point, else the
+            // general discard.
+            let drop_key = match preset {
+                config::KeymapPreset::EvilCollection => "x",
+                config::KeymapPreset::Vanilla => "k",
+            };
+            let d = km.get(drop_key).unwrap();
+            assert_eq!(
+                first_enabled_candidate(d, |id| id == "stash-row-drop" || always(id)),
+                Some("stash-row-drop")
+            );
+            assert_eq!(first_enabled_candidate(d, always), Some("discard"));
+        }
     }
 
     /// The secondary screens derive their `?` menu and header hints from the same

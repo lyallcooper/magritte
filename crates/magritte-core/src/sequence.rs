@@ -302,6 +302,16 @@ pub(crate) fn parse_todo_line(line: &str) -> Option<(&str, Option<String>, Strin
     if !takes_oid || rest.is_empty() {
         return Some((action, None, rest.to_string()));
     }
+    // `fixup` may carry a `-C`/`-c` flag (take the fixed-up commit's message,
+    // from `--autosquash` of an `amend!`/`reword!` commit) before the oid.
+    let rest = if matches!(action, "fixup" | "f") {
+        rest.strip_prefix("-C ")
+            .or_else(|| rest.strip_prefix("-c "))
+            .map(str::trim_start)
+            .unwrap_or(rest)
+    } else {
+        rest
+    };
     let (oid, subject) = match rest.split_once(' ') {
         Some((oid, subject)) => (oid, subject),
         None => (rest, ""),
@@ -344,6 +354,15 @@ mod tests {
         assert_eq!(oid, None);
         let (_, oid, _) = parse_todo_line("merge -C abc topic").unwrap();
         assert_eq!(oid, None);
+
+        // `fixup -C <sha>` (autosquash of an `amend!` commit): the flag isn't
+        // the oid.
+        let (verb, oid, subject) =
+            parse_todo_line("fixup -C 1234567890abcdef # amend! subject").unwrap();
+        assert_eq!((verb, oid.as_deref()), ("fixup", Some("1234567")));
+        assert_eq!(subject, "amend! subject");
+        let (_, oid, _) = parse_todo_line("fixup -c 1234567890abcdef").unwrap();
+        assert_eq!(oid.as_deref(), Some("1234567"));
 
         // Blanks and comments are skipped.
         assert!(parse_todo_line("").is_none());

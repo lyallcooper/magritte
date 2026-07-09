@@ -521,18 +521,22 @@ impl StatusView {
     /// todo): the `g` prefix, the fixed motion aliases (arrows, Ctrl-paging,
     /// `]`/`[`), and the remappable motion keys resolved through the effective
     /// keymap. Returns whether it consumed the key.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_nav(
         &mut self,
         key: &str,
         shift: bool,
         ctrl: bool,
         alt: bool,
+        cmd: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         // All motions (arrows, `C-d`, Space, `]`, the `g` prefix, …) resolve
-        // through the effective keymap — there are no hardcoded aliases.
-        let chord = chord(key, shift, ctrl, alt, false);
+        // through the effective keymap — there are no hardcoded aliases. The
+        // full chord (cmd included), so an unhandled cmd-chord falls through to
+        // the OS/app layer instead of being consumed as its bare key.
+        let chord = chord(key, shift, ctrl, alt, cmd);
         // A prefix key begins a sequence.
         if self.is_prefix(&chord) {
             self.enter_prefix(chord, window, cx);
@@ -557,6 +561,50 @@ impl StatusView {
         } else {
             false
         }
+    }
+
+    /// One keystroke on a pager screen (the `$` command log or blame — no
+    /// cursor): a registry verb bound at the full chord dispatches (`close`,
+    /// the log's toggle-queries); anything else scrolls less-style, with a
+    /// keymap-resolved motion translated to the key [`apply_scroll_key`]
+    /// understands. Resolving the full chord keeps modifier bindings (the
+    /// default `ctrl-n`/`ctrl-p`, or a user remap) driving the pager too.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pager_key(
+        &mut self,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        cmd: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let chorded = chord(key, shift, ctrl, alt, cmd);
+        let bound = self
+            .screen_bindings()
+            .get(&chorded)
+            .and_then(|v| v.first())
+            .map(String::as_str);
+        let (skey, sshift) = match bound {
+            Some("close") => return self.close_screen(window, cx),
+            Some("git-log-toggle-queries") => return self.toggle_git_log_all(window, cx),
+            Some("move-down") => ("j", false),
+            Some("move-up") => ("k", false),
+            Some("goto-bottom") => ("g", true),
+            Some("goto-top") => ("g", false),
+            _ => (key, shift),
+        };
+        let page = page_rows(window, self.row_h());
+        let len = match &self.screen {
+            Screen::GitLog { .. } => self.git_log_rows().len(),
+            Screen::Blame { rows, .. } => rows.len(),
+            _ => return,
+        };
+        if let Screen::GitLog { view, .. } | Screen::Blame { view, .. } = &mut self.screen {
+            apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
+        }
+        cx.notify();
     }
 
     pub(crate) fn toggle_fold(&mut self, cx: &mut Context<Self>) {
@@ -699,65 +747,6 @@ impl StatusView {
         );
     }
 
-    pub(crate) fn clamp_selection(&mut self) {
-        if self.rows.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        if self.selected >= self.rows.len() {
-            self.selected = self.rows.len() - 1;
-        }
-        if !self.rows[self.selected].selectable {
-            let down = (self.selected..self.rows.len()).find(|&i| self.rows[i].selectable);
-            let up = || (0..self.selected).rev().find(|&i| self.rows[i].selectable);
-            if let Some(i) = down.or_else(up) {
-                self.selected = i;
-            }
-        }
-    }
-
-    // --- Selection restoration across rebuilds ---------------------------
-    //
-    // Rather than keep the cursor at the same numeric row index (which may mean
-    // something unrelated after staging/folding), we capture the selected row's
-    // logical identity before a rebuild and restore it to the same place — or,
-    // if that's gone, to a sensible nearby row within the same section.
-
-    /// The logical identity of the row at `ix`.
-    pub(crate) fn ident_of(&self, ix: usize) -> AnchorIdent {
-        match self.rows.get(ix) {
-            Some(Row {
-                target: Some(t), ..
-            }) => match t {
-                Target::File(f) => AnchorIdent::File(f.section, f.path.clone()),
-                Target::Hunk { file, hunk } => {
-                    AnchorIdent::Hunk(file.section, file.path.clone(), *hunk)
-                }
-                Target::Line { file, hunk, line } => {
-                    AnchorIdent::Line(file.section, file.path.clone(), *hunk, *line)
-                }
-            },
-            Some(Row {
-                fold: Some(FoldKey::Section(s)),
-                ..
-            }) => AnchorIdent::Section(*s),
-            // Commit/stash rows carry no Target/fold; anchor by content, finding
-            // the enclosing section header for the commit case.
-            Some(Row {
-                kind: RowKind::Commit { hash, .. },
-                ..
-            }) => match self.enclosing_section(ix) {
-                Some(s) => AnchorIdent::Commit(s, hash.clone()),
-                None => AnchorIdent::Top,
-            },
-            Some(Row {
-                kind: RowKind::Stash { reference, .. },
-                ..
-            }) => AnchorIdent::Stash(reference.clone()),
-            _ => AnchorIdent::Top,
-        }
-    }
-
     /// The commit at point in a status section, as `(hash, short_hash, subject)`.
     pub(crate) fn point_commit(&self) -> Option<(String, String, String)> {
         match self.rows.get(self.selected).map(|r| &r.kind) {
@@ -781,101 +770,14 @@ impl StatusView {
         }
     }
 
-    /// The section a row belongs to, by scanning back to the nearest section
-    /// header at or above it.
-    pub(crate) fn enclosing_section(&self, ix: usize) -> Option<SectionId> {
-        (0..=ix)
-            .rev()
-            .find_map(|i| match self.rows.get(i).map(|r| &r.fold) {
-                Some(Some(FoldKey::Section(s))) => Some(*s),
-                _ => None,
-            })
-    }
-
-    /// The row indices belonging to a section: its header through the row before
-    /// the next section header (or end).
-    pub(crate) fn section_rows(&self, section: SectionId) -> Vec<usize> {
-        let Some(start) =
-            (0..self.rows.len()).find(|&i| self.rows[i].fold == Some(FoldKey::Section(section)))
-        else {
-            return Vec::new();
-        };
-        let mut out = vec![start];
-        for i in (start + 1)..self.rows.len() {
-            if matches!(self.rows[i].kind, RowKind::Section { .. }) {
-                break;
-            }
-            out.push(i);
-        }
-        out
-    }
-
     /// Capture the current selection for restoration after a rebuild.
     pub(crate) fn capture_anchor(&self) -> Option<SelAnchor> {
-        if self.rows.is_empty() {
-            return None;
-        }
-        let ident = self.ident_of(self.selected);
-        let scope: Vec<usize> = match ident.section() {
-            Some(s) => self.section_rows(s),
-            None => (0..self.rows.len()).collect(),
-        };
-        let ordinal = scope
-            .iter()
-            .filter(|&&i| self.rows[i].selectable)
-            .position(|&i| i == self.selected)
-            .unwrap_or(0);
-        Some(SelAnchor { ident, ordinal })
-    }
-
-    /// Whether the row at `ix` matches `ident` exactly.
-    pub(crate) fn row_matches(&self, ix: usize, ident: &AnchorIdent) -> bool {
-        self.ident_of(ix) == *ident
-    }
-
-    /// Find the best row for `ident`: exact, else progressively less specific
-    /// (a missing line falls back to its hunk header, then its file row).
-    pub(crate) fn locate_ident(&self, ident: &AnchorIdent) -> Option<usize> {
-        let ladder = match ident {
-            AnchorIdent::Line(s, p, h, _) => vec![
-                ident.clone(),
-                AnchorIdent::Hunk(*s, p.clone(), *h),
-                AnchorIdent::File(*s, p.clone()),
-            ],
-            AnchorIdent::Hunk(s, p, _) => vec![ident.clone(), AnchorIdent::File(*s, p.clone())],
-            other => vec![other.clone()],
-        };
-        ladder
-            .iter()
-            .find_map(|id| (0..self.rows.len()).find(|&i| self.row_matches(i, id)))
+        capture_row_anchor(&self.rows, self.selected)
     }
 
     /// Restore the selection captured by [`capture_anchor`] after a rebuild.
     pub(crate) fn restore_anchor(&mut self, anchor: Option<SelAnchor>) {
-        let Some(anchor) = anchor else {
-            self.clamp_selection();
-            return;
-        };
-        if let Some(ix) = self.locate_ident(&anchor.ident) {
-            self.selected = ix;
-            self.clamp_selection();
-            return;
-        }
-        // The anchored row is gone (e.g. staged away). Stay within the same
-        // section at roughly the same ordinal, else fall back to nearest.
-        if let Some(section) = anchor.ident.section() {
-            let selectable: Vec<usize> = self
-                .section_rows(section)
-                .into_iter()
-                .filter(|&i| self.rows[i].selectable)
-                .collect();
-            if !selectable.is_empty() {
-                let pick = anchor.ordinal.min(selectable.len() - 1);
-                self.selected = selectable[pick];
-                return;
-            }
-        }
-        self.clamp_selection();
+        self.selected = restored_row(&self.rows, self.selected, anchor.as_ref());
     }
 
     /// Rebuild rows while keeping the cursor on the same logical row.
@@ -884,6 +786,150 @@ impl StatusView {
         self.rebuild_rows();
         self.restore_anchor(anchor);
     }
+}
+
+// --- Selection restoration across rebuilds ---------------------------------
+//
+// Rather than keep the cursor at the same numeric row index (which may mean
+// something unrelated after staging/folding), we capture the selected row's
+// logical identity before a rebuild and restore it to the same place — or, if
+// that's gone, to a sensible nearby row within the same section. Pure over the
+// row list so the degradation ladder and fallbacks are unit-testable.
+
+/// Clamp `selected` into `rows`, snapping to the nearest selectable row
+/// (downward first, then upward).
+fn clamp_row(rows: &[Row], selected: usize) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let ix = selected.min(rows.len() - 1);
+    if rows[ix].selectable {
+        return ix;
+    }
+    let down = (ix..rows.len()).find(|&i| rows[i].selectable);
+    let up = || (0..ix).rev().find(|&i| rows[i].selectable);
+    down.or_else(up).unwrap_or(ix)
+}
+
+/// The logical identity of the row at `ix`.
+fn row_ident(rows: &[Row], ix: usize) -> AnchorIdent {
+    match rows.get(ix) {
+        Some(Row {
+            target: Some(t), ..
+        }) => match t {
+            Target::File(f) => AnchorIdent::File(f.section, f.path.clone()),
+            Target::Hunk { file, hunk } => {
+                AnchorIdent::Hunk(file.section, file.path.clone(), *hunk)
+            }
+            Target::Line { file, hunk, line } => {
+                AnchorIdent::Line(file.section, file.path.clone(), *hunk, *line)
+            }
+        },
+        Some(Row {
+            fold: Some(FoldKey::Section(s)),
+            ..
+        }) => AnchorIdent::Section(*s),
+        // Commit/stash rows carry no Target/fold; anchor by content, finding
+        // the enclosing section header for the commit case.
+        Some(Row {
+            kind: RowKind::Commit { hash, .. },
+            ..
+        }) => match enclosing_section(rows, ix) {
+            Some(s) => AnchorIdent::Commit(s, hash.clone()),
+            None => AnchorIdent::Top,
+        },
+        Some(Row {
+            kind: RowKind::Stash { reference, .. },
+            ..
+        }) => AnchorIdent::Stash(reference.clone()),
+        _ => AnchorIdent::Top,
+    }
+}
+
+/// The section a row belongs to, by scanning back to the nearest section
+/// header at or above it.
+fn enclosing_section(rows: &[Row], ix: usize) -> Option<SectionId> {
+    (0..=ix)
+        .rev()
+        .find_map(|i| match rows.get(i).map(|r| &r.fold) {
+            Some(Some(FoldKey::Section(s))) => Some(*s),
+            _ => None,
+        })
+}
+
+/// The row indices belonging to a section: its header through the row before
+/// the next section header (or end).
+fn section_rows(rows: &[Row], section: SectionId) -> Vec<usize> {
+    let Some(start) = (0..rows.len()).find(|&i| rows[i].fold == Some(FoldKey::Section(section)))
+    else {
+        return Vec::new();
+    };
+    let mut out = vec![start];
+    for (i, row) in rows.iter().enumerate().skip(start + 1) {
+        if matches!(row.kind, RowKind::Section { .. }) {
+            break;
+        }
+        out.push(i);
+    }
+    out
+}
+
+/// Capture the selection at `selected` for restoration after a rebuild.
+fn capture_row_anchor(rows: &[Row], selected: usize) -> Option<SelAnchor> {
+    if rows.is_empty() {
+        return None;
+    }
+    let ident = row_ident(rows, selected);
+    let scope: Vec<usize> = match ident.section() {
+        Some(s) => section_rows(rows, s),
+        None => (0..rows.len()).collect(),
+    };
+    let ordinal = scope
+        .iter()
+        .filter(|&&i| rows[i].selectable)
+        .position(|&i| i == selected)
+        .unwrap_or(0);
+    Some(SelAnchor { ident, ordinal })
+}
+
+/// Find the best row for `ident`: exact, else progressively less specific
+/// (a missing line falls back to its hunk header, then its file row).
+fn locate_ident(rows: &[Row], ident: &AnchorIdent) -> Option<usize> {
+    let ladder = match ident {
+        AnchorIdent::Line(s, p, h, _) => vec![
+            ident.clone(),
+            AnchorIdent::Hunk(*s, p.clone(), *h),
+            AnchorIdent::File(*s, p.clone()),
+        ],
+        AnchorIdent::Hunk(s, p, _) => vec![ident.clone(), AnchorIdent::File(*s, p.clone())],
+        other => vec![other.clone()],
+    };
+    ladder
+        .iter()
+        .find_map(|id| (0..rows.len()).find(|&i| row_ident(rows, i) == *id))
+}
+
+/// The row a captured anchor lands on in the rebuilt `rows` (with `selected`
+/// as the pre-rebuild cursor, for the anchorless clamp).
+fn restored_row(rows: &[Row], selected: usize, anchor: Option<&SelAnchor>) -> usize {
+    let Some(anchor) = anchor else {
+        return clamp_row(rows, selected);
+    };
+    if let Some(ix) = locate_ident(rows, &anchor.ident) {
+        return clamp_row(rows, ix);
+    }
+    // The anchored row is gone (e.g. staged away). Stay within the same
+    // section at roughly the same ordinal, else fall back to nearest.
+    if let Some(section) = anchor.ident.section() {
+        let selectable: Vec<usize> = section_rows(rows, section)
+            .into_iter()
+            .filter(|&i| rows[i].selectable)
+            .collect();
+        if !selectable.is_empty() {
+            return selectable[anchor.ordinal.min(selectable.len() - 1)];
+        }
+    }
+    clamp_row(rows, selected)
 }
 
 /// The magit section depth of a row that *starts* a section, or `None` for
@@ -1057,7 +1103,169 @@ pub(crate) fn apply_scroll_key(
 
 #[cfg(test)]
 mod tests {
-    use super::CharSelection;
+    use super::*;
+
+    // --- Anchor-restoration fixtures ------------------------------------
+    // Rows built by hand (the shapes rebuild_rows emits): ident/restore read
+    // only `fold`, `target`, `selectable`, and the commit/stash kinds.
+
+    fn row(target: Option<Target>, fold: Option<FoldKey>, kind: RowKind) -> Row {
+        Row {
+            indent: 0,
+            selectable: true,
+            fold,
+            target,
+            kind,
+        }
+    }
+
+    fn section(id: SectionId) -> Row {
+        row(
+            None,
+            Some(FoldKey::Section(id)),
+            RowKind::Section {
+                title: String::new(),
+                count: None,
+                expanded: true,
+                refreshing: false,
+            },
+        )
+    }
+
+    fn text(label: &str) -> RowKind {
+        RowKind::Plain {
+            text: label.to_string(),
+            color: gpui::hsla(0.0, 0.0, 0.0, 1.0),
+        }
+    }
+
+    fn file_ref(section: SectionId, path: &str) -> FileRef {
+        FileRef {
+            section,
+            path: path.to_string(),
+        }
+    }
+
+    fn file(section: SectionId, path: &str) -> Row {
+        row(
+            Some(Target::File(file_ref(section, path))),
+            None,
+            text(path),
+        )
+    }
+
+    fn hunk(section: SectionId, path: &str, hunk: usize) -> Row {
+        let target = Target::Hunk {
+            file: file_ref(section, path),
+            hunk,
+        };
+        row(Some(target), None, text("@@"))
+    }
+
+    fn line(section: SectionId, path: &str, hunk: usize, line: usize) -> Row {
+        let target = Target::Line {
+            file: file_ref(section, path),
+            hunk,
+            line,
+        };
+        row(Some(target), None, text("+x"))
+    }
+
+    // A commit row carries no section itself — the enclosing header does.
+    fn commit(hash: &str) -> Row {
+        row(
+            None,
+            None,
+            RowKind::Commit {
+                hash: hash.to_string(),
+                short_hash: hash.to_string(),
+                subject: String::new(),
+                refs: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn anchor_restores_exactly_then_degrades_line_to_hunk_to_file() {
+        let unstaged = SectionId::Unstaged;
+        let rows = vec![
+            section(unstaged),
+            file(unstaged, "a.txt"),
+            hunk(unstaged, "a.txt", 0),
+            line(unstaged, "a.txt", 0, 0),
+            line(unstaged, "a.txt", 0, 1),
+        ];
+        let anchor = capture_row_anchor(&rows, 4);
+        // Unchanged rows: the exact line is found again.
+        assert_eq!(restored_row(&rows, 0, anchor.as_ref()), 4);
+        // The line is gone (e.g. partially staged): degrade to its hunk header.
+        let no_line = vec![
+            section(unstaged),
+            file(unstaged, "a.txt"),
+            hunk(unstaged, "a.txt", 0),
+            line(unstaged, "a.txt", 0, 0),
+        ];
+        assert_eq!(restored_row(&no_line, 0, anchor.as_ref()), 2);
+        // The hunk is gone too (collapsed file): land on the file row.
+        let no_hunk = vec![section(unstaged), file(unstaged, "a.txt")];
+        assert_eq!(restored_row(&no_hunk, 0, anchor.as_ref()), 1);
+    }
+
+    #[test]
+    fn missing_anchor_falls_back_to_the_ordinal_within_its_section() {
+        let (untracked, unstaged) = (SectionId::Untracked, SectionId::Unstaged);
+        let rows = vec![
+            section(untracked),
+            file(untracked, "u.txt"),
+            section(unstaged),
+            file(unstaged, "a.txt"),
+            file(unstaged, "b.txt"),
+            file(unstaged, "c.txt"),
+        ];
+        // Cursor on b.txt — ordinal 2 among the section's selectable rows.
+        let anchor = capture_row_anchor(&rows, 4);
+        // b.txt staged away: land on the row now at that ordinal (c.txt),
+        // staying inside the Unstaged section (not row 4 of the buffer).
+        let after = vec![
+            section(untracked),
+            file(untracked, "u.txt"),
+            section(unstaged),
+            file(unstaged, "a.txt"),
+            file(unstaged, "c.txt"),
+        ];
+        assert_eq!(restored_row(&after, 0, anchor.as_ref()), 4);
+        // The ordinal clamps to the section's end when it shrank past it.
+        let shrunk = vec![
+            section(untracked),
+            file(untracked, "u.txt"),
+            section(unstaged),
+            file(unstaged, "a.txt"),
+        ];
+        assert_eq!(restored_row(&shrunk, 0, anchor.as_ref()), 3);
+        // The whole section is gone: clamp to the nearest selectable row.
+        let gone = vec![section(untracked), file(untracked, "u.txt")];
+        assert_eq!(restored_row(&gone, 5, anchor.as_ref()), 1);
+    }
+
+    #[test]
+    fn commit_anchors_follow_the_hash_within_their_section() {
+        let recent = SectionId::Recent;
+        let rows = vec![section(recent), commit("aaa"), commit("bbb")];
+        let anchor = capture_row_anchor(&rows, 2);
+        // The commit moved (a new one landed above it): follow the hash.
+        let after = vec![section(recent), commit("ccc"), commit("aaa"), commit("bbb")];
+        assert_eq!(restored_row(&after, 0, anchor.as_ref()), 3);
+    }
+
+    #[test]
+    fn anchorless_restore_clamps_to_a_selectable_row() {
+        assert_eq!(restored_row(&[], 3, None), 0);
+        let mut rows = vec![section(SectionId::Unstaged), file(SectionId::Unstaged, "a")];
+        assert_eq!(restored_row(&rows, 9, None), 1);
+        // An unselectable landing row snaps to the nearest selectable one.
+        rows[1].selectable = false;
+        assert_eq!(restored_row(&rows, 1, None), 0);
+    }
 
     #[test]
     fn char_range_normalizes_regardless_of_drag_direction() {

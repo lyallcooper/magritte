@@ -132,3 +132,60 @@ fn reflog_lists_entries() {
     assert!(!entries.is_empty());
     assert!(entries[0].refs.starts_with("HEAD@{0}"));
 }
+
+#[test]
+fn push_divergence_uses_configured_push_remote() {
+    // Triangular workflow: upstream is origin/main, pushes go to
+    // origin/feature. `git log @{push}..` refuses to resolve here under the
+    // default push.default=simple, so the ref must come from config.
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    let base = t.git(["rev-parse", "HEAD"]);
+
+    t.git(["checkout", "-b", "push-side"]);
+    t.write("f", "push\n");
+    t.commit_all("push-only");
+    let push_tip = t.git(["rev-parse", "HEAD"]);
+
+    t.git(["checkout", "-b", "feature", &base]);
+    t.write("g", "local\n");
+    t.commit_all("local-only");
+
+    t.git(["remote", "add", "origin", "https://example.com/origin.git"]);
+    t.git(["update-ref", "refs/remotes/origin/main", &base]);
+    t.git(["update-ref", "refs/remotes/origin/feature", &push_tip]);
+    t.git(["config", "branch.feature.remote", "origin"]);
+    t.git(["config", "branch.feature.merge", "refs/heads/main"]);
+    t.git(["config", "remote.pushDefault", "origin"]);
+    t.git(["config", "push.default", "simple"]);
+
+    let repo = Repo::discover(t.path()).unwrap();
+    let (unpushed, unpulled) = repo.push_divergence().unwrap();
+    assert_eq!(
+        unpushed
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["local-only"]
+    );
+    assert_eq!(
+        unpulled
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["push-only"]
+    );
+}
+
+#[test]
+fn push_divergence_is_empty_without_a_push_target() {
+    let t = TestRepo::new();
+    t.write("f", "base\n");
+    t.commit_all("base");
+    let repo = Repo::discover(t.path()).unwrap();
+    // No pushRemote/pushDefault: pushes follow the upstream, nothing distinct
+    // to report — and no error from an unresolvable `@{push}`.
+    let (unpushed, unpulled) = repo.push_divergence().unwrap();
+    assert!(unpushed.is_empty() && unpulled.is_empty());
+}

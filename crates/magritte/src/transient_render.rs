@@ -10,17 +10,19 @@ use crate::*;
 
 /// Rough rendered width (px) of a keycap label: one cap per space-separated
 /// step (each ~9px/char plus its border/padding), a bare dot for the `·`
-/// alternative separator, and the 4px gap between them.
-fn keys_px(keys: &str) -> f32 {
+/// alternative separator, and the 4px gap between them. The per-char constants
+/// are the 13px-font baseline; `scale` (font size / 13) tracks the configured
+/// size so larger fonts don't pack more columns than actually fit.
+fn keys_px(keys: &str, scale: f32) -> f32 {
     let mut w = 0.0;
     for (i, step) in keys.split(' ').enumerate() {
         if i > 0 {
             w += 4.0;
         }
         w += if step == "·" {
-            7.0
+            7.0 * scale
         } else {
-            step.chars().count() as f32 * 9.0 + 16.0
+            step.chars().count() as f32 * 9.0 * scale + 16.0
         };
     }
     w
@@ -29,8 +31,9 @@ fn keys_px(keys: &str) -> f32 {
 /// Rough rendered width (px) of one transient suffix cell — its keycaps plus
 /// description (and the git flag in parens for switches/options). Used to decide
 /// how many columns of a group fit the window; a slight over-estimate keeps text
-/// from overflowing. Tuned for the ~13px UI/mono fonts.
-fn suffix_cell_px(suffix: &Suffix) -> f32 {
+/// from overflowing. Char widths are the ~13px UI/mono baseline, scaled like
+/// [`keys_px`].
+fn suffix_cell_px(suffix: &Suffix, scale: f32) -> f32 {
     // (key label, text chars) — the flag in parens counts toward the text.
     let (key, text) = match suffix {
         Suffix::Switch(sw) => (
@@ -52,7 +55,7 @@ fn suffix_cell_px(suffix: &Suffix) -> f32 {
     };
     // Description: ~7px/char at 13px, plus the gap after the keycaps and a
     // little slack.
-    keys_px(key) + 8.0 + (text as f32 * 7.0) + 12.0
+    keys_px(key, scale) + 8.0 + (text as f32 * 7.0 * scale) + 12.0
 }
 
 /// Rough char count of a config variable's rendered value/choices, so its cell
@@ -111,13 +114,15 @@ impl StatusView {
         // narrow and wide bands both fill the width without overflowing. `px_3`
         // pads the panel on each side.
         let avail = f32::from(window.viewport_size().width) - 24.0;
+        // The width estimates' constants assume the 13px default font.
+        let scale = self.font_px() / 13.0;
         // How many columns of `group` fit in `width` px, given each column is its
         // widest cell plus the `gap_x_6` (24px) between sub-columns.
-        let fit_columns = |group: &Group, width: f32| -> usize {
+        let fit_columns = move |group: &Group, width: f32| -> usize {
             let cell = group
                 .suffixes
                 .iter()
-                .map(suffix_cell_px)
+                .map(|s| suffix_cell_px(s, scale))
                 .fold(0.0_f32, f32::max)
                 .max(1.0);
             (((width + 24.0) / (cell + 24.0)).floor() as usize).max(1)
@@ -723,5 +728,35 @@ impl StatusView {
                     .into_any_element()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The column-fit estimates must track the configured font size: at 24px a
+    /// glyph is ~1.85x its 13px width, so an unscaled estimate would pack about
+    /// twice the columns that actually fit and cells would overlap.
+    #[test]
+    fn width_estimates_scale_with_the_font() {
+        let scale = 24.0 / 13.0;
+
+        let keys_13 = keys_px("g r", 1.0);
+        let keys_24 = keys_px("g r", scale);
+        // Each keycap's glyph portion scales fully (only the fixed cap padding
+        // and inter-cap gap don't).
+        assert!(keys_24 - keys_13 >= 2.0 * 9.0 * (scale - 1.0) - 0.01);
+
+        let suffix = Suffix::Switch(transient::Switch::new(
+            "-f",
+            "--force-with-lease",
+            "Force with lease",
+        ));
+        let cell_13 = suffix_cell_px(&suffix, 1.0);
+        let cell_24 = suffix_cell_px(&suffix, scale);
+        // The description + flag text scales linearly per char.
+        let chars = "Force with lease".chars().count() + "--force-with-lease".chars().count() + 3;
+        assert!(cell_24 - cell_13 >= chars as f32 * 7.0 * (scale - 1.0) - 0.01);
     }
 }

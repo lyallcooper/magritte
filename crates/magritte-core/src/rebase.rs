@@ -96,8 +96,10 @@ impl Repo {
 
     /// The remaining instructions of an in-progress interactive rebase, parsed
     /// from `rebase-merge/git-rebase-todo` — the steps git has yet to apply.
-    /// Empty when the rebase has no editable plan left (e.g. paused on its last
-    /// commit) or isn't using the interactive (merge) backend.
+    /// Only commit-carrying instructions are modeled (others pass through
+    /// [`rebase_edit_todo`](Self::rebase_edit_todo) untouched). Empty when the
+    /// rebase has no editable plan left (e.g. paused on its last commit) or
+    /// isn't using the interactive (merge) backend.
     pub fn rebase_current_todo(&self) -> Result<Vec<RebaseStep>> {
         let todo = self.git_dir()?.join("rebase-merge").join("git-rebase-todo");
         let Ok(text) = std::fs::read_to_string(&todo) else {
@@ -119,12 +121,14 @@ impl Repo {
     /// Rewrite the remaining todo of an in-progress rebase (`git rebase
     /// --edit-todo`), injected via the throwaway sequence editor — magit's
     /// `magit-rebase-edit`. The rebase stays paused at its current stop; the new
-    /// plan governs what happens once it's continued.
+    /// plan governs what happens once it's continued. The edited steps are
+    /// merged back into the current todo so instructions the editor doesn't
+    /// model (`exec`, `label`, `reset`, `merge`, `update-ref`, `break`, …)
+    /// survive the rewrite instead of being silently dropped.
     pub fn rebase_edit_todo(&self, steps: &[RebaseStep]) -> Result<String> {
-        let todo: String = steps
-            .iter()
-            .map(|s| format!("{} {}\n", rebase_action_for_git(s.action).keyword(), s.oid))
-            .collect();
+        let path = self.git_dir()?.join("rebase-merge").join("git-rebase-todo");
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        let todo = merge_edited_todo(&current, steps);
         let argv = vec!["rebase".to_string(), "--edit-todo".to_string()];
         Ok(self.run_with_sequence_editor(&todo, &argv)?.status_line())
     }
@@ -227,5 +231,115 @@ fn rebase_action_for_git(action: RebaseAction) -> RebaseAction {
     match action {
         RebaseAction::Reword => RebaseAction::Edit,
         other => other,
+    }
+}
+
+/// Reassemble a todo from the edited steps while round-tripping the
+/// instructions the editor doesn't model (`exec`, `label`, `reset`, `merge`,
+/// `update-ref`, `break`, …): each such line stays attached to the modeled
+/// step it followed in `current` (so it moves with that commit on reorder),
+/// and lines before the first modeled step stay at the front. A step whose
+/// effective action is unchanged keeps its original line verbatim, preserving
+/// flags like `fixup -C` and the subject comment.
+fn merge_edited_todo(current: &str, steps: &[RebaseStep]) -> String {
+    struct Segment<'a> {
+        oid: String,
+        action: RebaseAction,
+        line: &'a str,
+        trailing: Vec<&'a str>,
+    }
+    let mut leading: Vec<&str> = Vec::new();
+    let mut segments: Vec<Option<Segment>> = Vec::new();
+    for line in current.lines() {
+        let Some((verb, oid, _)) = parse_todo_line(line) else {
+            continue; // blank/comment — git ignores them
+        };
+        match (RebaseAction::from_keyword(verb), oid) {
+            (Some(action), Some(oid)) => segments.push(Some(Segment {
+                oid,
+                action,
+                line,
+                trailing: Vec::new(),
+            })),
+            _ => match segments.last_mut() {
+                Some(Some(seg)) => seg.trailing.push(line),
+                _ => leading.push(line),
+            },
+        }
+    }
+
+    let mut out = String::new();
+    for line in &leading {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for step in steps {
+        // Consume the matching segment front-to-back so a duplicated oid pairs
+        // up in order.
+        let seg = segments
+            .iter_mut()
+            .find(|s| s.as_ref().is_some_and(|seg| seg.oid == step.oid))
+            .and_then(Option::take);
+        let action = rebase_action_for_git(step.action);
+        match &seg {
+            Some(seg) if seg.action == action => {
+                out.push_str(seg.line);
+                out.push('\n');
+            }
+            _ => {
+                out.push_str(action.keyword());
+                out.push(' ');
+                out.push_str(&step.oid);
+                out.push('\n');
+            }
+        }
+        for line in seg.iter().flat_map(|s| &s.trailing) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_edited_todo, RebaseAction, RebaseStep};
+
+    fn step(action: RebaseAction, oid: &str) -> RebaseStep {
+        RebaseStep {
+            action,
+            oid: oid.to_string(),
+            subject: String::new(),
+        }
+    }
+
+    #[test]
+    fn merge_keeps_unmodeled_lines_attached_to_their_step() {
+        let current = "label onto\npick 1111111 one\nexec make test\npick 2222222 two\nupdate-ref refs/heads/dep\n";
+        // Reorder the picks; the exec follows its commit, the leading label
+        // stays first, the trailing update-ref follows its commit.
+        let steps = [
+            step(RebaseAction::Pick, "2222222"),
+            step(RebaseAction::Pick, "1111111"),
+        ];
+        assert_eq!(
+            merge_edited_todo(current, &steps),
+            "label onto\npick 2222222 two\nupdate-ref refs/heads/dep\npick 1111111 one\nexec make test\n"
+        );
+    }
+
+    #[test]
+    fn merge_rewrites_only_changed_actions() {
+        let current = "pick 1111111 one\nfixup -C 2222222 # amend! one\n";
+        // Unchanged fixup keeps its `-C` flag verbatim; the reworded pick is
+        // rewritten as an app-managed edit stop.
+        let steps = [
+            step(RebaseAction::Reword, "1111111"),
+            step(RebaseAction::Fixup, "2222222"),
+        ];
+        assert_eq!(
+            merge_edited_todo(current, &steps),
+            "edit 1111111\nfixup -C 2222222 # amend! one\n"
+        );
     }
 }

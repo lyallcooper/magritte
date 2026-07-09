@@ -812,6 +812,9 @@ pub fn cherry_pick_transient() -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
+                // No `--edit`: like revert, an interactive message editor can't
+                // work in our background-git model — it would block on an
+                // editor that isn't there. Documented deviation.
                 suffixes: vec![
                     Suffix::Switch(
                         Switch::on("-F", "--ff", "Attempt fast-forward").exclusive_with(&["-x"]),
@@ -821,7 +824,6 @@ pub fn cherry_pick_transient() -> Transient {
                         "-x",
                         "Reference cherry in commit message",
                     )),
-                    Suffix::Switch(Switch::new("-e", "--edit", "Edit commit messages")),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
                     Suffix::Option(Opt {
                         key: "-m",

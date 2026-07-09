@@ -10,6 +10,62 @@ use magritte_core::DiffSource;
 use crate::*;
 
 impl StatusView {
+    /// Land a stamped background read: unwind the activity counter first (a
+    /// stale landing must never strand the spinner), then say whether the
+    /// result may apply — i.e. no newer generation superseded this read.
+    fn land_read(&mut self, stamp: u64, cx: &mut Context<Self>) -> bool {
+        self.end_activity(cx);
+        self.generation.is_current(stamp)
+    }
+
+    /// The logical anchor of row `ix`, via the cursor-anchor machinery.
+    fn anchor_at(&mut self, ix: usize) -> Option<SelAnchor> {
+        let saved = self.selected;
+        self.selected = ix;
+        let anchor = self.capture_anchor();
+        self.selected = saved;
+        anchor
+    }
+
+    /// Relocate `anchor` in the rebuilt rows, keeping it only when it lands on
+    /// exactly the same logical row. Unlike the cursor, a selection endpoint
+    /// must not take the nearby-row fallback — it would silently cover
+    /// different content — and content-free rows (spacers, notices) have no
+    /// identity to relocate by.
+    fn relocate_exact(&mut self, anchor: &SelAnchor) -> Option<usize> {
+        if anchor.ident == AnchorIdent::Top {
+            return None;
+        }
+        let saved = self.selected;
+        self.restore_anchor(Some(anchor.clone()));
+        let restored = self.selected;
+        self.selected = saved;
+        (self.anchor_at(restored)?.ident == anchor.ident).then_some(restored)
+    }
+
+    /// Rebuild rows after an async landing (a diff or section listing popping
+    /// in), preserving the cursor *and* any visual/char selection by logical
+    /// identity — raw row indices shift when rows appear above them, and a
+    /// stale index would let a later stage/discard act on different content.
+    /// A selection whose anchor row can't be relocated exactly is dropped
+    /// (like a refresh drops the region) rather than left covering the wrong
+    /// rows.
+    fn rebuild_after_landing(&mut self) {
+        let visual_anchor = self
+            .selection
+            .visual
+            .and_then(|anchor| self.anchor_at(anchor));
+        let char_anchor = self
+            .char_sel
+            .and_then(|sel| self.anchor_at(sel.row).map(|a| (a, sel)));
+        self.rebuild_preserving_selection();
+        self.selection.visual = visual_anchor.and_then(|a| self.relocate_exact(&a));
+        self.char_sel = char_anchor.and_then(|(a, sel)| {
+            self.relocate_exact(&a)
+                .map(|row| CharSelection { row, ..sel })
+        });
+    }
+
     /// Recompute the syntax-highlight cache for every loaded diff against the
     /// current theme. Reuses the languages detected at load time, so no files
     /// are re-read.
@@ -167,9 +223,6 @@ impl StatusView {
         let Some(repo) = self.read_repo() else {
             return;
         };
-        // Capture the cursor's logical position now (before the rebuild) so it
-        // can be restored once status lands, rather than left at a stale index.
-        let anchor = self.capture_anchor();
         let worktree_git_dir = self.worktree_git_dir.clone();
         let needs = RefreshNeeds {
             push_target: pushremote_configured,
@@ -190,8 +243,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.end_activity(cx);
-                if !this.generation.is_current(stamp) {
+                if !this.land_read(stamp, cx) {
                     return;
                 }
                 this.sequence = sequence;
@@ -231,8 +283,10 @@ impl StatusView {
                     this.status_sections.unpushed_pushremote.clear();
                     this.status_sections.unpulled_pushremote.clear();
                 }
-                this.rebuild_rows();
-                this.restore_anchor(anchor);
+                // Restore the cursor by the logical identity it has *now* (not
+                // at spawn time — keys pressed while `git status` ran must not
+                // be undone by the landing).
+                this.rebuild_after_landing();
                 // Re-load diffs for any files that were expanded before the
                 // refresh cleared them, so they don't get stuck on "Loading…".
                 this.reload_expanded_diffs(cx);
@@ -296,15 +350,16 @@ impl StatusView {
                 .spawn(async move { fetch(repo) })
                 .await;
             this.update(cx, |this, cx| {
-                this.end_activity(cx);
-                if !this.generation.is_current(stamp) {
+                if !this.land_read(stamp, cx) {
                     return;
                 }
                 apply(this, result);
                 for s in &sections {
                     this.loading_sections.remove(s);
                 }
-                this.rebuild_rows();
+                // The listing may pop in above the cursor/selection; keep both
+                // anchored to their logical rows, not their old indices.
+                this.rebuild_after_landing();
                 cx.notify();
             })
             .ok();
@@ -405,9 +460,7 @@ impl StatusView {
         } else {
             repo.with_diff_context(self.diff_context)
         };
-        if !self.diff_cache.contains(&key) {
-            self.diff_cache.set_state(key.clone(), DiffState::Loading);
-        }
+        self.diff_cache.begin_load(key.clone());
         // A rename's diff needs the original path in the pathspec — the new
         // path alone would come back as a whole-file addition.
         let orig = self.status.as_ref().and_then(|s| {
@@ -432,8 +485,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.end_activity(cx);
-                if !this.generation.is_current(generation) {
+                if !this.land_read(generation, cx) {
                     return;
                 }
                 let state = match loaded {
@@ -464,8 +516,9 @@ impl StatusView {
                     }
                 }
                 this.diff_cache.set_state(key, state);
-                // A diff finishing load inserts rows; keep the cursor put.
-                this.rebuild_preserving_selection();
+                // A diff finishing load inserts rows; keep the cursor and any
+                // active selection anchored to their logical rows.
+                this.rebuild_after_landing();
                 cx.notify();
             })
             .ok();

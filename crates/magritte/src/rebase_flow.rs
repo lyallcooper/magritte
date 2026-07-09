@@ -281,9 +281,8 @@ impl StatusView {
                     |_repo| Ok(()),
                     move |this, _result, stopped, _window, cx| {
                         if let Some(stopped) = stopped {
-                            this.pending_rebase_rewords.retain(|oid| {
-                                !(stopped.starts_with(oid) || oid.starts_with(&stopped))
-                            });
+                            this.pending_rebase_rewords
+                                .retain(|oid| !same_commit(oid, &stopped));
                         }
                         this.run_sequence(SeqOp::Skip, kind, cx);
                     },
@@ -361,7 +360,7 @@ impl StatusView {
                 let mut steps = repo.rebase_todo(&base)?;
                 let step = steps
                     .iter_mut()
-                    .find(|s| rev.starts_with(&s.oid) || s.oid.starts_with(&rev))
+                    .find(|s| same_commit(&s.oid, &rev))
                     .ok_or_else(|| {
                         magritte_core::Error::Message(
                             "selected commit is not in the rebase range".to_string(),
@@ -396,7 +395,7 @@ impl StatusView {
     pub(crate) fn pending_rebase_reword_matches(&self, stopped_sha: &str) -> bool {
         self.pending_rebase_rewords
             .iter()
-            .any(|oid| stopped_sha.starts_with(oid) || oid.starts_with(stopped_sha))
+            .any(|oid| same_commit(oid, stopped_sha))
     }
 
     pub(crate) fn open_pending_rebase_reword(
@@ -469,7 +468,11 @@ impl StatusView {
             move |this, outcome, stopped, window, cx| {
                 let (committed, result) = outcome.unwrap_or_else(|e| (false, Err(e)));
                 if committed {
-                    this.pending_rebase_rewords.remove(&stopped_for_result);
+                    // The set holds the todo's abbreviated (`%h`) oids while the
+                    // stopped sha is full-length, so remove by prefix match — an
+                    // exact remove would silently leave the entry behind.
+                    this.pending_rebase_rewords
+                        .retain(|oid| !same_commit(oid, &stopped_for_result));
                 }
                 if result.is_ok() {
                     if let Some(stopped) = stopped {
@@ -484,5 +487,43 @@ impl StatusView {
             window,
             cx,
         );
+    }
+}
+
+/// Whether two commit ids name the same commit when either may be abbreviated
+/// (the rebase todo's `%h` oids vs git's full-length `stopped-sha`).
+fn same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_commit;
+    use std::collections::HashSet;
+
+    #[test]
+    fn same_commit_matches_abbreviated_against_full() {
+        let full = "40a65c138f5b60e07463f941af80cb3e6bf0979a";
+        assert!(same_commit("40a65c1", full));
+        assert!(same_commit(full, "40a65c1"));
+        assert!(same_commit(full, full));
+        assert!(!same_commit("40a65c1", "deadbeef"));
+        assert!(!same_commit("", full));
+        assert!(!same_commit(full, ""));
+    }
+
+    #[test]
+    fn completed_reword_is_removed_despite_abbreviated_oids() {
+        // The pending set holds `%h` oids; a finished reword must clear its
+        // entry when compared against the full stopped sha.
+        let mut pending: HashSet<String> = HashSet::from(["40a65c1".to_string()]);
+        let stopped = "40a65c138f5b60e07463f941af80cb3e6bf0979a";
+        pending.retain(|oid| !same_commit(oid, stopped));
+        assert!(pending.is_empty());
+
+        // An unrelated pending reword survives.
+        let mut pending: HashSet<String> = HashSet::from(["deadbee".to_string()]);
+        pending.retain(|oid| !same_commit(oid, stopped));
+        assert_eq!(pending.len(), 1);
     }
 }

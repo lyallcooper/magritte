@@ -499,7 +499,7 @@ index 1111111..2222222 100644
         line_index(hunk, LineKind::Removed, "2"),
         line_index(hunk, LineKind::Added, "TWO"),
     ];
-    let patch = build_patch(file, hunk, &sel, false);
+    let patch = String::from_utf8(build_patch(file, hunk, &sel, false)).unwrap();
 
     // The unselected "+FOUR" is dropped; the unselected "-4" becomes context.
     assert!(patch.contains("\n-2\n"));
@@ -549,4 +549,70 @@ fn untrack_removes_from_index_keeps_worktree() {
         "keep.txt is no longer tracked"
     );
     assert!(t.path().join("keep.txt").exists(), "the working file stays");
+}
+
+/// Write raw (possibly non-UTF-8) bytes to a file in the repo.
+fn write_bytes(t: &TestRepo, rel: &str, contents: &[u8]) {
+    std::fs::write(t.path().join(rel), contents).expect("write bytes");
+}
+
+/// The staged blob for `path`, as raw bytes (`TestRepo::git` decodes lossily,
+/// which would hide exactly the corruption these tests guard against).
+fn staged_bytes(t: &TestRepo, path: &str) -> Vec<u8> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(t.path())
+        .args(["show", &format!(":{path}")])
+        .output()
+        .expect("spawn git show");
+    assert!(out.status.success());
+    out.stdout
+}
+
+#[test]
+fn hunk_ops_preserve_non_utf8_content() {
+    // Latin-1 0xE9 bytes in both the context and the added line: staging must
+    // reproduce the original bytes, not U+FFFD replacements.
+    let t = TestRepo::new();
+    write_bytes(&t, "f", b"caf\xE9 one\nplain\n");
+    t.commit_all("init");
+    let new_content = b"caf\xE9 one\nplain\nnew caf\xE9\n";
+    write_bytes(&t, "f", new_content);
+
+    let repo = open(&t);
+    let diff = find(&repo, DiffSource::Unstaged, "f").expect("a diff");
+    repo.stage_hunk(&diff, &diff.hunks[0]).unwrap();
+
+    // Fully staged — a lossy re-encode used to leave an `MM` split instead...
+    assert_eq!(t.git(["status", "--porcelain"]), "M  f");
+    // ...and the staged blob carries the worktree's exact bytes.
+    assert_eq!(staged_bytes(&t, "f"), new_content);
+
+    // The reverse direction (unstage) must also match the non-UTF-8 context.
+    let staged = find(&repo, DiffSource::Staged, "f").expect("a staged diff");
+    repo.unstage_hunk(&staged, &staged.hunks[0]).unwrap();
+    assert!(find(&repo, DiffSource::Staged, "f").is_none());
+    assert!(find(&repo, DiffSource::Unstaged, "f").is_some());
+}
+
+#[test]
+fn line_stage_with_non_utf8_context_applies() {
+    // An ASCII change surrounded by non-UTF-8 context: the rebuilt patch's
+    // context lines must byte-match or `git apply` rejects it.
+    let t = TestRepo::new();
+    write_bytes(&t, "f", b"\xE9 ctx\nold\n\xE9 tail\n");
+    t.commit_all("init");
+    write_bytes(&t, "f", b"\xE9 ctx\nnew\n\xE9 tail\n");
+
+    let repo = open(&t);
+    let diff = find(&repo, DiffSource::Unstaged, "f").expect("a diff");
+    let hunk = &diff.hunks[0];
+    let sel = vec![
+        line_index(hunk, LineKind::Removed, "old"),
+        line_index(hunk, LineKind::Added, "new"),
+    ];
+    repo.stage_lines(&diff, hunk, &sel).unwrap();
+
+    assert_eq!(t.git(["status", "--porcelain"]), "M  f");
+    assert_eq!(staged_bytes(&t, "f"), b"\xE9 ctx\nnew\n\xE9 tail\n");
 }

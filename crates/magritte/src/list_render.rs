@@ -89,7 +89,7 @@ impl StatusView {
                             .unwrap_or(0)
                             .to_string()
                             .len();
-                        let gutter = px(digits.max(4) as f32 * 8.0 + 6.0);
+                        let gutter = px(this.ch_px(digits.max(4) as f32) + 6.0);
                         range
                             .filter_map(|ix| rows.get(ix).map(|r| this.render_blame_row(r, gutter)))
                             .collect::<Vec<_>>()
@@ -262,7 +262,8 @@ impl StatusView {
                             .gap_1()
                             .child(
                                 div()
-                                    .w(px(44.0))
+                                    // Fits "999ms" at any font size.
+                                    .w(px(self.ch_px(5.5)))
                                     .flex_shrink_0()
                                     .text_color(elapsed_color)
                                     .child(SharedString::from(elapsed.clone())),
@@ -1068,14 +1069,16 @@ impl StatusView {
             .when(selected, |el| el.bg(self.palette.selection))
             .child(
                 div()
-                    .w(px(56.0))
+                    // "reword", the widest action keyword, plus slack.
+                    .w(px(self.ch_px(7.0)))
                     .flex_shrink_0()
                     .text_color(color)
                     .child(SharedString::from(keyword)),
             )
             .child(
                 div()
-                    .w(px(72.0))
+                    // An abbreviated oid plus slack.
+                    .w(px(self.ch_px(9.0)))
                     .flex_shrink_0()
                     .text_color(self.palette.dim)
                     .child(SharedString::from(step.oid.clone())),

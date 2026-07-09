@@ -365,3 +365,32 @@ fn diff_path_survives_a_path_with_spaces() {
         .expect("a diff");
     assert_eq!(diff.new_path, "has space.txt");
 }
+
+#[test]
+fn parse_diff_keeps_non_utf8_line_bytes() {
+    // A Latin-1 0xE9 byte on a context and an added line: the display content
+    // decodes lossily, but the original bytes stay available for patch
+    // reconstruction.
+    let mut raw: Vec<u8> = Vec::new();
+    raw.extend_from_slice(b"diff --git a/f b/f\n");
+    raw.extend_from_slice(b"index 1111111..2222222 100644\n");
+    raw.extend_from_slice(b"--- a/f\n");
+    raw.extend_from_slice(b"+++ b/f\n");
+    raw.extend_from_slice(b"@@ -1,2 +1,2 @@\n");
+    raw.extend_from_slice(b" caf\xE9 ctx\n");
+    raw.extend_from_slice(b"-old\n");
+    raw.extend_from_slice(b"+new caf\xE9\n");
+
+    let files = parse_diff(&raw).unwrap();
+    let hunk = &files[0].hunks[0];
+
+    let ctx = &hunk.lines[0];
+    assert_eq!(ctx.content, "caf\u{FFFD} ctx", "display is lossy");
+    assert_eq!(ctx.content_bytes(), b"caf\xE9 ctx", "bytes are preserved");
+    let removed = &hunk.lines[1];
+    assert!(removed.raw.is_none(), "valid UTF-8 keeps no raw copy");
+    assert_eq!(removed.content_bytes(), b"old");
+    assert_eq!(hunk.lines[2].content_bytes(), b"new caf\xE9");
+    // The header was pure ASCII, so no raw copy is kept.
+    assert!(files[0].header_raw.is_none());
+}

@@ -86,10 +86,13 @@ impl StatusView {
 
         // The `?` dispatch popup is modal (like magit's dispatch): a shown key
         // runs that command, esc/? close it, other keys are ignored. `q` closes
-        // help unless the context menu explicitly shows it as a view-local action.
+        // help unless the context menu explicitly shows it as a view-local
+        // action. Menu rows can be keyed on modifier chords (vanilla's `ctrl-w`
+        // Copy), so match the full chord — a plain key's chord is its cased form.
         if let Some(Popup::Dispatch(def)) = &self.popup {
             // (A pending prefix's second key was already resolved above.)
-            match cased.as_str() {
+            let chorded = chord(&key, shift, ctrl, alt, cmd);
+            match chorded.as_str() {
                 "escape" | "?" | "/" => {
                     self.popup = None;
                     cx.notify();
@@ -155,9 +158,18 @@ impl StatusView {
         }
 
         // Command palette via cmd+p / cmd+k — before per-view handlers, so it
-        // remains reachable from detail/log screens.
+        // remains reachable from detail/log screens. M-x and `:` (`;`+shift)
+        // reach it from every screen too: `:` dispatches through the keymap
+        // first (vanilla's git-command on the screens that bind it), with
+        // `run_dispatch` falling back to the palette everywhere else.
         if cmd && matches!(key.as_str(), "p" | "k") {
             return self.open_command_palette(window, cx);
+        }
+        if key == "x" && alt && !ctrl && !cmd {
+            return self.open_command_palette(window, cx);
+        }
+        if (key == ":" || (key == ";" && shift)) && !ctrl && !alt && !cmd {
+            return self.run_dispatch(&cased, window, cx);
         }
         if key == "?" || (key == "/" && shift) {
             self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
@@ -182,82 +194,19 @@ impl StatusView {
         }
 
         // The git command-log view takes over the window; esc/q/$ close it, and
-        // it scrolls with the usual vi/less keys.
+        // it scrolls with the usual vi/less keys (the shared `pager_key`).
         if self.git_log().is_some() {
-            let chorded = chord(&key, shift, ctrl, alt, cmd);
-            // The pager's registry verbs: close (`Esc`/`q`) and toggle-queries.
-            match self
-                .screen_bindings()
-                .get(&chorded)
-                .and_then(|v| v.first())
-                .map(String::as_str)
-            {
-                Some("close") => return self.close_screen(window, cx),
-                Some("git-log-toggle-queries") => return self.toggle_git_log_all(window, cx),
-                _ => {}
-            }
             // `$` (also shift-4) closes, mirroring the key that opened the pager.
             if key == "$" || (key == "4" && shift) {
                 return self.close_screen(window, cx);
             }
-            let page = page_rows(window, self.row_h());
-            let len = self.git_log_rows().len();
-            // The pager has no cursor, so it scrolls via less-style keys rather
-            // than the shared `nav_*`; translate a remapped motion to the key
-            // apply_scroll_key understands, so [keymap] still drives it.
-            let cased = chord(&key, shift, false, false, false);
-            let (skey, sshift) = match self
-                .screen_bindings()
-                .get(&cased)
-                .and_then(|v| v.first())
-                .map(String::as_str)
-            {
-                Some("move-down") => ("j", false),
-                Some("move-up") => ("k", false),
-                Some("goto-bottom") => ("g", true),
-                Some("goto-top") => ("g", false),
-                _ => (key.as_str(), shift),
-            };
-            if let Some(sv) = self.git_log_mut() {
-                apply_scroll_key(&sv.scroll, &mut sv.top, len, skey, sshift, ctrl, page);
-            }
-            cx.notify();
-            return;
+            return self.pager_key(&key, shift, ctrl, alt, cmd, window, cx);
         }
 
         // The blame view is a pager too (no cursor): `Esc`/`q` close via the
         // registry, motions translate to less-style scrolling.
         if matches!(self.screen, Screen::Blame { .. }) {
-            let chorded = chord(&key, shift, ctrl, alt, cmd);
-            if matches!(
-                self.screen_bindings()
-                    .get(&chorded)
-                    .and_then(|v| v.first())
-                    .map(String::as_str),
-                Some("close")
-            ) {
-                return self.close_screen(window, cx);
-            }
-            let page = page_rows(window, self.row_h());
-            let cased = chord(&key, shift, false, false, false);
-            let (skey, sshift) = match self
-                .screen_bindings()
-                .get(&cased)
-                .and_then(|v| v.first())
-                .map(String::as_str)
-            {
-                Some("move-down") => ("j", false),
-                Some("move-up") => ("k", false),
-                Some("goto-bottom") => ("g", true),
-                Some("goto-top") => ("g", false),
-                _ => (key.as_str(), shift),
-            };
-            if let Screen::Blame { view, rows, .. } = &mut self.screen {
-                let len = rows.len();
-                apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
-            }
-            cx.notify();
-            return;
+            return self.pager_key(&key, shift, ctrl, alt, cmd, window, cx);
         }
 
         // The interactive-rebase todo editor: set an action, reorder, then start.
@@ -306,7 +255,6 @@ impl StatusView {
             return;
         }
 
-        // Command palette via cmd+p / cmd+k handled above, before per-view branches.
         // SPC on a commit/stash row previews it (magit's show-or-scroll-up),
         // rather than paging — a heavily used peek flow. SPC anywhere else falls
         // through to paging (try_nav below). Plain Space only, status screen only.
@@ -321,7 +269,7 @@ impl StatusView {
             return;
         }
         // Motions, paging, and the `g` prefix — remappable, applied screen-aware.
-        if self.try_nav(&key, shift, ctrl, alt, window, cx) {
+        if self.try_nav(&key, shift, ctrl, alt, cmd, window, cx) {
             return;
         }
         // Act on the commit/stash at point in a status section (after motions, so
@@ -341,6 +289,9 @@ impl StatusView {
             // Shift-Tab falls through so a user binding for it can dispatch.
             "tab" if !shift => self.toggle_fold(cx),
             "escape" if !shift => {
+                // Cancel a transient still opening (its config-variable load
+                // hasn't landed), so it can't pop up after the quit.
+                self.transient_open_gen.bump();
                 // A running job takes priority: C-g/Esc kills its subprocess.
                 // Otherwise cancel a visual selection, else dismiss the
                 // status/error banner if one is showing.
@@ -355,17 +306,6 @@ impl StatusView {
                     cx.notify();
                 }
                 return;
-            }
-            // Modifier/popup shortcuts that aren't ordinary commands: M-x and an
-            // unbound `:`/`;`+shift open the palette; `?`/`/`+shift open Help.
-            // Bound symbol keys (`!`, `|`, `$`, vanilla `:`, and Cmd-C's yank
-            // binding) fall through to the effective keymap below.
-            "x" if alt => return self.open_command_palette(window, cx),
-            ":" | ";" if key == ":" || shift => {
-                if Self::is_dispatch_key(self.screen_bindings(), &cased) {
-                    return self.run_dispatch(&cased, window, cx);
-                }
-                return self.open_command_palette(window, cx);
             }
             // Everything else resolves through the effective keymap (the
             // shift-cased keystroke → command id), so remap/unbind take effect.
@@ -485,16 +425,13 @@ impl StatusView {
     /// (Stage on a file row). `None` if the key is unbound or all candidates
     /// decline.
     pub(crate) fn resolve_binding(&self, chord: &str) -> Option<String> {
-        self.screen_bindings()
-            .get(chord)?
-            .iter()
-            .find(|id| {
-                commands()
-                    .iter()
-                    .find(|c| c.id == id.as_str())
-                    .is_none_or(|c| (c.enabled)(self))
-            })
-            .cloned()
+        first_enabled_candidate(self.screen_bindings().get(chord)?, |id| {
+            commands()
+                .iter()
+                .find(|c| c.id == id)
+                .is_none_or(|c| (c.enabled)(self))
+        })
+        .map(str::to_string)
     }
 
     /// Close the active secondary screen (the `close` command, `Esc`/`q`). In a
@@ -668,32 +605,17 @@ impl StatusView {
     /// word. `Err` (with why) if a placeholder can't be resolved — e.g. `{file}`
     /// with no file at point.
     pub(crate) fn expand_placeholders(&self, command: &str) -> Result<String, String> {
-        let mut s = command.to_string();
-        for name in Self::PLACEHOLDERS {
-            let token = format!("{{{name}}}");
-            if s.contains(&token) {
-                s = s.replace(&token, &shell_words::quote(&self.placeholder_value(name)?));
-            }
-        }
-        Ok(s)
+        substitute_placeholders(command, |name| {
+            self.placeholder_value(name)
+                .map(|v| Some(shell_words::quote(&v).into_owned()))
+        })
     }
 
     /// Expand placeholders for a display label (a command title): unquoted, and
     /// an unresolvable placeholder stays literal — a label must always render.
     pub(crate) fn expand_placeholders_display(&self, text: &str) -> String {
-        if !text.contains('{') {
-            return text.to_string();
-        }
-        let mut s = text.to_string();
-        for name in Self::PLACEHOLDERS {
-            let token = format!("{{{name}}}");
-            if s.contains(&token) {
-                if let Ok(value) = self.placeholder_value(name) {
-                    s = s.replace(&token, &value);
-                }
-            }
-        }
-        s
+        substitute_placeholders(text, |name| Ok(self.placeholder_value(name).ok()))
+            .unwrap_or_else(|_| text.to_string())
     }
 
     /// The configured (raw) title behind a displayed command label: palette and
@@ -886,9 +808,20 @@ impl StatusView {
         // placeholders per palette row — O(rows × commands) `{default-branch}`
         // resolutions, each a git subprocess, which froze the open for seconds.
         let bindings = self.screen_bindings();
+        let kind = self.screen_kind();
         type Entry = (String, String, String, Option<String>, Option<String>);
         let mut entries: Vec<Entry> = all_commands(&self.config)
             .filter(|c| c.palette && (c.enabled)(self))
+            // Only commands that dispatch on the current screen (how the `?`
+            // menu scopes): a status-scoped act command run from another screen
+            // would act on the invisible status cursor. User `[[command]]`s
+            // (absent from the registry) are context-free.
+            .filter(|c| {
+                commands()
+                    .iter()
+                    .find(|b| b.id == c.id)
+                    .is_none_or(|b| b.contexts.contains(kind))
+            })
             .map(|c| {
                 // User `[[command]]` titles may carry placeholders ({branch},
                 // …); show and match them expanded, as they'd read on screen.
@@ -1026,4 +959,90 @@ fn dispatch_has_key(def: &Transient, key: &str) -> bool {
             .iter()
             .any(|suffix| matches!(suffix, Suffix::Info(info) if info.keys == key))
     })
+}
+
+/// The first of a key's candidate command ids (ordered most-specific-first by
+/// `build_keymap`) whose `enabled` holds — the pure core of
+/// [`StatusView::resolve_binding`], separated so the priority/enablement scan
+/// is testable without a live view.
+pub(crate) fn first_enabled_candidate(
+    candidates: &[String],
+    enabled: impl Fn(&str) -> bool,
+) -> Option<&str> {
+    candidates.iter().map(String::as_str).find(|id| enabled(id))
+}
+
+/// Replace each `{name}` placeholder in `text` in one left-to-right pass — a
+/// substituted value is emitted verbatim, never re-scanned, so a value that
+/// itself contains a placeholder token (a file named `{branch}.txt`) can't be
+/// re-substituted or break its shell quoting. `resolve` returns the
+/// replacement, `Ok(None)` to keep the token literal, or `Err` to abort;
+/// anything that isn't a known placeholder stays literal.
+fn substitute_placeholders(
+    text: &str,
+    mut resolve: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let token = StatusView::PLACEHOLDERS.iter().find_map(|name| {
+            rest[1..]
+                .strip_prefix(name)
+                .and_then(|tail| tail.strip_prefix('}'))
+                .map(|tail| (*name, tail))
+        });
+        match token {
+            Some((name, tail)) => {
+                match resolve(name)? {
+                    Some(value) => out.push_str(&value),
+                    None => {
+                        out.push('{');
+                        out.push_str(name);
+                        out.push('}');
+                    }
+                }
+                rest = tail;
+            }
+            None => {
+                out.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::substitute_placeholders;
+
+    #[test]
+    fn substitution_is_single_pass() {
+        // A substituted value containing a later placeholder token is emitted
+        // verbatim, not re-substituted — the quoting around it stays intact.
+        let out = substitute_placeholders("cat {file} on {branch}", |name| {
+            Ok(Some(match name {
+                "file" => "'{branch}.txt'".to_string(),
+                "branch" => "main".to_string(),
+                other => panic!("unexpected placeholder {other}"),
+            }))
+        })
+        .unwrap();
+        assert_eq!(out, "cat '{branch}.txt' on main");
+    }
+
+    #[test]
+    fn unknown_and_unresolved_tokens_stay_literal() {
+        let out = substitute_placeholders("{nope} {branch} {branch", |name| {
+            assert_eq!(name, "branch");
+            Ok(None)
+        })
+        .unwrap();
+        assert_eq!(out, "{nope} {branch} {branch");
+        let err = substitute_placeholders("run {file}", |_| Err("no file".to_string()));
+        assert_eq!(err, Err("no file".to_string()));
+    }
 }

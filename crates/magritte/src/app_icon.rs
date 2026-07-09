@@ -79,7 +79,9 @@ pub(crate) fn set_dock_icon(png: &[u8]) {
 
     // SAFETY: standard AppKit messages on the main thread. NSData copies the
     // bytes; NSImage/NSApplication are Apple singletons/owned objects. A failed
-    // decode yields nil, which we check before setting.
+    // decode yields nil, which we check before setting. alloc/init leaves us a
+    // +1 reference on the NSImage; the application retains its own, so ours is
+    // released after setting (else every switch leaks a decoded 1024px image).
     unsafe {
         let data: Id = msg_send![class!(NSData),
             dataWithBytes: png.as_ptr() as *const std::ffi::c_void
@@ -94,6 +96,7 @@ pub(crate) fn set_dock_icon(png: &[u8]) {
         }
         let app: Id = msg_send![class!(NSApplication), sharedApplication];
         let _: () = msg_send![app, setApplicationIconImage: image];
+        let _: () = msg_send![image, release];
     }
 }
 

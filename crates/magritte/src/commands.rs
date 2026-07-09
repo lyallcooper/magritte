@@ -866,6 +866,23 @@ pub(crate) fn commands() -> &'static [Command] {
             "Extend commit (keep message)",
             Leaf::CommitExtend
         ),
+        // Refill the commit editor from the saved-message ring (magit's
+        // `git-commit-prev-message`; alt-p does the same inside the editor).
+        // Palette-only, and no transient leaf — it isn't a git operation.
+        Command {
+            id: "commit-restore-message",
+            title: "Restore commit message",
+            aliases: &["previous message", "message ring", "recover message"],
+            contexts: STATUS,
+            category: Category::Commands,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            at_point: false,
+            leaf: None,
+            run: |t, w, cx| t.commit_restore_message(w, cx),
+        },
         leaf!(
             "push-pushremote",
             "Push current to push-remote",

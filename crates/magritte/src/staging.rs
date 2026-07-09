@@ -4,7 +4,7 @@
 //! an external editor. `impl StatusView` like the other view slices.
 
 use gpui::{Context, Window};
-use magritte_core::{ConflictSide, DiffSource, FileDiff, Hunk, LineKind};
+use magritte_core::{ConflictSide, DiffSource, FileDiff, Hunk, LineKind, Status};
 
 use crate::*;
 
@@ -146,6 +146,14 @@ impl DiffCache {
 
     pub(crate) fn set_state(&mut self, key: DiffKey, state: DiffState) {
         self.states.insert(key, state);
+    }
+
+    /// Record that a load is starting: mark `key` `Loading` only when nothing
+    /// is recorded yet. A forced reload keeps the existing loaded diff on
+    /// screen until the replacement lands, so refreshing an expanded file
+    /// never flashes a temporary "Loading…" body.
+    pub(crate) fn begin_load(&mut self, key: DiffKey) {
+        self.states.entry(key).or_insert(DiffState::Loading);
     }
 
     pub(crate) fn set_lang(&mut self, key: DiffKey, lang: &'static str) {
@@ -297,10 +305,25 @@ pub(crate) enum Confirm {
     UnstageAll,
 }
 
-impl StatusView {
+/// The selection→action resolution inputs, borrowed from the view: the rows
+/// the cursor/region cover, the loaded diffs, the parsed status, and the
+/// conflicted-path set. A pure function of these inputs, so the policy —
+/// per-file coarsest-granularity regions, section/verb matching, conflict
+/// refusal — is testable without constructing a view.
+pub(crate) struct ActionResolver<'a> {
+    pub(crate) rows: &'a [Row],
+    pub(crate) selected: usize,
+    /// Inclusive row range of the active visual selection, if any.
+    pub(crate) visual: Option<(usize, usize)>,
+    pub(crate) diff_cache: &'a DiffCache,
+    pub(crate) status: Option<&'a Status>,
+    pub(crate) conflicted: &'a std::collections::HashSet<String>,
+}
+
+impl<'a> ActionResolver<'a> {
     /// The loaded diff for `file`, if available — shared for embedding in an
     /// [`Action`] (an `Arc` clone, not a deep copy).
-    pub(crate) fn diff_for(&self, file: &FileRef) -> Option<Arc<FileDiff>> {
+    fn diff_for(&self, file: &FileRef) -> Option<Arc<FileDiff>> {
         let source = section_source(file.section)?;
         match self.diff_cache.state(&(source, file.path.clone()))? {
             DiffState::Loaded(diff) => Some(diff.clone()),
@@ -308,9 +331,8 @@ impl StatusView {
         }
     }
 
-    /// Borrow the loaded diff for `file`, for read-only lookups (a hunk's line
-    /// count, a target line).
-    pub(crate) fn diff_for_ref(&self, file: &FileRef) -> Option<&FileDiff> {
+    /// Borrow the loaded diff for `file`, for read-only lookups.
+    fn diff_for_ref(&self, file: &FileRef) -> Option<&'a FileDiff> {
         let source = section_source(file.section)?;
         match self.diff_cache.state(&(source, file.path.clone()))? {
             DiffState::Loaded(diff) => Some(diff),
@@ -318,12 +340,7 @@ impl StatusView {
         }
     }
 
-    /// Whether `path` is an unmerged (conflicted) entry. Conflict resolution
-    /// isn't supported in-app yet, so ordinary stage/unstage/discard is refused
-    /// on these — `git add` would silently mark a conflict resolved (markers and
-    /// all), and a discard could lose work.
-    pub(crate) fn is_conflicted(&self, path: &str) -> bool {
-        // O(1) against the set refreshed in `rebuild_rows`.
+    fn is_conflicted(&self, path: &str) -> bool {
         self.conflicted.contains(path)
     }
 
@@ -337,7 +354,7 @@ impl StatusView {
                 .and_then(|r| r.target.as_ref())
                 .map(target_path)
         };
-        match self.visual_range() {
+        match self.visual {
             Some((lo, hi)) => (lo..=hi)
                 .filter_map(path_at)
                 .find(|p| self.is_conflicted(p))
@@ -353,7 +370,7 @@ impl StatusView {
     /// means delete for untracked, revert-to-index for unstaged, and
     /// revert-the-index for staged). Shared by point resolution and by region
     /// selections that include a file-name row.
-    pub(crate) fn file_action(&self, f: &FileRef, op: Op) -> Option<Action> {
+    fn file_action(&self, f: &FileRef, op: Op) -> Option<Action> {
         Some(match (op, f.section) {
             (Op::Stage, SectionId::Untracked | SectionId::Unstaged) => {
                 Action::StageFile(f.path.clone())
@@ -373,8 +390,7 @@ impl StatusView {
 
     /// The parsed status entry for `path`, cloned for embedding in an [`Action`].
     fn file_entry(&self, path: &str) -> Option<FileEntry> {
-        self.status
-            .as_ref()?
+        self.status?
             .entries
             .iter()
             .find(|e| e.path == path)
@@ -445,53 +461,6 @@ impl StatusView {
         }
     }
 
-    /// The inclusive row range of the active visual selection, if any.
-    pub(crate) fn visual_range(&self) -> Option<(usize, usize)> {
-        self.selection
-            .visual
-            .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
-    }
-
-    /// Copy the visual selection (rows joined by newlines), or the row at point
-    /// when there's no selection, and flash a confirmation. Yanks the displayed
-    /// text — for a diff line that's its content, without the `+`/`-` prefix.
-    /// Exits visual mode (like an evil yank).
-    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        // A mouse char selection (within one row's text) takes precedence.
-        if let Some(sel) = self.char_sel.filter(|c| !c.is_empty()) {
-            let slice = self
-                .rows
-                .get(sel.row)
-                .and_then(|row| self.selectable_row_text(row))
-                .map(|(text, _)| sel.slice(&text).to_string());
-            if let Some(text) = slice {
-                self.char_sel = None;
-                self.copy_to_clipboard(text, cx);
-                return;
-            }
-        }
-        let text = if let Some((lo, hi)) = self.visual_range() {
-            let hi = hi.min(self.rows.len().saturating_sub(1));
-            self.rows[lo..=hi]
-                .iter()
-                .map(row_text)
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else if let Some(row) = self.rows.get(self.selected) {
-            // A single commit/stash row copies its value — the full hash or
-            // stash reference (magit-copy-section-value) — not the row text.
-            match &row.kind {
-                RowKind::Commit { hash, .. } => hash.clone(),
-                RowKind::Stash { reference, .. } => reference.clone(),
-                _ => row_text(row),
-            }
-        } else {
-            return;
-        };
-        self.selection.visual = None;
-        self.copy_to_clipboard(text, cx);
-    }
-
     /// Resolve a region (visual) selection into actions. Each file in the
     /// selection acts at the coarsest granularity it was selected with: a
     /// file-name row stages the whole file (even when its diff is collapsed),
@@ -499,7 +468,7 @@ impl StatusView {
     /// multiple files acts on *all* of them; parts whose section doesn't match
     /// the verb (e.g. a staged file when staging) are skipped.
     pub(crate) fn resolve_region_action(&self, op: Op) -> Option<Action> {
-        let (lo, hi) = self.visual_range()?;
+        let (lo, hi) = self.visual?;
 
         /// The granularity at which a file in the selection should be acted on.
         /// A whole-file row wins over individual hunks/lines of the same file.
@@ -602,6 +571,97 @@ impl StatusView {
             1 => actions.pop(),
             _ => Some(Action::Batch(actions)),
         }
+    }
+}
+
+impl StatusView {
+    /// The resolver over the current rows/selection/diffs — see [`ActionResolver`].
+    fn resolver(&self) -> ActionResolver<'_> {
+        ActionResolver {
+            rows: &self.rows,
+            selected: self.selected,
+            visual: self.visual_range(),
+            diff_cache: &self.diff_cache,
+            status: self.status.as_ref(),
+            conflicted: &self.conflicted,
+        }
+    }
+
+    /// Borrow the loaded diff for `file`, for read-only lookups (a hunk's line
+    /// count, a target line).
+    pub(crate) fn diff_for_ref(&self, file: &FileRef) -> Option<&FileDiff> {
+        self.resolver().diff_for_ref(file)
+    }
+
+    /// Whether `path` is an unmerged (conflicted) entry. Conflict resolution
+    /// isn't supported in-app yet, so ordinary stage/unstage/discard is refused
+    /// on these — `git add` would silently mark a conflict resolved (markers and
+    /// all), and a discard could lose work.
+    pub(crate) fn is_conflicted(&self, path: &str) -> bool {
+        // O(1) against the set refreshed in `rebuild_rows`.
+        self.conflicted.contains(path)
+    }
+
+    /// See [`ActionResolver::conflicted_in_selection`].
+    pub(crate) fn conflicted_in_selection(&self) -> Option<String> {
+        self.resolver().conflicted_in_selection()
+    }
+
+    /// See [`ActionResolver::resolve_action`].
+    pub(crate) fn resolve_action(&self, op: Op) -> Option<Action> {
+        self.resolver().resolve_action(op)
+    }
+
+    /// See [`ActionResolver::resolve_region_action`].
+    pub(crate) fn resolve_region_action(&self, op: Op) -> Option<Action> {
+        self.resolver().resolve_region_action(op)
+    }
+
+    /// The inclusive row range of the active visual selection, if any.
+    pub(crate) fn visual_range(&self) -> Option<(usize, usize)> {
+        self.selection
+            .visual
+            .map(|anchor| (anchor.min(self.selected), anchor.max(self.selected)))
+    }
+
+    /// Copy the visual selection (rows joined by newlines), or the row at point
+    /// when there's no selection, and flash a confirmation. Yanks the displayed
+    /// text — for a diff line that's its content, without the `+`/`-` prefix.
+    /// Exits visual mode (like an evil yank).
+    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        // A mouse char selection (within one row's text) takes precedence.
+        if let Some(sel) = self.char_sel.filter(|c| !c.is_empty()) {
+            let slice = self
+                .rows
+                .get(sel.row)
+                .and_then(|row| self.selectable_row_text(row))
+                .map(|(text, _)| sel.slice(&text).to_string());
+            if let Some(text) = slice {
+                self.char_sel = None;
+                self.copy_to_clipboard(text, cx);
+                return;
+            }
+        }
+        let text = if let Some((lo, hi)) = self.visual_range() {
+            let hi = hi.min(self.rows.len().saturating_sub(1));
+            self.rows[lo..=hi]
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else if let Some(row) = self.rows.get(self.selected) {
+            // A single commit/stash row copies its value — the full hash or
+            // stash reference (magit-copy-section-value) — not the row text.
+            match &row.kind {
+                RowKind::Commit { hash, .. } => hash.clone(),
+                RowKind::Stash { reference, .. } => reference.clone(),
+                _ => row_text(row),
+            }
+        } else {
+            return;
+        };
+        self.selection.visual = None;
+        self.copy_to_clipboard(text, cx);
     }
 
     /// Open the file at point (its row, or the file a hunk/line belongs to) in
@@ -882,30 +942,30 @@ impl StatusView {
         }
     }
 
-    /// Run a git mutation on the background executor, then refresh.
+    /// Run a git mutation through the shared job shell (cancel flag, spinner
+    /// accounting, progress toast — so a hung `git add`/`git apply` is killable
+    /// with `C-g`/Esc like any other job), then refresh.
     pub(crate) fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
         self.confirm = None;
         self.selection.visual = None;
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { action.run(&repo) })
-                .await;
-            this.update(cx, |this, cx| {
+        self.run_job_with(
+            "Applying…".to_string(),
+            move |repo| {
+                action
+                    .run(&repo)
+                    .map(|()| String::new())
+                    .map_err(magritte_core::Error::Message)
+            },
+            |this, result, cx| {
                 // Status, not `error`: refresh() clears `error` at its top, so a
                 // failure stored there would never be shown.
                 match result {
-                    Ok(()) => this.clear_status(cx),
-                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
+                    Ok(_) => this.clear_status(cx),
+                    Err(e) => this.report_error(e, cx),
                 }
-                this.refresh(cx);
-            })
-            .ok();
-        })
-        .detach();
+            },
+            cx,
+        );
     }
 
     /// Confirm a pending action (the `y` key or the confirm bar's "yes"
@@ -969,5 +1029,410 @@ impl StatusView {
     pub(crate) fn visual_cancel(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.selection.visual = None;
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use magritte_core::{Change, DiffLine, EntryKind, FileEntry, Status};
+    use std::collections::HashSet;
+
+    fn fref(section: SectionId, path: &str) -> FileRef {
+        FileRef {
+            section,
+            path: path.to_string(),
+        }
+    }
+
+    /// A selectable row carrying just a staging target (resolution never looks
+    /// at the rendered kind).
+    fn row(target: Option<Target>) -> Row {
+        Row {
+            indent: 0,
+            selectable: true,
+            fold: None,
+            target,
+            kind: RowKind::Plain {
+                text: String::new(),
+                color: gpui::transparent_black(),
+            },
+        }
+    }
+
+    fn file_row(section: SectionId, path: &str) -> Row {
+        row(Some(Target::File(fref(section, path))))
+    }
+
+    fn hunk_row(section: SectionId, path: &str, hunk: usize) -> Row {
+        row(Some(Target::Hunk {
+            file: fref(section, path),
+            hunk,
+        }))
+    }
+
+    fn line_row(section: SectionId, path: &str, hunk: usize, line: usize) -> Row {
+        row(Some(Target::Line {
+            file: fref(section, path),
+            hunk,
+            line,
+        }))
+    }
+
+    fn diff(path: &str, hunks: usize, lines_per_hunk: usize) -> FileDiff {
+        FileDiff {
+            old_path: path.to_string(),
+            new_path: path.to_string(),
+            hunks: (0..hunks)
+                .map(|_| Hunk {
+                    old_start: 1,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: lines_per_hunk as u32,
+                    section_heading: String::new(),
+                    lines: (0..lines_per_hunk)
+                        .map(|i| DiffLine {
+                            kind: LineKind::Added,
+                            content: format!("line {i}"),
+                            raw: None,
+                            old_lineno: None,
+                            new_lineno: Some(i as u32 + 1),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            ..FileDiff::default()
+        }
+    }
+
+    fn entry(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            orig_path: None,
+            kind: EntryKind::Tracked,
+            index: Change::Modified,
+            worktree: Change::Unmodified,
+        }
+    }
+
+    /// The borrowed inputs a resolver needs, owned by the test.
+    #[derive(Default)]
+    struct Fixture {
+        rows: Vec<Row>,
+        diff_cache: DiffCache,
+        status: Status,
+        conflicted: HashSet<String>,
+    }
+
+    impl Fixture {
+        fn with_diff(mut self, source: DiffSource, path: &str, hunks: usize, lines: usize) -> Self {
+            self.diff_cache.set_state(
+                (source, path.to_string()),
+                DiffState::Loaded(Arc::new(diff(path, hunks, lines))),
+            );
+            self
+        }
+
+        fn at(&self, selected: usize) -> ActionResolver<'_> {
+            self.resolver(selected, None)
+        }
+
+        fn region(&self, lo: usize, hi: usize) -> ActionResolver<'_> {
+            self.resolver(lo, Some((lo, hi)))
+        }
+
+        fn resolver(&self, selected: usize, visual: Option<(usize, usize)>) -> ActionResolver<'_> {
+            ActionResolver {
+                rows: &self.rows,
+                selected,
+                visual,
+                diff_cache: &self.diff_cache,
+                status: Some(&self.status),
+                conflicted: &self.conflicted,
+            }
+        }
+    }
+
+    #[test]
+    fn point_resolution_honors_section_and_verb() {
+        let mut fx = Fixture {
+            rows: vec![
+                file_row(SectionId::Untracked, "new.txt"),
+                file_row(SectionId::Unstaged, "a.txt"),
+                file_row(SectionId::Staged, "b.txt"),
+            ],
+            ..Fixture::default()
+        };
+        fx.status.entries = vec![entry("b.txt")];
+
+        // Stage applies to untracked/unstaged files, never to staged ones.
+        assert!(matches!(
+            fx.at(0).resolve_action(Op::Stage),
+            Some(Action::StageFile(p)) if p == "new.txt"
+        ));
+        assert!(matches!(
+            fx.at(1).resolve_action(Op::Stage),
+            Some(Action::StageFile(p)) if p == "a.txt"
+        ));
+        assert!(fx.at(2).resolve_action(Op::Stage).is_none());
+
+        // Unstage applies only to the staged side, carrying the status entry.
+        assert!(fx.at(1).resolve_action(Op::Unstage).is_none());
+        assert!(matches!(
+            fx.at(2).resolve_action(Op::Unstage),
+            Some(Action::UnstageFile(e)) if e.path == "b.txt"
+        ));
+
+        // Discard means delete / revert-to-index / revert-the-index by section.
+        assert!(matches!(
+            fx.at(0).resolve_action(Op::Discard),
+            Some(Action::DiscardUntracked(p)) if p == "new.txt"
+        ));
+        assert!(matches!(
+            fx.at(1).resolve_action(Op::Discard),
+            Some(Action::DiscardTracked(p)) if p == "a.txt"
+        ));
+        assert!(matches!(
+            fx.at(2).resolve_action(Op::Discard),
+            Some(Action::DiscardStagedFile(e)) if e.path == "b.txt"
+        ));
+    }
+
+    #[test]
+    fn point_resolution_on_hunks_and_lines() {
+        let mut fx = Fixture::default()
+            .with_diff(DiffSource::Unstaged, "a.txt", 2, 3)
+            .with_diff(DiffSource::Staged, "b.txt", 1, 3);
+        fx.rows = vec![
+            hunk_row(SectionId::Unstaged, "a.txt", 1),
+            line_row(SectionId::Unstaged, "a.txt", 0, 2),
+            hunk_row(SectionId::Staged, "b.txt", 0),
+            line_row(SectionId::Staged, "b.txt", 0, 1),
+        ];
+
+        assert!(matches!(
+            fx.at(0).resolve_action(Op::Stage),
+            Some(Action::StageHunk(_, 1))
+        ));
+        assert!(matches!(
+            fx.at(1).resolve_action(Op::Stage),
+            Some(Action::StageLines(_, 0, l)) if l == vec![2]
+        ));
+        // Wrong side for the verb: no action.
+        assert!(fx.at(0).resolve_action(Op::Unstage).is_none());
+        assert!(fx.at(2).resolve_action(Op::Stage).is_none());
+        assert!(matches!(
+            fx.at(2).resolve_action(Op::Unstage),
+            Some(Action::UnstageHunk(_, 0))
+        ));
+        // Discard dispatches on the side.
+        assert!(matches!(
+            fx.at(1).resolve_action(Op::Discard),
+            Some(Action::DiscardLines(_, 0, l)) if l == vec![2]
+        ));
+        assert!(matches!(
+            fx.at(3).resolve_action(Op::Discard),
+            Some(Action::DiscardStagedLines(_, 0, l)) if l == vec![1]
+        ));
+    }
+
+    #[test]
+    fn unloaded_diff_resolves_to_nothing_for_hunk_targets() {
+        let fx = Fixture {
+            rows: vec![hunk_row(SectionId::Unstaged, "a.txt", 0)],
+            ..Fixture::default()
+        };
+        assert!(fx.at(0).resolve_action(Op::Stage).is_none());
+    }
+
+    #[test]
+    fn conflicted_path_refuses_all_but_stage() {
+        let mut fx = Fixture {
+            rows: vec![file_row(SectionId::Unstaged, "a.txt")],
+            ..Fixture::default()
+        };
+        fx.conflicted.insert("a.txt".to_string());
+        // Stage passes through (marker check happens in `act`); the rest refuse.
+        assert!(matches!(
+            fx.at(0).resolve_action(Op::Stage),
+            Some(Action::StageFile(_))
+        ));
+        assert!(fx.at(0).resolve_action(Op::Discard).is_none());
+    }
+
+    #[test]
+    fn conflicted_in_selection_scans_the_whole_region() {
+        let mut fx = Fixture {
+            rows: vec![
+                file_row(SectionId::Unstaged, "clean.txt"),
+                file_row(SectionId::Unstaged, "conflicted.txt"),
+            ],
+            ..Fixture::default()
+        };
+        fx.conflicted.insert("conflicted.txt".to_string());
+        // Point on the clean file: fine. Region touching the conflicted one:
+        // the whole action is refused with that path.
+        assert_eq!(fx.at(0).conflicted_in_selection(), None);
+        assert_eq!(
+            fx.region(0, 1).conflicted_in_selection(),
+            Some("conflicted.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn region_file_row_wins_over_its_own_hunks_and_lines() {
+        let mut fx = Fixture::default().with_diff(DiffSource::Unstaged, "a.txt", 1, 3);
+        fx.rows = vec![
+            file_row(SectionId::Unstaged, "a.txt"),
+            hunk_row(SectionId::Unstaged, "a.txt", 0),
+            line_row(SectionId::Unstaged, "a.txt", 0, 0),
+        ];
+        // The whole-file row is the coarsest granularity in the selection.
+        assert!(matches!(
+            fx.region(0, 2).resolve_region_action(Op::Stage),
+            Some(Action::StageFile(p)) if p == "a.txt"
+        ));
+    }
+
+    #[test]
+    fn region_collapsed_file_stages_whole_file_without_a_diff() {
+        let fx = Fixture {
+            rows: vec![file_row(SectionId::Unstaged, "a.txt")],
+            ..Fixture::default()
+        };
+        assert!(matches!(
+            fx.region(0, 0).resolve_region_action(Op::Stage),
+            Some(Action::StageFile(p)) if p == "a.txt"
+        ));
+    }
+
+    #[test]
+    fn region_hunk_header_selects_every_line_once() {
+        let mut fx = Fixture::default().with_diff(DiffSource::Unstaged, "a.txt", 1, 3);
+        fx.rows = vec![
+            hunk_row(SectionId::Unstaged, "a.txt", 0),
+            line_row(SectionId::Unstaged, "a.txt", 0, 0),
+            line_row(SectionId::Unstaged, "a.txt", 0, 1),
+        ];
+        // The header and two of its lines are all selected; the duplicates
+        // collapse to the hunk's full line set.
+        match fx.region(0, 2).resolve_region_action(Op::Stage) {
+            Some(Action::ApplyRegion {
+                kind: RegionKind::Stage,
+                selections,
+                ..
+            }) => assert_eq!(selections, vec![(0, vec![0, 1, 2])]),
+            _ => panic!("expected a staged ApplyRegion"),
+        }
+    }
+
+    #[test]
+    fn region_skips_files_whose_section_does_not_match_the_verb() {
+        let mut fx = Fixture::default()
+            .with_diff(DiffSource::Unstaged, "a.txt", 1, 2)
+            .with_diff(DiffSource::Staged, "b.txt", 1, 2);
+        fx.rows = vec![
+            line_row(SectionId::Unstaged, "a.txt", 0, 0),
+            line_row(SectionId::Staged, "b.txt", 0, 0),
+        ];
+        // Staging: the staged file's lines are silently skipped, leaving a
+        // single (unbatched) action for the unstaged file.
+        match fx.region(0, 1).resolve_region_action(Op::Stage) {
+            Some(Action::ApplyRegion {
+                kind: RegionKind::Stage,
+                file,
+                selections,
+            }) => {
+                assert_eq!(file.new_path, "a.txt");
+                assert_eq!(selections, vec![(0, vec![0])]);
+            }
+            _ => panic!("expected one staged ApplyRegion"),
+        }
+        // Unstaging the same region flips which file is skipped.
+        match fx.region(0, 1).resolve_region_action(Op::Unstage) {
+            Some(Action::ApplyRegion {
+                kind: RegionKind::Unstage,
+                file,
+                ..
+            }) => assert_eq!(file.new_path, "b.txt"),
+            _ => panic!("expected one unstaged ApplyRegion"),
+        }
+        // Discard applies to both sides — a two-part batch.
+        match fx.region(0, 1).resolve_region_action(Op::Discard) {
+            Some(Action::Batch(actions)) => assert_eq!(actions.len(), 2),
+            _ => panic!("expected a batch"),
+        }
+    }
+
+    #[test]
+    fn region_across_files_batches_in_encounter_order() {
+        let mut fx = Fixture::default()
+            .with_diff(DiffSource::Unstaged, "a.txt", 1, 2)
+            .with_diff(DiffSource::Unstaged, "b.txt", 1, 2);
+        fx.rows = vec![
+            line_row(SectionId::Unstaged, "a.txt", 0, 0),
+            line_row(SectionId::Unstaged, "b.txt", 0, 1),
+        ];
+        match fx.region(0, 1).resolve_region_action(Op::Stage) {
+            Some(Action::Batch(actions)) => {
+                assert_eq!(actions.len(), 2);
+                assert!(matches!(
+                    &actions[0],
+                    Action::ApplyRegion { file, .. } if file.new_path == "a.txt"
+                ));
+                assert!(matches!(
+                    &actions[1],
+                    Action::ApplyRegion { file, .. } if file.new_path == "b.txt"
+                ));
+            }
+            _ => panic!("expected a batch"),
+        }
+    }
+
+    #[test]
+    fn region_with_no_matching_targets_resolves_to_nothing() {
+        let mut fx = Fixture::default().with_diff(DiffSource::Staged, "b.txt", 1, 2);
+        fx.rows = vec![
+            row(None), // a spacer/plain row contributes nothing
+            line_row(SectionId::Staged, "b.txt", 0, 0),
+        ];
+        assert!(fx.region(0, 1).resolve_region_action(Op::Stage).is_none());
+    }
+
+    #[test]
+    fn target_ops_by_section() {
+        let stage_sides = |t: &Target| target_ops(t);
+        assert_eq!(
+            stage_sides(&Target::File(fref(SectionId::Untracked, "a"))),
+            (true, false, true)
+        );
+        assert_eq!(
+            stage_sides(&Target::File(fref(SectionId::Unstaged, "a"))),
+            (true, false, true)
+        );
+        assert_eq!(
+            stage_sides(&Target::File(fref(SectionId::Staged, "a"))),
+            (false, true, true)
+        );
+        assert_eq!(
+            stage_sides(&Target::File(fref(SectionId::Recent, "a"))),
+            (false, false, false)
+        );
+    }
+
+    #[test]
+    fn begin_load_keeps_a_loaded_diff_until_the_replacement_lands() {
+        let mut cache = DiffCache::default();
+        let key = (DiffSource::Unstaged, "a.txt".to_string());
+        // A fresh load marks the entry Loading.
+        cache.begin_load(key.clone());
+        assert!(matches!(cache.state(&key), Some(DiffState::Loading)));
+        // A forced reload of an already-loaded diff keeps it on screen.
+        cache.set_state(
+            key.clone(),
+            DiffState::Loaded(Arc::new(diff("a.txt", 1, 1))),
+        );
+        cache.begin_load(key.clone());
+        assert!(matches!(cache.state(&key), Some(DiffState::Loaded(_))));
     }
 }

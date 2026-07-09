@@ -321,20 +321,24 @@ pub(crate) fn chevron(expanded: bool, color: Hsla) -> gpui_component::Icon {
         .text_color(color)
 }
 
+/// The unmerged (conflicted) paths in `status`. Cached on the view by
+/// [`StatusView::rebuild_rows`] so is_conflicted (called per clickable row in
+/// render) is an O(1) lookup, not an O(entries) scan per row.
+pub(crate) fn conflicted_paths(status: &Status) -> HashSet<String> {
+    status
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Unmerged)
+        .map(|e| e.path.clone())
+        .collect()
+}
+
 impl StatusView {
     pub(crate) fn rebuild_rows(&mut self) {
-        // Refresh the conflicted-path set so is_conflicted (called per clickable
-        // row in render) is an O(1) lookup, not an O(entries) scan per row.
         self.conflicted = self
             .status
             .as_ref()
-            .map(|s| {
-                s.entries
-                    .iter()
-                    .filter(|e| e.kind == EntryKind::Unmerged)
-                    .map(|e| e.path.clone())
-                    .collect()
-            })
+            .map(conflicted_paths)
             .unwrap_or_default();
 
         self.rows = if let Some(error) = &self.error {
@@ -766,10 +770,63 @@ impl StatusRows<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diffstat_text, stat_bar, StatusRows};
+    use super::{conflicted_paths, diffstat_text, parse_refs, stat_bar, RefKind, StatusRows};
     use crate::*;
-    use magritte_core::{Change, EntryKind, FileEntry, HeadInfo, Status};
+    use magritte_core::{
+        Change, DiffLine, EntryKind, FileDiff, FileEntry, HeadInfo, Hunk, LineKind, LogEntry,
+        Stash, Status,
+    };
     use std::collections::HashSet;
+
+    /// Everything `StatusRows` borrows, owned by the test — build rows from any
+    /// combination of status, listings, fold state, and loaded diffs.
+    struct Inputs {
+        status: Status,
+        sections: StatusSections,
+        expanded: HashSet<FoldKey>,
+        collapsed: HashSet<FoldKey>,
+        diff_cache: DiffCache,
+        section_ids: Vec<&'static str>,
+        recent_count: usize,
+    }
+
+    impl Default for Inputs {
+        fn default() -> Self {
+            Inputs {
+                status: Status::default(),
+                sections: StatusSections::default(),
+                expanded: HashSet::new(),
+                collapsed: HashSet::new(),
+                diff_cache: DiffCache::default(),
+                section_ids: Vec::new(),
+                recent_count: 10,
+            }
+        }
+    }
+
+    impl Inputs {
+        fn expand(mut self, key: FoldKey) -> Self {
+            self.expanded.insert(key);
+            self
+        }
+
+        fn build(&self) -> Vec<Row> {
+            let loading = HashSet::new();
+            let palette = Palette::default();
+            StatusRows {
+                status: &self.status,
+                status_sections: &self.sections,
+                expanded: &self.expanded,
+                collapsed_hunks: &self.collapsed,
+                loading_sections: &loading,
+                diff_cache: &self.diff_cache,
+                section_ids: self.section_ids.iter().map(|s| s.to_string()).collect(),
+                recent_count: self.recent_count,
+                palette: &palette,
+            }
+            .build()
+        }
+    }
 
     /// Build the status rows for `status` with the given expanded sections, over
     /// otherwise-empty inputs (no loaded diffs / listings).
@@ -790,6 +847,32 @@ mod tests {
             palette: &palette,
         }
         .build()
+    }
+
+    fn commit(n: usize) -> LogEntry {
+        LogEntry {
+            hash: format!("{n:040}"),
+            short_hash: format!("{n:07}"),
+            subject: format!("commit {n}"),
+            refs: String::new(),
+            author: "a".into(),
+            date: "now".into(),
+        }
+    }
+
+    /// The section headers in row order, as `(title, count, expanded)`.
+    fn headers(rows: &[Row]) -> Vec<(String, Option<usize>, bool)> {
+        rows.iter()
+            .filter_map(|r| match &r.kind {
+                RowKind::Section {
+                    title,
+                    count,
+                    expanded,
+                    ..
+                } => Some((title.clone(), *count, *expanded)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -885,5 +968,255 @@ mod tests {
         );
         assert_eq!(diffstat_text(1, 0, 2), "1 file changed, 2 deletions(-)");
         assert_eq!(diffstat_text(3, 0, 0), "3 files changed");
+    }
+
+    #[test]
+    fn listing_sections_render_in_configured_order_with_counts() {
+        let mut inputs = Inputs {
+            section_ids: vec!["stashes", "unpulled", "unpushed", "recent"],
+            ..Inputs::default()
+        }
+        .expand(FoldKey::Section(SectionId::Stashes))
+        .expand(FoldKey::Section(SectionId::Unpushed))
+        .expand(FoldKey::Section(SectionId::Recent));
+        inputs.status.head.upstream = Some("origin/main".to_string());
+        inputs.sections.stashes = vec![Stash {
+            reference: "stash@{0}".into(),
+            message: "WIP on main".into(),
+        }];
+        inputs.sections.unpulled = vec![commit(1)];
+        inputs.sections.unpushed = vec![commit(2), commit(3)];
+        inputs.sections.recent = vec![commit(4)];
+        let rows = inputs.build();
+
+        // Headers follow `[status].sections` order; the divergence headers name
+        // the upstream; recent shows no count (it's capped anyway); an
+        // unexpanded section reports so.
+        assert_eq!(
+            headers(&rows),
+            vec![
+                ("Stashes".to_string(), Some(1), true),
+                ("Unpulled from origin/main".to_string(), Some(1), false),
+                ("Unmerged into origin/main".to_string(), Some(2), true),
+                ("Recent commits".to_string(), None, true),
+            ]
+        );
+        // Expanded sections list their rows; the collapsed one hides them.
+        assert!(rows.iter().any(|r| matches!(
+            &r.kind,
+            RowKind::Stash { reference, .. } if reference == "stash@{0}"
+        )));
+        let commits: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                RowKind::Commit { subject, .. } => Some(subject.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commits, vec!["commit 2", "commit 3", "commit 4"]);
+    }
+
+    #[test]
+    fn empty_listings_render_no_section() {
+        let inputs = Inputs {
+            section_ids: vec!["stashes", "unpushed", "unpulled", "recent"],
+            ..Inputs::default()
+        };
+        assert!(headers(&inputs.build()).is_empty());
+    }
+
+    #[test]
+    fn pushremote_sections_name_the_distinct_push_target() {
+        let mut inputs = Inputs {
+            section_ids: vec!["unpushed-pushremote", "unpulled-pushremote"],
+            ..Inputs::default()
+        };
+        inputs.status.head.upstream = Some("origin/main".to_string());
+        // A distinct @{push} (triangular workflow) titles the sections with it.
+        inputs.status.head.push = Some("fork/main".to_string());
+        inputs.sections.unpushed_pushremote = vec![commit(1)];
+        inputs.sections.unpulled_pushremote = vec![commit(2)];
+        let titles: Vec<String> = headers(&inputs.build()).into_iter().map(|h| h.0).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "Unpushed to fork/main".to_string(),
+                "Unpulled from fork/main".to_string()
+            ]
+        );
+        // A push target equal to the upstream: the loader keeps these listings
+        // empty, so no pushremote sections appear.
+        inputs.status.head.push = None;
+        inputs.sections.unpushed_pushremote.clear();
+        inputs.sections.unpulled_pushremote.clear();
+        assert!(headers(&inputs.build()).is_empty());
+    }
+
+    #[test]
+    fn recent_listing_is_capped_to_recent_count() {
+        let mut inputs = Inputs {
+            section_ids: vec!["recent"],
+            recent_count: 2,
+            ..Inputs::default()
+        }
+        .expand(FoldKey::Section(SectionId::Recent));
+        inputs.sections.recent = vec![commit(1), commit(2), commit(3)];
+        let rows = inputs.build();
+        let commits = rows
+            .iter()
+            .filter(|r| matches!(&r.kind, RowKind::Commit { .. }))
+            .count();
+        assert_eq!(commits, 2);
+    }
+
+    #[test]
+    fn commit_rows_carry_parsed_ref_labels() {
+        let mut inputs = Inputs {
+            section_ids: vec!["recent"],
+            ..Inputs::default()
+        }
+        .expand(FoldKey::Section(SectionId::Recent));
+        inputs.status.head.upstream = Some("origin/main".to_string());
+        let mut c = commit(1);
+        c.refs = "HEAD -> main, origin/main, tag: v1".to_string();
+        inputs.sections.recent = vec![c];
+        let rows = inputs.build();
+        let refs = rows
+            .iter()
+            .find_map(|r| match &r.kind {
+                RowKind::Commit { refs, .. } => Some(refs.clone()),
+                _ => None,
+            })
+            .expect("a commit row");
+        // The current branch and its upstream fold into one synced entry.
+        assert_eq!(
+            refs,
+            vec![
+                ("origin/main".to_string(), RefKind::SyncedHead),
+                ("v1".to_string(), RefKind::Tag)
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_refs_classifies_and_drops_remote_head() {
+        assert_eq!(
+            parse_refs("origin/HEAD, origin/main, feature, tag: v2", None),
+            vec![
+                ("origin/main".to_string(), RefKind::Remote),
+                ("feature".to_string(), RefKind::Local),
+                ("v2".to_string(), RefKind::Tag),
+            ]
+        );
+        assert_eq!(
+            parse_refs("HEAD", None),
+            vec![("HEAD".to_string(), RefKind::Head)]
+        );
+        // No upstream on the commit: the current branch stays unfolded.
+        assert_eq!(
+            parse_refs("HEAD -> main", Some("origin/main")),
+            vec![("main".to_string(), RefKind::Head)]
+        );
+    }
+
+    #[test]
+    fn conflicted_paths_collects_only_unmerged_entries() {
+        let entry = |path: &str, kind: EntryKind| FileEntry {
+            path: path.into(),
+            orig_path: None,
+            kind,
+            index: Change::Unmodified,
+            worktree: Change::Modified,
+        };
+        let status = Status {
+            head: HeadInfo::default(),
+            entries: vec![
+                entry("clean.txt", EntryKind::Tracked),
+                entry("theirs.txt", EntryKind::Unmerged),
+                entry("new.txt", EntryKind::Untracked),
+                entry("ours.txt", EntryKind::Unmerged),
+            ],
+        };
+        let conflicted = conflicted_paths(&status);
+        assert_eq!(
+            conflicted,
+            HashSet::from(["theirs.txt".to_string(), "ours.txt".to_string()])
+        );
+        assert!(conflicted_paths(&Status::default()).is_empty());
+    }
+
+    #[test]
+    fn collapsed_hunk_keeps_its_header_and_hides_its_lines() {
+        let path = "a.txt".to_string();
+        let hunk = |start: u32| Hunk {
+            old_start: start,
+            old_count: 1,
+            new_start: start,
+            new_count: 2,
+            section_heading: String::new(),
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Added,
+                    content: "new".into(),
+                    raw: None,
+                    old_lineno: None,
+                    new_lineno: Some(start),
+                },
+                DiffLine {
+                    kind: LineKind::Context,
+                    content: "old".into(),
+                    raw: None,
+                    old_lineno: Some(start),
+                    new_lineno: Some(start + 1),
+                },
+            ],
+        };
+        let mut inputs = Inputs {
+            section_ids: vec!["unstaged"],
+            ..Inputs::default()
+        }
+        .expand(FoldKey::Section(SectionId::Unstaged))
+        .expand(FoldKey::File(DiffSource::Unstaged, path.clone()));
+        inputs.status.entries = vec![FileEntry {
+            path: path.clone(),
+            orig_path: None,
+            kind: EntryKind::Tracked,
+            index: Change::Unmodified,
+            worktree: Change::Modified,
+        }];
+        inputs.diff_cache.set_state(
+            (DiffSource::Unstaged, path.clone()),
+            DiffState::Loaded(Arc::new(FileDiff {
+                old_path: path.clone(),
+                new_path: path.clone(),
+                hunks: vec![hunk(1), hunk(10)],
+                ..FileDiff::default()
+            })),
+        );
+        // Collapse the first hunk only.
+        inputs
+            .collapsed
+            .insert(FoldKey::Hunk(DiffSource::Unstaged, path.clone(), 0));
+        let rows = inputs.build();
+
+        let hunk_headers: Vec<bool> = rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                RowKind::HunkHeader { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hunk_headers, vec![false, true]);
+        // Only the expanded hunk's two lines are projected as diff rows, and
+        // they target the second hunk.
+        let diff_targets: Vec<usize> = rows
+            .iter()
+            .filter(|r| matches!(&r.kind, RowKind::Diff { .. }))
+            .filter_map(|r| match &r.target {
+                Some(Target::Line { hunk, .. }) => Some(*hunk),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(diff_targets, vec![1, 1]);
     }
 }

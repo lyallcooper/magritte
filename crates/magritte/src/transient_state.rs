@@ -858,8 +858,12 @@ impl StatusView {
             if !missing.is_empty() {
                 // Load the uncached values in the background, then open. The
                 // ~tens-of-ms delay reads as an instant open (magit reads the
-                // same config synchronously), and there's no pop-in.
+                // same config synchronously), and there's no pop-in. Stamped so
+                // a superseded or cancelled open (Escape, another popup opened
+                // within the load window) is dropped rather than installing its
+                // popup late over whatever the user is looking at now.
                 let id = id.to_string();
+                let gen = self.transient_open_gen.bump();
                 cx.spawn(async move |this, cx| {
                     let values = cx
                         .background_executor()
@@ -874,7 +878,11 @@ impl StatusView {
                         })
                         .await;
                     this.update(cx, |this, cx| {
+                        // Keep the cache fill either way; open only if wanted.
                         this.transient_config_values.extend(values);
+                        if !this.transient_open_gen.is_current(gen) || this.popup.is_some() {
+                            return;
+                        }
                         this.fill_transient_variables(&mut def);
                         this.finish_open_transient(&id, def, targets, cx);
                     })
@@ -921,6 +929,8 @@ impl StatusView {
         targets: RemoteTargets,
         cx: &mut Context<Self>,
     ) {
+        // Any transient actually opening supersedes a still-pending open.
+        self.transient_open_gen.bump();
         let mut state = TransientState::new(id, def, targets);
         // A saved argument set (magit's `transient-save`) overrides this
         // transient's defaults; that becomes the baseline, so the save hint only
@@ -1139,7 +1149,12 @@ impl StatusView {
             cx.notify();
             return;
         }
-        if key == "escape" || key == "q" {
+        // Esc always closes; `q` does too, unless it's meaningful input to the
+        // open transient — completing a pending `-`/multi-key sequence, or a
+        // user-injected suffix bound at `q` (built-ins never use it).
+        let q_closes = key == "q"
+            && !matches!(&self.popup, Some(Popup::Transient(s)) if q_is_transient_input(s));
+        if key == "escape" || q_closes {
             // A Configure sub-transient (reached via `b C` / `M C`) pops back to
             // its parent transient rather than closing outright.
             match self.popup {
@@ -1273,6 +1288,19 @@ impl StatusView {
         }
         cx.notify();
     }
+}
+
+/// Whether a bare `q` is meaningful input to this transient rather than the
+/// close key: it completes a pending `-` switch toggle or multi-key sequence,
+/// or the definition binds a suffix at `q` (no built-in does, but a user
+/// `[transient.*]` injection can).
+pub(crate) fn q_is_transient_input(state: &TransientState) -> bool {
+    state.pending_dash
+        || !state.pending_key.is_empty()
+        || state.def.action_for("q").is_some()
+        || state.def.custom_for("q").is_some()
+        || state.def.variable_for("q").is_some()
+        || state.def.has_key_prefix("q")
 }
 
 /// The next value when cycling a choice variable (magit's
@@ -1470,6 +1498,25 @@ mod tests {
         let mut def = fixture();
         apply(&mut def, r#""-a" = { flag = "--other", before = "-s" }"#);
         assert_eq!(layout(&def)[0].1, ["-a", "-s"]);
+    }
+
+    #[test]
+    fn q_stays_input_while_pending_or_bound_to_a_suffix() {
+        let plain = |def| TransientState::new("commit", def, RemoteTargets::default());
+        // Built-in transients don't bind `q`, so it reads as close…
+        assert!(!q_is_transient_input(&plain(fixture())));
+        // …but a pending `-` awaits the switch letter (a user `-q` switch),
+        let mut pending_dash = plain(fixture());
+        pending_dash.pending_dash = true;
+        assert!(q_is_transient_input(&pending_dash));
+        // …a pending multi-key sequence consumes it,
+        let mut pending_key = plain(fixture());
+        pending_key.pending_key = "f".to_string();
+        assert!(q_is_transient_input(&pending_key));
+        // …and a user-injected action at `q` claims the key outright.
+        let mut def = fixture();
+        apply(&mut def, r#""q" = "user.quick""#);
+        assert!(q_is_transient_input(&plain(def)));
     }
 
     #[test]

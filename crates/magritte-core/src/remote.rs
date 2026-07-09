@@ -139,6 +139,15 @@ impl Repo {
         Ok(branches)
     }
 
+    /// The configured push remote for `branch` (`branch.<b>.pushRemote`, else
+    /// `remote.pushDefault`), best-effort. The push *ref* is derived from this
+    /// rather than by resolving `@{push}`, which git refuses under the default
+    /// `push.default = simple` in a triangular workflow.
+    pub(crate) fn push_remote_config(&self, branch: &str) -> Option<String> {
+        let config = |key: &str| self.config_get(key).ok().flatten();
+        config(&format!("branch.{branch}.pushRemote")).or_else(|| config("remote.pushDefault"))
+    }
+
     /// Resolve the current branch's push-remote and upstream.
     pub fn remote_targets(&self) -> Result<RemoteTargets> {
         let branch = self.current_branch()?;

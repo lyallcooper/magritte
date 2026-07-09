@@ -5,7 +5,7 @@
 use std::ops::Range;
 
 use gpui::prelude::FluentBuilder;
-use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, TextLayout};
+use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, TextLayout, Window};
 use gpui_component::input::Input;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
@@ -14,6 +14,14 @@ use gpui_component::Sizable;
 use crate::render::{color_run, offset_at, StyleRuns};
 use crate::*;
 use gpui_component::menu::ContextMenuExt;
+
+/// The tallest the editor's message box may be in this window: the resize
+/// drag and the height restored at editor open both clamp to this, so the
+/// grip and a usable strip of diff preview stay on screen (below the editor
+/// header) even in a short window.
+pub(crate) fn editor_message_max_height(window: &Window) -> f32 {
+    (window.viewport_size().height.as_f32() - 160.0).max(EDITOR_MESSAGE_HEIGHT_MIN)
+}
 
 impl StatusView {
     /// Render the commit message editor: a header, the editable text with a
@@ -197,16 +205,16 @@ impl StatusView {
         // The drag handlers live on the editor root so the divider keeps
         // following the pointer when it leaves the thin handle mid-drag.
         let (v_move, v_up) = (view.clone(), view.clone());
-        root.on_mouse_move(move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+        root.on_mouse_move(move |ev: &gpui::MouseMoveEvent, window, cx: &mut App| {
             if ev.pressed_button != Some(MouseButton::Left) {
                 return;
             }
+            let max = editor_message_max_height(window);
             v_move.update(cx, |this, cx| {
                 let Some((y0, h0)) = this.editor_resize else {
                     return;
                 };
-                let h =
-                    (h0 + (ev.position.y.as_f32() - y0)).clamp(EDITOR_MESSAGE_HEIGHT_MIN, 1200.0);
+                let h = (h0 + (ev.position.y.as_f32() - y0)).clamp(EDITOR_MESSAGE_HEIGHT_MIN, max);
                 if h != this.editor_message_height {
                     this.editor_message_height = h;
                     cx.notify();
@@ -377,7 +385,9 @@ impl StatusView {
         Some(
             div()
                 .absolute()
-                .bottom(px(34.0))
+                // Clear of the mode indicator below: its 8px inset plus the
+                // chip's height (one text line), which scales with the font.
+                .bottom(px(8.0 + self.font_px() * 1.5 + 6.0))
                 .right(px(16.0))
                 .px_2()
                 .py_1()

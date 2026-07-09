@@ -57,8 +57,14 @@ pub(crate) struct CommitEditor {
     /// resolves (see `arm_vim_hints`).
     pub(crate) vim_hints: bool,
     /// A mouse press is in flight over the message (Vim mode): the Normal-mode
-    /// blur-back is held off until release so a drag-selection can complete.
+    /// blur-back is held off so a drag-selection can complete. Cleared by
+    /// `vim_mouse_up`, which must run wherever the button is released — a
+    /// drag can end outside the message box.
     pub(crate) mouse_selecting: bool,
+    /// The message-ring entry the last restore filled in (see
+    /// [`StatusView::commit_restore_message`]) — repeated restores cycle from
+    /// here. `None` until the first restore in this editor.
+    pub(crate) restore_ring_index: Option<usize>,
     /// Kept alive so the PressEnter subscription stays active.
     pub(crate) _sub: Subscription,
 }
@@ -154,6 +160,11 @@ fn splice_value(
     );
 }
 
+/// `highlight_diff` caps each *file*, but a commit touching many files could
+/// still parse ~100k lines in one build. Past this aggregate budget, later
+/// files render unhighlighted to bound the build's cost.
+const HIGHLIGHT_LINE_BUDGET: usize = 20_000;
+
 /// Flatten loaded file diffs (each paired with its detected language) into
 /// displayable rows with syntax highlighting. Shared by the commit editor's
 /// preview and the commit/diff detail views. Free of UI state so it runs on
@@ -163,10 +174,6 @@ pub(crate) fn diff_rows(
     files: &[(Arc<FileDiff>, Option<&'static str>)],
     style: &DiffStyle,
 ) -> Vec<CommitDiffRow> {
-    // highlight_diff caps each *file*, but a commit touching many files could
-    // still parse ~100k lines in one build. Past this aggregate budget, later
-    // files render unhighlighted to bound the build's cost.
-    const HIGHLIGHT_LINE_BUDGET: usize = 20_000;
     let mut budget = HIGHLIGHT_LINE_BUDGET;
     let mut rows = Vec::new();
     for (diff, lang) in files {
@@ -177,13 +184,21 @@ pub(crate) fn diff_rows(
         let hl = match lang {
             Some(l) if !diff.is_binary && budget > 0 => {
                 let lines: usize = diff.hunks.iter().map(|h| h.lines.len()).sum();
-                budget = budget.saturating_sub(lines);
-                Some(highlight::highlight_diff(
-                    diff,
-                    l,
-                    &style.theme,
-                    style.default,
-                ))
+                // Only charge for files that will actually be parsed:
+                // highlight_diff rejects anything over its per-file cap, and
+                // charging for the rejected lines would silently unhighlight
+                // every later file.
+                if lines > highlight::MAX_HIGHLIGHT_LINES {
+                    None
+                } else {
+                    budget = budget.saturating_sub(lines);
+                    Some(highlight::highlight_diff(
+                        diff,
+                        l,
+                        &style.theme,
+                        style.default,
+                    ))
+                }
             }
             _ => None,
         };
@@ -276,9 +291,9 @@ impl StatusView {
         let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
-        // Auto-wrap only applies to Insert-mode typing: the wrap rewrite goes
-        // through `set_value`, which bypasses undo history, so letting it run
-        // after a Vim operator edit would leave undo with stale offsets.
+        // Auto-wrap only applies to Insert-mode typing: a wrap sneaking in
+        // after a Vim operator edit would invalidate the offsets the engine
+        // just computed (its undo snapshots and `.` recording included).
         let wrap = self.config.commit_body_wrap
             && self
                 .editor()
@@ -525,6 +540,27 @@ impl StatusView {
                 return;
             }
         }
+        self.open_editor_in_app(mode, args, after_submit, window, cx);
+    }
+
+    /// Open the in-app editor unconditionally — the tail of
+    /// [`open_editor_after`](Self::open_editor_after), and the direct path for
+    /// flows that must land in the in-app editor regardless of the external
+    /// `GIT_EDITOR` setting (restoring a saved message needs a buffer to seed).
+    fn open_editor_in_app(
+        &mut self,
+        mode: CommitMode,
+        args: Vec<String>,
+        after_submit: CommitAfterSubmit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A message-box height persisted from a taller window could park the
+        // resize grip (and the whole diff strip) below the visible area.
+        self.editor_message_height = self.editor_message_height.clamp(
+            EDITOR_MESSAGE_HEIGHT_MIN,
+            diff_render::editor_message_max_height(window),
+        );
         // Return inserts a newline; Cmd/Ctrl+Return submits (reported as a
         // PressEnter with secondary=true). We use code-editor mode (with the
         // grammar-less "text" language, so no syntax coloring) purely to get its
@@ -562,7 +598,9 @@ impl StatusView {
                 InputEvent::Change => this.on_editor_changed(window, cx),
                 // Vim Normal/Visual keeps focus on the view (that's what
                 // hides the input's caret). A mouse click focuses the input —
-                // let it place the cursor, then blur back on the next frame.
+                // let it place the cursor, then blur back on the next frame;
+                // mid-drag (`mouse_selecting`) the blur-back waits for
+                // `vim_mouse_up` instead.
                 InputEvent::Focus
                     if this.editor().is_some_and(|e| {
                         !e.mouse_selecting && e.vim.as_ref().is_some_and(|v| !v.in_insert())
@@ -595,6 +633,7 @@ impl StatusView {
             diff_expected,
             diff_loading: diff_expected,
             mouse_selecting: false,
+            restore_ring_index: None,
             initial: String::new(),
             confirming_cancel: false,
             flash: false,
@@ -825,6 +864,14 @@ impl StatusView {
             }
             return;
         }
+        // alt-p restores a saved message (magit's `git-commit-prev-message`,
+        // M-p); captured before Vim so it works in Normal mode too, and so the
+        // Input doesn't insert the character.
+        if key == "p" && event.keystroke.modifiers.alt {
+            cx.stop_propagation();
+            self.commit_restore_message(window, cx);
+            return;
+        }
         // Vim mode intercepts everything outside Insert mode — including an
         // idle-Normal Esc, a quiet no-op there (cancel is ZQ / :q).
         if self.handle_vim_key(key, event, window, cx) {
@@ -955,11 +1002,108 @@ impl StatusView {
         .detach();
     }
 
-    /// Close the editor, discarding its message.
+    /// Close the editor, discarding its message. An edited message goes into
+    /// the message ring first (magit's `git-commit-save-message` on cancel), so
+    /// a discard is recoverable via [`Self::commit_restore_message`].
     pub(crate) fn discard_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ed) = self.editor() {
+            let text = ed.state.read(cx).value().to_string();
+            if text.trim() != ed.initial.trim() {
+                self.save_commit_message(&text);
+            }
+        }
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// The per-worktree ring of rescued commit messages, next to `folds.toml`.
+    fn commit_message_ring_path(&self) -> Option<PathBuf> {
+        self.worktree_scope_dir
+            .as_ref()
+            .map(|d| state::scoped_path(d, state::COMMIT_MESSAGES_FILE))
+    }
+
+    /// Save a message into the ring (newest first, deduped). No-op for an
+    /// effectively empty message or without a repo.
+    pub(crate) fn save_commit_message(&self, message: &str) {
+        let message = message.trim_end();
+        if message.trim().is_empty() {
+            return;
+        }
+        let Some(path) = self.commit_message_ring_path() else {
+            return;
+        };
+        let mut ring = state::CommitMessageRing::load(&path);
+        ring.push(message.to_string());
+        state::save_toml(&path, &ring);
+    }
+
+    /// Restore a saved commit message (magit's `git-commit-prev-message`, M-p):
+    /// fill the editor with the newest ring entry; invoking again cycles to
+    /// older entries. With no editor open, opens the in-app commit editor
+    /// first. The in-progress message is pushed into the ring before the first
+    /// restore replaces it, so nothing is lost.
+    pub(crate) fn commit_restore_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.commit_message_ring_path() else {
+            return;
+        };
+        let mut ring = state::CommitMessageRing::load(&path);
+        if self.editor().is_none() {
+            if ring.messages.is_empty() {
+                self.set_status("No saved commit messages".to_string(), false, cx);
+                return;
+            }
+            self.open_editor_in_app(
+                CommitMode::Create,
+                Vec::new(),
+                CommitAfterSubmit::Commit,
+                window,
+                cx,
+            );
+        }
+        let Some(ed) = self.editor() else {
+            return;
+        };
+        let state = ed.state.clone();
+        let current = state.read(cx).value().to_string();
+        if ed.restore_ring_index.is_none()
+            && !current.trim().is_empty()
+            && current.trim() != ed.initial.trim()
+        {
+            ring.push(current.trim_end().to_string());
+            state::save_toml(&path, &ring);
+        }
+        if ring.messages.is_empty() {
+            self.set_status("No saved commit messages".to_string(), false, cx);
+            return;
+        }
+        let len = ring.messages.len();
+        let next = match self.editor().and_then(|e| e.restore_ring_index) {
+            // Skip the entry that *is* the current text (the one just saved).
+            None if ring.messages.first().map(String::as_str) == Some(current.trim_end()) => {
+                if len == 1 {
+                    self.set_status("No other saved message".to_string(), false, cx);
+                    return;
+                }
+                1
+            }
+            None => 0,
+            Some(i) => (i + 1) % len,
+        };
+        let msg = ring.messages[next].clone();
+        // Give Vim-level undo its own snapshot, like the reflow command — the
+        // splice below covers the widget history / ⌘Z.
+        let cursor = state.read(cx).cursor();
+        if let Some(vim) = self.editor_mut().and_then(|e| e.vim.as_mut()) {
+            vim.note_external_change(&current, cursor);
+        }
+        if let Some(ed) = self.editor_mut() {
+            ed.restore_ring_index = Some(next);
+        }
+        state.update(cx, |s, cx| splice_value(s, &msg, msg.len(), window, cx));
+        self.on_editor_changed(window, cx);
+        self.set_status(format!("Message {} of {}", next + 1, len), true, cx);
     }
 
     /// Dismiss the discard confirmation and keep editing.
@@ -1011,6 +1155,10 @@ impl StatusView {
         match ed.after_submit {
             CommitAfterSubmit::Commit => self.run_commit(message, ed.mode, ed.args, cx),
             CommitAfterSubmit::ContinueRebase { stopped_sha } => {
+                // The failure reporting lives in the rebase flow; save the
+                // message up front (magit saves on every finish) so a hook
+                // rejection can't lose it.
+                self.save_commit_message(&message);
                 self.run_rebase_reword_commit(message, stopped_sha, window, cx)
             }
             CommitAfterSubmit::CreateTag {
@@ -1033,11 +1181,98 @@ impl StatusView {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        self.run_job(
-            "Committing…",
-            "Committed",
+        // The editor is already gone by the time the job runs, so a failure
+        // (hook rejection, etc.) must not lose the typed message: save it into
+        // the message ring, recoverable via commit_restore_message (magit's
+        // git-commit-save-message on the pre-finish hook).
+        let saved = message.clone();
+        self.run_job_with(
+            "Committing…".to_string(),
             move |repo| repo.commit(&message, mode, &args),
+            move |this, result, cx| {
+                if result.is_err() {
+                    this.save_commit_message(&saved);
+                }
+                this.report("Committed", result, cx);
+            },
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use magritte_core::{DiffLine, Hunk};
+
+    /// A one-hunk file diff of `lines` added Rust-ish lines.
+    fn file_diff(path: &str, lines: usize) -> FileDiff {
+        FileDiff {
+            old_path: path.to_string(),
+            new_path: path.to_string(),
+            is_new: false,
+            is_deleted: false,
+            is_binary: false,
+            header_lines: Vec::new(),
+            header_raw: None,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 0,
+                new_start: 1,
+                new_count: lines as u32,
+                section_heading: String::new(),
+                lines: (0..lines)
+                    .map(|i| DiffLine {
+                        kind: LineKind::Added,
+                        content: format!("let x{i} = {i};"),
+                        raw: None,
+                        old_lineno: None,
+                        new_lineno: Some(i as u32 + 1),
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    fn style() -> DiffStyle {
+        DiffStyle {
+            theme: HighlightTheme::default_dark(),
+            default: gpui::black(),
+            fg: gpui::white(),
+            dim: gpui::white(),
+        }
+    }
+
+    /// Whether any diff line at or after `from` carries highlighted spans (the
+    /// unhighlighted fallback is exactly one span in the style's `fg`).
+    fn any_highlighted(rows: &[CommitDiffRow], from: usize) -> bool {
+        rows[from..].iter().any(|r| match r {
+            CommitDiffRow::Line { spans, .. } => {
+                spans.len() > 1 || spans.iter().any(|(_, c)| *c != gpui::white())
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn oversized_file_does_not_charge_highlight_budget() {
+        // The first file exceeds both the per-file cap (so highlight_diff
+        // would reject it) and the aggregate budget (so charging it would
+        // zero the budget); the small file after it must still highlight.
+        let huge = file_diff("big.rs", HIGHLIGHT_LINE_BUDGET + 1);
+        let small = file_diff("small.rs", 3);
+        let files = vec![
+            (Arc::new(huge), Some("rust")),
+            (Arc::new(small), Some("rust")),
+        ];
+        let rows = diff_rows(&files, &style());
+        let small_file = rows
+            .iter()
+            .position(|r| matches!(r, CommitDiffRow::File { path, .. } if path == "small.rs"))
+            .unwrap();
+        assert!(
+            any_highlighted(&rows, small_file),
+            "a small file after an oversized one should still be highlighted"
         );
     }
 }
