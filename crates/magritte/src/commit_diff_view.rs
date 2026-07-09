@@ -48,7 +48,7 @@ pub(crate) struct FlatDiff {
 impl FlatDiff {
     pub(crate) fn loading() -> Self {
         FlatDiff {
-            rows: vec![CommitDiffRow::Note("Loading…".to_string())],
+            rows: vec![CommitDiffRow::Loading("Loading…".to_string())],
             scroll: UniformListScrollHandle::new(),
             selected: 0,
             visual: None,
@@ -405,7 +405,7 @@ impl StatusView {
                 rows.push(CommitDiffRow::Message(subject));
                 rows.push(CommitDiffRow::Note(String::new()));
             }
-            rows.push(CommitDiffRow::Note("Loading…".to_string()));
+            rows.push(CommitDiffRow::Loading("Loading…".to_string()));
             FlatDiff {
                 rows,
                 ..FlatDiff::loading()
@@ -466,7 +466,7 @@ impl StatusView {
             let details = commit_metadata_lines(&metadata);
             let stage1 = {
                 let mut rows = commit_detail_rows(&details, &message, &[], &style);
-                rows.push(CommitDiffRow::Note("Loading diff…".to_string()));
+                rows.push(CommitDiffRow::Loading("Loading diff…".to_string()));
                 rows
             };
             let live = this

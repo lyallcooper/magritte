@@ -117,6 +117,8 @@ pub(crate) enum CommitDiffRow {
     Line { kind: LineKind, spans: Arc<[Span]> },
     /// A dim status note (e.g. when the staged diff couldn't be loaded).
     Note(String),
+    /// A dim note with a leading spinner, for an async load still in flight.
+    Loading(String),
 }
 
 /// The theme inputs [`diff_rows`] needs, snapshotted on the UI thread so row

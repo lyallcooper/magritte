@@ -659,6 +659,14 @@ impl StatusView {
                     Some(layout),
                 )
             }
+            CommitDiffRow::Loading(text) => (
+                base.gap_2()
+                    .text_color(self.palette.dim)
+                    .child(Spinner::new().xsmall().color(self.palette.dim))
+                    .child(text.clone())
+                    .into_any_element(),
+                None,
+            ),
             CommitDiffRow::Line { kind, spans } => {
                 let (sign, sign_color, tint) = match kind {
                     LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),

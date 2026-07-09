@@ -230,7 +230,7 @@ pub(crate) fn commit_row_text(row: &CommitDiffRow) -> String {
         }
         CommitDiffRow::Hunk(h) => h.clone(),
         CommitDiffRow::Line { spans, .. } => spans.iter().map(|(t, _)| t.as_str()).collect(),
-        CommitDiffRow::Note(n) => n.clone(),
+        CommitDiffRow::Note(n) | CommitDiffRow::Loading(n) => n.clone(),
     }
 }
 
