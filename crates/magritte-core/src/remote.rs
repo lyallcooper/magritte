@@ -223,6 +223,22 @@ impl Repo {
             .report())
     }
 
+    /// `git push [switches] <remote> <tag>` — push one tag
+    /// (`magit-push-tag`).
+    pub fn push_tag(&self, remote: &str, tag: &str, switches: &[String]) -> Result<String> {
+        Ok(self
+            .run(git_args(&["push"], switches, &[remote, tag]))?
+            .report())
+    }
+
+    /// `git push [switches] <remote> --tags` — push all tags
+    /// (`magit-push-tags`).
+    pub fn push_all_tags(&self, remote: &str, switches: &[String]) -> Result<String> {
+        Ok(self
+            .run(git_args(&["push"], switches, &[remote, "--tags"]))?
+            .report())
+    }
+
     /// `git pull [switches] <remote> <branch>`.
     pub fn pull_from(&self, remote: &str, branch: &str, switches: &[String]) -> Result<String> {
         Ok(self

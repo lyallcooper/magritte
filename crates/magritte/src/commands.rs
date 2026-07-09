@@ -449,8 +449,8 @@ pub(crate) fn commands() -> &'static [Command] {
             "m",
             &["combine"],
             |t, _w, cx| {
-                // While a merge is in progress, `m` opens its abort action (you
-                // finish a merge by committing); don't start another.
+                // While a merge is in progress, `m` opens its commit/abort
+                // actions (you finish a merge by committing); don't start another.
                 if matches!(
                     t.sequence.as_ref().map(|s| s.kind),
                     Some(SequenceKind::Merge)
@@ -894,6 +894,9 @@ pub(crate) fn commands() -> &'static [Command] {
             Leaf::PushUpstream
         ),
         leaf!("push-elsewhere", "Push elsewhere", Leaf::PushElsewhere),
+        leaf!("push-other", "Push another branch", Leaf::PushOther),
+        leaf!("push-tag", "Push a tag", Leaf::PushTag),
+        leaf!("push-tags", "Push all tags", Leaf::PushTags),
         leaf!(
             "pull-pushremote",
             "Pull from push-remote",
@@ -960,6 +963,23 @@ pub(crate) fn commands() -> &'static [Command] {
             "Stash including untracked",
             Leaf::StashPushAll
         ),
+        leaf!(
+            "stash-index",
+            "Stash index",
+            &["stash staged"],
+            Leaf::StashPushStaged
+        ),
+        leaf!(
+            "stash-keep-index",
+            "Stash keeping index",
+            Leaf::StashPushKeepIndex
+        ),
+        leaf!(
+            "stash-branch",
+            "Branch from stash",
+            &["stash branch"],
+            Leaf::StashBranch
+        ),
         leaf!("stash-apply", "Apply stash", Leaf::StashApply),
         leaf!("stash-pop", "Pop stash", Leaf::StashPop),
         leaf!(
@@ -1009,6 +1029,20 @@ pub(crate) fn commands() -> &'static [Command] {
             &["undo changes"],
             Leaf::RevertNoCommit
         ),
+        leaf!(
+            "reset-branch",
+            "Reset branch",
+            &["move branch to"],
+            Leaf::ResetBranch
+        ),
+        leaf!(
+            "file-checkout",
+            "Checkout file from revision",
+            &["restore file", "reset file"],
+            Leaf::ResetFile
+        ),
+        leaf!("merge-editmsg", "Merge, edit message", Leaf::MergeEditMsg),
+        leaf!("merge-preview", "Preview merge", Leaf::MergePreview),
         // Application commands.
         top!(
             "settings",
@@ -1375,6 +1409,13 @@ pub(crate) fn commands() -> &'static [Command] {
             .nav_show_level(3, cx)),
         nav!("show-level-4", "Unfold everything", "4", |t, _w, cx| t
             .nav_show_level(4, cx)),
+        // magit-section-cycle-global (S-TAB): sections → everything → folded.
+        nav!(
+            "cycle-folds",
+            "Cycle all folds",
+            "shift-tab",
+            |t, _w, cx| t.nav_cycle_global(cx)
+        ),
         // Explicit show/hide and show/hide-children — evil-collection's `z`
         // fold family (zo/zc/zO/zC). Keyless in the registry; bound to the `z`
         // sequences in the evil preset. `za` reuses `fold` (toggle).

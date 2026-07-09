@@ -31,11 +31,11 @@ vanilla presets differ, both are given.
 ## Executive summary
 
 **Whole areas missing:** submodules, clone/init, notes, subtree,
-sparse-checkout, bundle, cherry, wip. (Bisect, blame, and patch
-create/apply/`git am` have since shipped.) Within existing transients, the largest
-gaps are magit's "push something other than the current branch" group, log's
-limiting/formatting flags, merge strategies, and stash's index/worktree/
-snapshot variants.
+sparse-checkout, bundle, cherry, wip. (Bisect, blame, patch
+create/apply/`git am`, push-other/tags, merge editmsg/preview/`--strategy=`,
+branch-reset/file-checkout, and stash's index/keep-index/branch variants have
+since shipped.) Within existing transients, the largest gaps are log's
+limiting/formatting flags and stash's worktree/snapshot variants.
 
 **Notable behavior differences in shared features:**
 
@@ -177,7 +177,7 @@ has no branch args).
 | `n` | create | ✓ |
 | `C` | configure… | ✓ |
 | `m` | rename | ✓ |
-| `x` | branch-reset | ✗ — key conflict: our evil preset uses `x` for delete |
+| `x` | branch-reset | ≈ not here (key conflict: our evil preset uses `x` for delete); available as the reset transient's `b` |
 | `k` | delete | ✓ ours `x` evil / `k` vanilla |
 | `h` / `H` | shelve / unshelve (level 7) | ✗ |
 
@@ -204,14 +204,12 @@ variables are still missing.
 | Key | Command | Status |
 |-----|---------|--------|
 | `p` / `u` / `e` | pushremote / upstream / elsewhere | ✓ |
-| `o` | another branch | ✗ |
+| `o` | another branch | ✓ pick the source (current first, or type a rev), then the target `remote/branch` (seeded like elsewhere) |
 | `r` | explicit refspecs | ✗ |
 | `m` | matching branches | ✗ |
-| `T` / `t` | a tag / all tags | ✗ |
+| `T` / `t` | a tag / all tags | ✓ remote resolved like the other pushes (sole remote direct, else a picker) |
 | `n` | note ref (level 6) | ✗ |
 | `C` | branch-configure | ✗ |
-
-The whole "push things other than the current branch" group is missing.
 
 Ours-only refinements to the `p`/`u`/`e` group: when the push-remote and
 upstream resolve to the same ref we collapse `p` and `u` into one `p/u` entry
@@ -251,16 +249,19 @@ sub-transient ✗. Ours only: the background `[fetch]` auto-fetch loop.
 
 ### Merge (magit `m` / ours `m`)
 
-**Arguments**: `-f --ff-only` ✓; `-n --no-ff` ✓; `-s --strategy=` ✗;
-`-X --strategy-option=` (level 5) ✗; `-b`/`-w` ignore-space (level 5) ✗;
-`-A -Xdiff-algorithm=` (level 5) ✗; `-S --gpg-sign=` ✗; `+s --signoff`
-(level 6) ✗. The `--ff-only`/`--no-ff` incompatibility is not enforced
-(git errors at runtime).
+**Arguments**: `-f --ff-only` ✓; `-n --no-ff` ✓ (the incompatibility is
+enforced — toggling one turns the other off); `-s --strategy=` ✓ (magit's
+choices plus `ort`); `-X --strategy-option=` (level 5) ✗; `-b`/`-w`
+ignore-space (level 5) ✗; `-A -Xdiff-algorithm=` (level 5) ✗; `-S
+--gpg-sign=` ✗; `+s --signoff` (level 6) ✗.
 
-**Actions**: `m` plain ✓; `n` no-commit ✓; `s` squash ✓; `e` edit-message ✗;
-`a` absorb ✗; `p` preview ✗; `d` dissolve ✗. In progress: magit offers `m`
-"Commit merge" and `a` abort; ours shows only `a` abort (committing the
-resolved merge goes through the regular `c` commit transient) — ≈.
+**Actions**: `m` plain ✓; `e` edit-message ✓ (mechanically like magit:
+`merge --no-commit --no-ff`, then our commit editor opens seeded with git's
+prepared MERGE_MSG and committing concludes the merge); `n` no-commit ✓;
+`s` squash ✓; `p` preview ≈ (the three-dot `HEAD...<branch>` diff, not
+magit's merge-tree buffer); `a` absorb ✗; `d` dissolve ✗. In progress:
+magit's `m` "Commit merge" and `a` abort ✓ (ours also seeds the commit
+editor from MERGE_MSG on the regular `c c` path during a merge).
 
 ### Log (magit `l` / ours `l`)
 
@@ -377,21 +378,26 @@ row / log view).
 
 **Arguments**: magit `-u --include-untracked` ≈ (ours models untracked
 inclusion as the separate `Z` action, so it can't combine with future
-variants); `-a --all` (untracked + ignored) ✗.
+variants); `-a --all` (untracked + ignored) ✗; `--` file limiting ✓ (from
+magit's `z P` push sub-transient; ours lives on the one stash menu and
+applies to every push variant).
 
 **Actions**
 
 | Key | Command | Status |
 |-----|---------|--------|
 | `z` | both | ✓ (prompts for an optional message, like magit) |
-| `i` / `w` / `x` | index only / worktree only / keeping index | ✗ |
-| `P` | push… sub-transient (level 5; `--` file limiting, keep-index) | ∂ our `z` is `git stash push` but with no file limiting or keep-index |
+| `i` | index only | ✓ (`git stash push --staged`, git ≥ 2.35; magit reverse-applies by hand) |
+| `x` | keeping index | ✓ (`--keep-index`; same message prompt) |
+| `w` | worktree only | ✗ |
+| `P` | push… sub-transient (level 5; `--` file limiting, keep-index) | ≈ folded into the one stash menu: `--` file limiting and `x` keep-index live here |
 | `Z` / `I` / `W` | snapshots | ✗ (our `Z` key is taken by "both incl. untracked") |
 | `r` | wip-commit | ✗ (no wip mode) |
 | `a` / `p` / `k` | apply / pop / drop | ✓ (picker; also stash-row keys) |
 | `l` | list | ≈ the Stashes status section; no dedicated buffer |
 | `v` | show | ≈ Enter on a stash row; not reachable from the transient |
-| `b` / `B` | branch from stash / branch here | ✗ |
+| `b` | branch from stash | ✓ (pick the stash, then the new branch name) |
+| `B` | branch here | ✗ |
 | `f` | format-patch | ✗ |
 
 ### Tag (magit `t` / ours `t`)
@@ -418,8 +424,12 @@ multi-delete; `p` prune (local vs remote) ✗.
 ### Reset (magit `X` / ours `O` evil, `X` vanilla)
 
 The six modes `m`/`s`/`h`/`k`/`i`/`w` are at parity (same keys; ours
-confirms hard and worktree). Missing: `b` branch-reset (reset a *branch*,
-not HEAD) ✗ and `f` file-checkout (reset one file to a revision) ✗.
+confirms hard and worktree). `b` branch-reset ✓ (pick a local branch, then
+the revision with its upstream offered first; the current branch hard-resets
+through the usual confirmation, any other moves via `update-ref` like magit);
+`f` file-checkout ✓ (pick a revision, then a file from its tree — the file at
+point offered first; `git checkout <rev> -- <file>`). Magit's prefix-arg
+set-upstream variant of branch-reset ✗.
 
 ### Gitignore (magit `i` / ours `i`)
 

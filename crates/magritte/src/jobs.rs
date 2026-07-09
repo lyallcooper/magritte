@@ -97,15 +97,16 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Surface a failed git operation: cancel/timeout get their own short
-    /// notices, everything else the error text. Always sticky.
+    /// Surface a failed git operation: a user-initiated cancel is expected, so
+    /// it fades like a success notice; a timeout or real failure sticks until
+    /// dismissed.
     pub(crate) fn report_error(&mut self, e: magritte_core::Error, cx: &mut Context<Self>) {
-        let msg = match e {
-            magritte_core::Error::Cancelled => "Cancelled".to_string(),
-            magritte_core::Error::TimedOut => "Timed out".to_string(),
-            e => format!("error: {e}"),
+        let (msg, transient) = match e {
+            magritte_core::Error::Cancelled => ("Cancelled".to_string(), true),
+            magritte_core::Error::TimedOut => ("Timed out".to_string(), false),
+            e => (format!("error: {e}"), false),
         };
-        self.set_status(msg, false, cx);
+        self.set_status(msg, transient, cx);
     }
 
     /// Report a git operation's outcome: on success a brief `success` notice

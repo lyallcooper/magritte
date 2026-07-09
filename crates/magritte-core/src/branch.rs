@@ -85,6 +85,21 @@ impl Repo {
             .lines())
     }
 
+    /// A branch's configured upstream in short `remote/branch` form
+    /// (`<branch>@{upstream}`), or `None` when unset — the default target for
+    /// resetting that branch (magit's `magit-get-upstream-branch`).
+    pub fn upstream_of(&self, branch: &str) -> Result<Option<String>> {
+        Ok(self
+            .run_optional([
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                &format!("{branch}@{{upstream}}"),
+            ])?
+            .map(|o| o.stdout_text())
+            .filter(|s| !s.is_empty()))
+    }
+
     /// Local branches with their ahead/behind vs their upstream, in one
     /// `for-each-ref` — the refs browser's margin. `%(upstream:track)` reports
     /// `[ahead N, behind M]`; `nobracket` drops the brackets. A branch with no

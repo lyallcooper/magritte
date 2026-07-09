@@ -117,6 +117,32 @@ fn push_ref_creates_new_remote_branch() {
 }
 
 #[test]
+fn push_tag_delivers_one_tag() {
+    let (t, remote) = repo_with_remote();
+    let repo = Repo::discover(t.path()).unwrap();
+    t.git(["tag", "v1.0.0"]);
+    t.git(["tag", "v1.1.0"]);
+
+    repo.push_tag("origin", "v1.0.0", &[]).unwrap();
+
+    let tags = git_in(remote.path(), &["tag", "--list"]);
+    assert_eq!(tags, "v1.0.0", "only the pushed tag arrives");
+}
+
+#[test]
+fn push_all_tags_delivers_every_tag() {
+    let (t, remote) = repo_with_remote();
+    let repo = Repo::discover(t.path()).unwrap();
+    t.git(["tag", "v1.0.0"]);
+    t.git(["tag", "v1.1.0"]);
+
+    repo.push_all_tags("origin", &[]).unwrap();
+
+    let tags = git_in(remote.path(), &["tag", "--list"]);
+    assert_eq!(tags, "v1.0.0\nv1.1.0");
+}
+
+#[test]
 fn dry_run_switch_does_not_deliver() {
     let (t, remote) = repo_with_remote();
     let repo = Repo::discover(t.path()).unwrap();

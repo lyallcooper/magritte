@@ -364,10 +364,12 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `branch-create-checkout` | — | Create and checkout branch |
 | `branch-rename` | — | Rename branch |
 | `branch-delete` | — | Delete branch |
-| `push-pushremote` / `push-upstream` / `push-elsewhere` | — | Push variants |
+| `push-pushremote` / `push-upstream` / `push-elsewhere` / `push-other` / `push-tag` / `push-tags` | — | Push variants |
 | `pull-pushremote` / `pull-upstream` / `pull-elsewhere` | — | Pull variants |
 | `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | — | Fetch variants |
-| `stash-push` / `stash-push-all` / `stash-apply` / `stash-pop` / `stash-drop` | — | Stash variants |
+| `stash-push` / `stash-push-all` / `stash-index` / `stash-keep-index` / `stash-apply` / `stash-pop` / `stash-drop` / `stash-branch` | — | Stash variants |
+| `merge-editmsg` / `merge-preview` | — | Merge and edit the message / preview a merge |
+| `reset-branch` / `file-checkout` | — | Reset a branch / checkout a file from a revision |
 | `tag-create` / `tag-delete` | — | Tag variants |
 | `remote-add` / `remote-rename` / `remote-remove` | — | Remote variants |
 | `log-current` / `log-all` / `log-other` / `log-reflog` | — | Log variants |

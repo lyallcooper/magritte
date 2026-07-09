@@ -168,6 +168,17 @@ impl StatusView {
                 Self::sequence_skip,
             ));
         }
+        // A merge is finished by committing the resolved index (`m m`, like
+        // magit's in-progress "Commit merge"), not by `--continue`.
+        if matches!(seq.kind, SequenceKind::Merge) {
+            actions = actions.child(self.seq_action(
+                "seq-commit-merge",
+                keys("m"),
+                "commit merge",
+                view,
+                Self::merge_commit_action,
+            ));
+        }
         actions = actions.child(self.seq_action(
             "seq-abort",
             keys("a"),

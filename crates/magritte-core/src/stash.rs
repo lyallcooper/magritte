@@ -4,6 +4,20 @@
 use crate::error::Result;
 use crate::repo::Repo;
 
+/// What `git stash push` saves — magit's both / index / keeping-index variants
+/// (`magit-stash-both`, `magit-stash-index`, `magit-stash-keep-index`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashKind {
+    /// The index and the working tree (plain `git stash push`).
+    Both,
+    /// Only the staged changes (`--staged`, git ≥ 2.35); unstaged and
+    /// untracked changes stay put.
+    Staged,
+    /// The index and the working tree, but leave the index applied afterwards
+    /// (`--keep-index`).
+    KeepIndex,
+}
+
 /// One entry from `git stash list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stash {
@@ -42,15 +56,31 @@ impl Repo {
             .collect())
     }
 
-    /// `git stash push [-u] [-m <message>]` — stash the working tree and index.
-    pub fn stash_push(&self, message: Option<&str>, include_untracked: bool) -> Result<String> {
+    /// `git stash push [--staged|--keep-index] [-u] [-m <message>] [-- <paths>]`
+    /// — stash per `kind`, optionally limited to `paths` (empty = everything).
+    pub fn stash_push(
+        &self,
+        kind: StashKind,
+        message: Option<&str>,
+        include_untracked: bool,
+        paths: &[String],
+    ) -> Result<String> {
         let mut args = vec!["stash".to_string(), "push".to_string()];
+        match kind {
+            StashKind::Both => {}
+            StashKind::Staged => args.push("--staged".into()),
+            StashKind::KeepIndex => args.push("--keep-index".into()),
+        }
         if include_untracked {
             args.push("--include-untracked".into());
         }
         if let Some(m) = message.map(str::trim).filter(|m| !m.is_empty()) {
             args.push("--message".into());
             args.push(m.to_string());
+        }
+        if !paths.is_empty() {
+            args.push("--".into());
+            args.extend(paths.iter().cloned());
         }
         Ok(self.run(&args)?.report())
     }
@@ -68,5 +98,12 @@ impl Repo {
     /// `git stash drop <reference>` — delete a stash without applying it.
     pub fn stash_drop(&self, reference: &str) -> Result<String> {
         Ok(self.run(["stash", "drop", reference])?.report())
+    }
+
+    /// `git stash branch <branch> <reference>` — create and check out `branch`
+    /// from the commit the stash was made on, then apply the stash (dropping it
+    /// if it applies cleanly), mirroring `magit-stash-branch`.
+    pub fn stash_branch(&self, branch: &str, reference: &str) -> Result<String> {
+        Ok(self.run(["stash", "branch", branch, reference])?.report())
     }
 }

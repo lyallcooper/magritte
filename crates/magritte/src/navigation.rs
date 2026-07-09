@@ -516,6 +516,34 @@ impl StatusView {
         cx.notify();
     }
 
+    /// Cycle every section's visibility (magit's `magit-section-cycle-global`,
+    /// `S-TAB`): with any section collapsed, show all section headings (files
+    /// closed); with the sections open but something inside collapsed, open
+    /// everything; with everything open, collapse all sections.
+    pub(crate) fn nav_cycle_global(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.screen, Screen::Status) {
+            return;
+        }
+        let (mut section_closed, mut lower_closed) = (false, false);
+        for row in &self.rows {
+            if let Some(key) = &row.fold {
+                let closed = !self.is_fold_open(key);
+                match key {
+                    FoldKey::Section(_) => section_closed |= closed,
+                    _ => lower_closed |= closed,
+                }
+            }
+        }
+        let level = if section_closed {
+            2
+        } else if lower_closed {
+            4
+        } else {
+            1
+        };
+        self.nav_show_level(level, cx);
+    }
+
     /// Jump to a status section's header (magit-status-jump). A section with
     /// nothing in it has no rows, so the miss reports rather than moving.
     pub(crate) fn jump_to_section(&mut self, id: SectionId, cx: &mut Context<Self>) {

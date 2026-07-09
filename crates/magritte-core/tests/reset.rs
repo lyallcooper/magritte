@@ -80,3 +80,20 @@ fn worktree_only_leaves_head_and_index() {
     assert_eq!(t.git(["show", ":f"]), "two"); // index unmoved
     assert_eq!(read(&t, "f"), "one\n"); // worktree rewound
 }
+
+#[test]
+fn branch_reset_moves_a_non_current_branch_without_touching_the_checkout() {
+    let (t, first) = two_commits();
+    // `other` points at the second commit; we're still on main.
+    t.git(["branch", "other"]);
+    let head = t.git(["rev-parse", "HEAD"]);
+
+    open(&t).branch_reset("other", &first).unwrap();
+    assert_eq!(t.git(["rev-parse", "other"]), first); // branch moved
+    assert_eq!(t.git(["rev-parse", "HEAD"]), head); // HEAD untouched
+    assert_eq!(read(&t, "f"), "two\n"); // worktree untouched
+                                        // The move is recorded in the branch's reflog like magit's update-ref -m.
+    assert!(t
+        .git(["reflog", "other", "-1", "--format=%gs"])
+        .contains("reset: moving to"));
+}

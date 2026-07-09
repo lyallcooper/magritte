@@ -55,8 +55,9 @@ impl StatusView {
             CommitInstantFixup => self.fixup_squash_selected(SquashOp::InstantFixup, args, cx),
             CommitInstantSquash => self.fixup_squash_selected(SquashOp::InstantSquash, args, cx),
             // Push/pull/fetch resolve a remote (prompting if needed) then run.
-            PushPushRemote | PushUpstream | PushElsewhere | PullPushRemote | PullUpstream
-            | PullElsewhere | FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere => {
+            PushPushRemote | PushUpstream | PushElsewhere | PushOther | PushTag | PushTags
+            | PullPushRemote | PullUpstream | PullElsewhere | FetchPushRemote | FetchUpstream
+            | FetchAll | FetchElsewhere => {
                 self.dispatch_transfer(command, &targets, args, window, cx)
             }
             BranchCheckout | BranchCreateCheckout | BranchCreate | BranchRename | BranchDelete => {
@@ -74,10 +75,9 @@ impl StatusView {
             RunShellWorkdir => self.open_run_prompt(true, self.dir_at_point(), window, cx),
             BranchConfigure => self.open_branch_configure(window, cx),
             RemoteConfigure => self.open_remote_configure(window, cx),
-            ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree => {
-                self.dispatch_reset(command, window, cx)
-            }
-            MergePlain | MergeNoCommit | MergeSquash => {
+            ResetSoft | ResetMixed | ResetHard | ResetKeep | ResetIndex | ResetWorktree
+            | ResetBranch | ResetFile => self.dispatch_reset(command, window, cx),
+            MergePlain | MergeNoCommit | MergeSquash | MergeEditMsg | MergePreview => {
                 self.dispatch_merge(command, args, window, cx)
             }
             CherryPick | CherryPickRange | CherryApply | RevertCommit | RevertRange
@@ -88,9 +88,17 @@ impl StatusView {
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
                 self.dispatch_ignore(command, window, cx)
             }
-            StashPush => self.prompt_stash_message(false, window, cx),
-            StashPushAll => self.prompt_stash_message(true, window, cx),
-            StashApply | StashPop | StashDrop => self.dispatch_stash(command, window, cx),
+            StashPush => self.prompt_stash_message(StashKind::Both, false, paths, window, cx),
+            StashPushAll => self.prompt_stash_message(StashKind::Both, true, paths, window, cx),
+            StashPushStaged => {
+                self.prompt_stash_message(StashKind::Staged, false, paths, window, cx)
+            }
+            StashPushKeepIndex => {
+                self.prompt_stash_message(StashKind::KeepIndex, false, paths, window, cx)
+            }
+            StashApply | StashPop | StashDrop | StashBranch => {
+                self.dispatch_stash(command, window, cx)
+            }
             DiffDwim | DiffRange | DiffUnstaged | DiffStaged | DiffWorktree | DiffCommit => {
                 self.dispatch_diff(command, args, paths, window, cx)
             }
@@ -133,7 +141,7 @@ impl StatusView {
         );
     }
 
-    /// Open the stash picker for an apply/pop/drop command.
+    /// Open the stash picker for an apply/pop/drop/branch command.
     pub(crate) fn dispatch_stash(
         &mut self,
         command: transient::Command,
@@ -142,13 +150,15 @@ impl StatusView {
     ) {
         use transient::Command::*;
         let action = match command {
-            StashApply => StashAction::Apply,
-            StashPop => StashAction::Pop,
-            StashDrop => StashAction::Drop,
+            StashApply => PickerAction::Stash(StashAction::Apply),
+            StashPop => PickerAction::Stash(StashAction::Pop),
+            StashDrop => PickerAction::Stash(StashAction::Drop),
+            // magit-stash-branch: pick the stash, then read the branch name.
+            StashBranch => PickerAction::StashBranchStash,
             _ => return,
         };
         self.open_listed_picker(
-            PickerAction::Stash(action),
+            action,
             CreateMode::None,
             Vec::new(),
             |r| Ok(r.stash_list()?.iter().map(|s| s.display()).collect()),
@@ -600,7 +610,8 @@ impl StatusView {
     }
 
     /// Reset transient suffix: pick the target commit (a branch/ref, or type any
-    /// revision), then reset HEAD to it in the chosen mode.
+    /// revision), then reset HEAD to it in the chosen mode. The `b`/`f` suffixes
+    /// instead start the branch-reset / file-checkout picker chains.
     pub(crate) fn dispatch_reset(
         &mut self,
         command: transient::Command,
@@ -615,6 +626,29 @@ impl StatusView {
             ResetKeep => ResetMode::Keep,
             ResetIndex => ResetMode::Index,
             ResetWorktree => ResetMode::Worktree,
+            // magit-branch-reset: pick the local branch to reset, then the
+            // revision (its upstream offered first, as magit's default).
+            ResetBranch => {
+                return self.open_listed_picker(
+                    PickerAction::ResetBranch,
+                    CreateMode::None,
+                    Vec::new(),
+                    Repo::local_branches,
+                    window,
+                    cx,
+                );
+            }
+            // magit-file-checkout: pick the revision, then a file from it.
+            ResetFile => {
+                return self.open_listed_picker(
+                    PickerAction::FileCheckoutRev,
+                    CreateMode::Value,
+                    Vec::new(),
+                    targets::all_branches,
+                    window,
+                    cx,
+                );
+            }
             _ => return,
         };
         // `Value`: the typed text is itself a valid target (any revision/sha),
@@ -625,6 +659,23 @@ impl StatusView {
             Vec::new(),
             targets::all_branches,
             window,
+            cx,
+        );
+    }
+
+    /// Conclude a branch-reset (magit-branch-reset): the current branch is a
+    /// hard reset (through the usual confirmation), any other branch moves via
+    /// `update-ref` without touching the checkout.
+    pub(crate) fn run_branch_reset(&mut self, branch: String, to: String, cx: &mut Context<Self>) {
+        let current = self.status.as_ref().and_then(|s| s.head.branch.clone());
+        if current.as_deref() == Some(branch.as_str()) {
+            self.run_reset(ResetMode::Hard, to, cx);
+            return;
+        }
+        self.run_job(
+            &format!("Resetting {branch}…"),
+            "Reset branch",
+            move |repo| repo.branch_reset(&branch, &to),
             cx,
         );
     }
@@ -645,7 +696,7 @@ impl StatusView {
     }
 
     /// Merge transient suffix: fold the action's mode into the toggled
-    /// switches, then pick the branch/ref to merge.
+    /// switches, then pick the branch/ref to merge (or preview).
     pub(crate) fn dispatch_merge(
         &mut self,
         command: transient::Command,
@@ -654,14 +705,38 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         use transient::Command::*;
+        let mut edit = false;
         match command {
             MergeNoCommit => args.push("--no-commit".to_string()),
             MergeSquash => args.push("--squash".to_string()),
+            // magit-merge-editmsg mechanics: merge --no-commit --no-ff, then
+            // let the user edit git's prepared message in the commit editor
+            // (magit forces --no-ff and drops --ff-only the same way).
+            MergeEditMsg => {
+                args.retain(|a| a != "--ff-only");
+                if !args.iter().any(|a| a == "--no-ff") {
+                    args.push("--no-ff".to_string());
+                }
+                args.push("--no-commit".to_string());
+                edit = true;
+            }
+            // ≈ magit-merge-preview (which uses merge-tree): show the three-dot
+            // HEAD...<branch> diff — what merging the branch would bring in.
+            MergePreview => {
+                return self.open_listed_picker(
+                    PickerAction::MergePreview,
+                    CreateMode::Value,
+                    Vec::new(),
+                    targets::all_branches,
+                    window,
+                    cx,
+                );
+            }
             MergePlain => {}
             _ => return,
         }
         self.open_listed_picker(
-            PickerAction::Merge,
+            PickerAction::Merge { edit },
             CreateMode::Value,
             args,
             targets::all_branches,
@@ -679,6 +754,51 @@ impl StatusView {
             move |repo| repo.merge(&target, &args),
             cx,
         );
+    }
+
+    /// The edit-message merge (`m e`): run the `--no-commit --no-ff` merge on
+    /// the background executor, then — when it lands cleanly — open the commit
+    /// editor, which is seeded from the MERGE_MSG git just prepared; committing
+    /// concludes the merge. A conflict surfaces like any paused merge (resolve,
+    /// then commit).
+    pub(crate) fn run_merge_editmsg(
+        &mut self,
+        target: String,
+        args: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel.clone());
+        self.set_progress("Merging…".to_string(), cx);
+        self.begin_activity(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.merge(&target, &args) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.clear_job_cancel(&cancel);
+                this.end_activity(cx);
+                this.refresh(cx);
+                match result {
+                    Ok(_) => {
+                        this.clear_status(cx);
+                        // Don't pop the editor over something the user opened
+                        // while the merge ran.
+                        if this.ui_idle_for_prompt() {
+                            this.open_editor(CommitMode::Create, Vec::new(), window, cx);
+                        }
+                    }
+                    Err(e) => this.report_error(e, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The repo-relative path of the file at the cursor (file/hunk/line rows),
@@ -1216,6 +1336,13 @@ impl StatusView {
         );
     }
 
+    /// Conclude an in-progress merge by committing the resolved index (the
+    /// banner's "commit merge" button / the in-progress transient's `m`):
+    /// the normal commit path, whose editor seeds from MERGE_MSG.
+    pub(crate) fn merge_commit_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_commit(Vec::new(), window, cx);
+    }
+
     // Fixed-signature wrappers so the bisect banner's clickable buttons can share
     // the `seq_action` shape (`fn(&mut Self, &mut Window, &mut Context)`).
     pub(crate) fn bisect_good_action(&mut self, _w: &mut Window, cx: &mut Context<Self>) {
@@ -1441,8 +1568,125 @@ impl StatusView {
                     self.run_remote_action(r, chosen.to_string(), p.switches, window, cx)
                 }
                 PickerAction::Stash(s) => self.run_stash_action(s, chosen.to_string(), cx),
+                // Stash-branch step 1: the stash reference is the display
+                // string's first token; now read the new branch name.
+                PickerAction::StashBranchStash => {
+                    let stash = chosen
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or(&chosen)
+                        .to_string();
+                    self.open_picker(
+                        PickerAction::StashBranchName { stash },
+                        Vec::new(),
+                        CreateMode::Any,
+                        Vec::new(),
+                        window,
+                        cx,
+                    );
+                }
+                PickerAction::StashBranchName { stash } => {
+                    if chosen.trim().is_empty() {
+                        self.set_status("Branch name required".to_string(), false, cx);
+                        return;
+                    }
+                    let name = chosen.trim().to_string();
+                    self.run_job(
+                        "Branching stash…",
+                        "Branched stash",
+                        move |repo| repo.stash_branch(&name, &stash),
+                        cx,
+                    );
+                }
                 PickerAction::Reset(mode) => self.run_reset(mode, chosen.to_string(), cx),
-                PickerAction::Merge => self.run_merge(chosen.to_string(), p.switches, cx),
+                // Branch-reset step 1: the branch to reset is chosen; now pick
+                // the revision, offering its upstream first (magit's default).
+                PickerAction::ResetBranch => {
+                    let branch = chosen.to_string();
+                    let for_list = branch.clone();
+                    self.open_listed_picker(
+                        PickerAction::ResetBranchTo { branch },
+                        CreateMode::Value,
+                        Vec::new(),
+                        move |r| {
+                            let mut candidates = targets::all_branches(r)?;
+                            if let Ok(Some(upstream)) = r.upstream_of(&for_list) {
+                                candidates.sort_by_key(|c| *c != upstream);
+                            }
+                            Ok(candidates)
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                PickerAction::ResetBranchTo { branch } => {
+                    self.run_branch_reset(branch, chosen.to_string(), cx)
+                }
+                // File-checkout step 1: the revision is chosen; now pick a file
+                // from its tree, offering the file at point first.
+                PickerAction::FileCheckoutRev => {
+                    let rev = chosen.to_string();
+                    let for_list = rev.clone();
+                    let at_point = self.current_file_path();
+                    self.open_listed_picker(
+                        PickerAction::FileCheckoutFile { rev },
+                        CreateMode::None,
+                        Vec::new(),
+                        move |r| {
+                            let mut files = r.revision_files(&for_list)?;
+                            if let Some(default) = at_point {
+                                files.sort_by_key(|f| *f != default);
+                            }
+                            Ok(files)
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                PickerAction::FileCheckoutFile { rev } => {
+                    let file = chosen.to_string();
+                    self.run_job(
+                        "Checking out…",
+                        "Checked out",
+                        move |repo| repo.checkout_file(&rev, &file),
+                        cx,
+                    );
+                }
+                PickerAction::Merge { edit: false } => {
+                    self.run_merge(chosen.to_string(), p.switches, cx)
+                }
+                PickerAction::Merge { edit: true } => {
+                    self.run_merge_editmsg(chosen.to_string(), p.switches, window, cx)
+                }
+                PickerAction::MergePreview => self.open_diff(
+                    DiffRequest::Range {
+                        range: format!("HEAD...{chosen}"),
+                        args: Vec::new(),
+                        paths: Vec::new(),
+                    },
+                    cx,
+                ),
+                // Push-other step 1: the source branch/rev is chosen; now pick
+                // the target remote branch (seeded `remote/<source>`).
+                PickerAction::PushOtherSource => {
+                    let source = chosen.trim().to_string();
+                    if source.is_empty() {
+                        return;
+                    }
+                    self.prompt_branch(
+                        Transfer::PushRef { branch: source },
+                        true,
+                        p.switches,
+                        window,
+                        cx,
+                    );
+                }
+                // Push-tag step 1: the tag is chosen; resolve the remote like
+                // the other push actions (sole remote direct, else a picker).
+                PickerAction::PushTagSelect => {
+                    let tag = chosen.to_string();
+                    self.resolve_remote(Transfer::PushTag { tag }, None, p.switches, window, cx);
+                }
                 PickerAction::Rebase => self.run_rebase(chosen.to_string(), p.switches, cx),
                 PickerAction::PickRange(op) => {
                     self.pick_rev_with_args(op, chosen.to_string(), p.switches, window, cx)
@@ -1470,9 +1714,11 @@ impl StatusView {
                     self.run_bisect_start(bad, chosen.to_string(), cx)
                 }
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
-                PickerAction::StashMessage { include_untracked } => {
-                    self.run_stash_push(include_untracked, chosen.to_string(), cx)
-                }
+                PickerAction::StashMessage {
+                    kind,
+                    include_untracked,
+                    paths,
+                } => self.run_stash_push(kind, include_untracked, paths, chosen.to_string(), cx),
                 // Worktree create/move: step one captures the ref/branch and
                 // opens the directory prompt; step two runs the git command.
                 PickerAction::WorktreeAddRef => {
@@ -1868,15 +2114,22 @@ impl StatusView {
     }
 
     /// Prompt for an optional stash message (magit prompts too; empty keeps
-    /// git's default "WIP on …"), then stash (`Z z` / `Z Z`).
+    /// git's default "WIP on …"), then stash (`Z z` / `Z Z` / `Z i` / `Z x`).
+    /// `paths` is the transient's `--` file limit (empty = everything).
     pub(crate) fn prompt_stash_message(
         &mut self,
+        kind: StashKind,
         include_untracked: bool,
+        paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.open_picker(
-            PickerAction::StashMessage { include_untracked },
+            PickerAction::StashMessage {
+                kind,
+                include_untracked,
+                paths,
+            },
             Vec::new(),
             CreateMode::Value,
             Vec::new(),
@@ -1887,14 +2140,16 @@ impl StatusView {
 
     pub(crate) fn run_stash_push(
         &mut self,
+        kind: StashKind,
         include_untracked: bool,
+        paths: Vec<String>,
         message: String,
         cx: &mut Context<Self>,
     ) {
         self.run_job(
             "Stashing…",
             "Stashed",
-            move |repo| repo.stash_push(Some(&message), include_untracked),
+            move |repo| repo.stash_push(kind, Some(&message), include_untracked, &paths),
             cx,
         );
     }

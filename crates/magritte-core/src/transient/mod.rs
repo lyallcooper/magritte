@@ -49,6 +49,13 @@ pub enum Command {
     PushPushRemote,
     PushUpstream,
     PushElsewhere,
+    /// Push an arbitrary local branch/rev to a chosen remote branch
+    /// (magit-push-other; both ends are prompted for).
+    PushOther,
+    /// Push one tag (prompts for the tag, then resolves the remote).
+    PushTag,
+    /// Push all tags (`--tags`) to a resolved remote.
+    PushTags,
     PullPushRemote,
     PullUpstream,
     PullElsewhere,
@@ -108,12 +115,19 @@ pub enum Command {
     StashPush,
     /// Stash including untracked files.
     StashPushAll,
+    /// Stash only the staged changes (`--staged`).
+    StashPushStaged,
+    /// Stash worktree and index but leave the index applied (`--keep-index`).
+    StashPushKeepIndex,
     /// Apply a stash, keeping it (prompts for which).
     StashApply,
     /// Pop a stash (prompts for which).
     StashPop,
     /// Drop a stash (prompts for which).
     StashDrop,
+    /// Create and check out a branch from a stash (`git stash branch`), picking
+    /// the stash then prompting for the branch name.
+    StashBranch,
     /// Diff the context-sensitive target, usually unstaged/staged/commit.
     DiffDwim,
     /// Diff an arbitrary revision or range.
@@ -144,12 +158,24 @@ pub enum Command {
     ResetKeep,
     ResetIndex,
     ResetWorktree,
+    /// Reset a *branch* (not HEAD) to a picked revision (magit-branch-reset):
+    /// the current branch hard-resets, any other moves via `update-ref`.
+    ResetBranch,
+    /// Check one file out of a picked revision (magit-file-checkout).
+    ResetFile,
     /// Merge a branch/ref into HEAD (the frontend prompts for it).
     MergePlain,
     /// Merge but don't commit (`--no-commit`).
     MergeNoCommit,
     /// Squash-merge (`--squash`): stage the result without a merge commit.
     MergeSquash,
+    /// Merge and edit the message (magit-merge-editmsg): merge `--no-commit
+    /// --no-ff`, then conclude in the commit editor seeded with git's prepared
+    /// MERGE_MSG.
+    MergeEditMsg,
+    /// Preview what merging a picked branch would introduce (≈
+    /// magit-merge-preview): the three-dot `HEAD...<branch>` diff.
+    MergePreview,
     /// Cherry-pick commit(s), creating commits.
     CherryPick,
     /// Cherry-pick a typed revision/range.

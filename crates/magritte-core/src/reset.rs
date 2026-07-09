@@ -49,6 +49,22 @@ impl Repo {
         Ok(self.run(["reset", flag, target])?.first_line())
     }
 
+    /// Move a *non-current* local branch to `to` without touching HEAD, the
+    /// index, or the working tree (magit's `magit-branch-reset` for a branch
+    /// that isn't checked out): `git update-ref -m "reset: moving to <to>"
+    /// refs/heads/<branch> <to>`. Resetting the current branch is a hard reset
+    /// instead — the frontend routes that case through [`reset`](Self::reset).
+    pub fn branch_reset(&self, branch: &str, to: &str) -> Result<String> {
+        self.run([
+            "update-ref",
+            "-m",
+            &format!("reset: moving to {to}"),
+            &format!("refs/heads/{branch}"),
+            to,
+        ])?;
+        Ok(format!("Reset {branch} to {to}"))
+    }
+
     /// Reset only the index to `target`, leaving HEAD and the working tree
     /// (magit's `magit-reset-index`): `git reset <target> -- .`.
     pub fn reset_index(&self, target: &str) -> Result<String> {

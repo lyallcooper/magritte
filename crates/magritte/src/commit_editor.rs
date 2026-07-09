@@ -655,39 +655,57 @@ impl StatusView {
         // Stamp this editor instance so async loads started for it can't write
         // into a different editor opened after it was cancelled.
         let gen = self.next_screen_gen();
-        // Amend/reword pre-fill HEAD's message — loaded off the UI thread (the
-        // git call must not block the UI), then set into the input if the user
-        // hasn't started typing.
-        if matches!(mode, CommitMode::Amend | CommitMode::Reword) {
-            if let Some(repo) = self.repo.clone() {
-                cx.spawn_in(window, async move |this, cx| {
-                    let msg = cx
-                        .background_executor()
-                        .spawn(async move { repo.head_message().unwrap_or_default() })
-                        .await;
-                    let _ = cx.update(|window, app| {
-                        state.update(app, |s, cx| {
-                            if s.value().is_empty() {
-                                s.set_value(msg.clone(), window, cx);
-                            }
-                        });
-                    });
-                    // set_value doesn't emit Change, so update the summary
-                    // warning for the pre-filled message ourselves. Also record
-                    // HEAD's message as the baseline, so canceling an unedited
-                    // amend/reword doesn't prompt to discard.
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        if !this.screen_gen.is_current(gen) {
-                            return; // this editor was closed; don't touch a newer one
-                        }
-                        if let Some(ed) = this.editor_mut() {
-                            ed.initial = msg;
-                        }
-                        this.on_editor_changed(window, cx);
-                    });
-                })
-                .detach();
+        // Pre-fill the message — loaded off the UI thread (the git call must
+        // not block the UI), then set into the input if the user hasn't started
+        // typing. Amend/reword seed HEAD's message; a plain commit during a
+        // merge seeds the MERGE_MSG git prepared (comments stripped), so
+        // concluding the merge — `m e`, the in-progress `m m`, or `c c` —
+        // edits git's prepared message like magit.
+        let prefill: Option<fn(&Repo) -> Option<String>> = match mode {
+            CommitMode::Amend | CommitMode::Reword => {
+                Some(|r| Some(r.head_message().unwrap_or_default()))
             }
+            CommitMode::Create
+                if matches!(
+                    self.editor().map(|e| &e.after_submit),
+                    Some(CommitAfterSubmit::Commit)
+                ) =>
+            {
+                Some(|r| r.merge_msg().ok().flatten())
+            }
+            _ => None,
+        };
+        if let (Some(load), Some(repo)) = (prefill, self.repo.clone()) {
+            cx.spawn_in(window, async move |this, cx| {
+                let Some(msg) = cx
+                    .background_executor()
+                    .spawn(async move { load(&repo) })
+                    .await
+                else {
+                    return;
+                };
+                let _ = cx.update(|window, app| {
+                    state.update(app, |s, cx| {
+                        if s.value().is_empty() {
+                            s.set_value(msg.clone(), window, cx);
+                        }
+                    });
+                });
+                // set_value doesn't emit Change, so update the summary
+                // warning for the pre-filled message ourselves. Also record
+                // the seed as the baseline, so canceling an unedited
+                // amend/reword doesn't prompt to discard.
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if !this.screen_gen.is_current(gen) {
+                        return; // this editor was closed; don't touch a newer one
+                    }
+                    if let Some(ed) = this.editor_mut() {
+                        ed.initial = msg;
+                    }
+                    this.on_editor_changed(window, cx);
+                });
+            })
+            .detach();
         }
         // Preview the relevant diff: the staged change for create/amend, or the
         // reworded commit's own changes for reword. A tag message has no diff to

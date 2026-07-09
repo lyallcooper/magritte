@@ -17,4 +17,23 @@ impl Repo {
             .run(git_args(&["merge", "--no-edit"], args, &[target]))?
             .status_line())
     }
+
+    /// The commit message git prepared for the merge in progress
+    /// (`.git/MERGE_MSG`), with its `#` comment lines (e.g. the Conflicts
+    /// block) stripped like an editor-cleanup commit would. `None` when no
+    /// merge is in progress (or the message is empty).
+    pub fn merge_msg(&self) -> Result<Option<String>> {
+        let path = self.git_dir()?.join("MERGE_MSG");
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Ok(None);
+        };
+        let msg = raw
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_string();
+        Ok((!msg.is_empty()).then_some(msg))
+    }
 }

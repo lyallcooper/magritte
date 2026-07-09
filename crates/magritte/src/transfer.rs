@@ -21,10 +21,17 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         use transient::Command::*;
-        // Push/pull need the current branch; fetch doesn't.
+        // Push/pull need the current branch; fetch doesn't, and neither do the
+        // push-other/tag actions (they name their own source).
         let needs_branch = !matches!(
             command,
-            FetchPushRemote | FetchUpstream | FetchAll | FetchElsewhere
+            FetchPushRemote
+                | FetchUpstream
+                | FetchAll
+                | FetchElsewhere
+                | PushOther
+                | PushTag
+                | PushTags
         );
         if needs_branch && targets.branch.is_none() {
             self.set_status(
@@ -74,6 +81,37 @@ impl StatusView {
                 // branch to.
                 self.prompt_branch(Transfer::PushRef { branch }, true, switches, window, cx);
             }
+            // magit-push-other: pick the source (any local branch, or type a
+            // rev; the current branch first as the default), then the target
+            // remote branch.
+            PushOther => {
+                let current = targets.branch.clone();
+                self.open_listed_picker(
+                    PickerAction::PushOtherSource,
+                    CreateMode::Value,
+                    switches,
+                    move |repo| {
+                        let mut branches = repo.local_branches()?;
+                        if let Some(current) = current {
+                            branches.sort_by_key(|b| *b != current);
+                        }
+                        Ok(branches)
+                    },
+                    window,
+                    cx,
+                );
+            }
+            // magit-push-tag: pick the tag, then resolve the remote.
+            PushTag => self.open_listed_picker(
+                PickerAction::PushTagSelect,
+                CreateMode::None,
+                switches,
+                Repo::tags,
+                window,
+                cx,
+            ),
+            // magit-push-tags: `git push <remote> --tags`.
+            PushTags => self.resolve_remote(Transfer::PushTags, None, switches, window, cx),
             PullPushRemote => self.resolve_remote(
                 Transfer::Pull { branch },
                 targets.push_remote.clone(),
@@ -236,7 +274,10 @@ impl StatusView {
     ) {
         let progress = format!("{}…", transfer.verb());
         let done = match &transfer {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushed",
+            Transfer::Push { .. }
+            | Transfer::PushRef { .. }
+            | Transfer::PushTag { .. }
+            | Transfer::PushTags => "Pushed",
             Transfer::Pull { .. } | Transfer::PullRef => "Pulled",
             Transfer::Fetch => "Fetched",
         };
@@ -261,8 +302,21 @@ impl StatusView {
                 }
                 Transfer::PushRef { branch } => {
                     let (remote, target) = targets::split_ref(&repo, &chosen);
+                    // magit-git-push: a target that doesn't exist yet is
+                    // qualified as refs/heads/<target> — git can't infer the
+                    // namespace for a new branch when the source isn't a local
+                    // branch (push-other allows any rev). An existing tracked
+                    // target stays unqualified.
+                    let exists = repo.remote_branches().unwrap_or_default().contains(&chosen);
+                    let target = if exists {
+                        target
+                    } else {
+                        format!("refs/heads/{target}")
+                    };
                     repo.push_ref(&remote, &branch, &target, &switches)
                 }
+                Transfer::PushTag { tag } => repo.push_tag(&chosen, &tag, &switches),
+                Transfer::PushTags => repo.push_all_tags(&chosen, &switches),
                 Transfer::Pull { branch } => repo.pull_from(&chosen, &branch, &switches),
                 Transfer::PullRef => {
                     let (remote, branch) = targets::split_ref(&repo, &chosen);

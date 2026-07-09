@@ -54,7 +54,7 @@ pub use repo::{CommandRun, GitCommand, GitOutput, Repo, TagDistance};
 pub use reset::ResetMode;
 pub use sequence::{Sequence, SequenceKind, SequenceStep};
 pub use stage::ApplyTarget;
-pub use stash::Stash;
+pub use stash::{Stash, StashKind};
 pub use status::{Change, EntryKind, FileEntry, HeadInfo, RefreshNeeds, RefreshSnapshot, Status};
 pub use transient::{Command, Transient};
 pub use worktree::Worktree;

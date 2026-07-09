@@ -128,7 +128,7 @@ use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     bisect::Bisect, BisectMark, CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest,
     LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind,
-    Status, TagDistance,
+    StashKind, Status, TagDistance,
 };
 
 /// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).

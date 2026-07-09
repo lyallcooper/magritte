@@ -108,6 +108,14 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
                     ]
                 },
             },
+            Group {
+                title: plain_title("Push"),
+                suffixes: vec![
+                    Action::suffix("o", "another branch", Command::PushOther),
+                    Action::suffix("T", "a tag", Command::PushTag),
+                    Action::suffix("t", "all tags", Command::PushTags),
+                ],
+            },
         ],
     }
 }
@@ -333,10 +341,25 @@ pub fn stash_transient() -> Transient {
         title: plain_title("Stash"),
         groups: vec![
             Group {
+                title: plain_title("Arguments"),
+                // magit's file limit lives on the `z P` push sub-transient; we
+                // have one stash menu, so it rides here and applies to every
+                // push variant.
+                suffixes: vec![Suffix::Option(Opt {
+                    key: "--",
+                    arg: "",
+                    description: "Limit to files",
+                    completion: Completion::Files,
+                    pathspec: true,
+                })],
+            },
+            Group {
                 title: plain_title("Stash"),
                 suffixes: vec![
                     Action::suffix("z", "both", Command::StashPush),
                     Action::suffix("Z", "both, incl. untracked", Command::StashPushAll),
+                    Action::suffix("i", "index", Command::StashPushStaged),
+                    Action::suffix("x", "keeping index", Command::StashPushKeepIndex),
                 ],
             },
             Group {
@@ -346,6 +369,10 @@ pub fn stash_transient() -> Transient {
                     Action::suffix("p", "pop", Command::StashPop),
                     Action::suffix("k", "drop", Command::StashDrop),
                 ],
+            },
+            Group {
+                title: plain_title("Transform"),
+                suffixes: vec![Action::suffix("b", "branch", Command::StashBranch)],
             },
         ],
     }
@@ -797,14 +824,30 @@ pub fn merge_transient() -> Transient {
                         Switch::new("-f", "--ff-only", "Fast-forward only")
                             .exclusive_with(&["--no-ff"]),
                     ),
+                    Suffix::Option(Opt {
+                        key: "-s",
+                        arg: "--strategy=",
+                        description: "Strategy",
+                        completion: Completion::OneOf(&[
+                            "resolve",
+                            "recursive",
+                            "octopus",
+                            "ours",
+                            "subtree",
+                            "ort",
+                        ]),
+                        pathspec: false,
+                    }),
                 ],
             },
             Group {
                 title: plain_title("Merge"),
                 suffixes: vec![
                     Action::suffix("m", "merge", Command::MergePlain),
+                    Action::suffix("e", "merge, edit message", Command::MergeEditMsg),
                     Action::suffix("n", "merge, don't commit", Command::MergeNoCommit),
                     Action::suffix("s", "squash merge", Command::MergeSquash),
+                    Action::suffix("p", "preview merge", Command::MergePreview),
                 ],
             },
         ],
@@ -915,6 +958,11 @@ pub fn sequence_transient(kind: SequenceKind, style: KeymapStyle) -> Transient {
     }
     if kind.can_edit_todo() {
         suffixes.push(Action::suffix("e", "edit", Command::SequenceEditTodo));
+    }
+    // A merge is finished by committing the resolved index (magit's in-progress
+    // `m` "Commit merge" runs magit-commit-create), not by `--continue`.
+    if matches!(kind, SequenceKind::Merge) {
+        suffixes.push(Action::suffix("m", "commit merge", Command::CommitCreate));
     }
     suffixes.push(Action::suffix("a", "abort", Command::SequenceAbort));
     let label = kind.label();
@@ -1040,20 +1088,29 @@ pub fn ignore_transient() -> Transient {
 pub fn reset_transient() -> Transient {
     Transient {
         title: plain_title("Reset"),
-        groups: vec![Group {
-            title: plain_title("Reset"),
-            suffixes: vec![
-                Action::suffix("m", "mixed (HEAD and index)", Command::ResetMixed),
-                Action::suffix("s", "soft (HEAD only)", Command::ResetSoft),
-                Action::suffix("h", "hard (HEAD, index, working tree)", Command::ResetHard),
-                Action::suffix(
-                    "k",
-                    "keep (HEAD and index, keep uncommitted)",
-                    Command::ResetKeep,
-                ),
-                Action::suffix("i", "index (only)", Command::ResetIndex),
-                Action::suffix("w", "worktree (only)", Command::ResetWorktree),
-            ],
-        }],
+        groups: vec![
+            Group {
+                title: plain_title("Reset"),
+                suffixes: vec![
+                    Action::suffix("b", "branch", Command::ResetBranch),
+                    Action::suffix("f", "a file", Command::ResetFile),
+                ],
+            },
+            Group {
+                title: plain_title("Reset this"),
+                suffixes: vec![
+                    Action::suffix("m", "mixed (HEAD and index)", Command::ResetMixed),
+                    Action::suffix("s", "soft (HEAD only)", Command::ResetSoft),
+                    Action::suffix("h", "hard (HEAD, index, working tree)", Command::ResetHard),
+                    Action::suffix(
+                        "k",
+                        "keep (HEAD and index, keep uncommitted)",
+                        Command::ResetKeep,
+                    ),
+                    Action::suffix("i", "index (only)", Command::ResetIndex),
+                    Action::suffix("w", "worktree (only)", Command::ResetWorktree),
+                ],
+            },
+        ],
     }
 }

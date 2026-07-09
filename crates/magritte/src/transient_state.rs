@@ -239,8 +239,13 @@ pub(crate) enum Transfer {
         save_push_remote: bool,
     },
     /// Push the current branch to a chosen `remote/branch` ref (elsewhere),
-    /// creating it if new: `git push <remote> <branch>:<target>`.
+    /// creating it if new: `git push <remote> <branch>:<target>`. Also the
+    /// second step of push-other, where `branch` is the picked source.
     PushRef { branch: String },
+    /// `git push <remote> <tag>` — push one tag (the remote is the picked value).
+    PushTag { tag: String },
+    /// `git push <remote> --tags` — push all tags.
+    PushTags,
     /// `git pull <remote> <branch>` — `branch` is the remote branch to merge.
     Pull { branch: String },
     /// Pull a chosen `remote/branch` ref (elsewhere).
@@ -253,7 +258,10 @@ impl Transfer {
     /// Present-tense label for the progress message.
     pub(crate) fn verb(&self) -> &'static str {
         match self {
-            Transfer::Push { .. } | Transfer::PushRef { .. } => "Pushing",
+            Transfer::Push { .. }
+            | Transfer::PushRef { .. }
+            | Transfer::PushTag { .. }
+            | Transfer::PushTags => "Pushing",
             Transfer::Pull { .. } | Transfer::PullRef => "Pulling",
             Transfer::Fetch => "Fetching",
         }
@@ -275,6 +283,12 @@ impl Transfer {
                     ]
                 }
             }
+            Transfer::PushTag { tag } => vec![
+                TitleSpan::text("Push "),
+                TitleSpan::branch(tag.clone()),
+                TitleSpan::text(" to remote"),
+            ],
+            Transfer::PushTags => transient::plain_title("Push tags to remote"),
             Transfer::Pull { .. } | Transfer::PullRef => transient::plain_title("Pull from"),
             Transfer::Fetch => transient::plain_title("Fetch from"),
         }
@@ -378,8 +392,34 @@ pub(crate) enum PickerAction {
     RunCommand,
     /// Reset HEAD to the chosen commit, in the carried mode (hard is confirmed).
     Reset(magritte_core::ResetMode),
-    /// Merge the chosen branch/ref into HEAD, with the carried args.
-    Merge,
+    /// Step 1 of branch-reset (magit-branch-reset): the chosen value is the
+    /// local branch to reset; step 2 picks the revision.
+    ResetBranch,
+    /// Step 2 of branch-reset: reset `branch` to the chosen revision — a hard
+    /// reset when it's the current branch, `update-ref` otherwise.
+    ResetBranchTo {
+        branch: String,
+    },
+    /// Step 1 of file-checkout (magit-file-checkout): the chosen value is the
+    /// revision to check the file out of.
+    FileCheckoutRev,
+    /// Step 2 of file-checkout: `git checkout <rev> -- <chosen file>`.
+    FileCheckoutFile {
+        rev: String,
+    },
+    /// Merge the chosen branch/ref into HEAD, with the carried args. With
+    /// `edit`, merge `--no-commit` then conclude in the commit editor seeded
+    /// with git's prepared message (magit-merge-editmsg).
+    Merge {
+        edit: bool,
+    },
+    /// Preview merging the chosen branch: the three-dot `HEAD...<branch>` diff.
+    MergePreview,
+    /// Step 1 of push-other (magit-push-other): the chosen value is the local
+    /// branch/rev to push; step 2 picks the target `remote/branch`.
+    PushOtherSource,
+    /// Pick the tag to push; the remote is then resolved like the other pushes.
+    PushTagSelect,
     /// Rebase the current branch onto the chosen ref, with the carried args.
     Rebase,
     /// Cherry-pick or revert the typed revision/range with the carried args.
@@ -405,9 +445,19 @@ pub(crate) enum PickerAction {
     },
     /// Add the typed pattern (seeded with the file at point) to a gitignore file.
     Ignore(magritte_core::IgnoreDest),
-    /// Stash with the typed message (empty = git's default "WIP on …").
+    /// Stash with the typed message (empty = git's default "WIP on …"), in the
+    /// carried mode, optionally limited to the carried pathspecs.
     StashMessage {
+        kind: magritte_core::StashKind,
         include_untracked: bool,
+        paths: Vec<String>,
+    },
+    /// Step 1 of stash-branch (magit-stash-branch): the chosen value is the
+    /// stash to branch from; step 2 reads the new branch name.
+    StashBranchStash,
+    /// Step 2 of stash-branch: `git stash branch <chosen name> <stash>`.
+    StashBranchName {
+        stash: String,
     },
     /// The `%` worktree browser's create/move flows — each picks or types a
     /// value, then a directory, then runs a `git worktree` command.
@@ -498,7 +548,21 @@ impl PickerAction {
             PickerAction::DiffCommit { .. } => transient::plain_title("Show commit"),
             PickerAction::RunCommand => transient::plain_title("Run command"),
             PickerAction::Reset(_) => transient::plain_title("Reset to"),
-            PickerAction::Merge => transient::plain_title("Merge"),
+            PickerAction::ResetBranch => transient::plain_title("Reset branch"),
+            PickerAction::ResetBranchTo { branch } => vec![
+                TitleSpan::text("Reset "),
+                TitleSpan::branch(branch.clone()),
+                TitleSpan::text(" to"),
+            ],
+            PickerAction::FileCheckoutRev => transient::plain_title("Checkout from revision"),
+            PickerAction::FileCheckoutFile { rev } => vec![
+                TitleSpan::text("Checkout file from "),
+                TitleSpan::branch(rev.clone()),
+            ],
+            PickerAction::Merge { .. } => transient::plain_title("Merge"),
+            PickerAction::MergePreview => transient::plain_title("Preview merge"),
+            PickerAction::PushOtherSource => transient::plain_title("Push"),
+            PickerAction::PushTagSelect => transient::plain_title("Push tag"),
             PickerAction::Rebase => transient::plain_title("Rebase onto"),
             PickerAction::PickRange(PickOp::CherryPick) => {
                 transient::plain_title("Cherry-pick range")
@@ -518,6 +582,8 @@ impl PickerAction {
             }
             PickerAction::Ignore(_) => transient::plain_title("Ignore pattern"),
             PickerAction::StashMessage { .. } => transient::plain_title("Stash message (optional)"),
+            PickerAction::StashBranchStash => transient::plain_title("Branch stash"),
+            PickerAction::StashBranchName { .. } => transient::plain_title("Branch name"),
             PickerAction::WorktreeAddRef => transient::plain_title("Worktree for ref"),
             PickerAction::WorktreeBranchName => transient::plain_title("New branch name"),
             PickerAction::WorktreeAddDir { .. }
@@ -540,11 +606,12 @@ impl PickerAction {
     /// open regardless and never use this.
     pub(crate) fn empty_message(&self) -> &'static str {
         match self {
-            PickerAction::Stash(_) => "No stashes",
+            PickerAction::Stash(_) | PickerAction::StashBranchStash => "No stashes",
             PickerAction::Branch(_) => "No branches",
-            PickerAction::Tag(_) => "No tags",
+            PickerAction::Tag(_) | PickerAction::PushTagSelect => "No tags",
             PickerAction::Remote(_) => "No remotes configured",
             PickerAction::Transfer(_) => "No remotes configured",
+            PickerAction::FileCheckoutFile { .. } => "No files in that revision",
             _ => "Nothing to select",
         }
     }
@@ -552,9 +619,16 @@ impl PickerAction {
     /// Imperative verb for the confirm key hint.
     pub(crate) fn confirm_label(&self) -> &'static str {
         match self {
-            PickerAction::Transfer(Transfer::Push { .. } | Transfer::PushRef { .. }) => "push",
+            PickerAction::Transfer(
+                Transfer::Push { .. }
+                | Transfer::PushRef { .. }
+                | Transfer::PushTag { .. }
+                | Transfer::PushTags,
+            ) => "push",
             PickerAction::Transfer(Transfer::Pull { .. } | Transfer::PullRef) => "pull",
             PickerAction::Transfer(Transfer::Fetch) => "fetch",
+            PickerAction::PushOtherSource => "next",
+            PickerAction::PushTagSelect => "next",
             PickerAction::Branch(BranchAction::Checkout) => "checkout",
             PickerAction::Branch(BranchAction::Create { .. }) => "create",
             PickerAction::Branch(BranchAction::RenameFrom | BranchAction::RenameTo { .. }) => {
@@ -575,13 +649,20 @@ impl PickerAction {
             PickerAction::Stash(StashAction::Pop) => "pop",
             PickerAction::Stash(StashAction::Drop) => "drop",
             PickerAction::SetOption { .. } | PickerAction::SetVariable { .. } => "set",
+            PickerAction::ResetBranch => "next",
+            PickerAction::ResetBranchTo { .. } => "reset",
+            PickerAction::FileCheckoutRev => "next",
+            PickerAction::FileCheckoutFile { .. } => "checkout",
+            PickerAction::MergePreview => "preview",
+            PickerAction::StashBranchStash => "next",
+            PickerAction::StashBranchName { .. } => "branch",
             PickerAction::LogRef { .. } => "log",
             PickerAction::LogFile { .. } => "log",
             PickerAction::DiffRange { .. } => "diff",
             PickerAction::DiffCommit { .. } => "show",
             PickerAction::RunCommand => "run",
             PickerAction::Reset(_) => "reset",
-            PickerAction::Merge => "merge",
+            PickerAction::Merge { .. } => "merge",
             PickerAction::Rebase => "rebase",
             PickerAction::PickRange(PickOp::CherryPick | PickOp::CherryApply) => "pick",
             PickerAction::PickRange(PickOp::Revert | PickOp::RevertNoCommit) => "revert",

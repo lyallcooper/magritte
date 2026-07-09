@@ -36,6 +36,20 @@ fn current_branch_on_normal_unborn_and_detached_head() {
 }
 
 #[test]
+fn upstream_of_reports_the_configured_upstream() {
+    let (t, repo) = repo();
+    // No upstream configured yet.
+    assert_eq!(repo.upstream_of("main").unwrap(), None);
+
+    // A local "remote" branch wired up as main's upstream.
+    t.git(["branch", "base"]);
+    t.git(["branch", "--set-upstream-to=base", "main"]);
+    assert_eq!(repo.upstream_of("main").unwrap().as_deref(), Some("base"));
+    // Other branches are still unconfigured.
+    assert_eq!(repo.upstream_of("base").unwrap(), None);
+}
+
+#[test]
 fn default_branch_from_remote_head_or_mainline_name() {
     // No remote: falls back to the local mainline name, with no remote.
     let (t, repo) = repo();
