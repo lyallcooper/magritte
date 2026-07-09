@@ -674,20 +674,18 @@ impl StatusView {
             _ => (key, shift),
         };
         let page = page_rows(window, self.row_h());
+        // The resolve view has a real row cursor, so its motions move the
+        // cursor (which keeps itself in view) rather than the viewport.
+        if matches!(self.screen, Screen::Resolve(_)) {
+            return self.resolve_cursor_key(skey, sshift, ctrl, page, cx);
+        }
         let len = match &self.screen {
             Screen::GitLog { .. } => self.git_log_rows().len(),
             Screen::Blame { rows, .. } => rows.len(),
-            Screen::Resolve(rv) => rv.rows.len(),
             _ => return,
         };
-        match &mut self.screen {
-            Screen::GitLog { view, .. } | Screen::Blame { view, .. } => {
-                apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
-            }
-            Screen::Resolve(rv) => {
-                apply_scroll_key(&rv.scroll, &mut rv.top, len, skey, sshift, ctrl, page);
-            }
-            _ => {}
+        if let Screen::GitLog { view, .. } | Screen::Blame { view, .. } = &mut self.screen {
+            apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
         }
         cx.notify();
     }

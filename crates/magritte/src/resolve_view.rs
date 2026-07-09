@@ -20,13 +20,15 @@ pub(crate) struct ResolveView {
     /// The file as it was opened. When every choice is undone the rewrite
     /// emits these pristine bytes, so a full undo restores the exact original.
     pub(crate) original: Vec<u8>,
-    /// The conflict the cursor is on.
-    pub(crate) current: usize,
+    /// The cursor row (like every other list view; `j`/`k` move it). The
+    /// conflict verbs act on the conflict the cursor is in.
+    pub(crate) selected: usize,
+    /// Conflicts in the order their choices were applied — `u` off a conflict
+    /// undoes the most recent one.
+    pub(crate) applied: Vec<usize>,
     /// Derived from `segments` + `choices`; rebuilt whenever a choice changes.
     pub(crate) rows: Vec<ResolveRow>,
     pub(crate) scroll: UniformListScrollHandle,
-    /// Tracked top row for the pager scroll keys.
-    pub(crate) top: usize,
 }
 
 /// What a resolve row shows, driving its tint and text color.
@@ -50,18 +52,6 @@ pub(crate) enum ResolveRowKind {
     TheirsMarker,
     /// A line of a resolved conflict's chosen content (markers gone).
     Resolved,
-}
-
-impl ResolveRowKind {
-    fn is_marker(self) -> bool {
-        matches!(
-            self,
-            ResolveRowKind::OursMarker
-                | ResolveRowKind::BaseMarker
-                | ResolveRowKind::Separator
-                | ResolveRowKind::TheirsMarker
-        )
-    }
 }
 
 /// One row of the resolve list. Conflict rows carry their conflict's index so
@@ -174,35 +164,30 @@ pub(crate) fn next_unresolved(choices: &[Option<Resolution>], from: usize) -> Op
         .find(|&ix| choices.get(ix).is_some_and(Option::is_none))
 }
 
-/// The 1-based line number (in the file as currently written to disk) where
-/// conflict `ix` starts: its `<<<<<<<` marker while unresolved, or the first
-/// line of its chosen content once resolved.
-pub(crate) fn conflict_first_line(
-    segments: &[Segment],
-    choices: &[Option<Resolution>],
-    ix: usize,
-) -> u32 {
-    let mut newlines = 0u32;
-    let mut seen = 0;
-    for segment in segments {
-        match segment {
-            Segment::Text(bytes) => {
-                newlines += bytes.iter().filter(|&&b| b == b'\n').count() as u32;
-            }
-            Segment::Conflict(_) => {
-                if seen == ix {
-                    return newlines + 1;
-                }
-                let emitted = resolve(
-                    std::slice::from_ref(segment),
-                    std::slice::from_ref(choices.get(seen).unwrap_or(&None)),
-                );
-                newlines += emitted.iter().filter(|&&b| b == b'\n').count() as u32;
-                seen += 1;
-            }
-        }
+/// The first row of conflict `ix` in the derived row list.
+pub(crate) fn conflict_first_row(rows: &[ResolveRow], ix: usize) -> Option<usize> {
+    rows.iter().position(|r| r.conflict == Some(ix))
+}
+
+/// The first row of the neighboring conflict block relative to the cursor
+/// (`delta` = ±1, smerge-next/prev): the nearest conflict past `selected` in
+/// that direction, skipping the rest of the block the cursor is already in.
+/// Resolved conflicts count — that's how the cursor reaches one to undo it.
+pub(crate) fn neighbor_conflict_row(
+    rows: &[ResolveRow],
+    selected: usize,
+    delta: isize,
+) -> Option<usize> {
+    let at = rows.get(selected).and_then(|r| r.conflict);
+    if delta > 0 {
+        (selected + 1..rows.len())
+            .find(|&ix| rows[ix].conflict.is_some() && rows[ix].conflict != at)
+    } else {
+        let prev = (0..selected)
+            .rev()
+            .find(|&ix| rows[ix].conflict.is_some() && rows[ix].conflict != at)?;
+        conflict_first_row(rows, rows[prev].conflict?)
     }
-    newlines + 1
 }
 
 impl StatusView {
@@ -226,9 +211,19 @@ impl StatusView {
         }
     }
 
-    /// Whether the conflict at the resolve cursor has a diff3 base — the gate
-    /// for the `B` keep-base verb.
+    /// The conflict the cursor row belongs to, if any — what the keep/undo
+    /// verbs act on.
+    fn resolve_conflict_at_point(&self) -> Option<usize> {
+        let rv = self.resolve_state()?;
+        rv.rows.get(rv.selected)?.conflict
+    }
+
+    /// Whether the conflict at point has a diff3 base — the gate for the `B`
+    /// keep-base verb.
     pub(crate) fn resolve_current_has_base(&self) -> bool {
+        let Some(ix) = self.resolve_conflict_at_point() else {
+            return false;
+        };
         let Some(rv) = self.resolve_state() else {
             return false;
         };
@@ -238,7 +233,7 @@ impl StatusView {
                 Segment::Conflict(c) => Some(c),
                 _ => None,
             })
-            .nth(rv.current)
+            .nth(ix)
             .is_some_and(|c: &Conflict| c.base.is_some())
     }
 
@@ -275,15 +270,17 @@ impl StatusView {
                     }
                     let choices = vec![None; conflicts];
                     let rows = build_resolve_rows(&segments, &choices);
+                    // Open with the cursor on the first conflict.
+                    let selected = conflict_first_row(&rows, 0).unwrap_or(0);
                     this.screen = Screen::Resolve(ResolveView {
                         path,
                         segments,
                         choices,
                         original,
-                        current: 0,
+                        selected,
+                        applied: Vec::new(),
                         rows,
                         scroll: UniformListScrollHandle::new(),
-                        top: 0,
                     });
                     cx.notify();
                 }
@@ -300,34 +297,64 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Move the conflict cursor by `delta` conflicts (smerge-next/prev),
-    /// clamped, scrolling it into view.
+    /// Jump the cursor to the neighboring conflict block (smerge-next/prev),
+    /// resolved ones included — that's how the cursor reaches one to undo.
     pub(crate) fn resolve_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
-        if rv.choices.is_empty() {
-            return;
+        if let Some(row) = neighbor_conflict_row(&rv.rows, rv.selected, delta) {
+            rv.selected = row;
+            self.scroll_resolve_cursor_into_view();
+            cx.notify();
         }
-        let last = rv.choices.len() as isize - 1;
-        rv.current = (rv.current as isize + delta).clamp(0, last) as usize;
-        self.scroll_resolve_cursor_into_view();
-        cx.notify();
+    }
+
+    /// Move the row cursor for the vi/pager motion keys (`j`/`k`, `C-d`/`C-u`,
+    /// `C-f`/`C-b`, `g`/`G`) — the same key mapping the pager scroll uses, but
+    /// applied to the cursor; the list scrolls to keep it visible.
+    pub(crate) fn resolve_cursor_key(
+        &mut self,
+        key: &str,
+        shift: bool,
+        ctrl: bool,
+        page: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rv) = self.resolve_state_mut() else {
+            return;
+        };
+        // `scroll_target` encodes the vi key → delta mapping over an index in
+        // 0..len-page; reuse it with a full-length window so g/G land on the
+        // first/last row.
+        let Some(target) = scroll_target(rv.selected, rv.rows.len() + page, key, shift, ctrl, page)
+        else {
+            return;
+        };
+        let target = target.min(rv.rows.len().saturating_sub(1));
+        if target != rv.selected {
+            rv.selected = target;
+            self.scroll_resolve_cursor_into_view();
+            cx.notify();
+        }
     }
 
     fn scroll_resolve_cursor_into_view(&mut self) {
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
-        if let Some(ix) = rv.rows.iter().position(|r| r.conflict == Some(rv.current)) {
-            rv.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Top);
-        }
+        rv.scroll
+            .scroll_to_item(rv.selected, gpui::ScrollStrategy::Top);
     }
 
-    /// Apply `res` to the conflict at the cursor: record the choice, rewrite
-    /// the file on disk, and advance to the next unresolved conflict. When it
-    /// was the last one, offer to stage the file (magit's stage-to-resolve).
+    /// Apply `res` to the conflict at point: record the choice, rewrite the
+    /// file on disk, and advance to the next unresolved conflict. When it was
+    /// the last one, offer to stage the file (magit's stage-to-resolve).
     pub(crate) fn resolve_choose(&mut self, res: Resolution, cx: &mut Context<Self>) {
+        let Some(current) = self.resolve_conflict_at_point() else {
+            self.set_status("No conflict at point".to_string(), true, cx);
+            return;
+        };
         if res == Resolution::Base && !self.resolve_current_has_base() {
             self.set_status("This conflict has no base version".to_string(), true, cx);
             return;
@@ -335,17 +362,22 @@ impl StatusView {
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
-        if rv.choices.is_empty() {
-            return;
-        }
-        let current = rv.current;
         rv.choices[current] = Some(res);
-        if let Some(next) = next_unresolved(&rv.choices, current) {
-            rv.current = next;
-        }
+        rv.applied.retain(|&ix| ix != current);
+        rv.applied.push(current);
+        let next = next_unresolved(&rv.choices, current);
         let all_resolved = rv.choices.iter().all(Option::is_some);
         let path = rv.path.clone();
         self.rewrite_resolved_file(cx);
+        // Land the cursor on the next unresolved conflict (the rewrite just
+        // shifted the rows), or keep it on this one's resolved content.
+        if let Some(rv) = self.resolve_state_mut() {
+            let target = next
+                .or(Some(current))
+                .and_then(|ix| conflict_first_row(&rv.rows, ix));
+            rv.selected =
+                target.unwrap_or_else(|| rv.selected.min(rv.rows.len().saturating_sub(1)));
+        }
         self.scroll_resolve_cursor_into_view();
         if all_resolved {
             self.confirm = Some((
@@ -356,19 +388,30 @@ impl StatusView {
         cx.notify();
     }
 
-    /// Undo the choice at the cursor: restore that conflict's markers and
-    /// rewrite the file.
+    /// Undo a choice: the conflict at point when the cursor is on a resolved
+    /// one, else the most recently applied choice — so `u` right after a keep
+    /// always takes it back. Restores the markers and rewrites the file.
     pub(crate) fn resolve_undo(&mut self, cx: &mut Context<Self>) {
+        let at_point = self.resolve_conflict_at_point();
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
-        let current = rv.current;
-        if rv.choices.get(current).copied().flatten().is_none() {
-            self.set_status("Conflict is not resolved".to_string(), true, cx);
+        let target = at_point
+            .filter(|&ix| rv.choices.get(ix).copied().flatten().is_some())
+            .or_else(|| rv.applied.last().copied());
+        let Some(target) = target else {
+            self.set_status("Nothing to undo".to_string(), true, cx);
             return;
-        }
-        rv.choices[current] = None;
+        };
+        rv.choices[target] = None;
+        rv.applied.retain(|&ix| ix != target);
         self.rewrite_resolved_file(cx);
+        // Put the cursor on the restored conflict's markers.
+        if let Some(rv) = self.resolve_state_mut() {
+            if let Some(row) = conflict_first_row(&rv.rows, target) {
+                rv.selected = row;
+            }
+        }
         self.scroll_resolve_cursor_into_view();
         cx.notify();
     }
@@ -397,13 +440,14 @@ impl StatusView {
         self.refresh(cx);
     }
 
-    /// Open the file in the external editor at the current conflict's first
-    /// line (as the file sits on disk right now).
+    /// Open the file in the external editor at the cursor's line. The row list
+    /// mirrors the file as written to disk line-for-line, so the cursor row
+    /// index is the file line.
     pub(crate) fn resolve_open_editor(&mut self, cx: &mut Context<Self>) {
         let Some(rv) = self.resolve_state() else {
             return;
         };
-        let line = conflict_first_line(&rv.segments, &rv.choices, rv.current);
+        let line = rv.selected as u32 + 1;
         let path = rv.path.clone();
         let Some(repo) = self.repo.as_ref() else {
             return;
@@ -423,10 +467,15 @@ impl StatusView {
             move |range, _window, cx| {
                 let this = view.read(cx);
                 match this.resolve_state() {
-                    Some(rv) => range
-                        .filter_map(|ix| rv.rows.get(ix).map(|r| (ix, r)))
-                        .map(|(ix, row)| this.render_resolve_row(ix, row, rv.current, &view))
-                        .collect::<Vec<_>>(),
+                    Some(rv) => {
+                        let at_point = rv.rows.get(rv.selected).and_then(|r| r.conflict);
+                        range
+                            .filter_map(|ix| rv.rows.get(ix).map(|r| (ix, r)))
+                            .map(|(ix, row)| {
+                                this.render_resolve_row(ix, row, rv.selected, at_point, &view)
+                            })
+                            .collect::<Vec<_>>()
+                    }
                     None => Vec::new(),
                 }
             }
@@ -455,31 +504,49 @@ impl StatusView {
                     .child(SharedString::from(counter)),
             );
 
+        // The ⏎ glyph is thin/tofu in many monospace fonts, so it draws in the
+        // platform UI font like the keycaps do.
+        let hint = |t: &str| {
+            div()
+                .text_color(self.palette.dim)
+                .child(SharedString::from(t.to_string()))
+        };
         self.screen_scaffold()
             .child(self.view_header(left, "close", view))
             .child(body)
             .child(
                 div()
+                    .flex()
+                    .items_center()
                     .text_size(px(self.font_px() - 1.0))
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(
+                    .child(hint(
                         "o ours · t theirs · b both · B base · u undo · n/p conflict · \
-                         j/k scroll · ⏎ open in editor",
-                    )),
+                         j/k move · ",
+                    ))
+                    .child(
+                        div()
+                            .font_family(self.system_ui_font.clone())
+                            .text_color(self.palette.dim)
+                            .child(SharedString::from("⏎")),
+                    )
+                    .child(hint(" open in editor")),
             )
     }
 
     /// One resolve row: the line, tinted by its region (ours like added lines,
-    /// theirs like removed, base dim on a subtle wash), with the current
-    /// conflict marked by a left accent border and a marker-row highlight.
+    /// theirs like removed, base dim on a subtle wash). The cursor row wears
+    /// the selection wash; the conflict the cursor is in gets a left accent
+    /// border on every row.
     fn render_resolve_row(
         &self,
         ix: usize,
         row: &ResolveRow,
-        current: usize,
+        selected: usize,
+        at_point: Option<usize>,
         view: &Entity<Self>,
     ) -> AnyElement {
-        let is_current = row.conflict == Some(current);
+        let is_cursor = ix == selected;
+        let in_current = row.conflict.is_some() && row.conflict == at_point;
         let (bg, fg) = match row.kind {
             ResolveRowKind::Text => (None, self.palette.dim),
             ResolveRowKind::Ours => (Some(self.palette.added_bg), self.palette.fg),
@@ -491,13 +558,13 @@ impl StatusView {
             | ResolveRowKind::Separator
             | ResolveRowKind::TheirsMarker => (None, self.palette.dim),
         };
-        // The cursor's marker rows wear the selection wash so the current
-        // conflict reads at a glance; every row of it gets the accent border.
-        let bg = if is_current && row.kind.is_marker() {
+        // The cursor wash wins over a block's tint, like the diff views.
+        let bg = if is_cursor {
             Some(self.palette.selection)
         } else {
             bg
         };
+        let hover = self.palette.hover;
         let mut el = div()
             .id(("resolve-row", ix))
             .h(px(self.row_h()))
@@ -506,32 +573,31 @@ impl StatusView {
             .flex()
             .items_center()
             .overflow_hidden()
-            .text_color(fg);
-        if row.conflict.is_some() {
-            // A fixed-width accent slot, colored only on the current conflict,
-            // so switching conflicts doesn't shift the text.
-            el = el.border_l_2().border_color(if is_current {
+            .text_color(fg)
+            // A fixed-width accent slot, colored on the conflict the cursor is
+            // in, so moving between conflicts doesn't shift the text.
+            .border_l_2()
+            .border_color(if in_current {
                 self.palette.section
             } else {
                 gpui::transparent_black()
             });
-        }
         if let Some(bg) = bg {
             el = el.bg(bg);
+        } else {
+            el = el.hover(move |s| s.bg(hover));
         }
-        if let Some(conflict) = row.conflict {
-            let view = view.clone();
-            el = el
-                .cursor_pointer()
-                .on_click(move |_, _window, cx: &mut App| {
-                    view.update(cx, |this, vcx| {
-                        if let Some(rv) = this.resolve_state_mut() {
-                            rv.current = conflict;
-                            vcx.notify();
-                        }
-                    });
+        let view = view.clone();
+        el = el
+            .cursor_pointer()
+            .on_click(move |_, _window, cx: &mut App| {
+                view.update(cx, |this, vcx| {
+                    if let Some(rv) = this.resolve_state_mut() {
+                        rv.selected = ix;
+                        vcx.notify();
+                    }
                 });
-        }
+            });
         el.child(SharedString::from(row.text.clone()))
             .into_any_element()
     }
@@ -637,20 +703,26 @@ mod tests {
     }
 
     #[test]
-    fn conflict_first_line_counts_the_file_as_written() {
+    fn neighbor_conflict_navigation_visits_resolved_blocks_too() {
         let segments = vec![
-            text("a\nb\n"),
+            text("a\n"),
             conflict("o\n", None, "t\n"),
             text("mid\n"),
             conflict("x\n", None, "y\n"),
+            text("z\n"),
         ];
-        // Unresolved: the first conflict's `<<<<<<<` marker sits on line 3.
-        assert_eq!(conflict_first_line(&segments, &[None, None], 0), 3);
-        // The second starts after the first's 5-line marker block plus "mid".
-        assert_eq!(conflict_first_line(&segments, &[None, None], 1), 9);
-        // Resolving the first (1 content line, markers gone) pulls it up.
-        let choices = [Some(Resolution::Ours), None];
-        assert_eq!(conflict_first_line(&segments, &choices, 0), 3);
-        assert_eq!(conflict_first_line(&segments, &choices, 1), 5);
+        // First conflict resolved: rows are Text, Resolved, Text, markers…, Text.
+        let rows = build_resolve_rows(&segments, &[Some(Resolution::Ours), None]);
+        // From the top text row, `n` reaches the resolved block, `n` again the
+        // unresolved one; `p` from there returns to the resolved block's start.
+        let first = neighbor_conflict_row(&rows, 0, 1).unwrap();
+        assert_eq!(rows[first].conflict, Some(0));
+        assert_eq!(rows[first].kind, ResolveRowKind::Resolved);
+        let second = neighbor_conflict_row(&rows, first, 1).unwrap();
+        assert_eq!(rows[second].conflict, Some(1));
+        assert_eq!(neighbor_conflict_row(&rows, second, -1), Some(first));
+        // Mid-block: `n` skips the rest of the current conflict.
+        assert_eq!(neighbor_conflict_row(&rows, second + 1, 1), None);
+        assert_eq!(conflict_first_row(&rows, 1), Some(second));
     }
 }
