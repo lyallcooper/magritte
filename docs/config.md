@@ -60,6 +60,9 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72; bullets and indented lines keep a hanging indent (paused while in Vim Normal/Visual mode). |
+
+Commit messages are never lost: a message discarded with edits, or rejected by a failing commit (e.g. a pre-commit hook), is saved to a per-worktree ring of the last 10. Press `alt-p` in the commit editor (or run *Restore commit message* from the `:` palette) to fill in the newest saved message; repeat to cycle older ones.
+
 | `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` regex search (smartcase, with live match highlighting), `:` commands (`:s` with live match preview, `:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), `>`/`<` indent operators, mouse-drag Visual selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message); `[vim.keymap]` adds your own keys for these — see *Keymap*. For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
@@ -101,7 +104,11 @@ sections appear and in what order:
 
 ```toml
 [status]
-sections = ["untracked", "unstaged", "staged", "stashes", "unpulled", "unpushed", "recent"]
+sections = [
+  "untracked", "unstaged", "staged", "stashes",
+  "unpulled", "unpulled-pushremote", "unpushed", "unpushed-pushremote",
+  "recent",
+]
 recent_count = 10
 ```
 
@@ -222,10 +229,6 @@ keymap_preset = "evil"
   - `?` opens help, and unbound `:`, `Alt-x`, `Cmd-P`, and `Cmd-K` open the
     command palette. Bound symbols such as `!`, `|`, `$`, vanilla `:`, and
     `Cmd+C` go through the effective keymap.
-  - On a commit or stash row, the act-at-point verbs (`Return`, and for a
-    stash `a` apply / `A` pop / `x` drop) act on the item at point. The copy
-    and revert keys follow the preset: copy is evil `yy`/`ys` (or `Cmd+C`) /
-    vanilla `Ctrl-w`, revert is evil `_`/`-` / vanilla `V`/`v`.
 
   Keys typed inside a transient, picker, or the commit editor are consumed by
   that mode, not the keymap.
@@ -265,7 +268,9 @@ Any id below can be bound to a key. Top-level ones have a default key; the rest
 are reachable today only through their prefix's transient or the `:` palette.
 The palette hides commands that don't apply right now — e.g. `jump-to-ignored`
 appears only while the (opt-in) Ignored section is shown, and the other
-`jump-to-*` commands only while their section has content.
+`jump-to-*` commands only while their section has content. The *at point* ids
+act only on a commit or stash row and win over a general command sharing their
+key — so `a` is "apply commit" on a commit row but Stage on a file row.
 
 The palette also matches common synonyms and git verbs, not just the label, so
 you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
@@ -288,6 +293,9 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `push` | `p` | Push (transient) |
 | `pull` | `F` | Pull (transient) |
 | `fetch` | `f` | Fetch (transient) |
+| `patch` | `W` | Patch (transient: create patches, apply a diff, `git am` a mailbox) |
+| `bisect` | `B` | Bisect (transient; marks good/bad/skip/reset while a bisect runs) |
+| `blame` | — | Blame the file at point |
 | `run` | `!` | Run… (transient: git or shell command, in the root — or the file at point's directory, offered when there is one) |
 | `git-command` | `\|` (evil) / `:` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
@@ -297,6 +305,15 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `discard` | `x` | Discard the selection |
 | `untrack` | `K` (vanilla) / `X` (evil) | Untrack the file at point (`git rm --cached`) |
 | `open-file` | `Return` | Open file at point in `editor` |
+| `open-commit` / `stash-show` | `Return` | Show the commit / stash at point |
+| `commit-apply` | `a` | Apply the changes of the commit at point |
+| `commit-cherry-pick` | `A` | Cherry-pick transient for the commit at point |
+| `revert-here` | `_` (evil) / `V` (vanilla) | Revert transient for the commit at point |
+| `revert-changes` | `-` (evil) / `v` (vanilla) | Revert the commit at point's changes without committing |
+| `reset-here` | `o` (evil) / `x` (vanilla) | Reset HEAD (mixed) to the commit at point (confirmed) |
+| `stash-row-apply` / `stash-row-pop` | `a` / `A` | Apply / pop the stash at point |
+| `stash-row-drop` | `x` (evil) / `k` (vanilla) | Drop the stash at point (confirmed) |
+| `commit-details` | `=` | Toggle the details panel in a commit view |
 | `fold` | `Tab` | Fold / unfold |
 | `diff-more-context` | `+` | More diff context lines |
 | `diff-less-context` | `-` | Fewer diff context lines |
@@ -341,7 +358,12 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `pull-pushremote` / `pull-upstream` / `pull-elsewhere` | — | Pull variants |
 | `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | — | Fetch variants |
 | `stash-push` / `stash-push-all` / `stash-apply` / `stash-pop` / `stash-drop` | — | Stash variants |
+| `tag-create` / `tag-delete` | — | Tag variants |
+| `remote-add` / `remote-rename` / `remote-remove` | — | Remote variants |
 | `log-current` / `log-all` / `log-other` / `log-reflog` | — | Log variants |
+| `diff-dwim` / `diff-range` / `diff-unstaged` / `diff-staged` / `diff-worktree` / `diff-commit` | — | Diff variants |
+| `cherry-pick` / `cherry-pick-range` / `cherry-apply` | — | Cherry-pick a commit / a range / apply without committing |
+| `revert` / `revert-range` / `revert-no-commit` | — | Revert a commit / a range / just its changes |
 
 ## Transients
 

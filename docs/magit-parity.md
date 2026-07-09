@@ -534,7 +534,7 @@ remote-configure; notes/mergetool can reuse it) and a **no-repo app state**
 | `%` / `Z` | worktree | worktree browser: vanilla `Z`+`%`, evil `%` | ✓ (see Worktree) |
 | `Q` / `:` | git-command | vanilla `:`/`Q`, evil `\|` | ✓ |
 | `s`/`S`/`u`/`U` | stage/stage-modified/unstage/unstage-all | same keys | ✓ (`S` ≈, see act-at-point) |
-| `k` | delete-thing | evil `x` / vanilla `k` discard | ≈ stash-row drop is hardcoded `x` in both presets |
+| `k` | delete-thing | evil `x` / vanilla `k` discard | ✓ stash-row drop follows the preset too (evil `x` / vanilla `k`) |
 | `K` | file-untrack | untrack the file at point (`git rm --cached`): vanilla `K`, evil `X` (evil-collection's remap) | ✓ |
 | `R` | file-rename | — | ✗ |
 | `x` | reset-quickly (reset to rev at point) | vanilla `x` / evil `o` (evil-collection's remap) resets HEAD (mixed) to the commit at point in the log or a status commit section, confirmed | ✓ |
@@ -662,9 +662,8 @@ of it exists. `SPC` preview is now covered (as a returning overlay).
   diff in magit; ours only copies hashes (∂).
 - **Stash rows**: `a` apply, `A` pop, `RET` show — **matches magit** (its
   section map remaps `a`→apply, `A`→pop; a suspected reversal was
-  disproven against the source). Drop is `k` in magit vs hardcoded `x` in
-  ours — in the vanilla preset that's an inconsistency (vanilla discard is
-  `k`).
+  disproven against the source). Drop follows the preset like discard:
+  evil `x`, vanilla `k` (magit's key).
 - **Stashes header**: magit `RET` opens a stash-list buffer, `k` clears all
   stashes (confirmed). Ours: fold only; no list buffer, no clear anywhere. ✗
 - **Branch/tag/remote rows**: live in magit's refs buffer — ours is the
@@ -686,12 +685,11 @@ where magit is more predictable.
 Covered above per area; the residual key-level notes:
 
 - Bound and matching: all shared transient prefixes, `g` refresh, `Q`/`:`
-  git-command, `$`, `?`/`h`, `j` jump, `s`/`u`/`U`, `n`/`p`/`M-n`/`M-p`/`^`,
-  `TAB`, `C-w` copy.
+  git-command, `$`, `?`/`h`, `j` jump, `s`/`u`/`U`, `k` discard/stash-drop,
+  `n`/`p`/`M-n`/`M-p`/`^`, `TAB`, `C-w` copy.
 - ≈: `G` is a refresh alias (magit: refresh-all — deliberate, single
-  buffer); `S` includes untracked; `k` discards but stash-drop stays on `x`;
-  `1`–`4` semantics; `DEL` pages (no reverse-preview); `RET` worktree-
-  file semantics.
+  buffer); `S` includes untracked; `1`–`4` semantics; `DEL` pages (no
+  reverse-preview); `RET` worktree-file semantics.
 - ✗ keys with no binding at all:
   `M-w`, `C-c C-o` browse, and every missing-feature prefix (`B` `C` `D`
   `H` `I` `L` `o` `O` `T` `W` `y` `Y` `Z` `%` `>`; `w` works only as the
@@ -763,7 +761,7 @@ Covered above per area; the residual key-level notes:
 | `S` with staged present / `U` with unstaged present | confirms (blurs the staged/unstaged split) | confirms | ✓ |
 | discard (any granularity) | confirms; deletions go to **trash** | confirms; deletions go to trash (fallback: delete) | ✓ |
 | reverse `v` | confirms | no verb | ✗ |
-| stash drop / clear | prompt / confirm | `x` confirms; picker drop relies on the pick; no clear | ≈ |
+| stash drop / clear | prompt / confirm | drop at point confirms (evil `x` / vanilla `k`); picker drop relies on the pick; no clear | ≈ |
 | hard / worktree-only reset | rev prompt only, no y/n | rev pick + y/n confirm | ✓ stricter |
 | amend/reword/extend published | confirms vs `magit-published-branches` (default `origin/master`) | confirms vs `published_branches` (default adds `origin/main`) | ✓ |
 | rebase across published | confirms | confirms | ✓ |
@@ -843,5 +841,4 @@ Grouped by kind, roughly ordered within each group.
   since an interactive editor can't be serviced in the background-git model.
 - The permissive visual-selection batching (with its stricter
   conflicted-file refusal).
-- No shell in `!` (with `[[command]]` as the escape hatch).
 - Stricter reset confirms and the wider `published_branches` default.

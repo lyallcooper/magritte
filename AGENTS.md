@@ -46,7 +46,7 @@ Drives the `git` CLI and returns plain data, so it's unit-testable against throw
 - The `run` / `run_optional` / `run_with_env` / `run_with_input` / `run_with_sequence_editor` family shell out to git through one `collect_output` path that honors an optional cancel flag and timeout.
 - `cancellable()` / `with_cancel(flag)` / `with_timeout(d)` return tagged clones; the UI uses these so a refresh or `Ctrl-g` can kill an in-flight subprocess.
 - Every invocation is recorded into a shared ring buffer (the `$` command log). `is_query()` classifies read-only commands so they can be hidden from that log by default.
-- `transient.rs` defines the `Command`/`Transient` model (the popup command menus) shared with the UI layer.
+- `transient/` defines the `Command`/`Transient` model (the popup command menus, `mod.rs`) and the built-in menu definitions (`menus.rs`), shared with the UI layer.
 
 When implementing or fixing git behavior, **match magit's source** in `.reference/magit/lisp/` (a gitignored, GPL behavior reference — not vendored, not distributed, and must be removed before any public release) rather than reaching for a simpler git command.
 
@@ -54,11 +54,13 @@ When implementing or fixing git behavior, **match magit's source** in `.referenc
 A **single `Entity<StatusView>` god-object** owns all UI state for every screen. This is deliberate (a GPUI view owns its state + behavior together; multi-entity message-passing buys nothing for a single-pane modal app — see the FB5 disposition in `FEEDBACK.md`). The lesson for working here: **split the file, not the entity.** `main.rs` (~2k lines) holds the `StatusView` struct, the `Screen` enum, `main()`, and the registry/keymap invariant tests; cohesive slices live in sibling modules but stay `impl StatusView` blocks with `pub(crate)` methods over the same private fields:
 
 - `render.rs` — the shared rendering helpers, status rows, overlays, and the `Render` impl, with per-surface renderers split alongside (`title_bar.rs`, `transient_render.rs`, `picker_render.rs`, `list_render.rs`, `diff_render.rs`).
-- `controller.rs` — command dispatch (`fire_action`), the `run_job*` / `run_command_job` background-job runners, picker orchestration, and the status-bar/report plumbing.
+- `controller.rs` — command dispatch (`fire_action`) and the picker orchestration those prompts share.
+- `jobs.rs` — the `run_job*` / `run_command_job` background-job runners, the status-toast/report plumbing, and the auto-fetch/update-check loops; `transfer.rs` — push/pull/fetch orchestration; `rebase_flow.rs` — the interactive-rebase todo editor and the mid-rebase reword flow.
 - `commands.rs` — the `commands()` **registry** (the single source of truth for what commands exist), default keymap, and `?`-menu / `:`-palette metadata.
 - `input.rs` — `on_key`, the prefix-sequence state machine, dispatch, and the `:` palette.
 - `navigation.rs` — cursor motion, selection, fold toggling, selection-anchor preservation.
 - `row_build.rs` — the status `Row` list builder; `status_loader.rs` — the async status/diff engine; `staging.rs` — act-at-point actions and the diff cache.
+- `commit_editor.rs` — the in-app commit message editor (50/72 assistance, diff preview); `vim/` — its modal Vim engine, a pure keystroke→`Action` layer (applied by `vim/apply.rs`, tested headlessly in `vim/tests.rs` — see `docs/dev/vim-mode.md`).
 - `settings.rs`, `picker.rs`, `theme.rs`, `kbd.rs`, `config.rs`, `state.rs`, `watchers.rs`, etc.
 
 Key cross-cutting models:

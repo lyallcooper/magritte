@@ -1,6 +1,8 @@
-# Vim mode for the commit editor — implementation plan
+# Vim mode for the commit editor
 
-Status: proposal. A design/implementation plan, not a finished feature.
+Status: implemented — shipped as `crates/magritte/src/vim/` behind the
+`commit_vim_mode` setting. Written as the implementation plan; kept as the
+as-built design reference.
 
 ## Goal
 
@@ -336,10 +338,10 @@ even if the first cut ignores it.
 - **Visual/block rendering.** `range_to_bounds` is only valid after layout and
   for on-screen ranges; the overlay must degrade gracefully while scrolling.
 - **Auto-wrap.** *Decided:* suspend body auto-wrap while in Normal/Visual mode
-  (only wrap on `Change` events that arrive in Insert mode). `on_editor_changed`
-  rewrites the buffer with `set_value`, which sets `history.ignore` — the rewrap
-  is invisible to undo history, so letting it run after an operator edit could
-  make a later `u` restore mismatched offsets. Reflow (`⌥q`) stays available in
+  (only wrap on `Change` events that arrive in Insert mode). The wrap itself is
+  applied as a minimal `replace_text_in_range` splice (`splice_value`), so it
+  lands in the undo history grouped with the typing that caused it — a later
+  `u`/⌘Z can't restore mismatched offsets. Reflow (`⌥q`) stays available in
   both modes as an explicit command.
 - **Scope.** Vim is bottomless — the phased MVP is the line. Keep the `Action`
   vocabulary small and let unhandled keys `Beep` rather than half-implementing.
