@@ -8,6 +8,7 @@
 //! keeping the cost to two parses per hunk. Computed once at diff-load time and
 //! cached, so rendering/scrolling never re-parses.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Once};
@@ -303,67 +304,90 @@ pub fn highlight_diff(
         return FileHighlights::new();
     }
     register_extra_highlight_queries();
-    let mut highlighter = SyntaxHighlighter::new(lang);
-    let mut out = FileHighlights::new();
+    with_highlighter(lang, |highlighter| {
+        let mut out = FileHighlights::new();
 
-    for (hunk_ix, hunk) in file.hunks.iter().enumerate() {
-        // Build the new- and old-side blocks, recording each line's byte range.
-        let mut new_block = String::new();
-        let mut old_block = String::new();
-        // (line_index_in_hunk, on_new_side, byte_range_in_block)
-        let mut placements: Vec<(usize, bool, Range<usize>)> = Vec::new();
+        for (hunk_ix, hunk) in file.hunks.iter().enumerate() {
+            // Build the new- and old-side blocks, recording each line's byte range.
+            let mut new_block = String::new();
+            let mut old_block = String::new();
+            // (line_index_in_hunk, on_new_side, byte_range_in_block)
+            let mut placements: Vec<(usize, bool, Range<usize>)> = Vec::new();
 
-        for (line_ix, line) in hunk.lines.iter().enumerate() {
-            match line.kind {
-                LineKind::Context => {
-                    let s = new_block.len();
-                    new_block.push_str(&line.content);
-                    placements.push((line_ix, true, s..new_block.len()));
-                    new_block.push('\n');
-                    old_block.push_str(&line.content);
-                    old_block.push('\n');
-                }
-                LineKind::Added => {
-                    let s = new_block.len();
-                    new_block.push_str(&line.content);
-                    placements.push((line_ix, true, s..new_block.len()));
-                    new_block.push('\n');
-                }
-                LineKind::Removed => {
-                    let s = old_block.len();
-                    old_block.push_str(&line.content);
-                    placements.push((line_ix, false, s..old_block.len()));
-                    old_block.push('\n');
-                }
-                LineKind::NoNewline => {}
-            }
-        }
-
-        // Parse each side exactly once, slicing every line on that side before
-        // switching. `SyntaxHighlighter::update` replaces the parse tree, so we
-        // must group by side — interleaving would re-parse on every transition.
-        let has_new = placements.iter().any(|(_, on_new, _)| *on_new);
-        let has_old = placements.iter().any(|(_, on_new, _)| !*on_new);
-        if has_new {
-            highlighter.update(None, &Rope::from(new_block.as_str()), None);
-            for (line_ix, on_new, range) in &placements {
-                if *on_new {
-                    let spans = line_spans(&highlighter, &new_block, range, theme, default);
-                    out.insert((hunk_ix, *line_ix), Arc::from(spans));
+            for (line_ix, line) in hunk.lines.iter().enumerate() {
+                match line.kind {
+                    LineKind::Context => {
+                        let s = new_block.len();
+                        new_block.push_str(&line.content);
+                        placements.push((line_ix, true, s..new_block.len()));
+                        new_block.push('\n');
+                        old_block.push_str(&line.content);
+                        old_block.push('\n');
+                    }
+                    LineKind::Added => {
+                        let s = new_block.len();
+                        new_block.push_str(&line.content);
+                        placements.push((line_ix, true, s..new_block.len()));
+                        new_block.push('\n');
+                    }
+                    LineKind::Removed => {
+                        let s = old_block.len();
+                        old_block.push_str(&line.content);
+                        placements.push((line_ix, false, s..old_block.len()));
+                        old_block.push('\n');
+                    }
+                    LineKind::NoNewline => {}
                 }
             }
-        }
-        if has_old {
-            highlighter.update(None, &Rope::from(old_block.as_str()), None);
-            for (line_ix, on_new, range) in &placements {
-                if !*on_new {
-                    let spans = line_spans(&highlighter, &old_block, range, theme, default);
-                    out.insert((hunk_ix, *line_ix), Arc::from(spans));
+
+            // Parse each side exactly once, slicing every line on that side before
+            // switching. `SyntaxHighlighter::update` replaces the parse tree, so we
+            // must group by side — interleaving would re-parse on every transition.
+            let has_new = placements.iter().any(|(_, on_new, _)| *on_new);
+            let has_old = placements.iter().any(|(_, on_new, _)| !*on_new);
+            if has_new {
+                highlighter.update(None, &Rope::from(new_block.as_str()), None);
+                for (line_ix, on_new, range) in &placements {
+                    if *on_new {
+                        let spans = line_spans(highlighter, &new_block, range, theme, default);
+                        out.insert((hunk_ix, *line_ix), Arc::from(spans));
+                    }
+                }
+            }
+            if has_old {
+                highlighter.update(None, &Rope::from(old_block.as_str()), None);
+                for (line_ix, on_new, range) in &placements {
+                    if !*on_new {
+                        let spans = line_spans(highlighter, &old_block, range, theme, default);
+                        out.insert((hunk_ix, *line_ix), Arc::from(spans));
+                    }
                 }
             }
         }
-    }
-    out
+        out
+    })
+}
+
+thread_local! {
+    /// Per-thread highlighter cache. `SyntaxHighlighter::new` compiles the
+    /// language's tree-sitter queries (~16ms), which dwarfs the parse/style
+    /// work for a typical diff, so highlighters are built once per language
+    /// per thread and reused across files.
+    static HIGHLIGHTERS: RefCell<HashMap<String, SyntaxHighlighter>> = RefCell::new(HashMap::new());
+}
+
+fn with_highlighter<R>(lang: &str, f: impl FnOnce(&mut SyntaxHighlighter) -> R) -> R {
+    HIGHLIGHTERS.with_borrow_mut(|cache| {
+        if !cache.contains_key(lang) {
+            cache.insert(lang.to_string(), SyntaxHighlighter::new(lang));
+        }
+        let highlighter = cache.get_mut(lang).unwrap();
+        let out = f(highlighter);
+        // Drop the last file's text/tree so the cache holds only the compiled
+        // queries between uses.
+        highlighter.update(None, &Rope::from(""), None);
+        out
+    })
 }
 
 /// Resolve the styled runs for one line's byte range, filling gaps with the
@@ -540,6 +564,59 @@ mod tests {
                 styles.len()
             );
         }
+    }
+
+    /// The per-thread highlighter cache reuses one parser/query set across
+    /// files: highlighting a second, unrelated file must produce the same
+    /// spans as a fresh highlighter would.
+    #[test]
+    fn cached_highlighter_is_correct_across_files() {
+        use magritte_core::DiffLine;
+        let theme = gpui_component::highlighter::HighlightTheme::default_dark();
+        let file = |path: &str, content: &str| FileDiff {
+            new_path: path.into(),
+            is_new: true,
+            hunks: vec![magritte_core::Hunk {
+                old_start: 0,
+                old_count: 0,
+                new_start: 1,
+                new_count: content.lines().count() as u32,
+                section_heading: String::new(),
+                lines: content
+                    .lines()
+                    .enumerate()
+                    .map(|(i, l)| DiffLine {
+                        kind: LineKind::Added,
+                        content: l.to_string(),
+                        raw: None,
+                        old_lineno: None,
+                        new_lineno: Some(i as u32 + 1),
+                    })
+                    .collect(),
+            }],
+            ..FileDiff::default()
+        };
+        let a = file("a.rs", "fn alpha() -> u32 {\n    42\n}\n");
+        let b = file("b.rs", "struct Beta {\n    name: String,\n}\n");
+        // Prime the cache with a much larger file, then highlight b twice:
+        // once on the warm (dirty) highlighter and once via a fresh cache on
+        // another thread. The spans must match exactly.
+        let big_src = "let x = (1, \"two\", [3.0; 4]);\n".repeat(200);
+        let big = file("big.rs", &big_src);
+        highlight_diff(&big, "rust", &theme, gpui::black());
+        highlight_diff(&a, "rust", &theme, gpui::black());
+        let warm = highlight_diff(&b, "rust", &theme, gpui::black());
+        let fresh = std::thread::spawn({
+            let b = b.clone();
+            let theme = theme.clone();
+            move || highlight_diff(&b, "rust", &theme, gpui::black())
+        })
+        .join()
+        .unwrap();
+        assert_eq!(warm, fresh);
+        assert!(warm
+            .values()
+            .any(|spans| spans.iter().any(|(_, c)| *c != gpui::black())));
     }
 
     #[test]
