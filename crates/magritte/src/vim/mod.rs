@@ -59,19 +59,19 @@ pub(crate) enum Action {
     /// Mirror yanked/deleted text to the system clipboard (the engine's
     /// unnamed register is updated internally).
     Yank(String),
-    Undo,
-    Redo,
     /// `.`: replay the last change. The app fetches it with
     /// [`VimState::begin_repeat`], feeds the recorded keys back through
     /// `handle_key`, re-inserts the captured Insert-mode text, and closes
     /// with [`VimState::end_repeat`].
     Repeat,
-    /// `ZZ`: submit the commit message.
+    /// `ZZ` / `,,` / `,c`: submit the commit message.
     Commit,
-    /// `ZQ`: cancel the editor (the app's discard-confirm flow applies).
+    /// `ZQ` / `,k`: cancel the editor (the app's discard-confirm flow applies).
     Quit,
-    /// `gq`: reflow the message body.
-    Reflow,
+    /// `gq{motion}` / `gqq` / visual `gq`: reflow these whole lines of the
+    /// body at 72 columns (the app expands to line boundaries and skips the
+    /// summary line).
+    ReflowRange(Range<usize>),
     /// Unhandled or invalid input — swallow the key, optionally flash.
     Beep,
 }
@@ -150,6 +150,9 @@ pub(crate) enum Motion {
     NextLineStart,
     /// `-` — linewise; count lines up, to the first non-blank.
     PrevLineStart,
+    /// `_` — linewise; count-1 lines down, to the first non-blank (so `_` is
+    /// the current line — handy as an operator target: `d_` == `dd`).
+    FirstNonBlankDown,
     /// `Space` — exclusive; right, crossing line ends (each end-of-line counts
     /// as one position, like Vim's `<Space>` with default `whichwrap`).
     SpaceRight,

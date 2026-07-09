@@ -72,9 +72,17 @@ pub(crate) fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<
 /// [`wrap_at_cursor`], this *re-joins* manually-broken lines, so it's an
 /// explicit action rather than something to run while typing.
 pub(crate) fn reflow_body(text: &str, width: usize) -> String {
-    let mut iter = text.split('\n');
-    let mut out = vec![iter.next().unwrap_or("").to_string()];
-    let body: Vec<&str> = iter.collect();
+    match text.split_once('\n') {
+        None => text.to_string(),
+        Some((summary, rest)) => format!("{summary}\n{}", reflow_lines(rest, width)),
+    }
+}
+
+/// Reflow a block of body lines (see [`reflow_body`], which handles skipping
+/// the summary): paragraphs re-wrap at `width`, blank separator lines stay.
+pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
+    let body: Vec<&str> = block.split('\n').collect();
+    let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i < body.len() {
         if body[i].trim().is_empty() {

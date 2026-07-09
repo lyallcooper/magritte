@@ -40,7 +40,7 @@ pub(crate) struct CommitEditor {
     pub(crate) diff_collapsed: std::collections::HashSet<usize>,
     /// Modal Vim editing state, when the `commit_vim_mode` setting is on
     /// (`None` = ordinary editing). Opens in Normal mode.
-    pub(crate) vim: Option<vim::VimState>,
+    pub(crate) vim: Option<Box<vim::VimState>>,
     /// Kept alive so the PressEnter subscription stays active.
     pub(crate) _sub: Subscription,
 }
@@ -476,7 +476,10 @@ impl StatusView {
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             diff_collapsed: std::collections::HashSet::new(),
-            vim: self.config.commit_vim_mode.then(vim::VimState::new),
+            vim: self
+                .config
+                .commit_vim_mode
+                .then(|| Box::new(vim::VimState::new())),
             _sub: sub,
         });
         // Stamp this editor instance so async loads started for it can't write

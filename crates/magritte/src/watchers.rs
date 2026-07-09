@@ -268,7 +268,7 @@ impl StatusView {
             .editor_mut()
             .filter(|ed| vim_on != ed.vim.is_some())
             .map(|ed| {
-                ed.vim = vim_on.then(vim::VimState::new);
+                ed.vim = vim_on.then(|| Box::new(vim::VimState::new()));
                 ed.state.clone()
             });
         if let Some(state) = toggled {

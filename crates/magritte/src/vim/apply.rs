@@ -10,12 +10,12 @@
 //! on the view, so the input paints no caret, its bindings never match, and
 //! every key flows through `on_capture_key` into the engine.
 
-use gpui::prelude::*;
-use gpui::{Bounds, Context, EntityInputHandler, KeyDownEvent, Pixels, Window};
-use gpui_component::input;
-
-use super::{clamp_normal, line_end, next_char, Action, EditOp, Key, Mode};
+use super::{
+    clamp_normal, first_non_blank, line_end, line_start, next_char, prev_char, Action, EditOp, Key,
+    Mode,
+};
 use crate::*;
+use gpui::{Bounds, Context, EntityInputHandler, KeyDownEvent, Pixels, Window};
 
 impl StatusView {
     /// Route a commit-editor keystroke through Vim mode. Returns whether the
@@ -93,6 +93,56 @@ impl StatusView {
         cx.notify();
     }
 
+    /// `gq{target}`: reflow the target's whole lines at the body width. The
+    /// summary line never reflows (the 50-col convention), matching the ⌥q
+    /// whole-body reflow.
+    fn reflow_vim_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.editor().map(|e| e.state.clone()) else {
+            return;
+        };
+        state.update(cx, |s, cx| {
+            let text = s.text().to_string();
+            let mut start = line_start(&text, range.start.min(text.len()));
+            // The range's end is exclusive (a linewise range ends just past
+            // its trailing newline), so the last covered line is the one
+            // holding the char before it.
+            let last = prev_char(&text, range.end.min(text.len())).max(range.start);
+            let end = line_end(&text, last);
+            if start == 0 {
+                // Skip the summary line.
+                match text.find('\n') {
+                    Some(nl) if nl < end => start = nl + 1,
+                    _ => return,
+                }
+            }
+            let block = &text[start..end];
+            let reflowed = commit_text::reflow_lines(block, COMMIT_BODY_WIDTH);
+            if reflowed == block {
+                return;
+            }
+            s.replace_text_in_range(
+                Some(byte_range_to_utf16(&text, &(start..end))),
+                &reflowed,
+                window,
+                cx,
+            );
+            let post = s.text().to_string();
+            let cursor = first_non_blank(&post, start.min(post.len()));
+            s.set_cursor_position(
+                commit_text::byte_offset_to_position(&post, cursor),
+                window,
+                cx,
+            );
+        });
+        // Refresh the summary warning against the reflowed text.
+        self.on_editor_changed(window, cx);
+    }
+
     /// Keep focus in step with the mode: Insert focuses the input, everything
     /// else the view (which is what hides the input's caret in Normal mode —
     /// and set_cursor_position refocuses the input as a side effect, so this
@@ -152,17 +202,6 @@ impl StatusView {
                     );
                 }),
                 Action::Yank(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
-                // Undo/Redo dispatch on the input's own focus handle — in
-                // Normal mode the input isn't focused, so a window-level
-                // dispatch would miss it.
-                Action::Undo => {
-                    let fh = state.read(cx).focus_handle(cx);
-                    fh.dispatch_action(&input::Undo, window, cx);
-                }
-                Action::Redo => {
-                    let fh = state.read(cx).focus_handle(cx);
-                    fh.dispatch_action(&input::Redo, window, cx);
-                }
                 Action::Repeat => {
                     let repeat = self
                         .editor_mut()
@@ -191,7 +230,7 @@ impl StatusView {
                 }
                 Action::Commit => self.submit_editor(window, cx),
                 Action::Quit => self.cancel_editor(window, cx),
-                Action::Reflow => self.reflow_editor(window, cx),
+                Action::ReflowRange(range) => self.reflow_vim_range(range, window, cx),
                 Action::Beep => {}
             }
         }
@@ -225,6 +264,7 @@ impl StatusView {
         let state = ed.state.clone();
         let selection_bg = self.palette.visual;
         let cursor_bg = self.palette.fg.opacity(0.35);
+        let search_bg = self.palette.banner;
         Some(
             gpui::canvas(
                 |_, _, _| {},
@@ -252,6 +292,27 @@ impl StatusView {
                                 paint(window, b, at == le, selection_bg);
                             }
                             at = next_char(&text, le.max(at));
+                        }
+                    }
+                    // Incremental search: highlight every match of the query
+                    // being typed at the `/`/`?` prompt (capped, in case a
+                    // one-char query floods a long message).
+                    if let Some(q) = vim.search_query() {
+                        let mut from = 0;
+                        for _ in 0..200 {
+                            let Some(i) = text[from..].find(q) else {
+                                break;
+                            };
+                            let (m0, m1) = (from + i, from + i + q.len());
+                            let mut at = m0;
+                            while at < m1 {
+                                let le = line_end(&text, at).min(m1);
+                                if let Some(b) = s.range_to_bounds(&(at..le)) {
+                                    paint(window, b, false, search_bg);
+                                }
+                                at = next_char(&text, le.max(at));
+                            }
+                            from = next_char(&text, m0);
                         }
                     }
                     // Block cursor: the cell of the char under the cursor, or

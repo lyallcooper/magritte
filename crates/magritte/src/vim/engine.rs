@@ -40,6 +40,8 @@ enum Consumer {
     Op { op: Op, count: usize },
     /// `ys` awaiting its target.
     SurroundAdd,
+    /// `gq` awaiting its target: the covered lines get reflowed.
+    Reflow,
 }
 
 /// Mid-sequence state, cleared by `Esc` or any invalid key.
@@ -78,6 +80,10 @@ enum Pending {
     },
     /// After `Z`: awaiting `Z` (commit) or `Q` (cancel).
     Z,
+    /// After a bare `,` in Normal mode: `,`/`c` commit, `k` cancels
+    /// (evil-collection's with-editor leader keys); any other key falls back
+    /// to `,`'s reverse-find-repeat and then runs normally.
+    Comma,
     /// `/` or `?`: collecting the search query (shown live in the mode bar);
     /// Enter executes, Esc cancels, Backspace edits.
     Search {
@@ -123,6 +129,13 @@ pub(crate) struct VimState {
     insert_entry: Option<usize>,
     /// True while the app replays a `.` — suppresses re-recording.
     replaying: bool,
+    /// Vim-level undo: one `(text, cursor)` snapshot per change command (an
+    /// Insert session is one unit). The widget's own history groups edits by
+    /// time, which is right for typing but wrong for `u` after `dw..`.
+    undos: Vec<(String, usize)>,
+    redos: Vec<(String, usize)>,
+    /// Set by `u`/`C-r` so their own restoring edit isn't snapshotted.
+    in_undo: bool,
 }
 
 impl VimState {
@@ -140,6 +153,9 @@ impl VimState {
             last_change: None,
             insert_entry: None,
             replaying: false,
+            undos: Vec::new(),
+            redos: Vec::new(),
+            in_undo: false,
         }
     }
 
@@ -183,12 +199,22 @@ impl VimState {
                 s.push(*from);
             }
             Pending::Z => s.push('Z'),
+            Pending::Comma => s.push(','),
             Pending::Search { query, back } => {
                 s.push(if *back { '?' } else { '/' });
                 s.push_str(query);
             }
         }
         (!s.is_empty()).then_some(s)
+    }
+
+    /// The query being typed at a `/`/`?` prompt, for the live match
+    /// highlight (None outside the prompt or while it's still empty).
+    pub(crate) fn search_query(&self) -> Option<&str> {
+        match &self.pending {
+            Pending::Search { query, .. } if !query.is_empty() => Some(query),
+            _ => None,
+        }
     }
 
     /// The Visual selection as a byte range (for the overlay and operators):
@@ -226,14 +252,33 @@ impl VimState {
                     self.recording.push(key);
                 }
                 let actions = self.key_modal(text, cursor, key);
-                let edited = actions.iter().any(|a| matches!(a, Action::Edit(_)));
+                let edited = actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Edit(_) | Action::ReflowRange(_)));
                 // Any edit resets the sticky column, like Vim's curswant
                 // (`$x` then `j` aims at the deletion column, not line end).
                 if edited {
                     self.desired_col = None;
                 }
-                if !self.replaying {
-                    self.remember_change(cursor, edited, &actions);
+                // One undo snapshot per change command; a command that opens
+                // an Insert session snapshots here so the whole session is a
+                // single undo unit, like Vim. Undo/redo's own restoring edit
+                // is neither snapshotted nor recorded as a repeatable change.
+                let was_undo = self.in_undo;
+                self.in_undo = false;
+                if was_undo {
+                    self.recording.clear();
+                } else {
+                    if edited || self.mode == Mode::Insert {
+                        self.undos.push((text.to_string(), cursor));
+                        if self.undos.len() > 200 {
+                            self.undos.remove(0);
+                        }
+                        self.redos.clear();
+                    }
+                    if !self.replaying {
+                        self.remember_change(cursor, edited, &actions);
+                    }
                 }
                 actions
             }
@@ -279,6 +324,11 @@ impl VimState {
         // Leaving Insert re-anchors the sticky column at the cursor.
         self.desired_col = None;
         let cursor = cursor.min(text.len());
+        // An Insert session that left the buffer as it was isn't a change:
+        // drop its undo snapshot (Vim adds no undo level for `i<Esc>`).
+        if self.undos.last().is_some_and(|(t, _)| t == text) {
+            self.undos.pop();
+        }
         // Close the `.` recording: the change is the command's keys plus what
         // the Insert session typed (best-effort — the slice from entry to the
         // exit cursor covers plain typing; edits that moved before the entry
@@ -377,11 +427,17 @@ impl VimState {
             }
             Pending::G(consumer) => {
                 self.pending = Pending::None;
-                // `gq`: reflow the body (the app's whole-body reflow — a nod
-                // to Vim's gq operator, without the motion grammar).
+                // `gq`: the reflow operator. In Visual it acts on the
+                // selection at once; in Normal it awaits a motion/object
+                // (`gqq` for lines, like `dd`).
                 if key == Key::Char('q') && consumer == Consumer::Move {
-                    self.take_count();
-                    return vec![Action::Reflow];
+                    if let Some(range) = self.visual_range(text, cursor) {
+                        self.mode = Mode::Normal;
+                        self.take_count();
+                        return vec![Action::ReflowRange(range)];
+                    }
+                    self.pending = Pending::AwaitMotion(Consumer::Reflow);
+                    return Vec::new();
                 }
                 let Key::Char('g') = key else {
                     return self.beep();
@@ -437,6 +493,34 @@ impl VimState {
                     _ => self.beep(),
                 };
             }
+            Pending::Comma => {
+                self.pending = Pending::None;
+                match key {
+                    Key::Char(',') | Key::Char('c') => return vec![Action::Commit],
+                    Key::Char('k') => return vec![Action::Quit],
+                    _ => {
+                        // Not a leader command: the comma meant reverse-find
+                        // repeat. Run it, then this key from the landing spot
+                        // (the buffer is unchanged by a move, so only the
+                        // cursor needs forwarding).
+                        let mut acts = Vec::new();
+                        let mut at = cursor;
+                        if let Some((kind, target)) = self.last_find {
+                            let m = Motion::Find {
+                                kind: kind.reversed(),
+                                target,
+                                repeat: true,
+                            };
+                            acts = self.resolve_motion(text, cursor, m, Consumer::Move);
+                            if let Some(Action::MoveCursor(p)) = acts.last() {
+                                at = *p;
+                            }
+                        }
+                        acts.extend(self.key_modal(text, at, key));
+                        return acts;
+                    }
+                }
+            }
             Pending::Search { mut query, back } => {
                 match key {
                     Key::Char(c) => {
@@ -482,6 +566,14 @@ impl VimState {
             _ => Consumer::Move,
         };
 
+        // A bare `,` in Normal mode is the with-editor leader (`,,`/`,c`
+        // commit, `,k` cancel); with an operator pending or in Visual it
+        // stays the reverse-find repeat.
+        if key == Key::Char(',') && consumer == Consumer::Move && self.mode == Mode::Normal {
+            self.pending = Pending::Comma;
+            return Vec::new();
+        }
+
         // `G`: the count — typed before or after an operator — is an absolute
         // line number, not a repeat.
         if key == Key::Char('G') {
@@ -518,7 +610,16 @@ impl VimState {
         match key {
             Key::Ctrl('r') if consumer == Consumer::Move && self.mode == Mode::Normal => {
                 self.take_count();
-                vec![Action::Redo]
+                let Some((next_text, next_cursor)) = self.redos.pop() else {
+                    return self.beep();
+                };
+                self.undos.push((text.to_string(), cursor));
+                self.in_undo = true;
+                vec![Action::Edit(EditOp {
+                    range: 0..text.len(),
+                    text: next_text,
+                    cursor: next_cursor,
+                })]
             }
             Key::Char(c) => self.char_command(text, cursor, c, consumer),
             _ => self.beep(),
@@ -584,6 +685,35 @@ impl VimState {
                     }
                     self.pending = Pending::SurroundChar { start, end };
                     return Vec::new();
+                }
+                'i' | 'a' => {
+                    self.pending = Pending::Object {
+                        consumer,
+                        around: c == 'a',
+                    };
+                    return Vec::new();
+                }
+                'g' => {
+                    self.pending = Pending::G(consumer);
+                    return Vec::new();
+                }
+                _ => return self.beep(),
+            }
+        }
+        if consumer == Consumer::Reflow {
+            match c {
+                // `gqq`: the current `count` lines, like `dd`.
+                'q' => {
+                    let count = self.take_count().max(1);
+                    let start = line_start(text, cursor);
+                    let mut end = line_end(text, cursor);
+                    for _ in 1..count {
+                        if end >= text.len() {
+                            break;
+                        }
+                        end = line_end(text, next_char(text, end));
+                    }
+                    return vec![Action::ReflowRange(start..end)];
                 }
                 'i' | 'a' => {
                     self.pending = Pending::Object {
@@ -824,7 +954,16 @@ impl VimState {
             }
             'u' => {
                 self.take_count();
-                vec![Action::Undo]
+                let Some((prev_text, prev_cursor)) = self.undos.pop() else {
+                    return self.beep();
+                };
+                self.redos.push((text.to_string(), cursor));
+                self.in_undo = true;
+                vec![Action::Edit(EditOp {
+                    range: 0..text.len(),
+                    text: prev_text,
+                    cursor: prev_cursor,
+                })]
             }
             'g' => {
                 self.pending = Pending::G(Consumer::Move);
@@ -975,6 +1114,12 @@ impl VimState {
                 };
                 Vec::new()
             }
+            Consumer::Reflow => {
+                let Some((range, _)) = operator_range(text, cursor, m, target) else {
+                    return self.beep();
+                };
+                vec![Action::ReflowRange(range)]
+            }
         }
     }
 
@@ -1028,6 +1173,12 @@ impl VimState {
                     end: range.end,
                 };
                 Vec::new()
+            }
+            Consumer::Reflow => {
+                if range.start >= range.end {
+                    return self.beep();
+                }
+                vec![Action::ReflowRange(range)]
             }
         }
     }
@@ -1617,6 +1768,7 @@ fn char_motion(c: char, last_find: Option<(FindKind, char)>) -> Option<Motion> {
         '%' => Motion::MatchPair,
         '+' => Motion::NextLineStart,
         '-' => Motion::PrevLineStart,
+        '_' => Motion::FirstNonBlankDown,
         ' ' => Motion::SpaceRight,
         _ => return None,
     })
@@ -1634,6 +1786,7 @@ fn consumer_keys(c: &Consumer) -> String {
             s
         }
         Consumer::SurroundAdd => "ys".into(),
+        Consumer::Reflow => "gq".into(),
     }
 }
 

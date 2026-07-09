@@ -107,12 +107,7 @@ impl Buf {
                     self.vim.end_repeat();
                 }
             }
-            Action::Undo
-            | Action::Redo
-            | Action::Commit
-            | Action::Quit
-            | Action::Reflow
-            | Action::Beep => {}
+            Action::Commit | Action::Quit | Action::ReflowRange(_) | Action::Beep => {}
         }
         self.log.push(action);
     }
@@ -127,14 +122,6 @@ impl Buf {
 
     fn beeped(&self) -> bool {
         self.log.contains(&Action::Beep)
-    }
-
-    fn undos(&self) -> usize {
-        self.log.iter().filter(|a| **a == Action::Undo).count()
-    }
-
-    fn redos(&self) -> usize {
-        self.log.iter().filter(|a| **a == Action::Redo).count()
     }
 }
 
@@ -389,8 +376,11 @@ fn motions_find_till() {
         ("hello wo|rld", "To", "hello wo|rld"),
         ("hello wor|ld", "To", "hello wo|rld"),
         ("|axbxcx", "fx2;", "axbxc|x"),
-        ("axbx|cx", "Fx,", "axbxc|x"), // `,` reverses the direction
-        ("hello w|orld", "Fo,", "hello w|orld"),
+        // (a bare `,` is now the with-editor leader; with an operator
+        // pending it still reverses the find, tested below) // `,` reverses the direction
+        // A bare `,` pends as the leader; a non-leader key after it runs the
+        // deferred reverse-find first.
+        ("hello w|orld", "Fo,l", "hello wo|rld"),
         ("|axbxcxd", "2tx", "ax|bxcxd"),
     ] {
         check(spec, keys, want);
@@ -398,7 +388,7 @@ fn motions_find_till() {
     check_beep("|abc", "fz", "|abc"); // not on the line
     check_beep("ab|c\nzd", "fz", "ab|c\nzd"); // never crosses lines
     check_beep("|abc", ";", "|abc"); // no previous find
-    check_beep("|abc", ",", "|abc");
+    check_beep("|abc", "d,", "|abc"); // (bare `,` pends as the leader)
 }
 
 #[test]
@@ -914,20 +904,23 @@ fn insert_escape() {
 
 #[test]
 fn undo_redo_actions() {
-    let buf = run("|abc", "u");
-    assert_eq!((buf.undos(), buf.redos()), (1, 0));
-    assert_eq!(show(&buf.text, buf.cursor), "|abc");
-    assert!(!buf.beeped());
-
-    // `u` clears a pending count: one Undo, and the following x deletes one.
-    let buf = check_full("|abcd", "3ux", "|bcd", N, Some(false));
-    assert_eq!(buf.undos(), 1);
-
-    let buf = run("|abc", "<c-r>");
-    assert_eq!((buf.undos(), buf.redos()), (0, 1));
-
-    let buf = check_full("|abcd", "2<c-r>x", "|bcd", N, Some(false));
-    assert_eq!(buf.redos(), 1);
+    // Engine-native undo: one snapshot per change command (the widget's own
+    // history groups edits by time, which breaks `dw..u`).
+    check_beep("|abc", "u", "|abc"); // nothing to undo
+    check_beep("|abc", "<c-r>", "|abc");
+    check("a|bc", "xu", "a|bc");
+    check("a|bc", "xu<c-r>", "a|c");
+    check("|a b c d e", "dw..u", "|c d e"); // u undoes only the last dw
+    check("|a b c", "dwdwuu", "|a b c");
+    // An Insert session is a single undo unit…
+    check("|foo bar", "ciwxyz<esc>u", "|foo bar");
+    check("|ab", "ixyz<esc>u", "|ab");
+    // …and an unchanged session adds no undo level (the u undoes the x).
+    check("a|bc", "xi<esc>u", "a|bc");
+    // A new change clears the redo stack.
+    check_beep("a|bcd", "xux<c-r>", "a|cd");
+    // `u` clears a pending count: the following x deletes one char.
+    check_any("|abcd", "3ux", "|bcd");
 }
 
 // --- Surround (vim-surround semantics) -------------------------------------
@@ -1210,10 +1203,10 @@ fn dot_repeat_simple() {
     check_any("|abc", "2x.", "|"); // the second 2x runs out of chars
     check("a|b ab", "xw.", "a |b");
     check_beep("|ab", ".", "|ab"); // nothing to repeat
-                                   // An undo between doesn't clobber the recorded change.
+                                   // An undo between doesn't clobber the recorded change: x, undo, then
+                                   // `.` re-deletes.
     let buf = run("a|bcd", "xu.");
-    assert_eq!(buf.undos(), 1); // (the harness doesn't apply undo itself)
-    assert_eq!(buf.text, "ad"); // x repeated after u
+    assert_eq!(buf.text, "acd");
 }
 
 #[test]
@@ -1232,8 +1225,14 @@ fn editor_commands() {
     assert!(buf.log.contains(&Action::Commit), "ZZ commits");
     let buf = run("|ab", "ZQ");
     assert!(buf.log.contains(&Action::Quit), "ZQ cancels");
-    let buf = run("|ab", "gq");
-    assert!(buf.log.contains(&Action::Reflow), "gq reflows");
+    let buf = run("l1\nlo|ng", "gqq");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if *r == (3..7))),
+        "gqq reflows the current line: {:?}",
+        buf.log
+    );
     check_beep("|ab", "Zx", "|ab");
     // Esc in idle Normal mode is a quiet no-op (cancel is ZQ).
     check("a|b", "<esc>", "a|b");
@@ -1257,4 +1256,73 @@ fn search_basic() {
     check_beep("|ab", "n", "|ab"); // nothing searched yet
                                    // Search across lines, multibyte content.
     check("é|✓\nx é✓", "/é✓<cr>", "é✓\nx |é✓");
+}
+
+// --- Underscore, comma leader, gq operator ---------------------------------
+
+#[test]
+fn underscore_motion() {
+    check("ab\n  c|d", "_", "ab\n  |cd"); // current line's first non-blank
+    check("a|b\n  cd", "2_", "ab\n  |cd"); // count-1 lines down
+    check("a|b\ncd", "d_", "|cd"); // linewise: d_ == dd
+    check("a|b\ncd\nef", "d2_", "|ef");
+    check_beep("a|b", "3_", "a|b"); // past the last line
+}
+
+#[test]
+fn comma_leader() {
+    let buf = run("|ab", ",,");
+    assert!(buf.log.contains(&Action::Commit), ",, commits");
+    let buf = run("|ab", ",c");
+    assert!(buf.log.contains(&Action::Commit), ",c commits");
+    let buf = run("|ab", ",k");
+    assert!(buf.log.contains(&Action::Quit), ",k cancels");
+    // Any other key after `,` falls back to reverse-find repeat, then runs.
+    check("x a |x b x", "fx,l", "x a x| b x");
+    // With an operator pending, `,` stays the reverse-find repeat.
+    check("axbx|cx", "Fxd,", "ax|b");
+}
+
+#[test]
+fn gq_reflow_targets() {
+    // gq{motion}: the covered lines.
+    let buf = run("s\n|b1\nb2\nb3", "gqj");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if *r == (2..8))),
+        "gqj covers two lines: {:?}",
+        buf.log
+    );
+    // gqG: through the last line.
+    let buf = run("s\n|b1\nb2\nb3", "gqG");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if r.start == 2 && r.end >= 9)),
+        "gqG reaches EOF: {:?}",
+        buf.log
+    );
+    // Visual gq: the selection.
+    let buf = run("s\n|b1\nb2\nb3", "Vjgq");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if *r == (2..8))),
+        "visual gq covers the selected lines: {:?}",
+        buf.log
+    );
+    check_beep("|ab", "gqx", "|ab"); // not a motion
+}
+
+#[test]
+fn search_query_preview() {
+    let (text, cursor) = parse_spec("|ab cd");
+    let mut buf = Buf::new(&text, cursor);
+    buf.feed("/c");
+    assert_eq!(buf.vim.search_query(), Some("c"));
+    buf.feed("d");
+    assert_eq!(buf.vim.search_query(), Some("cd"));
+    buf.feed("<esc>");
+    assert_eq!(buf.vim.search_query(), None);
 }

@@ -157,6 +157,17 @@ pub(super) fn eval(
             }
             some(first_non_blank(text, p), MotionKind::Linewise)
         }
+        Motion::FirstNonBlankDown => {
+            let mut p = cursor;
+            for _ in 1..count {
+                let le = line_end(text, p);
+                if le >= text.len() {
+                    return None;
+                }
+                p = le + 1;
+            }
+            some(first_non_blank(text, p), MotionKind::Linewise)
+        }
         Motion::SpaceRight => steps(cursor, count, MotionKind::Exclusive, |p| {
             space_right(text, p)
         }),

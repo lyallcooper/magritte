@@ -135,14 +135,14 @@ impl StatusView {
                 .children(self.vim_mode_bar(ed))
         } else {
             root.child(message(div().h(px(176.0)).w_full()))
-                .child(self.render_commit_diff(ed, view))
                 .children(self.vim_mode_bar(ed))
+                .child(self.render_commit_diff(ed, view))
         }
     }
 
-    /// The Vim mode line pinned under the editor: the mode chip
-    /// (NORMAL/INSERT/VISUAL) plus the in-progress key sequence or search
-    /// prompt (`2d`, `ys`, `/quer`…).
+    /// The Vim mode line under the message editor (above the diff preview):
+    /// the mode chip (NORMAL/INSERT/VISUAL) plus the in-progress key sequence
+    /// or search prompt (`2d`, `ys`, `/quer`…).
     fn vim_mode_bar(&self, ed: &CommitEditor) -> Option<gpui::Div> {
         let (label, pending) = self.vim_indicator(ed)?;
         Some(

@@ -129,8 +129,9 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
 
 ### Motions, text objects, operators, surround (MVP)
 
-- **Motions:** `h j k l`, `0 ^ $`, `w W b B e E`, `gg G`, `f/t/F/T` (+ `;`/`,`),
-  `{`/`}`, `%`. Each tagged inclusive/exclusive and charwise/linewise (per
+- **Motions:** `h j k l`, `0 ^ $ _`, `w W b B e E`, `gg G`, `f/t/F/T` (+ `;`,
+  and `,` under an operator — a bare `,` is the leader, below), `{`/`}`, `%`.
+  Each tagged inclusive/exclusive and charwise/linewise (per
   `:help motion.txt`), because operators need that to compute the right range.
 - **Insert entry:** `i a I A o O` (and `c` lands in Insert). `Esc` back to
   Normal steps the cursor left one column.
@@ -140,12 +141,13 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
   (to end of line), `Y`/`S` (linewise), `x`/`X`, `r{char}`, `~`, `J`.
 - **Put:** `p`/`P` from the unnamed register (deletes and changes fill it too,
   as in Vim), honoring the register's linewise flag.
-- **Undo/redo:** `u`/`Ctrl-r`. `InputState`'s `undo`/`redo` methods are
-  `pub(super)`, but the `Undo`/`Redo` *actions* are public (the `actions!`
-  block, re-exported from `gpui_component::input`) — dispatch them with
-  `window.dispatch_action` while the input is focused. Each
-  `replace_text_in_range` call is one history entry, so an operator edit undoes
-  as a unit.
+- **Undo/redo:** `u`/`Ctrl-r`, engine-native. The widget's own history
+  groups entries by *time* (1s), which is right for typing but wrong for
+  Vim (`dw..` then `u` must undo one `dw`, not all three) — so the engine
+  keeps its own stack: one `(text, cursor)` snapshot per change command,
+  with a whole Insert session as a single unit (and no unit at all when the
+  session changed nothing). `u`/`Ctrl-r` emit a full-buffer `Edit` restoring
+  the snapshot.
 - **Surround:** `ysiw"`, `yss"`, motion-based `ys`, visual `S`, `cs"'`, `ds"`,
   for the bracket/quote pairs.
 
@@ -175,11 +177,18 @@ even if the first cut ignores it.
   Pending state (operator/`f`/surround/search) accumulates across keystrokes
   like the status view's `pending_prefix` machinery.
 - **Editor commands** use evil's commit-buffer keys so `Esc` and the editing
-  keys stay free for modal editing: `ZZ` commit, `ZQ` cancel (the
-  discard-confirm flow still applies), `gq` reflow. The engine emits
-  `Action::Commit`/`Quit`/`Reflow`; `Esc` in idle Normal is a quiet no-op.
-  `⌘⏎` still commits from any mode (in Normal it's caught in the capture
-  phase, since the unfocused input can't).
+  keys stay free for modal editing: `ZZ` (or `,,`/`,c`) commit, `ZQ` (or
+  `,k`) cancel (the discard-confirm flow still applies). A bare `,` in
+  Normal mode is the leader — any non-leader key after it falls back to
+  `,`'s reverse-find repeat and then runs (under an operator, `,` is always
+  the reverse-find). `Esc` in idle Normal is a quiet no-op. `⌘⏎` still
+  commits from any mode (in Normal it's caught in the capture phase, since
+  the unfocused input can't).
+- **`gq` is the reflow operator:** `gqq` reflows the current line(s),
+  `gq{motion}`/`gq{object}` the covered lines, Visual `gq` the selection —
+  each emits `Action::ReflowRange`, which the app expands to whole lines,
+  reflows at 72 columns, and splices (the summary line is always skipped,
+  keeping the 50-col convention). `⌥q` remains the whole-body reflow.
 - **`.` repeat:** the engine records each change's keys (`recording` →
   `last_change`), plus the text an Insert session typed — captured at `Esc`
   as the slice between the insert-entry point and the exit cursor
@@ -187,15 +196,17 @@ even if the first cut ignores it.
   replays the keys through `feed_vim`, re-inserts the text, and closes with
   `Esc` — so anything key-driven repeats, surround included.
 - **`/` search:** a `Pending::Search` prompt collects the query (shown live
-  in the mode bar), `Enter` jumps — literal substring, case-sensitive,
-  wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N` repeat, `?` searches
-  backward.
+  in the mode bar), and the overlay highlights every match as it's typed
+  (incsearch-style, capped at 200). `Enter` jumps — literal substring,
+  case-sensitive, wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N`
+  repeat, `?` searches backward.
 
 ## Rendering
 
 - **Mode line** (`NORMAL`/`INSERT`/`VISUAL` plus the pending keys or search
-  prompt) pinned under the editor (`render_editor`), vim-style; the header
-  hints show the vim keys (`ZZ`/`ZQ`/`gq`).
+  prompt) under the message editor, above the diff preview
+  (`render_editor`), vim-style; the header hints show the vim keys
+  (`ZZ`/`ZQ`/`gq`).
 - **Visual selection**: split `anchor..cursor` into per-line byte ranges and
   draw a translucent rect per line via `range_to_bounds`; falls back to none if
   bounds aren't available (not laid out / off-screen).
