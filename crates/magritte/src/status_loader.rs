@@ -229,16 +229,23 @@ impl StatusView {
         };
         self.begin_activity(cx);
         cx.spawn(async move |this, cx| {
-            let (result, sequence, bisect) = cx
+            let (result, sequence, bisect, elapsed) = cx
                 .background_executor()
                 .spawn(async move {
+                    let started = std::time::Instant::now();
                     let snapshot = match worktree_git_dir.as_deref() {
                         Some(dir) => repo.refresh_snapshot_in_dir_with(dir, needs),
                         None => repo.refresh_snapshot_with(needs),
                     };
+                    let elapsed = started.elapsed();
                     match snapshot {
-                        Ok(snapshot) => (Ok(snapshot.status), snapshot.sequence, snapshot.bisect),
-                        Err(e) => (Err(e), None, None),
+                        Ok(snapshot) => (
+                            Ok(snapshot.status),
+                            snapshot.sequence,
+                            snapshot.bisect,
+                            elapsed,
+                        ),
+                        Err(e) => (Err(e), None, None, elapsed),
                     }
                 })
                 .await;
@@ -252,6 +259,7 @@ impl StatusView {
                     Ok(status) => {
                         this.status = Some(status);
                         this.error = None;
+                        this.maybe_hint_fsmonitor(elapsed, cx);
                     }
                     Err(e) if e.is_git_missing() => {
                         this.error = Some(GIT_MISSING_MESSAGE.to_string())

@@ -10,6 +10,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::config;
 
 pub const FOLDS_FILE: &str = "folds.toml";
+pub const HINTS_FILE: &str = "hints.toml";
 pub const WINDOW_FILE: &str = "window.toml";
 pub const RECENT_REPOS_FILE: &str = "recent-repos.toml";
 pub const COMMIT_MESSAGES_FILE: &str = "commit-messages.toml";
@@ -154,6 +155,15 @@ pub struct FoldState {
     /// away from the default via the drag divider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_editor_height: Option<f32>,
+}
+
+/// One-shot per-repo hints already shown (repo scope, `.git/magritte/hints.toml`),
+/// so a suggestion never repeats once made.
+#[derive(Serialize, Deserialize, Default)]
+pub struct HintState {
+    /// The slow-status fsmonitor suggestion.
+    #[serde(default)]
+    pub fsmonitor: bool,
 }
 
 /// Last saved application window placement.

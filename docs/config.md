@@ -157,6 +157,16 @@ interval_minutes = 30  # default 30; minimum 1
 - Like everything else, this is per-repo overridable — enable it (or set a
   different interval) for one repository via `.git/magritte/config.toml`.
 
+## Large repositories
+
+When reading the repository's status is slow (over ~half a second) and git's
+filesystem monitor isn't configured, Magritte suggests it once with a status
+notice. Run "Enable filesystem monitor" from the `:` palette (anytime, hint or
+not) to set `core.fsmonitor` and `core.untrackedCache` for the repo -- git
+then watches the worktree instead of rescanning it, which makes `git status`
+near-instant on large trees. The hint never repeats for a repo, and it stays
+quiet if `core.fsmonitor` is already set to anything (including `false`).
+
 ## Keymap
 
 The default keymap mirrors evil-collection-magit. Set `keymap_preset = "vanilla"`

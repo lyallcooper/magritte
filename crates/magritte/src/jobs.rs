@@ -467,6 +467,76 @@ impl StatusView {
         .detach();
     }
 
+    /// After a slow status refresh, suggest git's builtin filesystem monitor —
+    /// once per repo, ever (the flag persists to the repo scope's hints.toml
+    /// whether or not the user acts), and only where the builtin daemon exists
+    /// (macOS/Windows). Any configured `core.fsmonitor` value, true or false,
+    /// is a decision already made, so no hint then either.
+    pub(crate) fn maybe_hint_fsmonitor(
+        &mut self,
+        elapsed: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        const THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+        if !(cfg!(target_os = "macos") || cfg!(target_os = "windows")) {
+            return;
+        }
+        if elapsed < THRESHOLD || self.fsmonitor_hint_checked {
+            return;
+        }
+        self.fsmonitor_hint_checked = true;
+        let (Some(repo), Some(scope)) = (self.repo.clone(), self.repo_scope_dir.clone()) else {
+            return;
+        };
+        let path = state::scoped_path(&scope, state::HINTS_FILE);
+        let secs = elapsed.as_secs_f32();
+        cx.spawn(async move |this, cx| {
+            let show = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut hints: state::HintState = state::load_toml_or_default(&path);
+                    if hints.fsmonitor || repo.config_get("core.fsmonitor").ok().flatten().is_some()
+                    {
+                        return false;
+                    }
+                    hints.fsmonitor = true;
+                    state::save_toml(&path, &hints);
+                    true
+                })
+                .await;
+            if show {
+                this.update(cx, |this, cx| {
+                    this.set_status(
+                        format!(
+                            "Reading status took {secs:.1}s — \"Enable filesystem monitor\" \
+                             in the : palette can speed it up"
+                        ),
+                        false,
+                        cx,
+                    );
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Enable git's builtin filesystem monitor for this repo, with the
+    /// untracked cache it pairs with (both speed up `git status` on large
+    /// worktrees).
+    pub(crate) fn enable_fsmonitor(&mut self, cx: &mut Context<Self>) {
+        self.run_job(
+            "Enabling filesystem monitor…",
+            "Filesystem monitor enabled",
+            |repo| {
+                repo.config_set("core.fsmonitor", "true")?;
+                repo.config_set("core.untrackedCache", "true")?;
+                Ok(String::new())
+            },
+            cx,
+        );
+    }
+
     /// Check the latest GitHub release tag and report whether this build is current.
     pub(crate) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
         self.set_progress("Checking for updates…".to_string(), cx);

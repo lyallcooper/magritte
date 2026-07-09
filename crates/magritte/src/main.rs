@@ -537,6 +537,9 @@ struct StatusView {
     /// immediately on focus unless a refresh happened within the cooldown, so
     /// rapid app-switching doesn't re-run a full status each time.
     last_refresh: Option<std::time::Instant>,
+    /// Whether this session already evaluated the slow-status fsmonitor hint,
+    /// so one slow refresh can't queue several checks.
+    fsmonitor_hint_checked: bool,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
@@ -791,6 +794,7 @@ impl StatusView {
             busy: false,
             busy_gen: Generation::default(),
             last_refresh: None,
+            fsmonitor_hint_checked: false,
             pending_prefix: None,
             prefix_gen: Generation::default(),
             window_bounds_save_gen: Generation::default(),

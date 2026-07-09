@@ -1040,6 +1040,22 @@ pub(crate) fn commands() -> &'static [Command] {
             leaf: None,
             run: |t, _w, cx| t.check_for_updates(cx),
         },
+        // Suggested by the slow-status hint; sets core.fsmonitor +
+        // core.untrackedCache for this repo.
+        Command {
+            id: "fsmonitor-enable",
+            contexts: ScreenSet::ALL,
+            title: "Enable filesystem monitor",
+            aliases: &["fsmonitor", "speed up status"],
+            category: Category::Application,
+            key: None,
+            menu: false,
+            palette: true,
+            enabled: ALWAYS,
+            at_point: false,
+            leaf: None,
+            run: |t, _w, cx| t.enable_fsmonitor(cx),
+        },
         Command {
             id: "about",
             contexts: ScreenSet::ALL,
