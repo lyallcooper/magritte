@@ -79,6 +79,10 @@ impl StatusView {
         let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
+        // Any key clears the last echoed error, like Vim's command line.
+        if let Some(ed) = self.editor_mut() {
+            ed.vim_error = None;
+        }
         let (text, cursor) = {
             let s = state.read(cx);
             (s.text().to_string(), s.cursor())
@@ -157,6 +161,7 @@ impl StatusView {
             return;
         }
         vim.cancel_pending();
+        ed.vim_error = None;
         ed.mouse_selecting = true;
         cx.notify();
     }
@@ -289,7 +294,16 @@ impl StatusView {
                 Action::Quit { force: true } => self.discard_editor(window, cx),
                 Action::Quit { force: false } => self.cancel_editor(window, cx),
                 Action::ReflowRange(range) => self.reflow_vim_range(range, window, cx),
-                Action::Beep => {}
+                Action::Help => {
+                    self.popup = Some(Popup::Dispatch(vim_help_menu()));
+                }
+                Action::Error(msg) => {
+                    if let Some(ed) = self.editor_mut() {
+                        ed.vim_error = Some(msg);
+                    }
+                    self.vim_bell_flash(cx);
+                }
+                Action::Beep => self.vim_bell_flash(cx),
             }
         }
     }
@@ -373,6 +387,14 @@ impl StatusView {
                             from = next_char(&text, m0);
                         }
                     }
+                    // Live `:s` preview: what the substitution being typed
+                    // would touch (first match per line, all with `g`).
+                    // Matches never span lines, so one rect each suffices.
+                    for r in vim.ex_matches(&text, cursor) {
+                        if let Some(b) = s.range_to_bounds(&r) {
+                            paint(window, b, false, search_bg);
+                        }
+                    }
                     // Block cursor: the cell of the char under the cursor, or
                     // a half-width stub on empty lines / EOF.
                     let c0 = clamp_normal(&text, cursor);
@@ -391,6 +413,65 @@ impl StatusView {
             .size_full()
             .into_any_element(),
         )
+    }
+}
+
+/// The `:help` popup: a cheat sheet of the Vim-mode bindings, shown as a
+/// dispatch-style transient over the editor (Esc dismisses). Static — the
+/// engine's keys aren't remappable.
+fn vim_help_menu() -> transient::Transient {
+    let info = |keys: &str, description: &str| {
+        transient::Suffix::Info(transient::Info {
+            keys: keys.to_string(),
+            description: description.to_string(),
+        })
+    };
+    let group = |title: &str, suffixes| transient::Group {
+        title: transient::plain_title(title),
+        suffixes,
+    };
+    transient::Transient {
+        title: transient::plain_title("Vim mode"),
+        groups: vec![
+            group(
+                "Editor",
+                vec![
+                    info("ZZ", "Commit (also :wq, ,,)"),
+                    info("ZQ", "Cancel (also :q, ,k)"),
+                    info(":q!", "Discard without asking"),
+                    info("gq", "Reflow (gqq line, gqip paragraph)"),
+                ],
+            ),
+            group(
+                "Modes",
+                vec![
+                    info("i a o", "Insert (I A O at line edges)"),
+                    info("v V", "Visual charwise / linewise"),
+                    info("esc", "Back to Normal"),
+                ],
+            ),
+            group(
+                "Edit",
+                vec![
+                    info("d c y", "Operators + motion or text object"),
+                    info("x r ~ J", "Char delete / replace / case / join"),
+                    info("p P", "Put after / before"),
+                    info("> <", "Indent / dedent"),
+                    info("u ctrl-r", "Undo / redo"),
+                    info(".", "Repeat the last change"),
+                    info("ys cs ds", "Surround add / change / delete"),
+                ],
+            ),
+            group(
+                "Search & command line",
+                vec![
+                    info("/ ?", "Search forward / back (n N repeat)"),
+                    info(":s/pat/rep/", "Substitute (%, N,M ranges; g i flags)"),
+                    info(":N", "Go to line N"),
+                    info("up down", "Prompt history"),
+                ],
+            ),
+        ],
     }
 }
 

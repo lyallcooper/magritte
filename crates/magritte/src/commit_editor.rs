@@ -46,6 +46,12 @@ pub(crate) struct CommitEditor {
     /// Modal Vim editing state, when the `commit_vim_mode` setting is on
     /// (`None` = ordinary editing). Opens in Normal mode.
     pub(crate) vim: Option<Box<vim::VimState>>,
+    /// A failed `:` command's echoed message (`Pattern not found: …`), shown
+    /// by the indicator until the next key or click.
+    pub(crate) vim_error: Option<String>,
+    /// The Vim visual bell: briefly true after a Beep action tints the mode
+    /// chip. Cleared by a timer.
+    pub(crate) vim_bell: bool,
     /// A mouse press is in flight over the message (Vim mode): the Normal-mode
     /// blur-back is held off until release so a drag-selection can complete.
     pub(crate) mouse_selecting: bool,
@@ -526,6 +532,9 @@ impl StatusView {
                 .submit_on_enter(false)
                 .line_number(false)
                 .folding(false)
+                // No soft wrap: the editor hard-wraps the body as you type,
+                // and a long summary reads as the single line it will be.
+                .soft_wrap(false)
         });
         let sub = cx.subscribe_in(
             &state,
@@ -592,6 +601,8 @@ impl StatusView {
                 .config
                 .commit_vim_mode
                 .then(|| Box::new(vim::VimState::new())),
+            vim_error: None,
+            vim_bell: false,
             _sub: sub,
         });
         // Stamp this editor instance so async loads started for it can't write
@@ -864,6 +875,33 @@ impl StatusView {
                 if this.confirm_flash_gen.is_current(gen) {
                     if let Some(ed) = this.editor_mut() {
                         ed.flash = false;
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The Vim visual bell: tint the mode chip briefly on a Beep action.
+    /// Generation-scoped like the discard-prompt flash, so rapid beeps keep
+    /// it lit without an earlier timer cutting a later one short.
+    pub(crate) fn vim_bell_flash(&mut self, cx: &mut Context<Self>) {
+        let Some(ed) = self.editor_mut() else {
+            return;
+        };
+        ed.vim_bell = true;
+        let gen = self.vim_bell_gen.bump();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.vim_bell_gen.is_current(gen) {
+                    if let Some(ed) = this.editor_mut() {
+                        ed.vim_bell = false;
                         cx.notify();
                     }
                 }

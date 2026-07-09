@@ -107,7 +107,12 @@ impl Buf {
                     self.vim.end_repeat();
                 }
             }
-            Action::Commit | Action::Quit { .. } | Action::ReflowRange(_) | Action::Beep => {}
+            Action::Commit
+            | Action::Quit { .. }
+            | Action::ReflowRange(_)
+            | Action::Help
+            | Action::Error(_)
+            | Action::Beep => {}
         }
         self.log.push(action);
     }
@@ -120,8 +125,19 @@ impl Buf {
         );
     }
 
+    /// A bell rang: a plain Beep or an echoed `:` error (both flash the
+    /// indicator in the app).
     fn beeped(&self) -> bool {
-        self.log.contains(&Action::Beep)
+        self.log
+            .iter()
+            .any(|a| matches!(a, Action::Beep | Action::Error(_)))
+    }
+
+    fn error(&self) -> Option<&str> {
+        self.log.iter().rev().find_map(|a| match a {
+            Action::Error(m) => Some(m.as_str()),
+            _ => None,
+        })
     }
 }
 
@@ -1584,4 +1600,96 @@ fn ex_commands_are_not_dot_repeatable() {
     check("a|b ab\ncd", "x:s/b/z/<cr>.", "| az\ncd");
     // A ':' substitution is a single undo unit.
     check("a|b\nab", ":%s/ab/xy/<cr>u", "a|b\nab");
+}
+
+#[test]
+fn ex_help() {
+    for keys in [":help<cr>", ":h<cr>"] {
+        let buf = run("|ab", keys);
+        assert!(buf.log.contains(&Action::Help), "{keys} opens help");
+    }
+}
+
+#[test]
+fn ex_errors_echo_messages() {
+    // Failed ':' commands echo what went wrong (shown until the next key).
+    let cases = [
+        (":foo<cr>", "Not an editor command: foo"),
+        (":s/zzz/x<cr>", "Pattern not found: zzz"),
+        (":s/[/x<cr>", "Invalid pattern: ["),
+        (":s/a/b/q<cr>", "Trailing characters: q"),
+        (":'<lt>,'>s/a/b<cr>", "Mark not set"),
+        (":1,xs/a/b<cr>", "Invalid range"),
+        (":s//b<cr>", "Empty pattern"),
+    ];
+    for (keys, want) in cases {
+        let buf = run("|ab", keys);
+        assert_eq!(buf.error(), Some(want), "{keys}");
+        assert_eq!(show(&buf.text, buf.cursor), "|ab", "{keys}: must not edit");
+    }
+}
+
+#[test]
+fn prompt_history() {
+    // Up recalls executed searches, newest first; Down walks back and then
+    // restores the stashed live line. Past either end just rings the bell.
+    let mut buf = run("|alpha beta", "/beta<cr>/alpha<cr>");
+    buf.feed("/");
+    buf.feed("<up>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/alpha"));
+    buf.feed("<up>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/beta"));
+    buf.feed("<up>"); // already at the oldest
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/beta"));
+    buf.feed("<down>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/alpha"));
+    buf.feed("<down>"); // back to the (empty) live line
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("/"));
+    buf.feed("<esc>");
+
+    // The ex prompt has its own history (C-p/C-n work too); typing resumes
+    // editing the recalled line, and consecutive repeats aren't duplicated.
+    buf.feed(":5<cr>:5<cr>:s/x/y<cr>");
+    buf.feed(":");
+    buf.feed("<c-p>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":s/x/y"));
+    buf.feed("<c-p>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":5"));
+    buf.feed("<c-p>"); // the two :5 runs collapsed into one entry
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":5"));
+    buf.feed("<c-n>");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":s/x/y"));
+    buf.feed("6");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(":s/x/y6"));
+    buf.feed("<esc>");
+
+    // A recalled search executes like a typed one.
+    let mut buf = run("|alpha beta", "/beta<cr>gg");
+    buf.feed("/");
+    buf.feed("<up>");
+    buf.feed("<cr>");
+    assert_eq!(show(&buf.text, buf.cursor), "alpha |beta");
+}
+
+#[test]
+fn ex_substitute_preview() {
+    // The matches the substitution being typed would touch: first per line,
+    // every one once `g` is typed, scoped to the range.
+    let m = |spec: &str, keys: &str| {
+        let buf = run(spec, keys);
+        buf.vim.ex_matches(&buf.text, buf.cursor)
+    };
+    assert_eq!(m("aa a|a\nba", ":s/a"), vec![0..1]);
+    assert_eq!(m("aa a|a\nba", ":%s/a"), vec![0..1, 7..8]);
+    assert_eq!(
+        m("aa a|a\nba", ":%s/a//g"),
+        vec![0..1, 1..2, 3..4, 4..5, 7..8]
+    );
+    assert_eq!(m("aa a|a\nba", ":2s/a"), vec![7..8]);
+    // Nothing while the pattern is empty, invalid mid-typing, or the line
+    // isn't a substitution.
+    assert!(m("a|a", ":s/").is_empty());
+    assert!(m("a|a", ":s/[").is_empty());
+    assert!(m("a|a", ":wq").is_empty());
+    assert!(m("a|a", "/a").is_empty());
 }

@@ -73,7 +73,12 @@ pub(crate) enum Action {
     /// body at 72 columns (the app expands to line boundaries and skips the
     /// summary line).
     ReflowRange(Range<usize>),
-    /// Unhandled or invalid input — swallow the key, optionally flash.
+    /// `:help`: show the Vim-mode cheat sheet.
+    Help,
+    /// A failed `:` command's echoed message (Vim's `E486: Pattern not
+    /// found`…) — shown until the next key, alongside the bell.
+    Error(String),
+    /// Unhandled or invalid input — swallow the key and ring the visual bell.
     Beep,
 }
 

@@ -150,6 +150,15 @@ pub(crate) struct VimState {
     /// `.`-repeatable change (Vim's `.` repeats the last Normal-mode change,
     /// never a `:` command — `:s` is repeated by `&`, which we don't have).
     in_ex: bool,
+    /// Executed `/`//`?` queries and `:` lines, oldest first, recalled with
+    /// Up/Down (or `C-p`/`C-n`) at the respective prompt.
+    search_hist: Vec<String>,
+    ex_hist: Vec<String>,
+    /// Index into the active prompt's history while browsing (None = the
+    /// live line), plus the live line stashed when browsing began so Down
+    /// past the newest entry restores it.
+    hist_ix: Option<usize>,
+    hist_stash: String,
 }
 
 impl VimState {
@@ -171,6 +180,10 @@ impl VimState {
             redos: Vec::new(),
             in_undo: false,
             in_ex: false,
+            search_hist: Vec::new(),
+            ex_hist: Vec::new(),
+            hist_ix: None,
+            hist_stash: String::new(),
         }
     }
 
@@ -251,6 +264,69 @@ impl VimState {
             Pending::Search { query, .. } if !query.is_empty() => Some(query),
             _ => None,
         }
+    }
+
+    /// Whether a `/`//`?`/`:` prompt is collecting input — the indicator
+    /// styles the pending text as a live command line then.
+    pub(crate) fn in_prompt(&self) -> bool {
+        matches!(self.pending, Pending::Search { .. } | Pending::Ex { .. })
+    }
+
+    /// Live matches of the substitution being typed at the `:` prompt — the
+    /// byte ranges `[range]s/pat…` would touch (first per line, every one
+    /// once a `g` flag is typed), for the incremental highlight. Empty while
+    /// the line isn't an `s` command or its pattern is empty/invalid.
+    pub(crate) fn ex_matches(&self, text: &str, cursor: usize) -> Vec<Range<usize>> {
+        const CAP: usize = 200;
+        let Pending::Ex { input, visual } = &self.pending else {
+            return Vec::new();
+        };
+        let lines = line_count(text);
+        let current = line_of(text, clamp_normal(text, cursor));
+        let Ok((range, rest)) = ex_range(input, current, lines, *visual) else {
+            return Vec::new();
+        };
+        let Some(body) = rest.strip_prefix("s/") else {
+            return Vec::new();
+        };
+        let (pat, _, flags) = split_substitute(body);
+        let (mut global, mut icase) = (false, false);
+        for f in flags.chars() {
+            match f {
+                'g' => global = true,
+                'i' => icase = true,
+                _ => return Vec::new(),
+            }
+        }
+        if pat.is_empty() {
+            return Vec::new();
+        }
+        let Ok(re) = regex::RegexBuilder::new(&pat)
+            .case_insensitive(icase)
+            .build()
+        else {
+            return Vec::new();
+        };
+        let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
+        let start = line_offset(text, a.min(b));
+        let end = line_end(text, line_offset(text, a.max(b)));
+        let mut out = Vec::new();
+        let mut at = start;
+        for line in text[start..end].split('\n') {
+            for m in re.find_iter(line) {
+                if m.start() < m.end() {
+                    out.push(at + m.start()..at + m.end());
+                }
+                if !global || out.len() >= CAP {
+                    break;
+                }
+            }
+            if out.len() >= CAP {
+                break;
+            }
+            at += line.len() + 1;
+        }
+        out
     }
 
     /// The Visual selection as a byte range (for the overlay and operators):
@@ -587,10 +663,12 @@ impl VimState {
             Pending::Search { mut query, back } => {
                 match key {
                     Key::Char(c) => {
+                        self.hist_ix = None;
                         query.push(c);
                         self.pending = Pending::Search { query, back };
                     }
                     Key::Backspace => {
+                        self.hist_ix = None;
                         // Backspace on an empty query cancels, like Vim.
                         if query.pop().is_some() {
                             self.pending = Pending::Search { query, back };
@@ -598,10 +676,30 @@ impl VimState {
                             self.pending = Pending::None;
                         }
                     }
+                    Key::Up | Key::Down | Key::Ctrl('p') | Key::Ctrl('n') => {
+                        let older = matches!(key, Key::Up | Key::Ctrl('p'));
+                        let stepped = hist_step(
+                            &self.search_hist,
+                            &mut self.hist_ix,
+                            &mut self.hist_stash,
+                            &query,
+                            older,
+                        );
+                        let beep = stepped.is_none();
+                        self.pending = Pending::Search {
+                            query: stepped.unwrap_or(query),
+                            back,
+                        };
+                        if beep {
+                            return vec![Action::Beep];
+                        }
+                    }
                     Key::Enter => {
                         self.pending = Pending::None;
+                        self.hist_ix = None;
                         // An empty `/` repeats the last search.
                         if !query.is_empty() {
+                            push_hist(&mut self.search_hist, &query);
                             self.last_search = Some((query, back));
                         }
                         return self.search(text, cursor, back);
@@ -613,10 +711,12 @@ impl VimState {
             Pending::Ex { mut input, visual } => {
                 match key {
                     Key::Char(c) => {
+                        self.hist_ix = None;
                         input.push(c);
                         self.pending = Pending::Ex { input, visual };
                     }
                     Key::Backspace => {
+                        self.hist_ix = None;
                         // Backspace on an empty line cancels, like Vim.
                         if input.pop().is_some() {
                             self.pending = Pending::Ex { input, visual };
@@ -624,8 +724,30 @@ impl VimState {
                             self.pending = Pending::None;
                         }
                     }
+                    Key::Up | Key::Down | Key::Ctrl('p') | Key::Ctrl('n') => {
+                        let older = matches!(key, Key::Up | Key::Ctrl('p'));
+                        let stepped = hist_step(
+                            &self.ex_hist,
+                            &mut self.hist_ix,
+                            &mut self.hist_stash,
+                            &input,
+                            older,
+                        );
+                        let beep = stepped.is_none();
+                        self.pending = Pending::Ex {
+                            input: stepped.unwrap_or(input),
+                            visual,
+                        };
+                        if beep {
+                            return vec![Action::Beep];
+                        }
+                    }
                     Key::Enter => {
                         self.pending = Pending::None;
+                        self.hist_ix = None;
+                        if !input.is_empty() {
+                            push_hist(&mut self.ex_hist, &input);
+                        }
                         self.in_ex = true;
                         return self.ex_execute(text, cursor, &input, visual);
                     }
@@ -996,6 +1118,7 @@ impl VimState {
                         return self.beep();
                     };
                     let last = prev_char(text, range.end).max(range.start);
+                    self.hist_ix = None;
                     self.pending = Pending::Ex {
                         input: "'<,'>".into(),
                         visual: Some((line_of(text, range.start), line_of(text, last))),
@@ -1140,6 +1263,7 @@ impl VimState {
             }
             '/' | '?' => {
                 self.take_count();
+                self.hist_ix = None;
                 self.pending = Pending::Search {
                     query: String::new(),
                     back: c == '?',
@@ -1148,6 +1272,7 @@ impl VimState {
             }
             ':' => {
                 self.take_count();
+                self.hist_ix = None;
                 self.pending = Pending::Ex {
                     input: String::new(),
                     visual: None,
@@ -1206,9 +1331,10 @@ impl VimState {
 
     // --- Ex (`:`) commands ----------------------------------------------
 
-    /// Execute a completed `:` line: `q`/`q!`/`w`/`wq`/`x`, a bare line
-    /// number, or `[range]s/pat/rep/[flags]`. Anything else beeps. `visual`
-    /// is the line pair a Visual-mode `:` remembered for `'<,'>`.
+    /// Execute a completed `:` line: `q`/`q!`/`w`/`wq`/`x`, `help`, a bare
+    /// line number, or `[range]s/pat/rep/[flags]`. Anything else echoes an
+    /// error. `visual` is the line pair a Visual-mode `:` remembered for
+    /// `'<,'>`.
     fn ex_execute(
         &mut self,
         text: &str,
@@ -1220,6 +1346,7 @@ impl VimState {
             "q" => return vec![Action::Quit { force: false }],
             "q!" => return vec![Action::Quit { force: true }],
             "w" | "wq" | "x" => return vec![Action::Commit],
+            "h" | "help" => return vec![Action::Help],
             _ => {}
         }
         // A bare line number jumps to its first non-blank, clamped to the
@@ -1235,27 +1362,12 @@ impl VimState {
         // `[range]s/pat/rep/[flags]` — the only range-taking command.
         let lines = line_count(text);
         let current = line_of(text, cursor);
-        let (range, rest) = if let Some(rest) = input.strip_prefix('%') {
-            ((1, lines), rest)
-        } else if let Some(rest) = input.strip_prefix("'<,'>") {
-            // Only meaningful when the prompt was opened from Visual.
-            let Some(v) = visual else {
-                return self.beep();
-            };
-            (v, rest)
-        } else if let Some((a, rest)) = ex_addr(input, current, lines) {
-            match rest.strip_prefix(',') {
-                Some(rest) => match ex_addr(rest, current, lines) {
-                    Some((b, rest)) => ((a, b), rest),
-                    None => return self.beep(),
-                },
-                None => ((a, a), rest),
-            }
-        } else {
-            ((current, current), input)
+        let (range, rest) = match ex_range(input, current, lines, visual) {
+            Ok(parsed) => parsed,
+            Err(msg) => return self.err(msg),
         };
         let Some(body) = rest.strip_prefix("s/") else {
-            return self.beep();
+            return self.err(format!("Not an editor command: {input}"));
         };
         let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
         self.ex_substitute(text, a.min(b), a.max(b), body)
@@ -1263,8 +1375,8 @@ impl VimState {
 
     /// `:s/pat/rep/[flags]` over 1-based lines `first..=last`: one edit
     /// replacing the covered line span, cursor at the first non-blank of the
-    /// last line with a match. No match in the range beeps (Vim's E486), as
-    /// does an invalid regex or an unknown flag.
+    /// last line with a match. No match in the range is an error (Vim's
+    /// E486), as is an invalid regex or an unknown flag.
     fn ex_substitute(&mut self, text: &str, first: usize, last: usize, body: &str) -> Vec<Action> {
         let (pat, rep, flags) = split_substitute(body);
         let (mut global, mut icase) = (false, false);
@@ -1272,18 +1384,18 @@ impl VimState {
             match f {
                 'g' => global = true,
                 'i' => icase = true,
-                _ => return self.beep(),
+                _ => return self.err(format!("Trailing characters: {flags}")),
             }
         }
         // No reuse of the last pattern (Vim's `:s//`), so empty is an error.
         if pat.is_empty() {
-            return self.beep();
+            return self.err("Empty pattern".into());
         }
         let Ok(re) = regex::RegexBuilder::new(&pat)
             .case_insensitive(icase)
             .build()
         else {
-            return self.beep();
+            return self.err(format!("Invalid pattern: {pat}"));
         };
         let rep = sub_replacement(&rep);
         let start = line_offset(text, first);
@@ -1307,7 +1419,7 @@ impl VimState {
             }
         }
         let Some(line_at) = last_match else {
-            return self.beep();
+            return self.err(format!("Pattern not found: {pat}"));
         };
         let post = splice(text, &(start..end), &out);
         let cursor = first_non_blank(&post, (start + line_at).min(post.len()));
@@ -2030,6 +2142,94 @@ impl VimState {
         self.clear_pending();
         vec![Action::Beep]
     }
+
+    /// A failed `:` command: echo `msg` (the app shows it until the next key).
+    fn err(&mut self, msg: String) -> Vec<Action> {
+        self.clear_pending();
+        vec![Action::Error(msg)]
+    }
+}
+
+/// Step a prompt through its history: `older` is Up/`C-p`. Returns the new
+/// line, or None when there's nowhere to go (empty history, already at the
+/// oldest, or Down on the live line). Browsing starts by stashing the live
+/// line; Down past the newest entry restores it.
+fn hist_step(
+    hist: &[String],
+    ix: &mut Option<usize>,
+    stash: &mut String,
+    current: &str,
+    older: bool,
+) -> Option<String> {
+    if older {
+        let next = match *ix {
+            None if hist.is_empty() => return None,
+            None => {
+                *stash = current.to_string();
+                hist.len() - 1
+            }
+            Some(0) => return None,
+            Some(i) => i - 1,
+        };
+        *ix = Some(next);
+        Some(hist[next].clone())
+    } else {
+        match *ix {
+            None => None,
+            Some(i) if i + 1 >= hist.len() => {
+                *ix = None;
+                Some(std::mem::take(stash))
+            }
+            Some(i) => {
+                *ix = Some(i + 1);
+                Some(hist[i + 1].clone())
+            }
+        }
+    }
+}
+
+/// Append an executed prompt line to its history (consecutive repeats and
+/// anything past 50 entries dropped).
+fn push_hist(hist: &mut Vec<String>, line: &str) {
+    if hist.last().map(String::as_str) == Some(line) {
+        return;
+    }
+    hist.push(line.to_string());
+    if hist.len() > 50 {
+        hist.remove(0);
+    }
+}
+
+/// Parse the optional leading `[range]` of an ex command — `%`, `'<,'>`
+/// (only meaningful with a Visual-remembered line pair), or one or two
+/// addresses (`N`, `.`, `$`) separated by `,` — returning the 1-based line
+/// pair and the rest of the line. No range means the current line. `Err` is
+/// the message to echo.
+fn ex_range(
+    input: &str,
+    current: usize,
+    lines: usize,
+    visual: Option<(usize, usize)>,
+) -> Result<((usize, usize), &str), String> {
+    if let Some(rest) = input.strip_prefix('%') {
+        return Ok(((1, lines), rest));
+    }
+    if let Some(rest) = input.strip_prefix("'<,'>") {
+        return match visual {
+            Some(v) => Ok((v, rest)),
+            None => Err("Mark not set".into()),
+        };
+    }
+    if let Some((a, rest)) = ex_addr(input, current, lines) {
+        return match rest.strip_prefix(',') {
+            Some(rest) => match ex_addr(rest, current, lines) {
+                Some((b, rest)) => Ok(((a, b), rest)),
+                None => Err("Invalid range".into()),
+            },
+            None => Ok(((a, a), rest)),
+        };
+    }
+    Ok(((current, current), input))
 }
 
 /// Multiply the counts typed before and after an operator (`2d3w` = 6 words).

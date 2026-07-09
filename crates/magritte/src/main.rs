@@ -552,6 +552,8 @@ struct StatusView {
     /// Scopes the timer that clears the commit editor's discard-prompt flash, so
     /// a later flash isn't cleared early by an earlier one's timer.
     confirm_flash_gen: Generation,
+    /// Same, for the Vim visual bell's clear timer.
+    vim_bell_gen: Generation,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The active full-window screen — exactly one at a time. Modeling these as
@@ -782,6 +784,7 @@ impl StatusView {
             settings_save_gen: Generation::default(),
             settings_save_pending: false,
             confirm_flash_gen: Generation::default(),
+            vim_bell_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,
             font,

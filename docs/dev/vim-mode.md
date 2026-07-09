@@ -227,8 +227,17 @@ even if the first cut ignores it.
   `g` for every occurrence per line), `rep` takes Vim's `&`/`\0`–`\9`
   backrefs (`\&`/`\\` for the literals), and `\/` escapes the delimiter.
   One `Edit` covers the line span, cursor at the last changed line's first
-  non-blank; no match, a bad regex, an unknown flag, or any other command
-  beeps. `:` commands are never the `.`-repeatable change, matching Vim.
+  non-blank. While an `s` command is being typed, the overlay highlights
+  the lines' matches live (first per line, all once a `g` flag is typed).
+  `:help` opens a static cheat-sheet transient. A failed command emits
+  `Action::Error(msg)` — echoed in red by the indicator until the next
+  key, alongside the visual bell (`Action::Beep` alone rings the bell: a
+  brief red tint on the mode chip). `:` commands are never the
+  `.`-repeatable change, matching Vim.
+- **Prompt history:** executed `/` queries and `:` lines are kept (50 each,
+  consecutive repeats collapsed); `Up`/`Down` (or `C-p`/`C-n`) at either
+  prompt recall them, with the live line stashed and restored by `Down`
+  past the newest entry.
 - **`>`/`<` indent operators:** `>>`/`<<` on lines, `>{motion}`/objects,
   Visual `>`/`<`; one step is two spaces (the hanging-bullet width — Vim's
   8 would be wrong here); indent skips blank lines, dedent strips a step of

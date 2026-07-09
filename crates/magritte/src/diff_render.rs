@@ -239,11 +239,19 @@ impl StatusView {
     }
 
     /// The Vim mode indicator overlaid at the message box's bottom-right: the
-    /// in-progress key sequence or search prompt (`2d`, `ys`, `/quer`…) to the
-    /// left of the mode chip (NORMAL/INSERT/VISUAL). No mouse listeners, so
-    /// clicks pass through to the input; inset clear of its scrollbar.
+    /// in-progress key sequence, live `/`//`:` command line, or echoed error
+    /// to the left of the mode chip (NORMAL/INSERT/VISUAL). All chip fills
+    /// are blended opaque over the box background — the overlay sits on the
+    /// message text, so alpha would let it bleed through. No mouse listeners,
+    /// so clicks pass through to the input; inset clear of its scrollbar.
     fn vim_indicator_overlay(&self, ed: &CommitEditor) -> Option<gpui::Div> {
         let (label, pending) = self.vim_indicator(ed)?;
+        let prompt = ed.vim.as_ref().is_some_and(|v| v.in_prompt());
+        let chip_bg = self.palette.bg.blend(if ed.vim_bell {
+            self.palette.removed_bg
+        } else {
+            self.palette.visual
+        });
         Some(
             div()
                 .absolute()
@@ -252,19 +260,33 @@ impl StatusView {
                 .flex()
                 .items_center()
                 .gap_2()
-                .when_some(pending, |el, keys| {
+                .when_some(ed.vim_error.clone(), |el, msg| {
                     el.child(
                         div()
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from(keys)),
+                            .text_color(self.palette.removed)
+                            .child(SharedString::from(msg)),
                     )
+                })
+                .when_some(pending.filter(|_| ed.vim_error.is_none()), |el, keys| {
+                    let keys = div().child(SharedString::from(keys));
+                    el.child(if prompt {
+                        // The live command line: chipped and full-color, so
+                        // it reads as an active prompt rather than a hint.
+                        keys.px_1()
+                            .rounded(px(3.0))
+                            .bg(self.palette.bg.blend(self.palette.selection))
+                            .text_color(self.palette.fg)
+                    } else {
+                        keys.text_color(self.palette.dim)
+                    })
                 })
                 .child(
                     div()
                         .px_1()
                         .rounded(px(3.0))
-                        .bg(self.palette.visual)
+                        .bg(chip_bg)
                         .text_color(match label {
+                            _ if ed.vim_bell => self.palette.removed,
                             "INSERT" => self.palette.added,
                             "VISUAL" | "V-LINE" => self.palette.modified,
                             _ => self.palette.fg,
