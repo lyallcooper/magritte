@@ -969,6 +969,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Leaf::StashDrop
         ),
         leaf!("log-current", "Log current", Leaf::LogCurrent),
+        leaf!("log-file", "Log file", &["file history"], Leaf::LogFile),
         leaf!("log-all", "Log all branches", Leaf::LogAll),
         leaf!("log-other", "Log other ref", Leaf::LogOther),
         leaf!("log-reflog", "Reflog", Leaf::LogReflog),
@@ -2516,6 +2517,11 @@ pub(crate) fn build_log_args(
     paths: Vec<String>,
     limit: usize,
 ) -> Vec<String> {
+    // git rejects `--follow` unless the log is limited to exactly one path,
+    // so the (default-on) transient switch only applies to single-file logs.
+    if paths.len() != 1 {
+        flags.retain(|a| a != "--follow");
+    }
     if !flags
         .iter()
         .any(|a| a.starts_with("-n") || a.starts_with("--max-count"))

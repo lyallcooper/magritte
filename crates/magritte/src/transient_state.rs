@@ -358,6 +358,11 @@ pub(crate) enum PickerAction {
         paths: Vec<String>,
         limit: usize,
     },
+    /// Log the chosen tracked file's history, with the log transient's flags.
+    LogFile {
+        flags: Vec<String>,
+        limit: usize,
+    },
     /// Diff the chosen revision/range, with args/pathspecs gathered from the
     /// diff transient.
     DiffRange {
@@ -488,6 +493,7 @@ impl PickerAction {
                 transient::plain_title(description.clone())
             }
             PickerAction::LogRef { .. } => transient::plain_title("Log ref"),
+            PickerAction::LogFile { .. } => transient::plain_title("Log file"),
             PickerAction::DiffRange { .. } => transient::plain_title("Diff range"),
             PickerAction::DiffCommit { .. } => transient::plain_title("Show commit"),
             PickerAction::RunCommand => transient::plain_title("Run command"),
@@ -570,6 +576,7 @@ impl PickerAction {
             PickerAction::Stash(StashAction::Drop) => "drop",
             PickerAction::SetOption { .. } | PickerAction::SetVariable { .. } => "set",
             PickerAction::LogRef { .. } => "log",
+            PickerAction::LogFile { .. } => "log",
             PickerAction::DiffRange { .. } => "diff",
             PickerAction::DiffCommit { .. } => "show",
             PickerAction::RunCommand => "run",

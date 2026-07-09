@@ -2225,6 +2225,30 @@ mod tests {
             build_log_args(vec!["-n3".into()], LogScope::Ref("dev".into()), vec![], 20),
             vec!["-n3", "dev"]
         );
+        // `--follow` (default-on in the log transient) only survives a
+        // single-file log; git rejects it otherwise.
+        assert_eq!(
+            build_log_args(
+                vec!["--follow".into()],
+                LogScope::Current,
+                vec!["a.txt".into()],
+                5
+            ),
+            vec!["--follow", "--max-count=5", "HEAD", "--", "a.txt"]
+        );
+        assert_eq!(
+            build_log_args(vec!["--follow".into()], LogScope::Current, vec![], 5),
+            vec!["--max-count=5", "HEAD"]
+        );
+        assert_eq!(
+            build_log_args(
+                vec!["--follow".into()],
+                LogScope::Current,
+                vec!["a.txt".into(), "b.txt".into()],
+                5
+            ),
+            vec!["--max-count=5", "HEAD", "--", "a.txt", "b.txt"]
+        );
     }
 
     #[test]

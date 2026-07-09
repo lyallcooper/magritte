@@ -132,6 +132,8 @@ pub enum Command {
     LogAll,
     /// Log another ref (prompts for one).
     LogOther,
+    /// Log one file's history (the file at point, else prompts for one).
+    LogFile,
     /// Reflog of HEAD.
     LogReflog,
     /// Reset HEAD to a commit (the frontend prompts for the target). The mode

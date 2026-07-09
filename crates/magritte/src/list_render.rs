@@ -375,6 +375,20 @@ impl StatusView {
             LogPurpose::SelectSquash { .. } => "Select a commit to fix up / squash into",
             LogPurpose::Browse => "Log",
         };
+        // A path-limited browse log carries its pathspec in the title
+        // ("Log -- src/main.rs"), like the diff views.
+        let title = if selecting {
+            title.to_string()
+        } else {
+            let paths: Vec<String> = log
+                .args
+                .iter()
+                .skip_while(|a| *a != "--")
+                .skip(1)
+                .cloned()
+                .collect();
+            commit_diff_view::diff_title(title, &paths)
+        };
         let mut left = div().flex().items_center().gap_3().child(
             div()
                 .font_weight(FontWeight::SEMIBOLD)

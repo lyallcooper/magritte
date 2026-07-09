@@ -359,6 +359,10 @@ pub fn log_transient() -> Transient {
                 title: plain_title("Arguments"),
                 suffixes: vec![
                     Suffix::Switch(Switch::new("-r", "--reverse", "Reverse order")),
+                    // On by default: `--follow` only reaches git when the log
+                    // is limited to exactly one file (it errors otherwise), so
+                    // single-file histories follow renames unless toggled off.
+                    Suffix::Switch(Switch::on("-f", "--follow", "Follow renames (single file)")),
                     Suffix::Switch(Switch::new("-m", "--no-merges", "Omit merge commits")),
                     Suffix::Switch(Switch::new(
                         "-p",
@@ -441,6 +445,7 @@ pub fn log_transient() -> Transient {
                 title: plain_title("Log"),
                 suffixes: vec![
                     Action::suffix("l", "current", Command::LogCurrent),
+                    Action::suffix("f", "file", Command::LogFile),
                     Action::suffix("a", "all branches", Command::LogAll),
                     Action::suffix("o", "other", Command::LogOther),
                     Action::suffix("r", "reflog", Command::LogReflog),

@@ -98,6 +98,7 @@ impl StatusView {
             LogCurrent => self.start_log(build_log_args(args, LogScope::Current, paths, limit), cx),
             LogAll => self.start_log(build_log_args(args, LogScope::All, paths, limit), cx),
             LogOther => self.prompt_log_ref(args, paths, limit, window, cx),
+            LogFile => self.log_file(args, paths, limit, window, cx),
             LogReflog => self.start_reflog(limit, cx),
             SequenceContinue => self.sequence_continue(window, cx),
             SequenceSkip => self.sequence_skip(window, cx),
@@ -399,6 +400,35 @@ impl StatusView {
             window,
             cx,
         );
+    }
+
+    /// One file's history (magit-log-buffer-file): an explicit `--` limit
+    /// wins, else the file at point, else a tracked-file picker. The scope is
+    /// HEAD; `--follow` rides along via the log transient's default-on switch
+    /// (kept only for single-file logs by [`build_log_args`]).
+    pub(crate) fn log_file(
+        &mut self,
+        flags: Vec<String>,
+        paths: Vec<String>,
+        limit: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = paths.into_iter().next().or_else(|| self.path_at_point());
+        match path {
+            Some(path) => self.start_log(
+                build_log_args(flags, LogScope::Current, vec![path], limit),
+                cx,
+            ),
+            None => self.open_listed_picker(
+                PickerAction::LogFile { flags, limit },
+                CreateMode::None,
+                Vec::new(),
+                |r| r.tracked_files(),
+                window,
+                cx,
+            ),
+        }
     }
 
     /// Open the picker for a branch-transient command: checkout/rename/delete
@@ -1514,6 +1544,11 @@ impl StatusView {
                 } => {
                     let args =
                         build_log_args(flags, LogScope::Ref(chosen.to_string()), paths, limit);
+                    self.start_log(args, cx);
+                }
+                PickerAction::LogFile { flags, limit } => {
+                    let args =
+                        build_log_args(flags, LogScope::Current, vec![chosen.to_string()], limit);
                     self.start_log(args, cx);
                 }
                 PickerAction::DiffRange { args, paths } => {

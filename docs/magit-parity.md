@@ -278,13 +278,16 @@ resolved merge goes through the regular `c` commit transient) — ≈.
 | `=m` / `=p` | `--no-merges` / `--first-parent` (level 7) | ✓ ours `-m`/`-p` |
 | `-D` | `--simplify-by-decoration` | ✗ |
 | `--` | limit to files | ✓ |
-| `-f` | `--follow` | ✗ |
+| `-f` | `--follow` | ✓ ours defaults on (no prefix-arg mechanism; only sent for single-file logs, where git accepts it) |
 | `/s /d /a /f /m` | history simplification (levels 6–7) | ✗ |
 | `-o` | commit order | ✓ |
 | `-r` | `--reverse` | ✓ |
 | `-g -c -d =S -h -p -s` | graph/color/decorate/signature/header/patch/stat | ✗ buffer-formatting toggles with no home in our fixed-format list |
 
-**Actions**: `l` current ✓; `o` other ✓; `a` all references ≈ (ours labeled
+**Actions**: `l` current ✓; `f` file ≈ (magit-log-buffer-file lives in the
+file dispatch, keyed to the visited buffer; ours logs the file at point from
+the log transient, prompting for a tracked file when there is none); `o`
+other ✓; `a` all references ≈ (ours labeled
 "all branches" but runs `--all`, magit's `a` semantics); `b` all branches ≈
 folded into ours `a`; `h` HEAD (level 0) ✗; `u` related ✗; `L` local
 branches ✗; `B`/`T`/`m` (level 7) ✗; `r`/`O`/`H` reflogs ≈ ours has one
