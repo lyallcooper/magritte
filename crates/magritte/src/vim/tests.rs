@@ -1329,6 +1329,28 @@ fn gq_reflow_targets() {
 }
 
 #[test]
+fn comma_q_reflows_whole_message() {
+    let buf = run("s\n|ab cd", ",q");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if *r == (0..7))),
+        ",q reflows the whole message: {:?}",
+        buf.log
+    );
+}
+
+#[test]
+fn undo_skips_no_op_snapshots() {
+    // gqq's ReflowRange snapshots before the app applies it; when the reflow
+    // changes nothing (here the harness applies none), a single `u` still
+    // reaches the real change underneath.
+    let buf = run("a|bc", "xgqqu");
+    assert_eq!(show(&buf.text, buf.cursor), "a|bc");
+    assert!(buf.vim.undo_stack().is_empty(), "both snapshots consumed");
+}
+
+#[test]
 fn search_query_preview() {
     let (text, cursor) = parse_spec("|ab cd");
     let mut buf = Buf::new(&text, cursor);

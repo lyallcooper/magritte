@@ -126,7 +126,7 @@ impl StatusView {
                 return;
             }
             s.replace_text_in_range(
-                Some(byte_range_to_utf16(&text, &(start..end))),
+                Some(commit_text::byte_range_to_utf16(&text, &(start..end))),
                 &reflowed,
                 window,
                 cx,
@@ -189,7 +189,7 @@ impl StatusView {
                     let text = s.text().to_string();
                     let range = range.start.min(text.len())..range.end.min(text.len());
                     s.replace_text_in_range(
-                        Some(byte_range_to_utf16(&text, &range)),
+                        Some(commit_text::byte_range_to_utf16(&text, &range)),
                         &replacement,
                         window,
                         cx,
@@ -382,25 +382,14 @@ fn single_char(s: &str) -> Option<char> {
     }
 }
 
-/// UTF-8 byte range → UTF-16 code-unit range, the one conversion Vim mode
-/// needs (only `replace_text_in_range` speaks UTF-16; every read is bytes).
-fn byte_range_to_utf16(text: &str, range: &std::ops::Range<usize>) -> std::ops::Range<usize> {
-    let start: usize = text[..range.start].chars().map(char::len_utf16).sum();
-    let len: usize = text[range.start..range.end]
-        .chars()
-        .map(char::len_utf16)
-        .sum();
-    start..start + len
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn utf16_ranges() {
         // "a𝄞b": 𝄞 is 4 bytes, 2 UTF-16 units.
         let t = "a𝄞b";
-        assert_eq!(super::byte_range_to_utf16(t, &(0..1)), 0..1);
-        assert_eq!(super::byte_range_to_utf16(t, &(1..5)), 1..3);
-        assert_eq!(super::byte_range_to_utf16(t, &(5..6)), 3..4);
+        assert_eq!(super::commit_text::byte_range_to_utf16(t, &(0..1)), 0..1);
+        assert_eq!(super::commit_text::byte_range_to_utf16(t, &(1..5)), 1..3);
+        assert_eq!(super::commit_text::byte_range_to_utf16(t, &(5..6)), 3..4);
     }
 }

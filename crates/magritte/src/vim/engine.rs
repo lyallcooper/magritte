@@ -367,6 +367,24 @@ impl VimState {
         self.replaying = false;
     }
 
+    #[cfg(test)]
+    pub(crate) fn undo_stack(&self) -> &[(String, usize)] {
+        &self.undos
+    }
+
+    /// An edit made outside the engine (the ⌥q reflow) still gets a Vim undo
+    /// level. In Insert mode the open session's snapshot already covers it.
+    pub(crate) fn note_external_change(&mut self, text: &str, cursor: usize) {
+        if self.mode == Mode::Insert {
+            return;
+        }
+        self.undos.push((text.to_string(), cursor));
+        if self.undos.len() > 200 {
+            self.undos.remove(0);
+        }
+        self.redos.clear();
+    }
+
     fn key_modal(&mut self, text: &str, cursor: usize, key: Key) -> Vec<Action> {
         if key == Key::Escape {
             self.clear_pending();
@@ -498,6 +516,9 @@ impl VimState {
                 match key {
                     Key::Char(',') | Key::Char('c') => return vec![Action::Commit],
                     Key::Char('k') => return vec![Action::Quit],
+                    // `,q`: reflow the whole message (the app skips the
+                    // summary line, like ⌥q).
+                    Key::Char('q') => return vec![Action::ReflowRange(0..text.len())],
                     _ => {
                         // Not a leader command: the comma meant reverse-find
                         // repeat. Run it, then this key from the landing spot
@@ -704,6 +725,7 @@ impl VimState {
             match c {
                 // `gqq`: the current `count` lines, like `dd`.
                 'q' => {
+                    self.pending = Pending::None;
                     let count = self.take_count().max(1);
                     let start = line_start(text, cursor);
                     let mut end = line_end(text, cursor);
@@ -954,7 +976,13 @@ impl VimState {
             }
             'u' => {
                 self.take_count();
-                let Some((prev_text, prev_cursor)) = self.undos.pop() else {
+                // Skip snapshots identical to the current text (a reflow that
+                // turned out to change nothing).
+                let mut top = self.undos.pop();
+                while top.as_ref().is_some_and(|(t, _)| t == text) {
+                    top = self.undos.pop();
+                }
+                let Some((prev_text, prev_cursor)) = top else {
                     return self.beep();
                 };
                 self.redos.push((text.to_string(), cursor));

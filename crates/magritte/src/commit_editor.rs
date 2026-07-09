@@ -94,6 +94,35 @@ pub(crate) enum CommitDiffRow {
     Note(String),
 }
 
+/// Apply `new` to the input as one minimal edit (longest common prefix and
+/// suffix preserved), then put the cursor at `cursor` (a byte offset into
+/// `new`). Unlike `set_value`, the edit lands in the undo history, so
+/// programmatic rewrites (reflow, auto-wrap) are ⌘Z-able.
+fn splice_value(
+    s: &mut InputState,
+    new: &str,
+    cursor: usize,
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+) {
+    use gpui::EntityInputHandler;
+    let old = s.text().to_string();
+    if old != new {
+        let (old_range, new_range) = commit_text::diff_splice(&old, new);
+        s.replace_text_in_range(
+            Some(commit_text::byte_range_to_utf16(&old, &old_range)),
+            &new[new_range],
+            window,
+            cx,
+        );
+    }
+    s.set_cursor_position(
+        commit_text::byte_offset_to_position(new, cursor.min(new.len())),
+        window,
+        cx,
+    );
+}
+
 /// The status-style change kind for a diff'd file (magit's "modified"/"new
 /// file"/"deleted"/"renamed" word), derived from the file diff's flags.
 pub(crate) fn file_change(diff: &FileDiff) -> Change {
@@ -175,14 +204,10 @@ impl StatusView {
                     commit_text::wrap_at_cursor(&value, offset, COMMIT_BODY_WIDTH)
                 {
                     // Wrapping only turns a space into a newline, so the cursor's
-                    // byte offset is unchanged — recompute its line/column in the
-                    // rewrapped text and restore it.
-                    s.set_value(wrapped.clone(), window, cx);
-                    s.set_cursor_position(
-                        commit_text::byte_offset_to_position(&wrapped, offset),
-                        window,
-                        cx,
-                    );
+                    // byte offset is unchanged. The splice keeps the wrap inside
+                    // the undo history (grouped with the typing that caused it),
+                    // so ⌘Z can't restore stale offsets.
+                    splice_value(s, &wrapped, offset, window, cx);
                 }
             }
             // Diagnostics carry their own copy of the text for position math;
@@ -215,19 +240,21 @@ impl StatusView {
         let Some(state) = self.editor().map(|e| e.state.clone()) else {
             return;
         };
-        state.update(cx, |s, cx| {
-            let value = s.value().to_string();
-            let reflowed = commit_text::reflow_body(&value, COMMIT_BODY_WIDTH);
-            if reflowed != value {
-                let end = reflowed.len(); // byte offset of the end
-                s.set_value(reflowed.clone(), window, cx);
-                s.set_cursor_position(
-                    commit_text::byte_offset_to_position(&reflowed, end),
-                    window,
-                    cx,
-                );
+        let (before, before_cursor) = {
+            let s = state.read(cx);
+            (s.text().to_string(), s.cursor())
+        };
+        let reflowed = commit_text::reflow_body(&before, COMMIT_BODY_WIDTH);
+        if reflowed != before {
+            // ⌥q isn't an engine command, so give Vim-level undo its own
+            // snapshot too (the splice covers the widget history / ⌘Z).
+            if let Some(vim) = self.editor_mut().and_then(|e| e.vim.as_mut()) {
+                vim.note_external_change(&before, before_cursor);
             }
-        });
+            state.update(cx, |s, cx| {
+                splice_value(s, &reflowed, reflowed.len(), window, cx);
+            });
+        }
         // Refresh the summary warning against the reflowed text.
         self.on_editor_changed(window, cx);
     }

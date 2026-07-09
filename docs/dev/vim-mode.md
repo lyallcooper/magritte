@@ -178,17 +178,22 @@ even if the first cut ignores it.
   like the status view's `pending_prefix` machinery.
 - **Editor commands** use evil's commit-buffer keys so `Esc` and the editing
   keys stay free for modal editing: `ZZ` (or `,,`/`,c`) commit, `ZQ` (or
-  `,k`) cancel (the discard-confirm flow still applies). A bare `,` in
-  Normal mode is the leader — any non-leader key after it falls back to
-  `,`'s reverse-find repeat and then runs (under an operator, `,` is always
-  the reverse-find). `Esc` in idle Normal is a quiet no-op. `⌘⏎` still
-  commits from any mode (in Normal it's caught in the capture phase, since
-  the unfocused input can't).
+  `,k`) cancel (the discard-confirm flow still applies), `,q` reflow the
+  whole message. A bare `,` in Normal mode is the leader — any non-leader
+  key after it falls back to `,`'s reverse-find repeat and then runs (under
+  an operator, `,` is always the reverse-find). `Esc` in idle Normal is a
+  quiet no-op. `⌘⏎` still commits from any mode (in Normal it's caught in
+  the capture phase, since the unfocused input can't).
 - **`gq` is the reflow operator:** `gqq` reflows the current line(s),
   `gq{motion}`/`gq{object}` the covered lines, Visual `gq` the selection —
   each emits `Action::ReflowRange`, which the app expands to whole lines,
   reflows at 72 columns, and splices (the summary line is always skipped,
-  keeping the 50-col convention). `⌥q` remains the whole-body reflow.
+  keeping the 50-col convention). Reflow respects structure: indented lines
+  are preformatted (kept verbatim, the git code-block convention) and
+  bullets (`- * + •`, `1.`/`1)`) re-wrap as their own items with a hanging
+  indent. `⌥q` remains the whole-body reflow (also on `,q`), applied as a
+  minimal `replace_text_in_range` splice — so it's ⌘Z-able in plain mode
+  and gets a Vim undo snapshot (`note_external_change`) in Vim mode.
 - **`.` repeat:** the engine records each change's keys (`recording` →
   `last_change`), plus the text an Insert session typed — captured at `Esc`
   as the slice between the insert-entry point and the exit cursor

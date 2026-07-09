@@ -80,25 +80,83 @@ pub(crate) fn reflow_body(text: &str, width: usize) -> String {
 
 /// Reflow a block of body lines (see [`reflow_body`], which handles skipping
 /// the summary): paragraphs re-wrap at `width`, blank separator lines stay.
+/// Structure is respected: an indented line is preformatted (kept verbatim —
+/// the git convention for code blocks and quoted output), and a bullet
+/// (`- * + •` or `1.`/`1)`) starts its own paragraph that re-wraps with a
+/// hanging indent, its continuation lines joined bullet-style.
 pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
-    let body: Vec<&str> = block.split('\n').collect();
+    // The open paragraph: the first line's prefix (a bullet marker or
+    // nothing), the hanging prefix for wrapped continuations, and its lines.
+    struct Para<'a> {
+        first: String,
+        cont: String,
+        lines: Vec<&'a str>,
+    }
     let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < body.len() {
-        if body[i].trim().is_empty() {
-            out.push(String::new());
-            i += 1;
-        } else {
-            let start = i;
-            while i < body.len() && !body[i].trim().is_empty() {
-                i += 1;
-            }
-            let collapsed = body[start..i].join(" ");
-            let collapsed = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
-            out.extend(wrap_line(&collapsed, width));
+    let mut para: Option<Para> = None;
+    fn flush(out: &mut Vec<String>, para: &mut Option<Para>, width: usize) {
+        let Some(p) = para.take() else { return };
+        let collapsed = p.lines.join(" ");
+        let collapsed = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+        let inner = width.saturating_sub(p.first.chars().count()).max(1);
+        for (i, piece) in wrap_line(&collapsed, inner).into_iter().enumerate() {
+            let prefix = if i == 0 { &p.first } else { &p.cont };
+            out.push(format!("{prefix}{piece}"));
         }
     }
+    for line in block.split('\n') {
+        if line.trim().is_empty() {
+            flush(&mut out, &mut para, width);
+            out.push(String::new());
+        } else if let Some(marker) = bullet_marker(line) {
+            flush(&mut out, &mut para, width);
+            para = Some(Para {
+                cont: " ".repeat(marker.chars().count()),
+                lines: vec![&line[marker.len()..]],
+                first: marker.to_string(),
+            });
+        } else if line.starts_with([' ', '\t']) {
+            // Indented: a bullet's continuation joins it; anything else is
+            // purposeful indentation, kept as-is.
+            match &mut para {
+                Some(p) if !p.cont.is_empty() => p.lines.push(line),
+                _ => {
+                    flush(&mut out, &mut para, width);
+                    out.push(line.to_string());
+                }
+            }
+        } else {
+            match &mut para {
+                Some(p) => p.lines.push(line),
+                None => {
+                    para = Some(Para {
+                        first: String::new(),
+                        cont: String::new(),
+                        lines: vec![line],
+                    });
+                }
+            }
+        }
+    }
+    flush(&mut out, &mut para, width);
     out.join("\n")
+}
+
+/// The bullet marker (including its trailing space) opening a list item:
+/// `- `, `* `, `+ `, `• `, or a number with `. `/`) `.
+fn bullet_marker(line: &str) -> Option<&str> {
+    for b in ['-', '*', '+', '•'] {
+        if let Some(rest) = line.strip_prefix(b) {
+            if rest.starts_with(' ') {
+                return Some(&line[..b.len_utf8() + 1]);
+            }
+        }
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 && (line[digits..].starts_with(". ") || line[digits..].starts_with(") ")) {
+        return Some(&line[..digits + 2]);
+    }
+    None
 }
 
 /// The character-column range of the part of the summary (line 0) that overruns
@@ -112,6 +170,48 @@ pub(crate) fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
         return None;
     }
     Some((limit as u32, chars as u32))
+}
+
+/// The minimal single-range difference between `old` and `new`: the byte
+/// range in `old` to replace and the byte range in `new` holding the
+/// replacement (longest common prefix and suffix trimmed, on char
+/// boundaries). Equal strings yield two empty ranges.
+pub(crate) fn diff_splice(
+    old: &str,
+    new: &str,
+) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    let mut p = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !(old.is_char_boundary(p) && new.is_char_boundary(p)) {
+        p -= 1;
+    }
+    let mut q = old[p..]
+        .bytes()
+        .rev()
+        .zip(new[p..].bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !(old.is_char_boundary(old.len() - q) && new.is_char_boundary(new.len() - q)) {
+        q -= 1;
+    }
+    (p..old.len() - q, p..new.len() - q)
+}
+
+/// UTF-8 byte range → UTF-16 code-unit range: `replace_text_in_range` is the
+/// one input API that speaks UTF-16.
+pub(crate) fn byte_range_to_utf16(
+    text: &str,
+    range: &std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let start: usize = text[..range.start].chars().map(char::len_utf16).sum();
+    let len: usize = text[range.start..range.end]
+        .chars()
+        .map(char::len_utf16)
+        .sum();
+    start..start + len
 }
 
 /// Convert a byte offset into `text` (as the input reports the cursor) to a
@@ -199,6 +299,44 @@ mod tests {
         let text = "summary\n\npara one here\n\npara two here";
         let reflowed = reflow_body(text, 72);
         assert_eq!(reflowed, "summary\n\npara one here\n\npara two here");
+    }
+
+    #[test]
+    fn reflow_preserves_structure() {
+        // Indented lines are preformatted: kept verbatim, never joined.
+        let text = "s\n\nintro text\n    code line one\n    code line two";
+        assert_eq!(reflow_body(text, 72), text);
+
+        // Bullets are their own paragraphs — consecutive items never merge —
+        // and re-wrap with a hanging indent, joining their continuations.
+        let text = "s\n\n- first item\n- second item that is a bit longer\nand continues here";
+        assert_eq!(
+            reflow_body(text, 24),
+            "s\n\n- first item\n- second item that is a\n  bit longer and\n  continues here"
+        );
+        // An indented continuation joins its bullet.
+        let text = "s\n\n- item text\n  indented continuation";
+        assert_eq!(
+            reflow_body(text, 72),
+            "s\n\n- item text indented continuation"
+        );
+        // Numbered lists too.
+        let text = "s\n\n1. one\n2) two";
+        assert_eq!(reflow_body(text, 72), text);
+    }
+
+    #[test]
+    fn diff_splice_minimal_ranges() {
+        assert_eq!(diff_splice("abc", "abc"), (3..3, 3..3));
+        assert_eq!(diff_splice("abc", "aXc"), (1..2, 1..2));
+        assert_eq!(diff_splice("ab", "aXb"), (1..1, 1..2));
+        assert_eq!(diff_splice("aXb", "ab"), (1..2, 1..1));
+        assert_eq!(diff_splice("aa", "aaa"), (2..2, 2..3));
+        // Multibyte boundaries: é (2 bytes) vs e.
+        let (o, n) = diff_splice("xéy", "xey");
+        assert!("xéy".is_char_boundary(o.start) && "xéy".is_char_boundary(o.end));
+        assert_eq!(&"xey"[n.clone()], "e");
+        assert_eq!(&"xéy"[o], "é");
     }
 
     #[test]
