@@ -14,8 +14,9 @@ The external-editor path stays the recommended route for full fidelity
 (`commit_editor = "nvim"` launches the user's real Vim). This is for people who
 want modal editing without shelling out.
 
-Non-goals for the first cut (left room for, in "Later"): ex commands (`:%s/…`),
-macros, marks, visual-block, multiple registers, search (`/`).
+Non-goals for the first cut (left room for, in "Later"): macros, marks,
+multiple registers. (Search, `:` ex commands, and Visual Block have since
+landed — see below.)
 
 ## Architecture: a modal command layer over `InputState`
 
@@ -116,7 +117,7 @@ strings headlessly — the same discipline as `magritte-core`.
 ### Modes
 
 ```
-enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
+enum Mode { Normal, Insert, Visual { anchor: usize, kind: Char|Line|Block },
             OperatorPending(Operator), SurroundPending(SurroundOp) }
 ```
 
@@ -124,6 +125,8 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
 - **Insert** — keys pass straight through to `InputState` (the only mode we don't
   intercept); `Esc` returns to Normal and steps the cursor left one column.
 - **Visual** — `anchor` + cursor define the range; operators act on it.
+  `v`/`V`/`C-v` pick the kind (charwise/linewise/blockwise) and switch it in
+  place; the current kind's own key exits.
 - **OperatorPending** — after `d`/`c`/`y`, awaiting a motion or text object.
 - **SurroundPending** — after `ys`/`cs`/`ds`, awaiting the text object / pair char.
 
@@ -142,7 +145,27 @@ enum Mode { Normal, Insert, Visual { anchor: usize, linewise: bool },
   clipboard). Doubled forms `dd`/`cc`/`yy` are linewise; shorthands `D`/`C`
   (to end of line), `Y`/`S` (linewise), `x`/`X`, `r{char}`, `~`, `J`.
 - **Put:** `p`/`P` from the unnamed register (deletes and changes fill it too,
-  as in Vim), honoring the register's linewise flag.
+  as in Vim), honoring the register's kind (charwise/linewise/blockwise).
+- **Visual Block** (`C-v`): the anchor and cursor define a rectangle in char
+  columns (multi-byte safe); the cursor corner on a line shorter than the
+  sticky column sits one past its last char, and `$` extends the block to
+  each line's end until a column-setting motion (both probed against Vim).
+  Operators emit one `Edit` spanning the covered lines, cursor at the
+  block's top-left: `d`/`x`, `y` (a blockwise register: segments joined by
+  newlines plus a column width — `p`/`P` re-insert them column-aligned,
+  space-padding short lines and creating missing ones), `r`, `c`, `I`/`A`
+  (Insert at the left edge / past the right one, `$A` at each line's end;
+  the Esc ending the session replicates the typed text onto the block's
+  other lines — skipping too-short lines for `I`/`c`, padding for `A`, and
+  not at all when the insert spanned lines), `D`/`C` (the to-eol forms),
+  and the line-based commands (`J`, `gq`, `:`, `X`/`Y`/`R`/`S`) shared with
+  the other kinds. Unsupported blockwise commands beep rather than
+  misapply.
+- **Scrolling:** `zz`/`zt`/`zb` center/top/bottom the cursor line (`z.`,
+  `z<CR>`, `z-` also move to the first non-blank). The engine emits
+  `Action::Scroll { align }`; the app computes the offset from the input's
+  laid-out line height and visible rows and sets it (clamped, applied at
+  the next layout).
 - **Undo/redo:** `u`/`Ctrl-r`, engine-native. The widget's own history
   groups entries by *time* (1s), which is right for typing but wrong for
   Vim (`dw..` then `u` must undo one `dw`, not all three) — so the engine
@@ -186,6 +209,19 @@ even if the first cut ignores it.
   an operator, `,` is always the reverse-find). `Esc` in idle Normal is a
   quiet no-op. `⌘⏎` still commits from any mode (in Normal it's caught in
   the capture phase, since the unfocused input can't).
+- **User keymap (`[vim.keymap]`):** extra literal key sequences for the
+  editor-level commands (`commit`/`cancel`/`discard`/`reflow`/`help`),
+  parsed from the config (`config::VimConfig`, per-entry repo merge like
+  `[keymap]`) into the engine at construction (`VimState::with_user_map`,
+  so remaps apply when an editor opens — a live config reload doesn't
+  rebind an already-open one). Resolution order: in Normal mode, before
+  the built-in dispatch, a key that starts any user sequence enters a
+  `Pending::User` prefix state (shown in the indicator like other pending
+  keys); an exact match fires (so it wins any collision with a built-in
+  key or prefix), a live prefix waits, and a dead end beeps *without*
+  replaying the swallowed keys — a mapping's first key therefore shadows
+  that built-in entirely (docs recommend distinct leaders). The defaults
+  always stay bound; user entries only add (or shadow on collision).
 - **`gq` is the reflow operator:** `gqq` reflows the current line(s),
   `gq{motion}`/`gq{object}` the covered lines, Visual `gq` the selection —
   each emits `Action::ReflowRange`, which the app expands to whole lines,
@@ -256,10 +292,22 @@ even if the first cut ignores it.
   vim keys (`ZZ`/`ZQ`/`gq`).
 - **Visual selection**: split `anchor..cursor` into per-line byte ranges and
   draw a translucent rect per line via `range_to_bounds`; falls back to none if
-  bounds aren't available (not laid out / off-screen).
+  bounds aren't available (not laid out / off-screen). A blockwise selection
+  paints the engine's per-line block ranges the same way (lines the block
+  overhangs yield empty ranges and no rect).
 - **Block cursor**: drawn by the same overlay via
   `range_to_bounds(cursor..next char)`, with a half-width stub on empty
   lines and at EOF.
+- **Which-key**: once a multi-key sequence (operator-pending, the
+  `g`/`Z`/`z`/`,` prefixes, surround, `i`/`a` objects, or a user-map
+  prefix — not the `/`/`:` prompts or a bare count) has sat pending for
+  ~600ms, a compact panel of its continuations appears above the mode
+  indicator. The engine owns the rows (`which_key_hints`: static tables
+  per pending state, capped at ~10 — a hint, not a manual — with a user
+  prefix listing its own sequences); the app owns the timing (a
+  generation-scoped timer re-armed on every key, mirroring the visual
+  bell) and paints the panel as an inert overlay — no mouse handlers and
+  not a `Popup`, which would capture the very keys it hints at.
 
 ## Testing
 
@@ -278,7 +326,8 @@ even if the first cut ignores it.
 3. Visual mode + the `range_to_bounds` per-line selection overlay.
 4. Surround MVP.
 5. Block cursor; polish.
-6. Later: registers/marks.
+6. Later: named registers, marks, macros, `C-d`/`C-u` paging, Visual paste
+   of a blockwise register, blockwise `~`/`u`/`U`/`>`/`<`.
 
 ## Risks / open questions
 

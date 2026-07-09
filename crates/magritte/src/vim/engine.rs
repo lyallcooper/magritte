@@ -83,10 +83,16 @@ enum Pending {
     },
     /// After `Z`: awaiting `Z` (commit) or `Q` (cancel).
     Z,
+    /// After a lowercase `z`: awaiting the scroll key (`z`/`t`/`b`, or the
+    /// first-non-blank variants `.`/`<CR>`/`-`).
+    Zscroll,
     /// After a bare `,` in Normal mode: `,`/`c` commit, `k` cancels
     /// (evil-collection's with-editor leader keys); any other key falls back
     /// to `,`'s reverse-find-repeat and then runs normally.
     Comma,
+    /// Mid-way through a `[vim.keymap]` sequence: the keys typed so far.
+    /// A dead end beeps without replaying them as built-ins.
+    User(String),
     /// `/` or `?`: collecting the search query (shown live in the mode bar);
     /// Enter executes, Esc cancels, Backspace edits.
     Search {
@@ -102,11 +108,79 @@ enum Pending {
     },
 }
 
-/// The unnamed register: the last yanked or deleted text.
+/// The unnamed register: the last yanked or deleted text. A blockwise
+/// register's `text` is the block's per-line segments joined with `\n`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Register {
     text: String,
-    linewise: bool,
+    kind: RegKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegKind {
+    Char,
+    Line,
+    /// `width` is the block's column width in chars (segments from lines the
+    /// block overhung are narrower); pastes pad segments back out to it.
+    Block {
+        width: usize,
+    },
+}
+
+impl Register {
+    fn charwise(text: String) -> Register {
+        Register {
+            text,
+            kind: RegKind::Char,
+        }
+    }
+}
+
+/// A pending blockwise Insert session (`c`/`I`/`A` in Visual Block): the Esc
+/// that ends it replays the typed text onto the block's other lines.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct BlockInsert {
+    /// 1-based line numbers to replicate onto (the rows below the top one).
+    rows: Range<usize>,
+    /// Char column to insert at; `None` appends at each line's end (`$`-`A`).
+    col: Option<usize>,
+    /// Pad shorter lines with spaces to reach `col` (`A`); otherwise skip
+    /// lines that don't reach it (`I`/`c`).
+    pad: bool,
+    /// Column the cursor lands on after the replication (the block's left
+    /// edge for `I`/`A`); `None` keeps the plain Esc step-left (`c`).
+    exit_col: Option<usize>,
+}
+
+/// A resolved blockwise selection: the per-line byte ranges plus the char
+/// columns that define the rectangle.
+struct BlockGeom {
+    /// One range per covered line, top to bottom (empty on lines the block
+    /// overhangs).
+    ranges: Vec<Range<usize>>,
+    /// Leftmost and rightmost char columns, both inside the block.
+    left: usize,
+    right: usize,
+    /// `$`-extended: the block runs to each line's end (`:help v_b_dollar`).
+    to_eol: bool,
+    /// 1-based line numbers covered (end exclusive).
+    rows: Range<usize>,
+}
+
+impl BlockGeom {
+    /// The register's column width: the rectangle's, or the widest segment
+    /// for a `$` block.
+    fn width(&self, text: &str) -> usize {
+        if self.to_eol {
+            self.ranges
+                .iter()
+                .map(|r| text[r.clone()].chars().count())
+                .max()
+                .unwrap_or(0)
+        } else {
+            self.right - self.left + 1
+        }
+    }
 }
 
 /// All cross-keystroke Vim state for one editor. Create with [`VimState::new`]
@@ -116,6 +190,11 @@ struct Register {
 pub(crate) struct VimState {
     mode: Mode,
     pending: Pending,
+    /// The `[vim.keymap]` sequences: literal key strings → editor commands,
+    /// matched in Normal mode before the built-in dispatch (so a mapping's
+    /// first key shadows any built-in on that key). Parsed by
+    /// [`super::parse_user_map`] when the editor opens.
+    user_map: Vec<(String, UserCmd)>,
     /// Digits typed so far for the count in progress (may sit before an
     /// operator, after it, or both — they multiply, as in Vim).
     count: String,
@@ -135,8 +214,12 @@ pub(crate) struct VimState {
     /// The last buffer-changing command for `.`: its keys, plus the text the
     /// Insert session it opened typed (captured between entry and Esc).
     last_change: Option<(Vec<Key>, String)>,
-    /// Where Insert-mode typing began, for the `.` text capture.
+    /// Where Insert-mode typing began, for the `.` text capture and the
+    /// blockwise replication.
     insert_entry: Option<usize>,
+    /// Set by a blockwise `c`/`I`/`A`: the Esc ending the session replicates
+    /// the typed text onto the block's other lines.
+    block_insert: Option<BlockInsert>,
     /// True while the app replays a `.` — suppresses re-recording.
     replaying: bool,
     /// Vim-level undo: one `(text, cursor)` snapshot per change command (an
@@ -162,10 +245,19 @@ pub(crate) struct VimState {
 }
 
 impl VimState {
+    /// Fresh state in Normal mode, with no user `[vim.keymap]` sequences.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::with_user_map(Vec::new())
+    }
+
+    /// Fresh state in Normal mode, with the user's `[vim.keymap]` sequences
+    /// active.
+    pub(crate) fn with_user_map(user_map: Vec<(String, UserCmd)>) -> Self {
         VimState {
             mode: Mode::Normal,
             pending: Pending::None,
+            user_map,
             count: String::new(),
             anchor: 0,
             desired_col: None,
@@ -175,6 +267,7 @@ impl VimState {
             recording: Vec::new(),
             last_change: None,
             insert_entry: None,
+            block_insert: None,
             replaying: false,
             undos: Vec::new(),
             redos: Vec::new(),
@@ -227,7 +320,9 @@ impl VimState {
                 s.push(*from);
             }
             Pending::Z => s.push('Z'),
+            Pending::Zscroll => s.push('z'),
             Pending::Comma => s.push(','),
+            Pending::User(typed) => s.push_str(typed),
             Pending::Search { query, back } => {
                 s.push(if *back { '?' } else { '/' });
                 s.push_str(query);
@@ -254,7 +349,9 @@ impl VimState {
         self.cancel_pending();
         self.desired_col = None;
         self.anchor = clamp_normal(text, anchor);
-        self.mode = Mode::Visual { linewise: false };
+        self.mode = Mode::Visual {
+            kind: VisualKind::Char,
+        };
     }
 
     /// The query being typed at a `/`/`?` prompt, for the live match
@@ -331,25 +428,88 @@ impl VimState {
 
     /// The Visual selection as a byte range (for the overlay and operators):
     /// charwise includes both endpoint chars; linewise covers whole lines
-    /// including the trailing newline.
+    /// including the trailing newline. `None` outside Visual and for a
+    /// blockwise selection (see [`VimState::block_ranges`]).
     pub(crate) fn visual_range(&self, text: &str, cursor: usize) -> Option<Range<usize>> {
-        let Mode::Visual { linewise } = self.mode else {
+        let Mode::Visual { kind } = self.mode else {
             return None;
         };
         let a = clamp_normal(text, self.anchor);
         let c = clamp_normal(text, cursor);
         let (lo, hi) = if a <= c { (a, c) } else { (c, a) };
-        if linewise {
-            let end = line_end(text, hi);
-            Some(line_start(text, lo)..(end + usize::from(end < text.len())))
-        } else if self.desired_col == Some(usize::MAX) {
-            // After `$` the selection runs to the end of the line including
-            // its newline (Vim's curswant=MAXCOL: `v$d` joins the lines).
-            let end = line_end(text, hi);
-            Some(lo..(end + usize::from(end < text.len())).min(text.len()))
-        } else {
-            Some(lo..next_char(text, hi))
+        match kind {
+            VisualKind::Line => {
+                let end = line_end(text, hi);
+                Some(line_start(text, lo)..(end + usize::from(end < text.len())))
+            }
+            VisualKind::Char if self.desired_col == Some(usize::MAX) => {
+                // After `$` the selection runs to the end of the line
+                // including its newline (Vim's curswant=MAXCOL: `v$d` joins
+                // the lines).
+                let end = line_end(text, hi);
+                Some(lo..(end + usize::from(end < text.len())).min(text.len()))
+            }
+            VisualKind::Char => Some(lo..next_char(text, hi)),
+            VisualKind::Block => None,
         }
+    }
+
+    /// The blockwise selection's per-line byte ranges, top to bottom (for the
+    /// overlay and the block operators): the char-column rectangle between
+    /// the anchor and the cursor, clamped per line. A line shorter than the
+    /// left column yields an empty range at its end. `None` outside Visual
+    /// Block.
+    pub(crate) fn block_ranges(&self, text: &str, cursor: usize) -> Option<Vec<Range<usize>>> {
+        self.block_geom(text, cursor).map(|g| g.ranges)
+    }
+
+    fn block_geom(&self, text: &str, cursor: usize) -> Option<BlockGeom> {
+        if self.mode
+            != (Mode::Visual {
+                kind: VisualKind::Block,
+            })
+        {
+            return None;
+        }
+        let a = clamp_normal(text, self.anchor);
+        let c = clamp_normal(text, cursor);
+        let to_eol = self.desired_col == Some(usize::MAX);
+        // The cursor corner aims at the sticky column: on a line shorter
+        // than curswant it sits one past the last char (probed: `C-v` at
+        // column 5, `j` onto a 2-char line, `d` deletes columns 3-5).
+        let actual = char_col(text, c);
+        let line_chars = char_col(text, line_end(text, c));
+        let ccol = self
+            .desired_col
+            .unwrap_or(actual)
+            .min(line_chars)
+            .max(actual);
+        let acol = char_col(text, a);
+        let (left, right) = (acol.min(ccol), acol.max(ccol));
+        let (lo, hi) = (a.min(c), a.max(c));
+        let mut ranges = Vec::new();
+        let last_line = line_start(text, hi);
+        let mut at = line_start(text, lo);
+        loop {
+            let start = offset_of_col(text, at, left);
+            let end = if to_eol {
+                line_end(text, at)
+            } else {
+                offset_of_col(text, at, right + 1)
+            };
+            ranges.push(start..end);
+            if at >= last_line {
+                break;
+            }
+            at = line_end(text, at) + 1;
+        }
+        Some(BlockGeom {
+            ranges,
+            left,
+            right,
+            to_eol,
+            rows: line_of(text, lo)..line_of(text, hi) + 1,
+        })
     }
 
     /// Feed one keystroke. `text`/`cursor` are the buffer's current contents
@@ -396,6 +556,11 @@ impl VimState {
                         } else {
                             self.remember_change(cursor, edited, &actions);
                         }
+                    } else if self.mode == Mode::Insert {
+                        // A `.` replay still needs the entry point: the Esc
+                        // closing the replayed session replicates a blockwise
+                        // insert from it.
+                        self.note_insert_entry(cursor, &actions);
                     }
                 }
                 actions
@@ -410,18 +575,7 @@ impl VimState {
     /// beep…) discards the recording.
     fn remember_change(&mut self, cursor: usize, edited: bool, actions: &[Action]) {
         if self.mode == Mode::Insert {
-            // Typing starts wherever the command left the cursor.
-            self.insert_entry = Some(
-                actions
-                    .iter()
-                    .rev()
-                    .find_map(|a| match a {
-                        Action::Edit(e) => Some(e.cursor),
-                        Action::MoveCursor(p) => Some(*p),
-                        _ => None,
-                    })
-                    .unwrap_or(cursor),
-            );
+            self.note_insert_entry(cursor, actions);
         } else if edited {
             self.last_change = Some((std::mem::take(&mut self.recording), String::new()));
         } else if self.pending == Pending::None
@@ -430,6 +584,21 @@ impl VimState {
         {
             self.recording.clear();
         }
+    }
+
+    /// Typing starts wherever the command left the cursor.
+    fn note_insert_entry(&mut self, cursor: usize, actions: &[Action]) {
+        self.insert_entry = Some(
+            actions
+                .iter()
+                .rev()
+                .find_map(|a| match a {
+                    Action::Edit(e) => Some(e.cursor),
+                    Action::MoveCursor(p) => Some(*p),
+                    _ => None,
+                })
+                .unwrap_or(cursor),
+        );
     }
 
     fn key_insert(&mut self, text: &str, cursor: usize, key: Key) -> Vec<Action> {
@@ -447,28 +616,48 @@ impl VimState {
         if self.undos.last().is_some_and(|(t, _)| t == text) {
             self.undos.pop();
         }
-        // Close the `.` recording: the change is the command's keys plus what
-        // the Insert session typed (best-effort — the slice from entry to the
+        // What the session typed (best-effort — the slice from entry to the
         // exit cursor covers plain typing; edits that moved before the entry
         // point just record less).
+        let entry = self.insert_entry.take().unwrap_or(cursor);
+        let typed =
+            if entry <= cursor && text.is_char_boundary(entry) && text.is_char_boundary(cursor) {
+                text[entry..cursor].to_string()
+            } else {
+                String::new()
+            };
+        // Close the `.` recording: the change is the command's keys plus the
+        // typed text.
         if !self.replaying && !self.recording.is_empty() {
-            let entry = self.insert_entry.take().unwrap_or(cursor);
-            let typed =
-                if entry <= cursor && text.is_char_boundary(entry) && text.is_char_boundary(cursor)
-                {
-                    text[entry..cursor].to_string()
-                } else {
-                    String::new()
-                };
-            self.last_change = Some((std::mem::take(&mut self.recording), typed));
+            self.last_change = Some((std::mem::take(&mut self.recording), typed.clone()));
         }
         // Step left one column, like Vim, unless at the line start.
-        let pos = if cursor > line_start(text, cursor) {
+        let step_left = if cursor > line_start(text, cursor) {
             prev_char(text, cursor)
         } else {
             cursor
         };
-        vec![Action::MoveCursor(clamp_normal(text, pos))]
+        let mut pos = clamp_normal(text, step_left);
+        let mut actions = Vec::new();
+        // A blockwise `c`/`I`/`A` session: replay the typed text onto the
+        // block's other lines. Vim skips the replication when the insert
+        // spans lines (probed); `I`/`A` land on the block's top-left.
+        if let Some(bi) = self.block_insert.take() {
+            if !typed.is_empty() && !typed.contains('\n') {
+                if let Some(col) = bi.exit_col {
+                    pos = clamp_normal(text, offset_of_col(text, cursor, col));
+                }
+                if let Some((range, out)) = block_replicate(text, &bi, &typed) {
+                    actions.push(Action::Edit(EditOp {
+                        range,
+                        text: out,
+                        cursor: pos,
+                    }));
+                }
+            }
+        }
+        actions.push(Action::MoveCursor(pos));
+        actions
     }
 
     /// Start a `.` replay: the recorded keys and the Insert text to re-type.
@@ -537,6 +726,15 @@ impl VimState {
                     _ => return self.beep(),
                 };
                 self.pending = Pending::None;
+                // Blockwise `r`: every char inside the rectangle becomes `c`.
+                if let Some(geom) = self.block_geom(text, cursor) {
+                    if c == '\n' {
+                        return self.beep();
+                    }
+                    self.mode = Mode::Normal;
+                    self.take_count();
+                    return self.block_replace(text, geom, c);
+                }
                 // Visual `r`: every selected char (newlines aside) becomes `c`.
                 if let Some(range) = self.visual_range(text, cursor) {
                     self.mode = Mode::Normal;
@@ -571,6 +769,14 @@ impl VimState {
                         self.mode = Mode::Normal;
                         self.take_count();
                         return vec![Action::ReflowRange(range)];
+                    }
+                    if matches!(self.mode, Mode::Visual { .. }) {
+                        // Blockwise gq: the covered lines (reflow is linewise
+                        // whatever the visual kind).
+                        let a = clamp_normal(text, self.anchor);
+                        self.mode = Mode::Normal;
+                        self.take_count();
+                        return vec![Action::ReflowRange(a.min(cursor)..a.max(cursor))];
                     }
                     self.pending = Pending::AwaitMotion(Consumer::Reflow);
                     return Vec::new();
@@ -629,6 +835,26 @@ impl VimState {
                     _ => self.beep(),
                 };
             }
+            Pending::Zscroll => {
+                self.pending = Pending::None;
+                self.take_count();
+                // `z.`/`z<CR>`/`z-` also move to the first non-blank.
+                let scroll = |align| vec![Action::Scroll(align)];
+                let move_scroll = |s: &mut Self, align| {
+                    let pos = first_non_blank(text, cursor);
+                    s.desired_col = Some(char_col(text, pos));
+                    vec![Action::MoveCursor(pos), Action::Scroll(align)]
+                };
+                return match key {
+                    Key::Char('z') => scroll(ScrollAlign::Center),
+                    Key::Char('t') => scroll(ScrollAlign::Top),
+                    Key::Char('b') => scroll(ScrollAlign::Bottom),
+                    Key::Char('.') => move_scroll(self, ScrollAlign::Center),
+                    Key::Enter => move_scroll(self, ScrollAlign::Top),
+                    Key::Char('-') => move_scroll(self, ScrollAlign::Bottom),
+                    _ => self.beep(),
+                };
+            }
             Pending::Comma => {
                 self.pending = Pending::None;
                 match key {
@@ -659,6 +885,13 @@ impl VimState {
                         return acts;
                     }
                 }
+            }
+            Pending::User(mut typed) => {
+                let Key::Char(c) = key else {
+                    return self.beep();
+                };
+                typed.push(c);
+                return self.user_advance(text, typed);
             }
             Pending::Search { mut query, back } => {
                 match key {
@@ -758,6 +991,18 @@ impl VimState {
             Pending::None | Pending::AwaitMotion(_) => {}
         }
 
+        // A `[vim.keymap]` sequence starts here: user sequences are matched
+        // before the built-in dispatch in Normal mode, so a mapping's first
+        // key shadows any built-in on that key (dead ends beep, without
+        // replaying the swallowed keys).
+        if self.mode == Mode::Normal && self.pending == Pending::None {
+            if let Key::Char(c) = key {
+                if self.user_map.iter().any(|(seq, _)| seq.starts_with(c)) {
+                    return self.user_advance(text, c.to_string());
+                }
+            }
+        }
+
         // Count digits: 1-9 always; 0 only continues a count. Capped at nine
         // digits, like Vim caps huge counts, so no arithmetic can overflow.
         if let Key::Char(c) = key {
@@ -816,6 +1061,27 @@ impl VimState {
         }
 
         match key {
+            // `C-v`: enter blockwise Visual; from Visual it switches the
+            // kind, or exits when already blockwise (like `vv`).
+            Key::Ctrl('v') if consumer == Consumer::Move => {
+                self.take_count();
+                self.mode = match self.mode {
+                    Mode::Visual {
+                        kind: VisualKind::Block,
+                    } => Mode::Normal,
+                    Mode::Visual { .. } => Mode::Visual {
+                        kind: VisualKind::Block,
+                    },
+                    _ => {
+                        self.anchor = cursor;
+                        self.desired_col = None;
+                        Mode::Visual {
+                            kind: VisualKind::Block,
+                        }
+                    }
+                };
+                Vec::new()
+            }
             Key::Ctrl('r') if consumer == Consumer::Move && self.mode == Mode::Normal => {
                 self.take_count();
                 let Some((next_text, next_cursor)) = self.redos.pop() else {
@@ -831,6 +1097,136 @@ impl VimState {
             }
             Key::Char(c) => self.char_command(text, cursor, c, consumer),
             _ => self.beep(),
+        }
+    }
+
+    /// Advance a `[vim.keymap]` sequence by one key: fire on an exact match
+    /// (a sequence that is also the prefix of a longer one fires immediately,
+    /// making the longer one unreachable), keep waiting on a live prefix, and
+    /// beep on a dead end.
+    fn user_advance(&mut self, text: &str, typed: String) -> Vec<Action> {
+        self.pending = Pending::None;
+        if let Some(cmd) = self
+            .user_map
+            .iter()
+            .find(|(seq, _)| *seq == typed)
+            .map(|(_, cmd)| *cmd)
+        {
+            self.take_count();
+            return match cmd {
+                UserCmd::Commit => vec![Action::Commit],
+                UserCmd::Cancel => vec![Action::Quit { force: false }],
+                UserCmd::Discard => vec![Action::Quit { force: true }],
+                UserCmd::Reflow => vec![Action::ReflowRange(0..text.len())],
+                UserCmd::Help => vec![Action::Help],
+            };
+        }
+        if self
+            .user_map
+            .iter()
+            .any(|(seq, _)| seq.starts_with(typed.as_str()) && seq.len() > typed.len())
+        {
+            self.pending = Pending::User(typed);
+            return Vec::new();
+        }
+        self.beep()
+    }
+
+    /// The which-key rows for the current pending state: `(keys, description)`
+    /// pairs for the most useful continuations — a hint, not a manual, so each
+    /// state stays at ~10 rows. Empty when nothing multi-key is pending,
+    /// including the `/`/`?`/`:` prompts and a bare count. A pending
+    /// `[vim.keymap]` prefix lists its own continuations.
+    pub(crate) fn which_key_hints(&self) -> Vec<(String, String)> {
+        let own = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+            rows.iter()
+                .map(|(k, d)| (k.to_string(), d.to_string()))
+                .collect()
+        };
+        match &self.pending {
+            Pending::AwaitMotion(consumer) => {
+                // The operator's own doubled key is its linewise form.
+                let line_key = match consumer {
+                    Consumer::Op { op, .. } => Some(op.key().to_string()),
+                    Consumer::SurroundAdd => Some("s".to_string()),
+                    Consumer::Reflow => Some("q".to_string()),
+                    Consumer::Shift { dedent, .. } => {
+                        Some(if *dedent { "<" } else { ">" }.to_string())
+                    }
+                    Consumer::Move => None,
+                };
+                let mut rows: Vec<(String, String)> = Vec::new();
+                if let Some(key) = line_key {
+                    rows.push((key, "Whole line".to_string()));
+                }
+                rows.extend(own(&[
+                    ("w", "To next word"),
+                    ("e", "To word end"),
+                    ("b", "Back a word"),
+                    ("$", "To line end"),
+                    ("0", "To line start"),
+                    ("gg G", "First / last line"),
+                    ("f t", "Find / till a char"),
+                    ("iw aw", "Inner / around word"),
+                    ("i\" i( ip", "Quotes / parens / paragraph"),
+                ]));
+                rows
+            }
+            Pending::Object { .. } => own(&[
+                ("w W", "Word"),
+                ("s", "Sentence"),
+                ("p", "Paragraph"),
+                ("\" ' `", "Quoted string"),
+                ("( [ {", "Bracket block"),
+                ("t", "Tag block"),
+            ]),
+            Pending::G(consumer) => {
+                let mut rows = vec![("g".to_string(), "First line".to_string())];
+                if *consumer == Consumer::Move {
+                    rows.push(("q".to_string(), "Reflow operator".to_string()));
+                }
+                rows
+            }
+            Pending::Z => own(&[("Z", "Commit"), ("Q", "Cancel")]),
+            Pending::Zscroll => own(&[
+                ("z", "Center cursor line"),
+                ("t", "Cursor line to top"),
+                ("b", "Cursor line to bottom"),
+            ]),
+            Pending::Comma => own(&[
+                (",", "Commit"),
+                ("c", "Commit"),
+                ("k", "Cancel"),
+                ("q", "Reflow message"),
+            ]),
+            Pending::SurroundChar { .. } | Pending::SurroundChangeTo { .. } => own(&[
+                ("\" ' `", "Quotes"),
+                ("( [ { <", "Brackets, inner spaces"),
+                (") ] } >", "Brackets, snug"),
+            ]),
+            Pending::SurroundDelete | Pending::SurroundChangeFrom => own(&[
+                ("\" ' `", "Quotes"),
+                ("( [ { <", "Nearest bracket pair"),
+                ("t", "Tag"),
+            ]),
+            Pending::User(typed) => {
+                let mut rows: Vec<(String, String)> = self
+                    .user_map
+                    .iter()
+                    .filter_map(|(seq, cmd)| {
+                        seq.strip_prefix(typed.as_str())
+                            .filter(|rest| !rest.is_empty())
+                            .map(|rest| (rest.to_string(), cmd.describe().to_string()))
+                    })
+                    .collect();
+                rows.truncate(10);
+                rows
+            }
+            Pending::Find { .. }
+            | Pending::Replace
+            | Pending::Search { .. }
+            | Pending::Ex { .. }
+            | Pending::None => Vec::new(),
         }
     }
 
@@ -972,7 +1368,23 @@ impl VimState {
         }
 
         // Visual-mode commands.
-        if let Mode::Visual { linewise } = self.mode {
+        if let Mode::Visual { kind } = self.mode {
+            if kind == VisualKind::Block {
+                // Blockwise operators; the unhandled keys fall through to
+                // the shared Visual commands below (which beep for the
+                // charwise-only ones rather than misapply them).
+                match c {
+                    'd' | 'x' => return self.block_op(text, cursor, Op::Delete),
+                    'c' | 's' => return self.block_op(text, cursor, Op::Change),
+                    'y' => return self.block_op(text, cursor, Op::Yank),
+                    // `D`/`C` are the to-eol forms (`:help v_b_D`).
+                    'D' => return self.block_op_eol(text, cursor, Op::Delete),
+                    'C' => return self.block_op_eol(text, cursor, Op::Change),
+                    'I' => return self.block_insert_cmd(text, cursor, false),
+                    'A' => return self.block_insert_cmd(text, cursor, true),
+                    _ => {}
+                }
+            }
             match c {
                 'd' | 'x' => return self.visual_op(text, cursor, Op::Delete),
                 'c' | 's' => return self.visual_op(text, cursor, Op::Change),
@@ -980,15 +1392,21 @@ impl VimState {
                 // The uppercase forms operate on whole lines regardless of
                 // the visual kind (`:help v_Y`).
                 'Y' => {
-                    self.mode = Mode::Visual { linewise: true };
+                    self.mode = Mode::Visual {
+                        kind: VisualKind::Line,
+                    };
                     return self.visual_op(text, cursor, Op::Yank);
                 }
                 'D' | 'X' => {
-                    self.mode = Mode::Visual { linewise: true };
+                    self.mode = Mode::Visual {
+                        kind: VisualKind::Line,
+                    };
                     return self.visual_op(text, cursor, Op::Delete);
                 }
                 'C' | 'R' => {
-                    self.mode = Mode::Visual { linewise: true };
+                    self.mode = Mode::Visual {
+                        kind: VisualKind::Line,
+                    };
                     return self.visual_op(text, cursor, Op::Change);
                 }
                 // `u`/`U`: set the selection's case.
@@ -1014,7 +1432,7 @@ impl VimState {
                     };
                     // Linewise S wraps the lines' content (no trailing \n).
                     let mut end = range.end;
-                    if linewise {
+                    if kind == VisualKind::Line {
                         while end > range.start
                             && matches!(char_at(text, prev_char(text, end)), Some('\n'))
                         {
@@ -1032,19 +1450,25 @@ impl VimState {
                     self.anchor = clamp_normal(text, cursor);
                     return vec![Action::MoveCursor(clamp_normal(text, a))];
                 }
+                // `v`/`V` switch the Visual kind; the current kind's own key
+                // drops back to Normal.
                 'v' => {
-                    self.mode = if linewise {
-                        Mode::Visual { linewise: false }
-                    } else {
+                    self.mode = if kind == VisualKind::Char {
                         Mode::Normal
+                    } else {
+                        Mode::Visual {
+                            kind: VisualKind::Char,
+                        }
                     };
                     return Vec::new();
                 }
                 'V' => {
-                    self.mode = if linewise {
+                    self.mode = if kind == VisualKind::Line {
                         Mode::Normal
                     } else {
-                        Mode::Visual { linewise: true }
+                        Mode::Visual {
+                            kind: VisualKind::Line,
+                        }
                     };
                     return Vec::new();
                 }
@@ -1065,7 +1489,12 @@ impl VimState {
                         return self.beep();
                     };
                     self.mode = Mode::Normal;
-                    return self.visual_put(text, range, linewise, reg);
+                    if matches!(reg.kind, RegKind::Block { .. }) {
+                        // Pasting a block register over a selection is out of
+                        // scope for the blockwise MVP.
+                        return self.beep();
+                    }
+                    return self.visual_put(text, range, kind == VisualKind::Line, reg);
                 }
                 'g' => {
                     self.pending = Pending::G(Consumer::Move);
@@ -1076,14 +1505,14 @@ impl VimState {
                     return Vec::new();
                 }
                 'J' => {
-                    let Some(range) = self.visual_range(text, cursor) else {
-                        return self.beep();
-                    };
+                    // Join the covered lines, whatever the visual kind.
+                    let a = clamp_normal(text, self.anchor);
                     self.mode = Mode::Normal;
-                    // The selection's end is one past its last char; the last
-                    // selected LINE is the one holding the char before it.
-                    let last = prev_char(text, range.end).max(range.start);
-                    return self.join_range(text, range.start..last);
+                    return self.join_range(text, a.min(cursor)..a.max(cursor));
+                }
+                'z' => {
+                    self.pending = Pending::Zscroll;
+                    return Vec::new();
                 }
                 '~' => {
                     let Some(range) = self.visual_range(text, cursor) else {
@@ -1111,17 +1540,13 @@ impl VimState {
                 ':' => {
                     // `:` leaves Visual and opens the prompt prefilled with
                     // `'<,'>`, remembering the selection's line range.
-                    let range = self.visual_range(text, cursor);
+                    let a = clamp_normal(text, self.anchor);
                     self.mode = Mode::Normal;
                     self.take_count();
-                    let Some(range) = range else {
-                        return self.beep();
-                    };
-                    let last = prev_char(text, range.end).max(range.start);
                     self.hist_ix = None;
                     self.pending = Pending::Ex {
                         input: "'<,'>".into(),
-                        visual: Some((line_of(text, range.start), line_of(text, last))),
+                        visual: Some((line_of(text, a.min(cursor)), line_of(text, a.max(cursor)))),
                     };
                     return Vec::new();
                 }
@@ -1146,7 +1571,9 @@ impl VimState {
             'v' => {
                 self.take_count();
                 self.anchor = cursor;
-                self.mode = Mode::Visual { linewise: false };
+                self.mode = Mode::Visual {
+                    kind: VisualKind::Char,
+                };
                 // An earlier `$`'s sticky end-of-line must not leak into the
                 // selection (only `$` pressed in Visual extends to the
                 // newline); re-anchor the column here.
@@ -1156,7 +1583,9 @@ impl VimState {
             'V' => {
                 self.take_count();
                 self.anchor = cursor;
-                self.mode = Mode::Visual { linewise: true };
+                self.mode = Mode::Visual {
+                    kind: VisualKind::Line,
+                };
                 self.desired_col = None;
                 Vec::new()
             }
@@ -1259,6 +1688,10 @@ impl VimState {
             'Z' => {
                 self.take_count();
                 self.pending = Pending::Z;
+                Vec::new()
+            }
+            'z' => {
+                self.pending = Pending::Zscroll;
                 Vec::new()
             }
             '/' | '?' => {
@@ -1658,7 +2091,11 @@ impl VimState {
         };
         self.register = Some(Register {
             text: reg_text.clone(),
-            linewise,
+            kind: if linewise {
+                RegKind::Line
+            } else {
+                RegKind::Char
+            },
         });
         match op {
             Op::Yank => {
@@ -1755,12 +2192,161 @@ impl VimState {
         let Some(range) = self.visual_range(text, cursor) else {
             return self.beep();
         };
-        let linewise = matches!(self.mode, Mode::Visual { linewise: true });
+        let linewise = matches!(
+            self.mode,
+            Mode::Visual {
+                kind: VisualKind::Line
+            }
+        );
         self.mode = Mode::Normal;
         self.take_count();
         // A visual yank puts the cursor at the start of the selection (unlike
         // `yy`, which stays put) — pass the selection start as the origin.
         self.op_on_range(text, op, range.clone(), linewise, range.start)
+    }
+
+    // --- Blockwise (Visual Block) operators --------------------------------
+
+    fn block_op(&mut self, text: &str, cursor: usize, op: Op) -> Vec<Action> {
+        let Some(geom) = self.block_geom(text, cursor) else {
+            return self.beep();
+        };
+        self.mode = Mode::Normal;
+        self.take_count();
+        self.block_apply(text, geom, op)
+    }
+
+    /// Blockwise `D`/`C`: the block extends to each line's end first.
+    fn block_op_eol(&mut self, text: &str, cursor: usize, op: Op) -> Vec<Action> {
+        self.desired_col = Some(usize::MAX);
+        self.block_op(text, cursor, op)
+    }
+
+    /// Apply an operator to a resolved block: one edit spanning the covered
+    /// lines, the segments into the register as a block, the cursor at the
+    /// block's top-left.
+    fn block_apply(&mut self, text: &str, geom: BlockGeom, op: Op) -> Vec<Action> {
+        // The cursor lands at the top-left; the sticky column re-anchors
+        // there (probed: a yank isn't an edit, so handle_key won't reset it).
+        self.desired_col = None;
+        let segments: Vec<&str> = geom.ranges.iter().map(|r| &text[r.clone()]).collect();
+        let reg_text = segments.join("\n");
+        self.register = Some(Register {
+            text: reg_text.clone(),
+            kind: RegKind::Block {
+                width: geom.width(text),
+            },
+        });
+        let top_left = geom.ranges[0].start;
+        if op == Op::Yank {
+            return vec![
+                Action::Yank(reg_text),
+                Action::MoveCursor(clamp_normal(text, top_left)),
+            ];
+        }
+        let (range, out) = block_splice(text, &geom.ranges, |_| String::new());
+        let changed = out != text[range.clone()];
+        let mut actions = vec![Action::Yank(reg_text)];
+        if op == Op::Change {
+            // Insert at the top-left; the Esc ending the session replicates
+            // the typed text onto the block's other lines.
+            self.block_insert = Some(BlockInsert {
+                rows: geom.rows.start + 1..geom.rows.end,
+                col: Some(geom.left),
+                pad: false,
+                exit_col: None,
+            });
+            self.mode = Mode::Insert;
+            if changed {
+                actions.push(Action::Edit(EditOp {
+                    range,
+                    text: out,
+                    cursor: top_left,
+                }));
+            } else {
+                actions.push(Action::MoveCursor(top_left.min(text.len())));
+            }
+        } else if changed {
+            let post = splice(text, &range, &out);
+            actions.push(Action::Edit(EditOp {
+                range,
+                text: out,
+                cursor: clamp_normal_after(&post, top_left),
+            }));
+        } else {
+            // The block overhangs every line: nothing to delete.
+            actions.push(Action::MoveCursor(clamp_normal(text, top_left)));
+        }
+        actions
+    }
+
+    /// Blockwise `r`: every char inside the rectangle becomes `c`; the
+    /// cursor lands on the block's top-left.
+    fn block_replace(&mut self, text: &str, geom: BlockGeom, c: char) -> Vec<Action> {
+        let (range, out) = block_splice(text, &geom.ranges, |seg| seg.chars().map(|_| c).collect());
+        let top_left = geom.ranges[0].start;
+        if out == text[range.clone()] {
+            return vec![Action::MoveCursor(clamp_normal(text, top_left))];
+        }
+        let post = splice(text, &range, &out);
+        vec![Action::Edit(EditOp {
+            range,
+            text: out,
+            cursor: clamp_normal_after(&post, top_left),
+        })]
+    }
+
+    /// Blockwise `I`/`A`: Insert at the block's left edge, or just past its
+    /// right one (`$`-blocks append at each line's end); the Esc closing the
+    /// session replicates the typed text onto the other lines.
+    fn block_insert_cmd(&mut self, text: &str, cursor: usize, append: bool) -> Vec<Action> {
+        let Some(geom) = self.block_geom(text, cursor) else {
+            return self.beep();
+        };
+        self.mode = Mode::Insert;
+        self.take_count();
+        let rows = geom.rows.start + 1..geom.rows.end;
+        let top = geom.ranges[0].start;
+        if !append {
+            // The top line always reaches the left column (each corner sits
+            // on its own line); shorter lines below are skipped at Esc.
+            self.block_insert = Some(BlockInsert {
+                rows,
+                col: Some(geom.left),
+                pad: false,
+                exit_col: Some(geom.left),
+            });
+            return vec![Action::MoveCursor(top.min(text.len()))];
+        }
+        if geom.to_eol {
+            self.block_insert = Some(BlockInsert {
+                rows,
+                col: None,
+                pad: false,
+                exit_col: Some(geom.left),
+            });
+            return vec![Action::MoveCursor(line_end(text, top))];
+        }
+        let col = geom.right + 1;
+        self.block_insert = Some(BlockInsert {
+            rows,
+            col: Some(col),
+            pad: true,
+            exit_col: Some(geom.left),
+        });
+        let le = line_end(text, top);
+        let chars = char_col(text, le);
+        if chars < col {
+            // Pad the top line out to the block's right edge first (the
+            // lines below pad at Esc).
+            let pad: String = " ".repeat(col - chars);
+            return vec![Action::Edit(EditOp {
+                range: le..le,
+                text: pad.clone(),
+                cursor: le + pad.len(),
+            })];
+        }
+        vec![Action::MoveCursor(offset_of_col(text, top, col))]
     }
 
     // --- Simple edits ------------------------------------------------------
@@ -1815,10 +2401,7 @@ impl VimState {
             return self.beep();
         }
         let yanked = text[cursor..to].to_string();
-        self.register = Some(Register {
-            text: yanked.clone(),
-            linewise: false,
-        });
+        self.register = Some(Register::charwise(yanked.clone()));
         let post = splice(text, &(cursor..to), "");
         vec![
             Action::Yank(yanked),
@@ -1843,10 +2426,7 @@ impl VimState {
             return self.beep();
         }
         let yanked = text[from..cursor].to_string();
-        self.register = Some(Register {
-            text: yanked.clone(),
-            linewise: false,
-        });
+        self.register = Some(Register::charwise(yanked.clone()));
         vec![
             Action::Yank(yanked),
             Action::Edit(EditOp {
@@ -2017,13 +2597,18 @@ impl VimState {
         };
         self.register = Some(Register {
             text: cut.clone(),
-            linewise: sel_linewise,
+            kind: if sel_linewise {
+                RegKind::Line
+            } else {
+                RegKind::Char
+            },
         });
         // A linewise register pastes as whole lines (splitting a charwise
         // selection's line); a charwise register over a linewise selection
         // becomes its own line. Match the selection's trailing-newline
         // presence so an EOF paste doesn't grow a stray empty line.
-        let mut pasted = match (reg.linewise, sel_linewise) {
+        let reg_linewise = reg.kind == RegKind::Line;
+        let mut pasted = match (reg_linewise, sel_linewise) {
             (false, false) => reg.text.clone(),
             (true, false) => format!("\n{}", reg.text),
             (false, true) => format!("{}\n", reg.text),
@@ -2037,7 +2622,7 @@ impl VimState {
             }
         }
         let post = splice(text, &range, &pasted);
-        let cursor = if reg.linewise || sel_linewise {
+        let cursor = if reg_linewise || sel_linewise {
             // First non-blank of the first pasted line.
             let first = range.start + usize::from(pasted.starts_with('\n'));
             first_non_blank(&post, first.min(post.len()))
@@ -2070,8 +2655,11 @@ impl VimState {
         // Cap the expansion so an absurd count can't OOM the app.
         const PUT_LIMIT: usize = 4 << 20;
         let count = count.min((PUT_LIMIT / reg.text.len().max(1)).max(1));
+        if let RegKind::Block { width } = reg.kind {
+            return self.put_block(text, cursor, &reg.text, width, count, after);
+        }
         let body = reg.text.repeat(count);
-        if reg.linewise {
+        if reg.kind == RegKind::Line {
             let at = if after {
                 let le = line_end(text, cursor);
                 (le + usize::from(le < text.len())).min(text.len())
@@ -2112,6 +2700,78 @@ impl VimState {
                 cursor,
             })]
         }
+    }
+
+    /// Paste a blockwise register: each segment lands at the same char
+    /// column on successive lines (`p` one column right of the cursor, like
+    /// charwise `p`; `P` at it), with shorter lines space-padded out to the
+    /// column, missing lines created, segments padded to the block width
+    /// when text follows them, and a count repeating each segment
+    /// horizontally. Cursor at the paste's top-left. (All probed.)
+    fn put_block(
+        &mut self,
+        text: &str,
+        cursor: usize,
+        reg: &str,
+        width: usize,
+        count: usize,
+        after: bool,
+    ) -> Vec<Action> {
+        let at = if after && char_at(text, cursor).is_some_and(|c| c != '\n') {
+            next_char(text, cursor)
+        } else {
+            cursor
+        };
+        let col = char_col(text, at);
+        let width = width.saturating_mul(count);
+        let start = line_start(text, at);
+        let mut out = String::new();
+        let mut end = start;
+        let mut line = Some(start);
+        for (i, seg) in reg.split('\n').enumerate() {
+            let seg = seg.repeat(count);
+            if i > 0 {
+                out.push('\n');
+            }
+            let Some(at_line) = line else {
+                // Past the last line: create one, padded out to the column.
+                if !seg.is_empty() {
+                    out.extend(std::iter::repeat_n(' ', col));
+                    out.push_str(&seg);
+                }
+                continue;
+            };
+            let le = line_end(text, at_line);
+            let chars = char_col(text, le);
+            if chars >= col {
+                let ins = offset_of_col(text, at_line, col);
+                out.push_str(&text[at_line..ins]);
+                out.push_str(&seg);
+                if ins < le {
+                    // Text follows: pad the segment to the block width so
+                    // the columns stay aligned.
+                    out.extend(std::iter::repeat_n(
+                        ' ',
+                        width.saturating_sub(seg.chars().count()),
+                    ));
+                }
+                out.push_str(&text[ins..le]);
+            } else {
+                out.push_str(&text[at_line..le]);
+                if !seg.is_empty() {
+                    out.extend(std::iter::repeat_n(' ', col - chars));
+                    out.push_str(&seg);
+                }
+            }
+            end = le;
+            line = (le < text.len()).then(|| le + 1);
+        }
+        let post = splice(text, &(start..end), &out);
+        vec![Action::Edit(EditOp {
+            range: start..end,
+            text: out,
+            cursor: clamp_normal(&post, at),
+        })]
     }
 
     // --- Small state helpers ---------------------------------------------
@@ -2343,6 +3003,85 @@ fn consumer_keys(c: &Consumer) -> String {
         Consumer::Shift { dedent: false, .. } => ">".into(),
         Consumer::Shift { dedent: true, .. } => "<".into(),
     }
+}
+
+/// Byte offset of char column `col` on the line containing `line_pos`,
+/// clamped to the line's end. Unlike [`offset_at_col`], which clamps to the
+/// last char for Normal-mode cursors, this can land one past it — block
+/// edges and insertions live between chars.
+fn offset_of_col(text: &str, line_pos: usize, col: usize) -> usize {
+    let end = line_end(text, line_pos);
+    let mut at = line_start(text, line_pos);
+    for _ in 0..col {
+        if at >= end {
+            break;
+        }
+        at = next_char(text, at);
+    }
+    at
+}
+
+/// Rebuild a block's covered line span with each segment mapped through `f`,
+/// returning the span and its replacement.
+fn block_splice(
+    text: &str,
+    ranges: &[Range<usize>],
+    f: impl Fn(&str) -> String,
+) -> (Range<usize>, String) {
+    let start = line_start(text, ranges[0].start);
+    let end = line_end(text, ranges.last().unwrap().start);
+    let mut out = String::with_capacity(end - start);
+    for (i, seg) in ranges.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&text[line_start(text, seg.start)..seg.start]);
+        out.push_str(&f(&text[seg.clone()]));
+        out.push_str(&text[seg.end..line_end(text, seg.start)]);
+    }
+    (start..end, out)
+}
+
+/// The replication edit closing a blockwise insert session: `typed` inserted
+/// on each of `bi.rows` at `bi.col` (space-padded or skipped on lines that
+/// don't reach it, per `bi.pad`), or appended at each line's end for
+/// `col: None`. `None` when nothing changes.
+fn block_replicate(text: &str, bi: &BlockInsert, typed: &str) -> Option<(Range<usize>, String)> {
+    let first = bi.rows.start;
+    let last = (bi.rows.end.saturating_sub(1)).min(line_count(text));
+    if first > last {
+        return None;
+    }
+    let start = line_offset(text, first);
+    let end = line_end(text, line_offset(text, last));
+    let mut out = String::with_capacity(end - start + typed.len() * (last - first + 1));
+    for (i, line) in text[start..end].split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        match bi.col {
+            None => {
+                out.push_str(line);
+                out.push_str(typed);
+            }
+            Some(col) => {
+                let chars = line.chars().count();
+                if chars >= col {
+                    let at = line.char_indices().nth(col).map_or(line.len(), |(b, _)| b);
+                    out.push_str(&line[..at]);
+                    out.push_str(typed);
+                    out.push_str(&line[at..]);
+                } else if bi.pad {
+                    out.push_str(line);
+                    out.extend(std::iter::repeat_n(' ', col - chars));
+                    out.push_str(typed);
+                } else {
+                    out.push_str(line);
+                }
+            }
+        }
+    }
+    (out != text[start..end]).then_some((start..end, out))
 }
 
 /// The buffer after replacing `range` with `with` (for computing post-edit

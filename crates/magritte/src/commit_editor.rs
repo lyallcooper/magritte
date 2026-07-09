@@ -52,6 +52,10 @@ pub(crate) struct CommitEditor {
     /// The Vim visual bell: briefly true after a Beep action tints the mode
     /// chip. Cleared by a timer.
     pub(crate) vim_bell: bool,
+    /// The Vim which-key panel is showing: set by a timer once a multi-key
+    /// sequence has been pending for a beat, cleared when the pending state
+    /// resolves (see `arm_vim_hints`).
+    pub(crate) vim_hints: bool,
     /// A mouse press is in flight over the message (Vim mode): the Normal-mode
     /// blur-back is held off until release so a drag-selection can complete.
     pub(crate) mouse_selecting: bool,
@@ -597,12 +601,14 @@ impl StatusView {
             diff: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             diff_collapsed: std::collections::HashSet::new(),
-            vim: self
-                .config
-                .commit_vim_mode
-                .then(|| Box::new(vim::VimState::new())),
+            vim: self.config.commit_vim_mode.then(|| {
+                Box::new(vim::VimState::with_user_map(vim::parse_user_map(
+                    &self.config.vim.keymap,
+                )))
+            }),
             vim_error: None,
             vim_bell: false,
+            vim_hints: false,
             _sub: sub,
         });
         // Stamp this editor instance so async loads started for it can't write
@@ -904,6 +910,44 @@ impl StatusView {
                         ed.vim_bell = false;
                         cx.notify();
                     }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Arm (or cancel) the Vim which-key panel: called after every key the
+    /// engine sees. A hint-worthy pending state starts a fresh delay — so each
+    /// keystroke restarts it — and one that resolved or cleared drops the
+    /// panel; the bumped generation cancels any earlier timer either way.
+    pub(crate) fn arm_vim_hints(&mut self, cx: &mut Context<Self>) {
+        let gen = self.vim_hint_gen.bump();
+        let Some(ed) = self.editor_mut() else {
+            return;
+        };
+        let worthy = ed
+            .vim
+            .as_ref()
+            .is_some_and(|v| !v.which_key_hints().is_empty());
+        if !worthy {
+            if std::mem::take(&mut ed.vim_hints) {
+                cx.notify();
+            }
+            return;
+        }
+        ed.vim_hints = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(VIM_WHICH_KEY_DELAY_MS))
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.vim_hint_gen.is_current(gen) {
+                    return;
+                }
+                if let Some(ed) = this.editor_mut() {
+                    ed.vim_hints = true;
+                    cx.notify();
                 }
             })
             .ok();

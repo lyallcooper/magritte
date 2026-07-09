@@ -264,11 +264,12 @@ impl StatusView {
         // turning it on starts in Normal (view-focused, no caret), off
         // returns to plain editing with the input focused.
         let vim_on = self.config.commit_vim_mode;
+        let user_map = vim::parse_user_map(&self.config.vim.keymap);
         let toggled = self
             .editor_mut()
             .filter(|ed| vim_on != ed.vim.is_some())
             .map(|ed| {
-                ed.vim = vim_on.then(|| Box::new(vim::VimState::new()));
+                ed.vim = vim_on.then(|| Box::new(vim::VimState::with_user_map(user_map)));
                 ed.state.clone()
             });
         if let Some(state) = toggled {

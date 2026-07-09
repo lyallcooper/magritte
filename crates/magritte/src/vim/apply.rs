@@ -12,7 +12,7 @@
 
 use super::{
     clamp_normal, first_non_blank, line_end, line_start, next_char, prev_char, Action, EditOp, Key,
-    Mode,
+    Mode, ScrollAlign, VisualKind,
 };
 use crate::*;
 use gpui::{Bounds, Context, EntityInputHandler, KeyDownEvent, Pixels, Window};
@@ -94,6 +94,8 @@ impl StatusView {
             .unwrap_or_default();
         self.apply_vim_actions(actions, window, cx);
         self.sync_vim_focus(window, cx);
+        // Re-arm the which-key panel against the state this key left behind.
+        self.arm_vim_hints(cx);
         cx.notify();
     }
 
@@ -163,6 +165,8 @@ impl StatusView {
         vim.cancel_pending();
         ed.vim_error = None;
         ed.mouse_selecting = true;
+        // The click cleared any pending sequence, so drop the which-key panel.
+        self.arm_vim_hints(cx);
         cx.notify();
     }
 
@@ -201,6 +205,12 @@ impl StatusView {
             });
         }
         self.sync_vim_focus(window, cx);
+        cx.notify();
+    }
+
+    /// Show the Vim-mode cheat sheet (`:help`, or a click on the mode chip).
+    pub(crate) fn open_vim_help(&mut self, cx: &mut Context<Self>) {
+        self.popup = Some(Popup::Dispatch(super::help::vim_help_menu()));
         cx.notify();
     }
 
@@ -289,14 +299,39 @@ impl StatusView {
                         }
                     }
                 }
+                Action::Scroll(align) => state.update(cx, |s, cx| {
+                    // Aim the cursor's line at the viewport edge. Soft wrap
+                    // is off in the commit editor, so buffer lines are
+                    // display rows. The viewport height isn't public, but
+                    // the last layout brackets it to within a line: the
+                    // visible range ends at the first row past the bottom
+                    // edge, so that row's top minus the scroll position is
+                    // the height. `set_scroll_offset` clamps to the valid
+                    // range at the next layout.
+                    let (Some(line_height), Some(rows)) = (s.line_height(), s.visible_row_range())
+                    else {
+                        return;
+                    };
+                    let text = s.text().to_string();
+                    let row = text[..s.cursor().min(text.len())].matches('\n').count();
+                    let mut offset = s.scroll_offset();
+                    let viewport = (line_height * rows.end.saturating_sub(1) as f32 + offset.y)
+                        .max(line_height);
+                    let cursor_y = line_height * row as f32;
+                    let y = match align {
+                        ScrollAlign::Top => -cursor_y,
+                        ScrollAlign::Center => (viewport - line_height) * 0.5 - cursor_y,
+                        ScrollAlign::Bottom => viewport - line_height - cursor_y,
+                    };
+                    offset.y = y.min(px(0.));
+                    s.set_scroll_offset(offset, cx);
+                }),
                 Action::Commit => self.submit_editor(window, cx),
                 // `:q!` bypasses the discard confirmation.
                 Action::Quit { force: true } => self.discard_editor(window, cx),
                 Action::Quit { force: false } => self.cancel_editor(window, cx),
                 Action::ReflowRange(range) => self.reflow_vim_range(range, window, cx),
-                Action::Help => {
-                    self.popup = Some(Popup::Dispatch(vim_help_menu()));
-                }
+                Action::Help => self.open_vim_help(cx),
                 Action::Error(msg) => {
                     if let Some(ed) = self.editor_mut() {
                         ed.vim_error = Some(msg);
@@ -317,8 +352,15 @@ impl StatusView {
         let label = match vim.mode() {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
-            Mode::Visual { linewise: false } => "VISUAL",
-            Mode::Visual { linewise: true } => "V-LINE",
+            Mode::Visual {
+                kind: VisualKind::Char,
+            } => "VISUAL",
+            Mode::Visual {
+                kind: VisualKind::Line,
+            } => "V-LINE",
+            Mode::Visual {
+                kind: VisualKind::Block,
+            } => "V-BLOCK",
         };
         Some((label, vim.pending_display()))
     }
@@ -364,6 +406,17 @@ impl StatusView {
                                 paint(window, b, at == le, selection_bg);
                             }
                             at = next_char(&text, le.max(at));
+                        }
+                    }
+                    // Blockwise selection: one rect per covered line (lines
+                    // the block overhangs yield empty ranges — nothing).
+                    if let Some(ranges) = vim.block_ranges(&text, cursor) {
+                        for r in ranges {
+                            if r.start < r.end {
+                                if let Some(b) = s.range_to_bounds(&r) {
+                                    paint(window, b, false, selection_bg);
+                                }
+                            }
                         }
                     }
                     // Incremental search: highlight every (smartcase regex)
@@ -413,65 +466,6 @@ impl StatusView {
             .size_full()
             .into_any_element(),
         )
-    }
-}
-
-/// The `:help` popup: a cheat sheet of the Vim-mode bindings, shown as a
-/// dispatch-style transient over the editor (Esc dismisses). Static — the
-/// engine's keys aren't remappable.
-fn vim_help_menu() -> transient::Transient {
-    let info = |keys: &str, description: &str| {
-        transient::Suffix::Info(transient::Info {
-            keys: keys.to_string(),
-            description: description.to_string(),
-        })
-    };
-    let group = |title: &str, suffixes| transient::Group {
-        title: transient::plain_title(title),
-        suffixes,
-    };
-    transient::Transient {
-        title: transient::plain_title("Vim mode"),
-        groups: vec![
-            group(
-                "Editor",
-                vec![
-                    info("ZZ", "Commit (also :wq, ,,)"),
-                    info("ZQ", "Cancel (also :q, ,k)"),
-                    info(":q!", "Discard without asking"),
-                    info("gq", "Reflow (gqq line, gqip paragraph)"),
-                ],
-            ),
-            group(
-                "Modes",
-                vec![
-                    info("i a o", "Insert (I A O at line edges)"),
-                    info("v V", "Visual charwise / linewise"),
-                    info("esc", "Back to Normal"),
-                ],
-            ),
-            group(
-                "Edit",
-                vec![
-                    info("d c y", "Operators + motion or text object"),
-                    info("x r ~ J", "Char delete / replace / case / join"),
-                    info("p P", "Put after / before"),
-                    info("> <", "Indent / dedent"),
-                    info("u ctrl-r", "Undo / redo"),
-                    info(".", "Repeat the last change"),
-                    info("ys cs ds", "Surround add / change / delete"),
-                ],
-            ),
-            group(
-                "Search & command line",
-                vec![
-                    info("/ ?", "Search forward / back (n N repeat)"),
-                    info(":s/pat/rep/", "Substitute (%, N,M ranges; g i flags)"),
-                    info(":N", "Go to line N"),
-                    info("up down", "Prompt history"),
-                ],
-            ),
-        ],
     }
 }
 

@@ -197,6 +197,9 @@ const FOCUS_REFRESH_COOLDOWN_MS: u64 = 5000;
 /// How long the commit editor's discard-prompt flash stays lit after an
 /// ignored keypress.
 const CONFIRM_FLASH_MS: u64 = 400;
+/// How long a Vim multi-key sequence sits pending before the which-key panel
+/// of its continuations appears in the commit editor.
+const VIM_WHICH_KEY_DELAY_MS: u64 = 600;
 /// The status text for a clipboard copy. Doubles as the toast's discriminator:
 /// `status_copied` is rendered (emphasized) only when the message is this.
 const COPIED_LABEL: &str = "Copied";
@@ -554,6 +557,9 @@ struct StatusView {
     confirm_flash_gen: Generation,
     /// Same, for the Vim visual bell's clear timer.
     vim_bell_gen: Generation,
+    /// Scopes the Vim which-key reveal timer: every key restarts the delay,
+    /// and a resolved pending state cancels a stale reveal.
+    vim_hint_gen: Generation,
     /// An open bottom popup (command transient or help menu), or `None`.
     popup: Option<Popup>,
     /// The active full-window screen — exactly one at a time. Modeling these as
@@ -785,6 +791,7 @@ impl StatusView {
             settings_save_pending: false,
             confirm_flash_gen: Generation::default(),
             vim_bell_gen: Generation::default(),
+            vim_hint_gen: Generation::default(),
             popup: None,
             screen: Screen::Status,
             font,

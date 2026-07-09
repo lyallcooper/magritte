@@ -8,8 +8,15 @@ use super::*;
 
 const N: Mode = Mode::Normal;
 const I: Mode = Mode::Insert;
-const V: Mode = Mode::Visual { linewise: false };
-const VL: Mode = Mode::Visual { linewise: true };
+const V: Mode = Mode::Visual {
+    kind: VisualKind::Char,
+};
+const VL: Mode = Mode::Visual {
+    kind: VisualKind::Line,
+};
+const VB: Mode = Mode::Visual {
+    kind: VisualKind::Block,
+};
 
 /// A headless stand-in for the app layer: applies the engine's actions to a
 /// plain string buffer, mirroring `apply.rs` (Insert-mode keys are typed
@@ -107,10 +114,12 @@ impl Buf {
                     self.vim.end_repeat();
                 }
             }
+            // Scroll only moves the viewport, which the harness doesn't model.
             Action::Commit
             | Action::Quit { .. }
             | Action::ReflowRange(_)
             | Action::Help
+            | Action::Scroll(_)
             | Action::Error(_)
             | Action::Beep => {}
         }
@@ -780,6 +789,307 @@ fn visual_put_replace_join() {
     check_beep("a|bc", "vp", "a|bc"); // empty register
 }
 
+// --- Visual Block mode -----------------------------------------------------
+// The expected buffers, cursors, and paddings below were probed against
+// Vim 9.2 (`vim -es -u NONE`).
+
+#[test]
+fn block_mode_switching() {
+    check_full("a|bc", "<c-v>", "a|bc", VB, Some(false));
+    check_full("a|bc", "v<c-v>", "a|bc", VB, Some(false));
+    check_full("a|bc", "V<c-v>", "a|bc", VB, Some(false));
+    check_full("a|bc", "<c-v>v", "a|bc", V, Some(false));
+    check_full("a|bc", "<c-v>V", "a|bc", VL, Some(false));
+    // The current kind's own key drops back to Normal.
+    check_full("a|bc", "<c-v><c-v>", "a|bc", N, Some(false));
+    check_full("a|bc", "<c-v><esc>", "a|bc", N, Some(false));
+    // Esc leaves the cursor where the block cursor was.
+    check("a|bcd\nefgh", "<c-v>jl<esc>", "abcd\nef|gh");
+}
+
+#[test]
+fn block_ranges_geometry() {
+    // One byte range per covered line; a line shorter than the left column
+    // yields an empty range at its end.
+    let buf = run("|abcdef\nab\nabcdef", "llll<c-v>jj");
+    assert_eq!(
+        buf.vim.block_ranges(&buf.text, buf.cursor),
+        Some(vec![4..5, 9..9, 14..15])
+    );
+    // The cursor corner on a short line sits one past its last char.
+    let buf = run("|abcdef\nabc\nx", "llll<c-v>j");
+    assert_eq!(
+        buf.vim.block_ranges(&buf.text, buf.cursor),
+        Some(vec![3..5, 10..10])
+    );
+    // `$` extends every line's range to its end.
+    let buf = run("|abcdef\nab\nabcdef", "l<c-v>jj$");
+    assert_eq!(
+        buf.vim.block_ranges(&buf.text, buf.cursor),
+        Some(vec![1..6, 8..9, 11..16])
+    );
+    // Not blockwise: no ranges.
+    let buf = run("a|bc", "v");
+    assert_eq!(buf.vim.block_ranges(&buf.text, buf.cursor), None);
+}
+
+#[test]
+fn block_delete() {
+    for (spec, keys, want) in [
+        // The rectangle between the anchor and the cursor, as one edit;
+        // cursor at the block's top-left.
+        (
+            "|abcdef\nabcdef\nabcdef",
+            "ll<c-v>jjld",
+            "ab|ef\nabef\nabef",
+        ),
+        ("|abcdef\nabcdef", "l<c-v>jlx", "a|def\nadef"),
+        // Lines shorter than the left column are untouched.
+        ("|abcdef\nab\nabcdef", "llll<c-v>jjd", "abcd|f\nab\nabcdf"),
+        // The cursor corner on a short line sits one past its last char.
+        ("|abcdef\nab\nabcdef", "llll<c-v>jd", "ab|f\nab\nabcdef"),
+        ("|abcdef\nabc\nx", "llll<c-v>jd", "abc|f\nabc\nx"),
+        ("|abcdef\na\nx", "llll<c-v>jd", "a|f\na\nx"),
+        // A line ending inside the block loses its tail.
+        ("|abcdef\nabc\nabcdef", "l<c-v>jj3ld", "a|f\na\naf"),
+        // `$` extends to each line's end — even ones past the corners.
+        ("|abcdef\nab\nabcdef", "ll<c-v>jj$d", "a|b\nab\nab"),
+        ("|abcdef\nabcdefgh", "l<c-v>$jd", "|a\na"),
+        // A column-setting motion drops the $-extension (v_b_dollar).
+        ("|abcdef\nabcdef", "l<c-v>j$hd", "a|f\naf"),
+        ("|abcdef\nabcdef", "<c-v>j$0ld", "|cdef\ncdef"),
+        // Multibyte: columns are chars, not bytes.
+        ("a|ébé\naébé", "<c-v>jd", "a|bé\nabé"),
+        // D deletes to each line's end, like $d.
+        ("|abcdef\nabcdef", "l<c-v>jD", "|a\na"),
+    ] {
+        check(spec, keys, want);
+    }
+    // The register mirrors the segments joined with newlines.
+    check_clip(
+        "|abcdef\nab\nabcdef",
+        "ll<c-v>jjly",
+        "ab|cdef\nab\nabcdef",
+        "cd\n\ncd",
+    );
+    // A block with nothing in it (empty lines) deletes nothing.
+    check_any("|\n\nab", "<c-v>jd", "|\n\nab");
+}
+
+#[test]
+fn block_yank_put() {
+    for (spec, keys, want) in [
+        // y: cursor to the block's top-left.
+        ("|abcdef\nabcdef", "jlll<c-v>khy", "ab|cdef\nabcdef"),
+        // p pastes one column right of the cursor, P at it; missing lines
+        // are created padded with spaces; cursor at the paste's top-left.
+        (
+            "|abcdef\nabcdef",
+            "l<c-v>jly0jllllp",
+            "abcdef\nabcde|bcf\n     bc",
+        ),
+        (
+            "|abcdef\nabcdef",
+            "l<c-v>jly0jllllP",
+            "abcdef\nabcd|bcef\n    bc",
+        ),
+        ("|abcd\nefgh\nxy", "<c-v>jlyjjlp", "abcd\nefgh\nxy|ab\n  ef"),
+        // d fills the register the same blockwise way.
+        (
+            "|abcdef\nabcdef\nxyzw",
+            "l<c-v>jldGp",
+            "adef\nadef\nx|bcyzw\n bc",
+        ),
+        // A count repeats the segments horizontally.
+        ("|abcd\nefgh", "<c-v>jly02p", "a|ababbcd\neefeffgh"),
+        // Short target lines pad out to the paste column; segments pad to
+        // the block width when text follows them (the empty one too).
+        (
+            "|ab\n\ncd\nwxyz\nwxyz\nwxyz",
+            "<c-v>jjyjjjlp",
+            "ab\n\ncd\nwx|ayz\nwx yz\nwxcyz",
+        ),
+    ] {
+        check(spec, keys, want);
+    }
+    // Pasting a block register over a Visual selection is out of scope.
+    let buf = run("|ab\ncd", "<c-v>jyjvp");
+    assert!(buf.beeped());
+    assert_eq!(show(&buf.text, buf.cursor), "ab\n|cd");
+}
+
+#[test]
+fn block_change() {
+    for (spec, keys, want) in [
+        // c deletes the block, inserts on the top line, and replicates the
+        // typed text onto the other lines at Esc.
+        (
+            "|abcdef\nabcdef\nabcdef",
+            "ll<c-v>jjlcXY<esc>",
+            "abX|Yef\nabXYef\nabXYef",
+        ),
+        // Lines shorter than the left column are skipped.
+        (
+            "|abcdef\nab\nabcdef",
+            "llll<c-v>jjcXY<esc>",
+            "abcdX|Yf\nab\nabcdXYf",
+        ),
+        // $c clears to each line's end first; C is the same.
+        (
+            "|abcdef\nab\nabcdef",
+            "ll<c-v>jj$cXY<esc>",
+            "abX|Y\nabXY\nabXY",
+        ),
+        ("|abcdef\nabcdef", "l<c-v>jCXY<esc>", "aX|Y\naXY"),
+    ] {
+        check(spec, keys, want);
+    }
+    // s is a synonym for c.
+    check_i("|abcd\nabcd", "l<c-v>js", "a|cd\nacd");
+}
+
+#[test]
+fn block_insert_ia() {
+    for (spec, keys, want) in [
+        // I inserts at the block's left edge on every line, skipping ones
+        // too short to reach it; cursor to the block's top-left at Esc.
+        ("|abcdef\nabcdef", "ll<c-v>jIXY<esc>", "ab|XYcdef\nabXYcdef"),
+        (
+            "|abcdef\nab\nabcdef",
+            "llll<c-v>jjIXY<esc>",
+            "abcd|XYef\nab\nabcdXYef",
+        ),
+        // A line exactly reaching the left column gets the text appended.
+        (
+            "|abcdef\nabcd\nabcdef",
+            "llll<c-v>jjIXY<esc>",
+            "abcd|XYef\nabcdXY\nabcdXYef",
+        ),
+        ("|ab\n\ncd", "<c-v>jjIX<esc>", "|Xab\nX\nXcd"),
+        // A appends after the right edge, padding shorter lines with spaces.
+        (
+            "|abcdef\nab\nabcdef",
+            "ll<c-v>jjlAXY<esc>",
+            "ab|cdXYef\nab  XY\nabcdXYef",
+        ),
+        (
+            "|abcdef\nab\nabcdef",
+            "llll<c-v>jjAXY<esc>",
+            "abcd|eXYf\nab   XY\nabcdeXYf",
+        ),
+        ("|ab\n\ncd", "<c-v>jjAX<esc>", "|aXb\n X\ncXd"),
+        // $A appends at each line's end, no padding.
+        (
+            "|abcdef\nab\nabcdef",
+            "ll<c-v>jj$AXY<esc>",
+            "ab|cdefXY\nabXY\nabcdefXY",
+        ),
+        // An insert spanning lines isn't replicated.
+        (
+            "|abcdef\nabcdef",
+            "l<c-v>jIX<cr>Y<esc>",
+            "aX\n|Ybcdef\nabcdef",
+        ),
+    ] {
+        check(spec, keys, want);
+    }
+}
+
+#[test]
+fn block_replace() {
+    for (spec, keys, want) in [
+        // r fills the rectangle, clamped to each line; cursor at top-left.
+        ("|abcdef\nab\nabcdef", "l<c-v>jj2lrz", "a|zzzef\naz\nazzzef"),
+        ("|abcdef\nabcdef", "ll<c-v>jlrz", "ab|zzef\nabzzef"),
+        // $r replaces to each line's end.
+        ("|abcdef\nab\nabcdef", "ll<c-v>jj$rz", "ab|zzzz\nab\nabzzzz"),
+    ] {
+        check(spec, keys, want);
+    }
+    // r<Enter> has no blockwise meaning here (the cursor stays where the
+    // block cursor was).
+    check_full("|ab\nab", "<c-v>jr<cr>", "ab\n|ab", VB, Some(true));
+}
+
+#[test]
+fn block_dot_repeat() {
+    // '.' replays the recorded keys, so a block delete repeats relative to
+    // the new cursor position.
+    check(
+        "|abcdef\nabcdef\nabcdef\nabcdef",
+        "l<c-v>jld<space>jj.",
+        "adef\nadef\nab|ef\nabef",
+    );
+    // The replicated insert replays too (the typed text is re-entered and
+    // the closing Esc re-replicates).
+    check(
+        "|abcd\nabcd\nabcd\nabcd",
+        "l<c-v>jIX<esc>jj.",
+        "aXbcd\naXbcd\na|Xbcd\naXbcd",
+    );
+}
+
+#[test]
+fn block_shared_commands() {
+    // gq, :, and J act on the covered lines whatever the visual kind.
+    let buf = run("s\n|b1\nb2\nb3", "<c-v>jgq");
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRange(r) if r.start >= 2 && r.end <= 8)),
+        "blockwise gq reflows the covered lines: {:?}",
+        buf.log
+    );
+    check("|a1\na2\na3", "<c-v>j:s/a/b/<cr>", "b1\n|b2\na3");
+    check("|a\nb\nc", "<c-v>jJ", "a| b\nc");
+    // o swaps the corners.
+    check_full("a|bcd\nefgh", "<c-v>jlo", "a|bcd\nefgh", VB, Some(false));
+    // Unsupported blockwise commands beep rather than misapply.
+    let buf = run("a|bc\ndef", "<c-v>j~");
+    assert!(buf.beeped());
+    assert_eq!(show(&buf.text, buf.cursor), "abc\nd|ef");
+}
+
+// --- z scrolling -----------------------------------------------------------
+
+#[test]
+fn z_scroll() {
+    for (keys, align) in [
+        ("zz", ScrollAlign::Center),
+        ("zt", ScrollAlign::Top),
+        ("zb", ScrollAlign::Bottom),
+    ] {
+        let buf = run("a|b\ncd", keys);
+        assert!(
+            buf.log.contains(&Action::Scroll(align)),
+            "{keys}: {:?}",
+            buf.log
+        );
+        assert_eq!(show(&buf.text, buf.cursor), "a|b\ncd", "{keys}: no move");
+        assert!(!buf.beeped(), "{keys}");
+    }
+    // z. / z<CR> / z- also move to the first non-blank.
+    for (keys, align) in [
+        ("z.", ScrollAlign::Center),
+        ("z<cr>", ScrollAlign::Top),
+        ("z-", ScrollAlign::Bottom),
+    ] {
+        let buf = run("ab\n  c|d", keys);
+        assert!(buf.log.contains(&Action::Scroll(align)), "{keys}");
+        assert_eq!(show(&buf.text, buf.cursor), "ab\n  |cd", "{keys}");
+    }
+    // Anything else after z beeps.
+    check_beep("|ab", "zq", "|ab");
+    // z works from Visual without leaving it, and shows in the mode bar.
+    let buf = run("a|bc", "vzz");
+    assert_eq!(buf.vim.mode(), V);
+    assert!(buf.log.contains(&Action::Scroll(ScrollAlign::Center)));
+    let (text, cursor) = parse_spec("|ab");
+    let mut buf = Buf::new(&text, cursor);
+    buf.feed("z");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("z"));
+}
+
 // --- Registers and put ---------------------------------------------------
 
 #[test]
@@ -1089,6 +1399,7 @@ fn fuzz_no_panic() {
             Key::Ctrl('r'),
             Key::Ctrl('n'),
             Key::Ctrl('p'),
+            Key::Ctrl('v'),
         ]);
         p
     };
@@ -1692,4 +2003,145 @@ fn ex_substitute_preview() {
     assert!(m("a|a", ":s/[").is_empty());
     assert!(m("a|a", ":wq").is_empty());
     assert!(m("a|a", "/a").is_empty());
+}
+
+// --- Which-key hints and the [vim.keymap] user map -------------------------
+
+/// [`run`] with a `[vim.keymap]` user map installed before the keys feed.
+#[track_caller]
+fn run_mapped(spec: &str, keys: &str, map: &[(&str, UserCmd)]) -> Buf {
+    let (text, cursor) = parse_spec(spec);
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(map.iter().map(|(s, c)| (s.to_string(), *c)).collect());
+    buf.feed(keys);
+    buf
+}
+
+#[test]
+fn which_key_hints_for_pending_states() {
+    let hints = |keys: &str| run("|abc def\nghi", keys).vim.which_key_hints();
+    // Every multi-key pending state offers continuations…
+    for keys in [
+        "d", "2d", "c", "y", "g", "dg", "Z", "z", ",", "di", "ya", "vi", "ys", "cs", "ds", ">",
+        "gq", "ysiw",
+    ] {
+        assert!(!hints(keys).is_empty(), "{keys:?} should hint");
+    }
+    // …while idle, a bare count, the prompts, and the single-char waits
+    // (f/r target) hint nothing.
+    for keys in ["", "2", "/", "/ab", ":", ":s/a", "?", "f", "r", "i"] {
+        assert!(hints(keys).is_empty(), "{keys:?} should not hint");
+    }
+    // The operator table leads with the doubled (linewise) key.
+    assert_eq!(hints("d")[0].0, "d");
+    assert_eq!(hints("gq")[0].0, "q");
+    assert_eq!(hints("<lt>")[0].0, "<");
+    // Z is the commit/cancel pair.
+    assert_eq!(
+        hints("Z"),
+        vec![
+            ("Z".to_string(), "Commit".to_string()),
+            ("Q".to_string(), "Cancel".to_string())
+        ]
+    );
+}
+
+#[test]
+fn user_map_single_key_fires() {
+    for (name, cmd, want) in [
+        ("commit", UserCmd::Commit, Action::Commit),
+        ("cancel", UserCmd::Cancel, Action::Quit { force: false }),
+        ("discard", UserCmd::Discard, Action::Quit { force: true }),
+        ("help", UserCmd::Help, Action::Help),
+    ] {
+        let buf = run_mapped("a|bc", "Q", &[("Q", cmd)]);
+        assert!(
+            buf.log.contains(&want),
+            "{name}: wrong action {:?}",
+            buf.log
+        );
+        assert!(!buf.beeped(), "{name}: unexpected beep");
+        assert_eq!(buf.text, "abc", "{name}: buffer must not change");
+    }
+    // Reflow covers the whole message, like `,q`.
+    let buf = run_mapped("one\ntwo |three", "R", &[("R", UserCmd::Reflow)]);
+    assert!(
+        buf.log.contains(&Action::ReflowRange(0..13)),
+        "{:?}",
+        buf.log
+    );
+}
+
+#[test]
+fn user_map_multi_key_sequences() {
+    let map = &[(",w", UserCmd::Commit), ("qq", UserCmd::Cancel)];
+    let buf = run_mapped("a|bc", ",w", map);
+    assert!(buf.log.contains(&Action::Commit));
+    assert!(!buf.beeped());
+    let buf = run_mapped("a|bc", "qq", map);
+    assert!(buf.log.contains(&Action::Quit { force: false }));
+    // The typed prefix shows in the indicator while the sequence is pending.
+    let buf = run_mapped("a|bc", ",", map);
+    assert_eq!(buf.vim.pending_display().as_deref(), Some(","));
+    assert_eq!(buf.vim.mode(), N);
+}
+
+#[test]
+fn user_map_shadows_builtins_and_dead_ends_beep() {
+    // `xy` makes `x` a user prefix: the built-in delete-char never fires, and
+    // a dead end beeps without replaying the swallowed keys.
+    let map = &[("xy", UserCmd::Commit)];
+    let buf = run_mapped("a|bc", "x", map);
+    assert_eq!(buf.text, "abc", "x must be swallowed, not delete");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("x"));
+    let buf = run_mapped("a|bc", "xz", map);
+    assert!(buf.beeped());
+    assert_eq!(buf.text, "abc", "dead end must not replay x as delete");
+    assert!(!buf.log.contains(&Action::Commit));
+    let buf = run_mapped("a|bc", "xy", map);
+    assert!(buf.log.contains(&Action::Commit));
+    // A `,`-leading mapping shadows the whole comma leader: the built-in `,c`
+    // dies (distinct leaders are the documented recommendation).
+    let map = &[(",w", UserCmd::Commit)];
+    let buf = run_mapped("a|bc", ",c", map);
+    assert!(buf.beeped());
+    assert!(!buf.log.contains(&Action::Commit));
+    // A full-sequence collision wins over the built-in: user ZZ cancels.
+    let buf = run_mapped("a|bc", "ZZ", &[("ZZ", UserCmd::Cancel)]);
+    assert!(buf.log.contains(&Action::Quit { force: false }));
+    assert!(!buf.log.contains(&Action::Commit));
+}
+
+#[test]
+fn user_map_prefix_shows_in_which_key() {
+    let map = &[("Qa", UserCmd::Commit), ("Qb", UserCmd::Cancel)];
+    let buf = run_mapped("a|bc", "Q", map);
+    assert_eq!(
+        buf.vim.which_key_hints(),
+        vec![
+            ("a".to_string(), "Commit".to_string()),
+            ("b".to_string(), "Cancel".to_string())
+        ]
+    );
+}
+
+#[test]
+fn user_map_parses_config_entries() {
+    let entries: std::collections::BTreeMap<String, String> = [
+        ("Q", "cancel"),
+        (",w", "commit"),
+        ("", "commit"),       // empty sequence: skipped
+        ("a b", "commit"),    // whitespace: skipped
+        ("bad", "not-a-cmd"), // unknown command: skipped
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(
+        parse_user_map(&entries),
+        vec![
+            (",w".to_string(), UserCmd::Commit),
+            ("Q".to_string(), UserCmd::Cancel)
+        ]
+    );
 }

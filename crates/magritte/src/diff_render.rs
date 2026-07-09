@@ -42,7 +42,10 @@ impl StatusView {
             // The message editor and diff preview are monospace (the 50/72
             // ruler depends on column alignment).
             .font_family(self.font.clone())
-            .p_3()
+            // No bottom padding: the diff preview runs flush to the window's
+            // bottom edge (the message-only layout adds its own below).
+            .pt_3()
+            .px_3()
             .gap_2()
             .child(
                 div()
@@ -97,8 +100,9 @@ impl StatusView {
                             )
                         } else {
                             // Vim mode uses evil's commit-buffer keys (ZZ
-                            // finish, ZQ cancel, gq reflow) so Esc and the
-                            // editing keys stay free for modal editing.
+                            // finish, ZQ cancel) so Esc and the editing keys
+                            // stay free for modal editing; its reflow (gq) and
+                            // the rest live in the :help sheet, not up here.
                             let vim = ed.vim.is_some();
                             el.child(self.key_action(
                                 "editor-commit",
@@ -107,13 +111,15 @@ impl StatusView {
                                 view,
                                 Self::submit_editor,
                             ))
-                            .child(self.key_action(
-                                "editor-reflow",
-                                if vim { "gq" } else { "alt-q" },
-                                "reflow",
-                                view,
-                                Self::reflow_editor,
-                            ))
+                            .when(!vim, |el| {
+                                el.child(self.key_action(
+                                    "editor-reflow",
+                                    "alt-q",
+                                    "reflow",
+                                    view,
+                                    Self::reflow_editor,
+                                ))
+                            })
                             .child(self.key_action(
                                 "editor-cancel",
                                 if vim { "ZQ" } else { "esc" },
@@ -136,13 +142,23 @@ impl StatusView {
         // and watches the mouse: a press aborts pending operators, a
         // completed drag-selection becomes a Visual selection.
         let vim_active = ed.vim.is_some();
-        let (v_mdown, v_mup) = (view.clone(), view.clone());
+        let (v_mdown, v_mup, v_chip) = (view.clone(), view.clone(), view.clone());
         let message = move |input: gpui::Div| {
             let wrapped = input
                 .relative()
-                .child(Input::new(&ed.state).h_full().disabled(paused))
+                // The Input's default vertical padding is dead space above the
+                // summary line and below the last one — zero it (the
+                // horizontal padding stays, from the Input's own default).
+                .child(
+                    Input::new(&ed.state)
+                        .h_full()
+                        .pt_0()
+                        .pb_0()
+                        .disabled(paused),
+                )
                 .children(self.vim_overlay(ed))
-                .children(self.vim_indicator_overlay(ed));
+                .children(self.vim_which_key_overlay(ed))
+                .children(self.vim_indicator_overlay(ed, &v_chip));
             if !vim_active {
                 return wrapped;
             }
@@ -156,15 +172,24 @@ impl StatusView {
         };
         // A tag message has no diff: the message fills the window. Otherwise
         // the split is reserved from the first frame (`diff_expected`), so the
-        // async diff landing doesn't shift the layout; the divider drags to
-        // resize the message box (persisted per repo).
+        // async diff landing doesn't shift the layout; the message box's
+        // bottom edge drags to resize it (persisted per repo). The diff starts
+        // directly below the box, and the resize grip paints last so its thin
+        // strip wins the hit test over both neighbors.
         if !ed.diff_expected {
-            return root.child(message(div().flex_grow(1.0).w_full()));
+            return root.pb_3().child(message(div().flex_grow(1.0).w_full()));
         }
-        let root = root
-            .child(message(div().h(px(self.editor_message_height)).w_full()))
-            .child(self.editor_resize_divider(view))
-            .child(self.render_commit_diff(ed, view));
+        let root = root.child(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_grow(1.0)
+                .w_full()
+                .child(message(div().h(px(self.editor_message_height)).w_full()))
+                .child(self.render_commit_diff(ed, view))
+                .child(self.editor_resize_grip(view)),
+        );
         // The drag handlers live on the editor root so the divider keeps
         // following the pointer when it leaves the thin handle mid-drag.
         let (v_move, v_up) = (view.clone(), view.clone());
@@ -193,33 +218,28 @@ impl StatusView {
         })
     }
 
-    /// The draggable divider between the message box and the diff preview: a
-    /// full-width hairline with a centered grip pill that brightens when the
-    /// divider is hovered.
-    fn editor_resize_divider(&self, view: &Entity<Self>) -> impl IntoElement {
-        const GRIP_GROUP: &str = "editor-resize-divider";
+    /// The message box's resize handle: a thin strip straddling the box's
+    /// bottom border (no divider row — the border itself is the edge), with a
+    /// centered grip pill that brightens on hover. Dragging it resizes the
+    /// message box; the strip is deliberately short so clicks just past it
+    /// still reach the message's last line and the diff's first row.
+    fn editor_resize_grip(&self, view: &Entity<Self>) -> impl IntoElement {
+        const GRIP_GROUP: &str = "editor-resize-grip";
         let v = view.clone();
         let grip = self.palette.dim.opacity(0.4);
         let grip_hover = self.palette.dim;
         div()
-            .id("editor-resize-divider")
+            .id("editor-resize-grip")
             .group(GRIP_GROUP)
+            .absolute()
+            .top(px(self.editor_message_height - 4.0))
+            .left_0()
             .w_full()
-            .h(px(9.0))
-            .my(px(-4.0))
+            .h(px(8.0))
             .flex()
             .items_center()
             .justify_center()
             .cursor_ns_resize()
-            .child(
-                div()
-                    .absolute()
-                    .top(px(4.0))
-                    .left_0()
-                    .w_full()
-                    .h(px(1.0))
-                    .bg(self.palette.border),
-            )
             .child(
                 div()
                     .w(px(36.0))
@@ -230,6 +250,10 @@ impl StatusView {
             )
             .on_mouse_down(MouseButton::Left, {
                 move |ev: &gpui::MouseDownEvent, _window, cx: &mut App| {
+                    // The strip overlaps the input's bottom edge; without this
+                    // the press also reaches the input, which starts a text
+                    // drag-selection while the box is being resized.
+                    cx.stop_propagation();
                     v.update(cx, |this, _cx| {
                         this.editor_resize =
                             Some((ev.position.y.as_f32(), this.editor_message_height));
@@ -240,11 +264,13 @@ impl StatusView {
 
     /// The Vim mode indicator overlaid at the message box's bottom-right: the
     /// in-progress key sequence, live `/`//`:` command line, or echoed error
-    /// to the left of the mode chip (NORMAL/INSERT/VISUAL). All chip fills
-    /// are blended opaque over the box background — the overlay sits on the
-    /// message text, so alpha would let it bleed through. No mouse listeners,
-    /// so clicks pass through to the input; inset clear of its scrollbar.
-    fn vim_indicator_overlay(&self, ed: &CommitEditor) -> Option<gpui::Div> {
+    /// to the left of the mode chip (NORMAL/INSERT/VISUAL). Every piece gets
+    /// an opaque fill (the editor background, or a blend over it) — the
+    /// overlay sits on the message text, so anything translucent would let it
+    /// bleed through. Only the mode chip listens for the mouse (a click opens
+    /// the :help sheet); everything else passes clicks to the input. Inset
+    /// clear of the input's scrollbar.
+    fn vim_indicator_overlay(&self, ed: &CommitEditor, view: &Entity<Self>) -> Option<gpui::Div> {
         let (label, pending) = self.vim_indicator(ed)?;
         let prompt = ed.vim.as_ref().is_some_and(|v| v.in_prompt());
         let chip_bg = self.palette.bg.blend(if ed.vim_bell {
@@ -252,6 +278,7 @@ impl StatusView {
         } else {
             self.palette.visual
         });
+        let v = view.clone();
         Some(
             div()
                 .absolute()
@@ -263,21 +290,25 @@ impl StatusView {
                 .when_some(ed.vim_error.clone(), |el, msg| {
                     el.child(
                         div()
+                            .px_1()
+                            .rounded(px(3.0))
+                            .bg(self.palette.bg)
                             .text_color(self.palette.removed)
                             .child(SharedString::from(msg)),
                     )
                 })
                 .when_some(pending.filter(|_| ed.vim_error.is_none()), |el, keys| {
-                    let keys = div().child(SharedString::from(keys));
+                    let keys = div()
+                        .px_1()
+                        .rounded(px(3.0))
+                        .child(SharedString::from(keys));
                     el.child(if prompt {
-                        // The live command line: chipped and full-color, so
-                        // it reads as an active prompt rather than a hint.
-                        keys.px_1()
-                            .rounded(px(3.0))
-                            .bg(self.palette.bg.blend(self.palette.selection))
+                        // The live command line: full-color and tinted, so it
+                        // reads as an active prompt rather than a hint.
+                        keys.bg(self.palette.bg.blend(self.palette.selection))
                             .text_color(self.palette.fg)
                     } else {
-                        keys.text_color(self.palette.dim)
+                        keys.bg(self.palette.bg).text_color(self.palette.dim)
                     })
                 })
                 .child(
@@ -288,11 +319,71 @@ impl StatusView {
                         .text_color(match label {
                             _ if ed.vim_bell => self.palette.removed,
                             "INSERT" => self.palette.added,
-                            "VISUAL" | "V-LINE" => self.palette.modified,
+                            "VISUAL" | "V-LINE" | "V-BLOCK" => self.palette.modified,
                             _ => self.palette.fg,
+                        })
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, _window, cx: &mut App| {
+                            cx.stop_propagation();
+                            v.update(cx, |this, cx| this.open_vim_help(cx));
                         })
                         .child(SharedString::from(label)),
                 ),
+        )
+    }
+
+    /// The Vim which-key panel, anchored above the mode indicator: one row
+    /// per possible continuation of the pending multi-key sequence (kbd cap +
+    /// dim description), shown once the sequence has sat pending for a beat
+    /// (`arm_vim_hints`). Additive to the indicator, which keeps showing the
+    /// typed prefix — and deliberately inert: no mouse handlers, so it can't
+    /// swallow the keys it hints at.
+    fn vim_which_key_overlay(&self, ed: &CommitEditor) -> Option<gpui::Div> {
+        if !ed.vim_hints {
+            return None;
+        }
+        let hints = ed.vim.as_ref()?.which_key_hints();
+        if hints.is_empty() {
+            return None;
+        }
+        // Column-major, five rows per column, so even the longest table
+        // (operator-pending) stays inside the default message-box height.
+        let mut grid = div().flex().flex_row().items_start().gap_4();
+        for chunk in hints.chunks(5) {
+            grid = grid.child(div().flex().flex_col().items_start().gap_1().children(
+                chunk.iter().map(|(keys, desc)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(kbd::key_chip(
+                            keys,
+                            self.palette.dim,
+                            &self.font,
+                            &self.system_ui_font,
+                        ))
+                        .child(
+                            div()
+                                .text_color(self.palette.dim)
+                                .child(SharedString::from(desc.clone())),
+                        )
+                }),
+            ));
+        }
+        Some(
+            div()
+                .absolute()
+                .bottom(px(34.0))
+                .right(px(16.0))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                // Opaque: the panel floats over the message text.
+                .bg(self.palette.bg.blend(self.palette.selection))
+                .border_1()
+                .border_color(self.palette.border)
+                .text_xs()
+                .child(grid),
         )
     }
 

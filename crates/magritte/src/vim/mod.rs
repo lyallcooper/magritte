@@ -11,6 +11,7 @@
 
 pub(crate) mod apply;
 mod engine;
+mod help;
 mod motion;
 mod surround;
 #[cfg(test)]
@@ -21,15 +22,22 @@ pub(crate) use engine::VimState;
 
 use std::ops::Range;
 
-/// The current editing mode. `Visual { linewise: false }` is `v`,
-/// `{ linewise: true }` is `V`. Operator-pending and other mid-sequence states
-/// live inside [`VimState`], not here — the app only needs these three to
-/// route keys and render the indicator.
+/// The current editing mode. Operator-pending and other mid-sequence states
+/// live inside [`VimState`], not here — the app only needs these to route
+/// keys and render the indicator.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Mode {
     Normal,
     Insert,
-    Visual { linewise: bool },
+    Visual { kind: VisualKind },
+}
+
+/// The three Visual flavors: `v`, `V`, and `Ctrl-V`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum VisualKind {
+    Char,
+    Line,
+    Block,
 }
 
 /// A keystroke, as the engine sees it. The app layer converts gpui keystrokes
@@ -75,11 +83,73 @@ pub(crate) enum Action {
     ReflowRange(Range<usize>),
     /// `:help`: show the Vim-mode cheat sheet.
     Help,
+    /// `zz`/`zt`/`zb` (and `z.`/`z<CR>`/`z-`): scroll the view so the cursor
+    /// line sits at the given edge, without moving the cursor.
+    Scroll(ScrollAlign),
     /// A failed `:` command's echoed message (Vim's `E486: Pattern not
     /// found`…) — shown until the next key, alongside the bell.
     Error(String),
     /// Unhandled or invalid input — swallow the key and ring the visual bell.
     Beep,
+}
+
+/// Where [`Action::Scroll`] puts the cursor line in the viewport.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ScrollAlign {
+    Center,
+    Top,
+    Bottom,
+}
+
+/// An editor-level command a `[vim.keymap]` sequence can invoke.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum UserCmd {
+    Commit,
+    Cancel,
+    Discard,
+    Reflow,
+    Help,
+}
+
+impl UserCmd {
+    fn parse(name: &str) -> Option<UserCmd> {
+        Some(match name {
+            "commit" => UserCmd::Commit,
+            "cancel" => UserCmd::Cancel,
+            "discard" => UserCmd::Discard,
+            "reflow" => UserCmd::Reflow,
+            "help" => UserCmd::Help,
+            _ => return None,
+        })
+    }
+
+    /// The which-key hint description.
+    pub(super) fn describe(self) -> &'static str {
+        match self {
+            UserCmd::Commit => "Commit",
+            UserCmd::Cancel => "Cancel",
+            UserCmd::Discard => "Discard without asking",
+            UserCmd::Reflow => "Reflow message",
+            UserCmd::Help => "Vim help",
+        }
+    }
+}
+
+/// Parse the config's `[vim.keymap]` table into the engine's user map: each
+/// entry a literal key sequence (successive plain chars — no modifier
+/// notation) naming an editor-level command. Invalid entries — an empty
+/// sequence, whitespace/control chars, or an unknown command name — are
+/// skipped.
+pub(crate) fn parse_user_map(
+    entries: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, UserCmd)> {
+    entries
+        .iter()
+        .filter(|(seq, _)| {
+            !seq.is_empty() && seq.chars().all(|c| !c.is_whitespace() && !c.is_control())
+        })
+        .filter_map(|(seq, cmd)| UserCmd::parse(cmd).map(|c| (seq.clone(), c)))
+        .collect()
 }
 
 /// One buffer edit: replace `range` with `text`, then put the cursor at

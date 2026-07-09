@@ -121,6 +121,10 @@ pub struct Config {
     /// in the order written, so one can place relative to an earlier one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub transient: BTreeMap<String, IndexMap<String, TransientSuffix>>,
+    /// Commit-editor Vim mode (`[vim]`): extra key sequences for the
+    /// editor-level commands. Only used while `commit_vim_mode` is on.
+    #[serde(default, skip_serializing_if = "is_default_vim")]
+    pub vim: VimConfig,
     /// How long (ms) after a prefix key is pressed before the which-key popup
     /// of possible continuations appears. The prefix itself waits indefinitely
     /// for the next key; this only delays the help.
@@ -165,6 +169,20 @@ pub struct Config {
     /// Background auto-fetch (`[fetch]`).
     #[serde(default, skip_serializing_if = "is_default_fetch")]
     pub fetch: FetchConfig,
+}
+
+/// Commit-editor Vim mode settings (`[vim]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VimConfig {
+    /// Extra key sequences for the editor-level Vim commands (`commit`,
+    /// `cancel`, `discard`, `reflow`, `help`), added alongside the built-in
+    /// defaults (`ZZ`, `ZQ`, `,q`, `:wq`, …). A sequence is literal successive
+    /// keys (`"Q"`, `",w"` — no modifier notation); one whose first key names
+    /// a built-in command shadows that key. Merged per entry with a repo
+    /// overlay, like `[keymap]`. See docs/config.md.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keymap: BTreeMap<String, String>,
 }
 
 /// Background auto-fetch (`[fetch]`). Off by default; when `auto` is on, runs a
@@ -501,6 +519,9 @@ fn is_default_interval_minutes(n: &u64) -> bool {
 fn is_default_status(s: &StatusConfig) -> bool {
     *s == StatusConfig::default()
 }
+fn is_default_vim(v: &VimConfig) -> bool {
+    *v == VimConfig::default()
+}
 fn is_default_fetch(f: &FetchConfig) -> bool {
     *f == FetchConfig::default()
 }
@@ -529,6 +550,7 @@ impl Default for Config {
             keymap: BTreeMap::new(),
             keymap_preset: KeymapPreset::default(),
             transient: BTreeMap::new(),
+            vim: VimConfig::default(),
             which_key_delay_ms: default_which_key_delay_ms(),
             refresh_on_focus: true,
             show_tags_in_title_bar: false,
@@ -1032,6 +1054,25 @@ mod tests {
         assert_eq!(km.get("k").and_then(|v| v.as_str()), Some("move-up")); // kept from global
         assert_eq!(km.get("K").and_then(|v| v.as_str()), Some("branch-delete"));
         // added by repo
+    }
+
+    #[test]
+    fn vim_keymap_parses_and_merges_per_entry() {
+        let cfg: Config =
+            toml::from_str("[vim.keymap]\n\"Q\" = \"cancel\"\n\",w\" = \"commit\"\n").unwrap();
+        assert_eq!(cfg.vim.keymap["Q"], "cancel");
+        assert_eq!(cfg.vim.keymap[",w"], "commit");
+        // Repo overlay: per-entry, like [keymap] — same key wins, new keys add.
+        let mut base = val("[vim.keymap]\n\"Q\" = \"cancel\"\n\",w\" = \"commit\"\n");
+        let overlay = val("[vim.keymap]\n\"Q\" = \"commit\"\n\"R\" = \"reflow\"\n");
+        deep_merge(&mut base, overlay);
+        let cfg: Config = base.try_into().unwrap();
+        assert_eq!(cfg.vim.keymap["Q"], "commit");
+        assert_eq!(cfg.vim.keymap[",w"], "commit");
+        assert_eq!(cfg.vim.keymap["R"], "reflow");
+        // Default configs don't serialize an empty [vim] table.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("[vim"), "empty [vim] omitted:\n{text}");
     }
 
     #[test]

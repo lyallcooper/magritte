@@ -59,7 +59,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72; bullets and indented lines keep a hanging indent (paused while in Vim Normal/Visual mode). |
-| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` regex search (smartcase, with live match highlighting), `:` commands (`:s` with live match preview, `:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), `>`/`<` indent operators, mouse-drag Visual selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message). For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
+| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` regex search (smartcase, with live match highlighting), `:` commands (`:s` with live match preview, `:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), `>`/`<` indent operators, mouse-drag Visual selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message); `[vim.keymap]` adds your own keys for these — see *Keymap*. For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
@@ -228,6 +228,35 @@ keymap_preset = "evil"
 
   Keys typed inside a transient, picker, or the commit editor are consumed by
   that mode, not the keymap.
+
+### Vim mode keys (`[vim.keymap]`)
+
+With `commit_vim_mode = true`, a `[vim.keymap]` table adds key sequences for
+the commit editor's editor-level Vim commands: `commit`, `cancel`, `discard`
+(cancel without the confirmation), `reflow` (the whole message), and `help`.
+
+```toml
+[vim.keymap]
+"Q" = "cancel"      # a single key
+";w" = "commit"     # ; then w — multi-char sequences are successive keys
+"gz" = "help"
+```
+
+- **Sequences are literal keys typed in order** — `";w"` is `;` then `w`, with
+  no spaces between the steps and no modifier notation (`ctrl-`/`alt-` chords
+  aren't supported here). Case matters: `Q` is shift-q.
+- **User entries add to the defaults** — `ZZ`, `ZQ`, `,,`/`,c`/`,k`/`,q`,
+  `:wq`/`:q`/`:q!`/`:help` all keep working. An exact collision wins: mapping
+  `"ZZ" = "cancel"` overrides the built-in `ZZ`.
+- **A sequence's first key shadows that built-in key.** Mapping `"dx"` makes
+  `d` wait for the sequence, so the delete operator dies; `";w"` above shadows
+  `;` (repeat find). Prefer leaders Vim mode doesn't use (`Q`, `;`, …). A
+  sequence that dead-ends beeps; the swallowed keys don't replay.
+- While a sequence is pending, the typed prefix shows by the mode indicator,
+  and after a beat a which-key panel lists the continuations.
+- Merged per entry with a repo's `.git/magritte/config.toml`, like `[keymap]`;
+  unknown command names are ignored. Changes apply the next time the editor
+  opens.
 
 ### Command ids
 
