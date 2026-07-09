@@ -140,11 +140,11 @@ impl StatusView {
                 stamp,
                 &[],
                 cx,
-                |repo| repo.tags_around(),
+                |repo| repo.nearest_tag(),
                 |this, tags| this.tag_info = tags,
             );
         } else {
-            self.tag_info = (None, None);
+            self.tag_info = None;
         }
     }
 

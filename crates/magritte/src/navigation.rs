@@ -693,6 +693,8 @@ impl StatusView {
             &state::FoldState {
                 collapsed,
                 commit_details_expanded: self.commit_details_expanded,
+                commit_editor_height: (self.editor_message_height != EDITOR_MESSAGE_HEIGHT_DEFAULT)
+                    .then_some(self.editor_message_height),
             },
         );
     }

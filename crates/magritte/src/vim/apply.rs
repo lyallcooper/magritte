@@ -143,6 +143,62 @@ impl StatusView {
         self.on_editor_changed(window, cx);
     }
 
+    /// A mouse press over the message in Vim Normal/Visual mode: abort any
+    /// pending operator/count (a click is an implicit Esc) and hold off the
+    /// blur-back so a drag can complete with the input focused.
+    pub(crate) fn vim_mouse_down(&mut self, cx: &mut Context<Self>) {
+        let Some(ed) = self.editor_mut() else {
+            return;
+        };
+        let Some(vim) = ed.vim.as_mut() else {
+            return;
+        };
+        if vim.in_insert() {
+            return;
+        }
+        vim.cancel_pending();
+        ed.mouse_selecting = true;
+        cx.notify();
+    }
+
+    /// The release: a completed drag-selection becomes a Visual selection
+    /// (anchor at its start, cursor on its last char, the native selection
+    /// dropped in favor of the Vim overlay); a plain click just places the
+    /// cursor. Either way focus goes back to the view.
+    pub(crate) fn vim_mouse_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ed) = self.editor_mut() else {
+            return;
+        };
+        if !std::mem::take(&mut ed.mouse_selecting) {
+            return;
+        }
+        let state = ed.state.clone();
+        let in_insert = ed.vim.as_ref().is_none_or(|v| v.in_insert());
+        if in_insert {
+            return;
+        }
+        let (text, sel) = {
+            let s = state.read(cx);
+            (s.text().to_string(), s.selected_range())
+        };
+        if sel.start < sel.end {
+            if let Some(vim) = self.editor_mut().and_then(|e| e.vim.as_mut()) {
+                vim.begin_visual(&text, sel.start);
+            }
+            state.update(cx, |s, cx| {
+                s.unselect(window, cx);
+                let cursor = clamp_normal(&text, prev_char(&text, sel.end));
+                s.set_cursor_position(
+                    commit_text::byte_offset_to_position(&text, cursor),
+                    window,
+                    cx,
+                );
+            });
+        }
+        self.sync_vim_focus(window, cx);
+        cx.notify();
+    }
+
     /// Keep focus in step with the mode: Insert focuses the input, everything
     /// else the view (which is what hides the input's caret in Normal mode —
     /// and set_cursor_position refocuses the input as a side effect, so this
@@ -294,13 +350,13 @@ impl StatusView {
                             at = next_char(&text, le.max(at));
                         }
                     }
-                    // Incremental search: highlight every (smartcase) match
-                    // of the query being typed at the `/`/`?` prompt (capped,
-                    // in case a one-char query floods a long message).
-                    if let Some(q) = vim.search_query() {
+                    // Incremental search: highlight every (smartcase regex)
+                    // match of the pattern being typed at the `/`/`?` prompt
+                    // (capped, in case a one-char query floods the message).
+                    if let Some(re) = vim.search_query().and_then(super::compile_search) {
                         let mut from = 0;
                         for _ in 0..200 {
-                            let Some((m0, mlen)) = super::search_from(&text, q, from) else {
+                            let Some((m0, mlen)) = re.find_from(&text, from) else {
                                 break;
                             };
                             let m1 = m0 + mlen;

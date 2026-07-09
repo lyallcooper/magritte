@@ -577,30 +577,17 @@ impl StatusView {
                 (None, None) => {}
             }
 
-            // Nearest tag(s): "Tag: v1 (5)" (behind) or "Tags: v1 (5), v2 (2)"
-            // (behind + ahead), magit's status tag header. Gated by `show_tags_in_title_bar`
-            // (when off, `tag_info` is left empty so this is skipped).
-            let (cur, next) = &self.tag_info;
-            let entries: Vec<&(String, usize)> = [cur.as_ref(), next.as_ref()]
-                .into_iter()
-                .flatten()
-                .collect();
-            // Gate on the live config too, so toggling `show_tags_in_title_bar` off hides the
-            // segment immediately (not just after the next status refresh clears
-            // `tag_info`).
-            if self.config.show_tags_in_title_bar && !entries.is_empty() {
-                let mut seg = div().flex().items_center().gap_1();
-                for (i, (name, count)) in entries.iter().enumerate() {
-                    // The first entry is the tag HEAD is at or past; a second is
-                    // the next tag ahead. The count is commits since (until) it.
-                    let (tip, count_tip) = if i == 0 {
-                        ("Nearest tag", "Commits since tag")
-                    } else {
-                        ("Next tag", "Commits until tag")
-                    };
-                    // A tag-tinted pill: the name (click opens the tag transient)
-                    // and, divided off like the branch chip's copy button, the
-                    // commits-since count.
+            // The nearest reachable tag: "v1 (5)", magit's current-tag header.
+            // (Tags merely *containing* HEAD — e.g. on unpulled upstream
+            // commits — aren't shown; a second tag here read as noise.)
+            // Gate on the live config too, so toggling `show_tags_in_title_bar`
+            // off hides the segment immediately (not just after the next
+            // status refresh clears `tag_info`).
+            if self.config.show_tags_in_title_bar {
+                if let Some((name, count)) = &self.tag_info {
+                    // A tag-tinted pill: the name (click opens the tag
+                    // transient) and, divided off like the branch chip's copy
+                    // button, the commits-since count.
                     let mut pill = div()
                         .flex()
                         .items_center()
@@ -610,9 +597,9 @@ impl StatusView {
                         .text_color(self.palette.tag)
                         .child(self.titlebar_action(
                             view,
-                            format!("titlebar-tag-{i}"),
+                            "titlebar-tag".to_string(),
                             "tag",
-                            tip,
+                            "Nearest tag",
                             Some(name.clone()),
                             div().px(px(5.0)).child(SharedString::from(name.clone())),
                         ));
@@ -627,8 +614,8 @@ impl StatusView {
                             .child(
                                 self.titlebar_tip(
                                     view,
-                                    format!("titlebar-tag-{i}-count"),
-                                    count_tip,
+                                    "titlebar-tag-count".to_string(),
+                                    "Commits since tag",
                                     None,
                                     div()
                                         .px(px(4.0))
@@ -636,9 +623,8 @@ impl StatusView {
                                 ),
                             );
                     }
-                    seg = seg.child(pill);
+                    info = info.child(div().flex().items_center().gap_1().child(pill));
                 }
-                info = info.child(seg);
             }
 
             if !status.is_clean() {

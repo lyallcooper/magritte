@@ -59,7 +59,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72; bullets and indented lines keep a hanging indent (paused while in Vim Normal/Visual mode). |
-| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` search (smartcase, with live match highlighting), and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message). For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
+| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` regex search (smartcase, with live match highlighting), `>`/`<` indent operators, mouse-drag Visual selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message). For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
@@ -128,9 +128,8 @@ copies the reference. File rows stage/unstage/discard as usual; discarded
 files go to the system trash. On a section header, `s`/`u` act on the whole
 section.
 
-Set `show_tags_in_title_bar = true` to show the nearest tag(s) in the title bar —
-`Tag: v1.0 (5)` (commits since) or `Tags: v1.0 (5), v1.1 (2)` (also the next
-tag ahead). Off by default.
+Set `show_tags_in_title_bar = true` to show the nearest reachable tag in the
+title bar — `v1.0 (5)` (commits since it). Off by default.
 
 ## Auto-fetch
 

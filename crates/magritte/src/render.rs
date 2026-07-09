@@ -1009,7 +1009,7 @@ impl StatusView {
                 Popup::Dispatch(def) => self
                     .render_transient(def, None, window, view)
                     .into_any_element(),
-                Popup::Picker(state) => self.render_picker(state, view).into_any_element(),
+                Popup::Picker(_) => self.picker_overlay.clone().into_any_element(),
             });
         } else if let Some((prompt, _)) = &self.confirm {
             root = root.child(

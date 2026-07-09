@@ -57,13 +57,9 @@ pub struct Repo {
     pub(crate) diff_context: Option<usize>,
 }
 
-/// A tag name paired with the number of commits between it and HEAD.
+/// A tag name paired with the number of commits between it and HEAD. See
+/// [`Repo::nearest_tag`].
 pub type TagDistance = (String, usize);
-/// The status "Tag/Tags" display: the nearest tag reachable from HEAD (with
-/// commits since it) and the nearest tag that *contains* HEAD (with commits
-/// until it). Either side is `None` when there's no such tag. See
-/// [`Repo::tags_around`].
-pub type TagsAround = (Option<TagDistance>, Option<TagDistance>);
 
 /// One recorded command invocation, for the command log (magit's process
 /// buffer). Usually git, but a user `!` shell escape records its program too.
@@ -823,14 +819,13 @@ impl Repo {
         self.run_optional(["config", "--unset", key]).map(|_| ())
     }
 
-    /// The nearest tag reachable from HEAD (with commits-since) and the nearest
-    /// tag that *contains* HEAD (with commits-until) — magit's status "Tag/Tags"
-    /// header (`magit-get-current-tag` / `magit-get-next-tag`). Either is `None`
-    /// when there's no such tag.
-    pub fn tags_around(&self) -> TagsAround {
-        let current = self.current_tag();
-        let next = self.next_tag(current.as_ref().map(|(t, _)| t.as_str()));
-        (current, next)
+    /// The nearest tag reachable from HEAD, with the commits since it —
+    /// magit's `magit-get-current-tag`. (The "next" tag *containing* HEAD is
+    /// deliberately not surfaced: with an upstream ahead of HEAD it reports
+    /// tags on commits you haven't even pulled, which reads as noise in the
+    /// title bar.)
+    pub fn nearest_tag(&self) -> Option<TagDistance> {
+        self.current_tag()
     }
 
     /// `git describe --long --tags` → `(tag, commits-since)`; `None` if untagged.
@@ -844,28 +839,6 @@ impl Repo {
         let without_hash = s.rsplit_once("-g")?.0;
         let (tag, count) = without_hash.rsplit_once('-')?;
         Some((tag.to_string(), count.parse().ok()?))
-    }
-
-    /// `git describe --contains HEAD` → `(tag, commits-until)` for the nearest
-    /// tag HEAD is an ancestor of; `None` if none, or if it's the current tag.
-    fn next_tag(&self, current: Option<&str>) -> Option<TagDistance> {
-        let out = self
-            .run_optional(["describe", "--contains", "HEAD"])
-            .ok()
-            .flatten()?;
-        let s = out.stdout_text();
-        // "<tag>" possibly suffixed with `~N` / `^N`.
-        let tag = s.split(['~', '^']).next().unwrap_or("").to_string();
-        if tag.is_empty() || Some(tag.as_str()) == current {
-            return None;
-        }
-        let count = self
-            .run_optional(["rev-list", "--count", &format!("HEAD..{tag}")])
-            .ok()
-            .flatten()
-            .and_then(|o| o.stdout_text().parse().ok())
-            .unwrap_or(0);
-        Some((tag, count))
     }
 
     /// Ignored file paths (`git ls-files --others --ignored --exclude-standard`),

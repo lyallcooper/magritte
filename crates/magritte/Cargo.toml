@@ -36,6 +36,7 @@ magritte-core = { path = "../magritte-core" }
 # bridges its callback thread to the GPUI executor — no polling.
 notify = "7"
 async-channel = "2"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # POSIX-style word splitting for the `!` run-git prompt — honors quoting and

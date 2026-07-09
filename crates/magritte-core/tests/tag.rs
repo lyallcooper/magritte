@@ -25,8 +25,9 @@ fn create_list_and_delete_lightweight_tag() {
 }
 
 #[test]
-fn tags_around_reports_nearest_behind_and_ahead() {
-    // v1 -- middle -- v2; from `middle`, v1 is one behind and v2 one ahead.
+fn nearest_tag_reports_reachable_tag_with_distance() {
+    // v1 -- middle -- v2; from `middle`, v1 is one behind (v2, which merely
+    // contains HEAD, is deliberately not reported — see `Repo::nearest_tag`).
     let (t, repo) = repo();
     t.git(["tag", "v1"]);
     t.write("f", "2\n");
@@ -37,15 +38,11 @@ fn tags_around_reports_nearest_behind_and_ahead() {
     t.git(["tag", "v2"]);
 
     t.git(["checkout", &middle]);
-    let (current, next) = repo.tags_around();
-    assert_eq!(current, Some(("v1".to_string(), 1)));
-    assert_eq!(next, Some(("v2".to_string(), 1)));
+    assert_eq!(repo.nearest_tag(), Some(("v1".to_string(), 1)));
 
-    // Exactly on a tag: distance 0, and no distinct next tag.
+    // Exactly on a tag: distance 0.
     t.git(["checkout", "v2"]);
-    let (current, next) = repo.tags_around();
-    assert_eq!(current, Some(("v2".to_string(), 0)));
-    assert_eq!(next, None);
+    assert_eq!(repo.nearest_tag(), Some(("v2".to_string(), 0)));
 }
 
 #[test]

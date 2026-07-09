@@ -29,6 +29,31 @@ fn picker_ref_style(action: &PickerAction) -> Option<PickerRefStyle> {
     }
 }
 
+/// The picker overlay as its own view: filtering and Up/Down notify THIS
+/// entity, so a keystroke repaints only the bottom panel instead of the whole
+/// window (title bar, status list, theme re-resolution) — that full-window
+/// relayout was the `:`-palette typing lag.
+pub(crate) struct PickerOverlay {
+    pub(crate) parent: gpui::WeakEntity<StatusView>,
+}
+
+impl gpui::Render for PickerOverlay {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        let Some(parent) = self.parent.upgrade() else {
+            return div().into_any_element();
+        };
+        let this = parent.read(cx);
+        match &this.popup {
+            Some(Popup::Picker(state)) => this.render_picker(state, &parent).into_any_element(),
+            _ => div().into_any_element(),
+        }
+    }
+}
+
 impl StatusView {
     /// The remote-picker overlay: a title and kbd hints over a searchable list
     /// of remotes (search field focused on appear). Enter / clicking a row runs

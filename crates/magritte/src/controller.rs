@@ -234,7 +234,7 @@ impl StatusView {
                     if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                         p.list
                             .set_choices(items.into_iter().map(SharedString::from).collect());
-                        cx.notify();
+                        this.notify_picker(cx);
                     }
                 })
                 .ok();
@@ -1284,7 +1284,7 @@ impl StatusView {
                     if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                         p.list.set_query(&query);
                         p.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
-                        cx.notify();
+                        this.notify_picker(cx);
                     }
                 }
             },
@@ -1371,7 +1371,7 @@ impl StatusView {
                             p.list
                                 .set_choices(choices.into_iter().map(SharedString::from).collect());
                         }
-                        cx.notify();
+                        this.notify_picker(cx);
                     }
                     Err(e) => {
                         if selection_only {
@@ -1551,13 +1551,20 @@ impl StatusView {
         }
     }
 
+    /// Repaint just the picker overlay (its own view): filtering and
+    /// navigation don't touch anything outside the bottom panel, and a full
+    /// `cx.notify()` here re-laid-out the whole window per keystroke.
+    pub(crate) fn notify_picker(&self, cx: &mut Context<Self>) {
+        self.picker_overlay.update(cx, |_, cx| cx.notify());
+    }
+
     /// Move the picker highlight by `delta` rows (Up/Down), keeping it in view.
     pub(crate) fn picker_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         if let Some(Popup::Picker(p)) = self.popup.as_mut() {
             p.list.move_by(delta);
             p.scroll
                 .scroll_to_item(p.list.selected(), gpui::ScrollStrategy::Top);
-            cx.notify();
+            self.notify_picker(cx);
         }
     }
 

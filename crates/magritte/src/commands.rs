@@ -5,6 +5,7 @@
 //! the command `run` closures call back into [`StatusView`] methods.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use gpui::{Context, Window};
 use magritte_core::transient::{self, Suffix, TitleSpan, Transient};
@@ -2064,28 +2065,49 @@ pub(crate) fn command_keys(
     // Otherwise a leaf reached through its prefix's transient: `<prefix>
     // <suffix>`, with the prefix's *current* key (the suffix is transient-fixed).
     let leaf = cmd.leaf?;
-    // Search every transient (via the single `transient_for` source of truth, so
-    // adding a leaf under any prefix surfaces its key — no hardcoded list).
-    for &prefix_id in TRANSIENT_IDS {
-        let Some(t) = transient_for(prefix_id, config.keymap_preset.transient_style()) else {
-            continue;
-        };
-        for group in &t.groups {
-            for suffix in &group.suffixes {
-                if let Suffix::Action(a) = suffix {
-                    if a.command == leaf {
-                        let default = commands()
-                            .iter()
-                            .find(|c| c.id == prefix_id)
-                            .and_then(|c| default_key_for_command(config.keymap_preset, c));
-                        let prefix_key = current_key(keymap, prefix_id, default)?;
-                        return Some(format!("{prefix_key} {}", a.key));
+    let (prefix_id, suffix_key) = transient_leaf_keys(config.keymap_preset.transient_style())
+        .iter()
+        .find(|(cmd, _)| *cmd == leaf)
+        .map(|(_, entry)| entry)?;
+    let default = commands()
+        .iter()
+        .find(|c| c.id == *prefix_id)
+        .and_then(|c| default_key_for_command(config.keymap_preset, c));
+    let prefix_key = current_key(keymap, prefix_id, default)?;
+    Some(format!("{prefix_key} {suffix_key}"))
+}
+
+/// Leaf command → (prefix id, suffix key), across every built-in transient
+/// (first prefix in [`TRANSIENT_IDS`] order wins). The transient definitions
+/// are static per keymap style, but building one is not free — the palette's
+/// first frame used to construct all fourteen per visible row resolving key
+/// hints, so the table is built once per style instead.
+type LeafKeys = Vec<(transient::Command, (&'static str, String))>;
+fn transient_leaf_keys(style: transient::KeymapStyle) -> &'static LeafKeys {
+    static EVIL: OnceLock<LeafKeys> = OnceLock::new();
+    static VANILLA: OnceLock<LeafKeys> = OnceLock::new();
+    let cell = match style {
+        transient::KeymapStyle::EvilCollection => &EVIL,
+        transient::KeymapStyle::Vanilla => &VANILLA,
+    };
+    cell.get_or_init(|| {
+        let mut table: LeafKeys = Vec::new();
+        for &prefix_id in TRANSIENT_IDS {
+            let Some(t) = transient_for(prefix_id, style) else {
+                continue;
+            };
+            for group in &t.groups {
+                for suffix in &group.suffixes {
+                    if let Suffix::Action(a) = suffix {
+                        if !table.iter().any(|(cmd, _)| *cmd == a.command) {
+                            table.push((a.command, (prefix_id, a.key.to_string())));
+                        }
                     }
                 }
             }
         }
-    }
-    None
+        table
+    })
 }
 
 /// The keystroke for a user `[[command]]` (matched by `title`): a direct

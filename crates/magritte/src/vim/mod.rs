@@ -281,50 +281,61 @@ pub(super) fn offset_at_col(text: &str, line_pos: usize, col: usize) -> usize {
     at // col past the line: its last char
 }
 
-/// The first `/`-search match at or after byte `from`, as `(start, byte
-/// len)`. Vim 'smartcase': an all-lowercase query matches case-insensitively,
-/// any uppercase char makes it exact. Shared by the engine's jump and the
-/// overlay's live match highlight.
-pub(super) fn search_from(text: &str, query: &str, from: usize) -> Option<(usize, usize)> {
+/// A compiled `/`-search pattern: a regex (Rust syntax) with Vim
+/// 'smartcase' — a pattern with no *literal* uppercase (escaped chars like
+/// `\W` don't count) matches case-insensitively. `None` for an empty or
+/// invalid pattern (nothing matches while a partial regex is being typed).
+/// Shared by the engine's jump and the overlay's live match highlight.
+pub(super) struct Search(regex::Regex);
+
+pub(super) fn compile_search(query: &str) -> Option<Search> {
     if query.is_empty() {
         return None;
     }
-    let insensitive = !query.chars().any(char::is_uppercase);
-    let query_lower = insensitive.then(|| query.to_lowercase());
-    let mut pos = from.min(text.len());
-    loop {
-        let hit = match &query_lower {
-            Some(ql) => smartcase_match_len(text, pos, ql),
-            None => text[pos..].starts_with(query).then_some(query.len()),
-        };
-        if let Some(len) = hit {
-            return Some((pos, len));
+    let mut chars = query.chars();
+    let mut literal_upper = false;
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            chars.next();
+        } else if c.is_uppercase() {
+            literal_upper = true;
+            break;
         }
-        if pos >= text.len() {
-            return None;
+    }
+    regex::RegexBuilder::new(query)
+        .case_insensitive(!literal_upper)
+        .build()
+        .ok()
+        .map(Search)
+}
+
+impl Search {
+    /// The first match at or after byte `from`, as `(start, byte len)`.
+    /// Zero-width matches (e.g. `x*` between chars) are skipped — a jump
+    /// needs somewhere to land.
+    pub(super) fn find_from(&self, text: &str, from: usize) -> Option<(usize, usize)> {
+        let mut at = from.min(text.len());
+        while !text.is_char_boundary(at) {
+            at += 1;
         }
-        pos = next_char(text, pos);
+        loop {
+            let m = self.0.find(&text[at..])?;
+            if !m.is_empty() {
+                return Some((at + m.start(), m.len()));
+            }
+            let past = at + m.start();
+            if past >= text.len() {
+                return None;
+            }
+            at = next_char(text, past);
+        }
     }
 }
 
-/// The byte length of text at `at` matching the pre-lowercased query
-/// case-insensitively, comparing char by char (lowercasing can change byte
-/// and even char counts, e.g. `İ`).
-fn smartcase_match_len(text: &str, at: usize, query_lower: &str) -> Option<usize> {
-    let mut ql = query_lower.chars().peekable();
-    for (i, c) in text[at..].char_indices() {
-        if ql.peek().is_none() {
-            return Some(i);
-        }
-        for lc in c.to_lowercase() {
-            match ql.next() {
-                Some(qc) if qc == lc => {}
-                // A mismatch, or the query ending mid-char: no match.
-                _ => return None,
-            }
-        }
-    }
-    ql.peek().is_none().then(|| text.len() - at)
+/// [`compile_search`] + [`Search::find_from`] in one call, for the tests.
+#[cfg(test)]
+pub(super) fn search_from(text: &str, query: &str, from: usize) -> Option<(usize, usize)> {
+    compile_search(query)?.find_from(text, from)
 }
 
 /// Clamp `pos` to a valid Normal-mode cursor position: on a char that isn't a
@@ -400,20 +411,26 @@ mod helper_tests {
     }
 
     #[test]
-    fn smartcase_search() {
-        // Lowercase queries are case-insensitive…
+    fn smartcase_regex_search() {
+        // Lowercase patterns are case-insensitive…
         assert_eq!(search_from("ab CD ab", "cd", 0), Some((3, 2)));
         assert_eq!(search_from("Hello", "hello", 0), Some((0, 5)));
-        // …uppercase makes them exact.
+        // …literal uppercase makes them exact (escapes don't count).
         assert_eq!(search_from("ab cd CD", "CD", 0), Some((6, 2)));
         assert_eq!(search_from("ab cd", "CD", 0), None);
-        // From an offset; empty query never matches.
+        assert_eq!(search_from("A b", r"\w", 0), Some((0, 1))); // \W-style upper is not literal
+                                                                // From an offset; empty or invalid patterns never match.
         assert_eq!(search_from("aa aa", "aa", 1), Some((3, 2)));
         assert_eq!(search_from("aa", "", 0), None);
-        // Multibyte case folding: the match length is the text's, not the
-        // query's.
+        assert_eq!(search_from("aa", "(", 0), None);
+        // Real regex syntax: classes, quantifiers, alternation.
+        assert_eq!(search_from("abc 123 xy", "[0-9]+", 0), Some((4, 3)));
+        assert_eq!(search_from("foo bar", "b.r", 0), Some((4, 3)));
+        assert_eq!(search_from("x ee y", "e{2}|zz", 0), Some((2, 2)));
+        // Zero-width matches are skipped, not looped on.
+        assert_eq!(search_from("aab", "x*b", 0), Some((2, 1)));
+        // Multibyte case folding (simple folding: é ↔ É).
         assert_eq!(search_from("x É y", "é", 0), Some((2, 2)));
-        assert_eq!(search_from("x İ y", "i̇", 0), Some((2, 2)));
         assert_eq!(search_from("é", "É", 0), None); // exact: no match
     }
 

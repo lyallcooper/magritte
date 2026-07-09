@@ -69,7 +69,14 @@ impl StatusView {
                                             } else {
                                                 self.palette.dim
                                             })
-                                            .child(SharedString::from("Discard message?")),
+                                            // Amend/reword edit an existing
+                                            // message: it's the changes being
+                                            // discarded, not the message.
+                                            .child(SharedString::from(if ed.initial.is_empty() {
+                                                "Discard message?"
+                                            } else {
+                                                "Discard changes?"
+                                            })),
                                     )
                                     .child(self.key_action(
                                         "editor-discard-yes",
@@ -123,21 +130,88 @@ impl StatusView {
         // out — a clear cue that typing is paused until you answer y/n.
         let paused = ed.confirming_cancel;
         // Vim mode paints its Visual selection and block cursor as an overlay
-        // sibling above the Input (InputState exposes no selection setter).
-        let message = |input: gpui::Div| {
-            input
+        // sibling above the Input (InputState exposes no selection setter),
+        // and watches the mouse: a press aborts pending operators, a
+        // completed drag-selection becomes a Visual selection.
+        let vim_active = ed.vim.is_some();
+        let (v_mdown, v_mup) = (view.clone(), view.clone());
+        let message = move |input: gpui::Div| {
+            let wrapped = input
                 .relative()
                 .child(Input::new(&ed.state).h_full().disabled(paused))
-                .children(self.vim_overlay(ed))
+                .children(self.vim_overlay(ed));
+            if !vim_active {
+                return wrapped;
+            }
+            wrapped
+                .on_mouse_down(MouseButton::Left, move |_, _window, cx: &mut App| {
+                    v_mdown.update(cx, |this, cx| this.vim_mouse_down(cx));
+                })
+                .on_mouse_up(MouseButton::Left, move |_, window, cx: &mut App| {
+                    v_mup.update(cx, |this, cx| this.vim_mouse_up(window, cx));
+                })
         };
-        if ed.diff.is_empty() {
-            root.child(message(div().flex_grow(1.0).w_full()))
-                .children(self.vim_mode_bar(ed))
-        } else {
-            root.child(message(div().h(px(176.0)).w_full()))
-                .children(self.vim_mode_bar(ed))
-                .child(self.render_commit_diff(ed, view))
+        // A tag message has no diff: the message fills the window. Otherwise
+        // the split is reserved from the first frame (`diff_expected`), so the
+        // async diff landing doesn't shift the layout; the divider drags to
+        // resize the message box (persisted per repo).
+        if !ed.diff_expected {
+            return root
+                .child(message(div().flex_grow(1.0).w_full()))
+                .children(self.vim_mode_bar(ed));
         }
+        let root = root
+            .child(message(div().h(px(self.editor_message_height)).w_full()))
+            .children(self.vim_mode_bar(ed))
+            .child(self.editor_resize_divider(view))
+            .child(self.render_commit_diff(ed, view));
+        // The drag handlers live on the editor root so the divider keeps
+        // following the pointer when it leaves the thin handle mid-drag.
+        let (v_move, v_up) = (view.clone(), view.clone());
+        root.on_mouse_move(move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+            if ev.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            v_move.update(cx, |this, cx| {
+                let Some((y0, h0)) = this.editor_resize else {
+                    return;
+                };
+                let h =
+                    (h0 + (ev.position.y.as_f32() - y0)).clamp(EDITOR_MESSAGE_HEIGHT_MIN, 1200.0);
+                if h != this.editor_message_height {
+                    this.editor_message_height = h;
+                    cx.notify();
+                }
+            });
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _window, cx: &mut App| {
+            v_up.update(cx, |this, _cx| {
+                if this.editor_resize.take().is_some() {
+                    this.persist_fold_state();
+                }
+            });
+        })
+    }
+
+    /// The draggable divider between the message box and the diff preview.
+    fn editor_resize_divider(&self, view: &Entity<Self>) -> gpui::Div {
+        let v = view.clone();
+        div()
+            .w_full()
+            .h(px(5.0))
+            .my(px(-2.0))
+            .flex()
+            .items_center()
+            .cursor_ns_resize()
+            .child(div().w_full().h(px(1.0)).bg(self.palette.border))
+            .on_mouse_down(MouseButton::Left, {
+                move |ev: &gpui::MouseDownEvent, _window, cx: &mut App| {
+                    v.update(cx, |this, _cx| {
+                        this.editor_resize =
+                            Some((ev.position.y.as_f32(), this.editor_message_height));
+                    });
+                }
+            })
     }
 
     /// The Vim mode line under the message editor (above the diff preview):

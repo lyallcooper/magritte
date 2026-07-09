@@ -38,9 +38,16 @@ pub(crate) struct CommitEditor {
     /// Collapsed File/Hunk header row indices in the preview diff, toggled by
     /// clicking a header (the preview has no cursor, so folding is mouse-driven).
     pub(crate) diff_collapsed: std::collections::HashSet<usize>,
+    /// Whether a diff preview is (or will be) shown below the message — known
+    /// at open time, so the split layout can be reserved before the async
+    /// diff lands (no pop-in shift). Tag messages have no diff.
+    pub(crate) diff_expected: bool,
     /// Modal Vim editing state, when the `commit_vim_mode` setting is on
     /// (`None` = ordinary editing). Opens in Normal mode.
     pub(crate) vim: Option<Box<vim::VimState>>,
+    /// A mouse press is in flight over the message (Vim mode): the Normal-mode
+    /// blur-back is held off until release so a drag-selection can complete.
+    pub(crate) mouse_selecting: bool,
     /// Kept alive so the PressEnter subscription stays active.
     pub(crate) _sub: Subscription,
 }
@@ -472,10 +479,9 @@ impl StatusView {
                 // hides the input's caret). A mouse click focuses the input —
                 // let it place the cursor, then blur back on the next frame.
                 InputEvent::Focus
-                    if this
-                        .editor()
-                        .and_then(|e| e.vim.as_ref())
-                        .is_some_and(|v| !v.in_insert()) =>
+                    if this.editor().is_some_and(|e| {
+                        !e.mouse_selecting && e.vim.as_ref().is_some_and(|v| !v.in_insert())
+                    }) =>
                 {
                     cx.on_next_frame(window, |this, window, cx| {
                         this.sync_vim_focus(window, cx);
@@ -495,11 +501,14 @@ impl StatusView {
                 to_focus.read(cx).focus_handle(cx).focus(window, cx);
             }
         });
+        let diff_expected = !matches!(after_submit, CommitAfterSubmit::CreateTag { .. });
         self.screen = Screen::Editor(CommitEditor {
             state: state.clone(),
             mode,
             args,
             after_submit,
+            diff_expected,
+            mouse_selecting: false,
             initial: String::new(),
             confirming_cancel: false,
             flash: false,
@@ -751,6 +760,17 @@ impl StatusView {
             "g" if event.keystroke.modifiers.control => "escape",
             k => k,
         };
+        // The `?` help menu (and any transient) can float over the editor,
+        // but `on_key` — which normally runs popups — bails while the editor
+        // is open. Own the keyboard here: Esc/C-g dismisses, everything else
+        // is swallowed so it can't leak into the message (or Vim mode).
+        if matches!(self.popup, Some(Popup::Transient(_) | Popup::Dispatch(_))) {
+            cx.stop_propagation();
+            if key == "escape" {
+                self.cancel_popup(window, cx);
+            }
+            return;
+        }
         // While the "discard message?" confirmation is up, it owns the keyboard:
         // swallow every key so none reaches the message input (otherwise typing
         // would edit the message behind the prompt). Only y / n / esc act.

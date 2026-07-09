@@ -1271,6 +1271,39 @@ fn search_smartcase() {
     check("|x É y", "/é<cr>", "x |É y");
 }
 
+#[test]
+fn mouse_hooks() {
+    // A click aborts a pending operator (the app calls cancel_pending on
+    // mouse-down), so the next key isn't consumed as a motion.
+    let (text, cursor) = parse_spec("|ab cd");
+    let mut buf = Buf::new(&text, cursor);
+    buf.feed("d");
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("d"));
+    buf.vim.cancel_pending();
+    assert_eq!(buf.vim.pending_display(), None);
+    buf.feed("w");
+    assert_eq!(show(&buf.text, buf.cursor), "ab |cd"); // moved, deleted nothing
+
+    // A drag becomes a Visual selection: anchor at the start, then operators
+    // act on it.
+    let (text, cursor) = parse_spec("|ab cd");
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim.begin_visual(&buf.text.clone(), 0);
+    buf.cursor = 3; // the app puts the cursor on the selection's last char
+    buf.feed("d");
+    assert_eq!(show(&buf.text, buf.cursor), "|d");
+    let _ = (text, cursor);
+}
+
+#[test]
+fn search_is_regex() {
+    check("|ab a1 cd", "/a[0-9]<cr>", "ab |a1 cd");
+    check("|ab xy ab", "/x.<cr>", "ab |xy ab");
+    check("|one two", "/t\\w+<cr>", "one |two");
+    check_beep("|ab", "/(<cr>", "|ab"); // invalid pattern: no match
+    check("|aa ab", "/a+<cr>n", "aa |ab"); // n repeats the regex
+}
+
 // --- Underscore, comma leader, gq operator ---------------------------------
 
 #[test]
@@ -1414,4 +1447,30 @@ fn search_query_preview() {
     assert_eq!(buf.vim.search_query(), Some("cd"));
     buf.feed("<esc>");
     assert_eq!(buf.vim.search_query(), None);
+}
+
+// --- Indent operators -------------------------------------------------------
+
+#[test]
+fn indent_operators() {
+    // >> / << on the current line(s); indent is two spaces.
+    check("a|b\ncd", ">>", "  |ab\ncd");
+    check("|ab\ncd", "2>>", "  |ab\n  cd");
+    check("  a|b", "<lt><lt>", "|ab");
+    check(" a|b", "<lt><lt>", "|ab"); // a lone space still dedents
+    check("\ta|b", "<lt><lt>", "|ab"); // and a tab counts as one step
+                                       // With a motion / text object (whole lines).
+    check("|ab\ncd\nef", ">j", "  |ab\n  cd\nef");
+    check("a|a bb\ncc\n\ndd", ">ip", "  |aa bb\n  cc\n\ndd");
+    check("s\n\n|aa\nbb", ">G", "s\n\n  |aa\n  bb");
+    // Counts multiply; blank lines don't gain trailing indent.
+    check("|a\n\nb", "3>>", "  |a\n\n  b");
+    // Visual shift exits to Normal, cursor at the first non-blank.
+    check("|ab\ncd", "Vj>", "  |ab\n  cd");
+    check("  ab\n  c|d", "vk<lt>", "|ab\ncd");
+    // << with nothing to strip is a quiet no-op.
+    check("|ab", "<lt><lt>", "|ab");
+    // Dot-repeat and undo ride the normal edit path.
+    check("|ab", ">>..", "      |ab");
+    check("|ab", ">>u", "|ab");
 }

@@ -209,12 +209,22 @@ even if the first cut ignores it.
   (best-effort; covers plain typing). `.` emits `Action::Repeat` and the app
   replays the keys through `feed_vim`, re-inserts the text, and closes with
   `Esc` — so anything key-driven repeats, surround included.
-- **`/` search:** a `Pending::Search` prompt collects the query (shown live
-  in the mode bar), and the overlay highlights every match as it's typed
-  (incsearch-style, capped at 200). `Enter` jumps — a literal substring
-  with smartcase (an all-lowercase query matches any case, any uppercase
-  makes it exact), wrapping — `Esc`/empty-`Backspace` cancel, `n`/`N`
-  repeat, `?` searches backward.
+- **`/` search:** a `Pending::Search` prompt collects the pattern (shown
+  live in the mode bar), and the overlay highlights every match as it's
+  typed (incsearch-style, capped at 200). Patterns are regexes (Rust
+  syntax) with smartcase — no *literal* uppercase means case-insensitive
+  (escapes like `\W` don't count) — and an invalid or still-partial
+  pattern simply matches nothing. `Enter` jumps (wrapping),
+  `Esc`/empty-`Backspace` cancel, `n`/`N` repeat, `?` searches backward.
+- **`>`/`<` indent operators:** `>>`/`<<` on lines, `>{motion}`/objects,
+  Visual `>`/`<`; one step is two spaces (the hanging-bullet width — Vim's
+  8 would be wrong here); indent skips blank lines, dedent strips a step of
+  spaces or a tab.
+- **Mouse:** a click in Normal/Visual aborts any pending operator/count and
+  places the cursor; a completed drag-selection becomes a charwise Visual
+  selection (anchor at its start, native selection dropped for the
+  overlay). The blur-back is held while the button is down so the drag can
+  complete against the focused input.
 
 ## Rendering
 
@@ -244,11 +254,7 @@ even if the first cut ignores it.
 3. Visual mode + the `range_to_bounds` per-line selection overlay.
 4. Surround MVP.
 5. Block cursor; polish.
-6. Later: registers/marks, `>`/`<`, regex search (`/` is a literal substring
-   today), a minimal `:` line, and mouse integration (a click should abort a
-   pending operator, and a native drag-selection should become — or at least
-   clear on entering — Visual mode; today the two selection models simply
-   coexist).
+6. Later: registers/marks and a minimal `:` line.
 
 ## Risks / open questions
 

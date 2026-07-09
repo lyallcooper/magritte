@@ -42,6 +42,9 @@ enum Consumer {
     SurroundAdd,
     /// `gq` awaiting its target: the covered lines get reflowed.
     Reflow,
+    /// `>`/`<` awaiting its target: the covered lines shift by one indent
+    /// step (with the count typed before the operator).
+    Shift { dedent: bool, count: usize },
 }
 
 /// Mid-sequence state, cleared by `Esc` or any invalid key.
@@ -206,6 +209,23 @@ impl VimState {
             }
         }
         (!s.is_empty()).then_some(s)
+    }
+
+    /// Abort any half-typed command (a mouse click is Vim's `Esc` for
+    /// pending state: `d` then a click shouldn't leave the delete armed).
+    pub(crate) fn cancel_pending(&mut self) {
+        self.pending = Pending::None;
+        self.count.clear();
+    }
+
+    /// Enter charwise Visual mode with the anchor at `anchor` — the app maps
+    /// a completed mouse drag-selection onto Visual so the two selection
+    /// models don't coexist.
+    pub(crate) fn begin_visual(&mut self, text: &str, anchor: usize) {
+        self.cancel_pending();
+        self.desired_col = None;
+        self.anchor = clamp_normal(text, anchor);
+        self.mode = Mode::Visual { linewise: false };
     }
 
     /// The query being typed at a `/`/`?` prompt, for the live match
@@ -721,6 +741,36 @@ impl VimState {
                 _ => return self.beep(),
             }
         }
+        if let Consumer::Shift { dedent, count } = consumer {
+            match c {
+                // `>>`/`<<`: the current `count` lines, like `dd`.
+                _ if c == if dedent { '<' } else { '>' } => {
+                    self.pending = Pending::None;
+                    let count = total(count, self.take_count());
+                    let start = line_start(text, cursor);
+                    let mut end = line_end(text, cursor);
+                    for _ in 1..count {
+                        if end >= text.len() {
+                            break;
+                        }
+                        end = line_end(text, next_char(text, end));
+                    }
+                    return self.shift_lines(text, start..end, dedent);
+                }
+                'i' | 'a' => {
+                    self.pending = Pending::Object {
+                        consumer,
+                        around: c == 'a',
+                    };
+                    return Vec::new();
+                }
+                'g' => {
+                    self.pending = Pending::G(consumer);
+                    return Vec::new();
+                }
+                _ => return self.beep(),
+            }
+        }
         if consumer == Consumer::Reflow {
             match c {
                 // `gqq`: the current `count` lines, like Vim — an overlong
@@ -883,6 +933,14 @@ impl VimState {
                         text: toggled,
                     })];
                 }
+                '>' | '<' => {
+                    let Some(range) = self.visual_range(text, cursor) else {
+                        return self.beep();
+                    };
+                    self.mode = Mode::Normal;
+                    self.take_count();
+                    return self.shift_lines(text, range, c == '<');
+                }
                 _ => return self.beep(),
             }
         }
@@ -893,6 +951,14 @@ impl VimState {
             'd' => self.start_op(Op::Delete),
             'c' => self.start_op(Op::Change),
             'y' => self.start_op(Op::Yank),
+            '>' | '<' => {
+                let count = self.take_count();
+                self.pending = Pending::AwaitMotion(Consumer::Shift {
+                    dedent: c == '<',
+                    count,
+                });
+                Vec::new()
+            }
             'v' => {
                 self.take_count();
                 self.anchor = cursor;
@@ -1030,18 +1096,22 @@ impl VimState {
         }
     }
 
-    /// Jump to the next occurrence of the last search query — a literal
-    /// substring with Vim 'smartcase' (all-lowercase matches any case) —
-    /// wrapping around the buffer like Vim's default 'wrapscan'.
+    /// Jump to the next occurrence of the last search pattern — a regex with
+    /// Vim 'smartcase' (no literal uppercase matches any case) — wrapping
+    /// around the buffer like Vim's default 'wrapscan'.
     fn search(&mut self, text: &str, cursor: usize, back: bool) -> Vec<Action> {
-        let Some((query, _)) = self.last_search.clone() else {
+        let Some(re) = self
+            .last_search
+            .as_ref()
+            .and_then(|(query, _)| compile_search(query))
+        else {
             return self.beep();
         };
         let found = if back {
             // Last match before the cursor, else the last match anywhere.
             let (mut before, mut any) = (None, None);
             let mut pos = 0;
-            while let Some((s0, _)) = search_from(text, &query, pos) {
+            while let Some((s0, _)) = re.find_from(text, pos) {
                 if s0 < cursor {
                     before = Some(s0);
                 }
@@ -1053,8 +1123,8 @@ impl VimState {
             }
             before.or(any)
         } else {
-            search_from(text, &query, next_char(text, cursor))
-                .or_else(|| search_from(text, &query, 0))
+            re.find_from(text, next_char(text, cursor))
+                .or_else(|| re.find_from(text, 0))
                 .map(|(s0, _)| s0)
         };
         let Some(pos) = found else {
@@ -1075,7 +1145,9 @@ impl VimState {
         consumer: Consumer,
     ) -> Vec<Action> {
         let count = match consumer {
-            Consumer::Op { count, .. } => total(count, self.take_count()),
+            Consumer::Op { count, .. } | Consumer::Shift { count, .. } => {
+                total(count, self.take_count())
+            }
             _ => self.take_count().max(1),
         };
         // `cw`/`cW` on a non-blank doesn't take the trailing blanks (`:help
@@ -1161,6 +1233,12 @@ impl VimState {
                 };
                 vec![Action::ReflowRange(range)]
             }
+            Consumer::Shift { dedent, .. } => {
+                let Some((range, _)) = operator_range(text, cursor, m, target) else {
+                    return self.beep();
+                };
+                self.shift_lines(text, range, dedent)
+            }
         }
     }
 
@@ -1173,7 +1251,9 @@ impl VimState {
         consumer: Consumer,
     ) -> Vec<Action> {
         let count = match consumer {
-            Consumer::Op { count, .. } => total(count, self.take_count()),
+            Consumer::Op { count, .. } | Consumer::Shift { count, .. } => {
+                total(count, self.take_count())
+            }
             _ => self.take_count().max(1),
         };
         let Some(range) = text_object::text_object(text, cursor, around, obj, count) else {
@@ -1221,6 +1301,12 @@ impl VimState {
                     return self.beep();
                 }
                 vec![Action::ReflowRange(range)]
+            }
+            Consumer::Shift { dedent, .. } => {
+                if range.start >= range.end {
+                    return self.beep();
+                }
+                self.shift_lines(text, range, dedent)
             }
         }
     }
@@ -1527,6 +1613,48 @@ impl VimState {
         })]
     }
 
+    /// `>`/`<`: shift the whole lines covered by `range` by one indent step
+    /// (two spaces — the hanging-bullet width; Vim's 'shiftwidth' default of
+    /// 8 is wrong for commit messages). Indent skips blank lines, like Vim;
+    /// dedent strips up to one step of spaces or a tab.
+    fn shift_lines(&mut self, text: &str, range: Range<usize>, dedent: bool) -> Vec<Action> {
+        const STEP: &str = "  ";
+        let start = line_start(text, range.start.min(text.len()));
+        let last = prev_char(text, range.end.min(text.len())).max(range.start);
+        let end = line_end(text, last.max(start));
+        let mut shifted = String::with_capacity(end - start + STEP.len() * 4);
+        for (i, line) in text[start..end].split('\n').enumerate() {
+            if i > 0 {
+                shifted.push('\n');
+            }
+            if dedent {
+                let trimmed = line
+                    .strip_prefix(STEP)
+                    .or_else(|| line.strip_prefix('\t'))
+                    .or_else(|| line.strip_prefix(' '))
+                    .unwrap_or(line);
+                shifted.push_str(trimmed);
+            } else if line.trim().is_empty() {
+                shifted.push_str(line);
+            } else {
+                shifted.push_str(STEP);
+                shifted.push_str(line);
+            }
+        }
+        if shifted == text[start..end] {
+            // Nothing to dedent: park on the first non-blank, like Vim's
+            // silent `<<` on an unindented line.
+            return vec![Action::MoveCursor(first_non_blank(text, start))];
+        }
+        let post = splice(text, &(start..end), &shifted);
+        let cursor = first_non_blank(&post, start.min(post.len()));
+        vec![Action::Edit(EditOp {
+            range: start..end,
+            text: shifted,
+            cursor,
+        })]
+    }
+
     /// Join the lines covered by `range` (at least the cursor's line and the
     /// next): each newline (plus the following line's indent) becomes one
     /// space, unless the text before it already ends in whitespace.
@@ -1829,6 +1957,8 @@ fn consumer_keys(c: &Consumer) -> String {
         }
         Consumer::SurroundAdd => "ys".into(),
         Consumer::Reflow => "gq".into(),
+        Consumer::Shift { dedent: false, .. } => ">".into(),
+        Consumer::Shift { dedent: true, .. } => "<".into(),
     }
 }
 

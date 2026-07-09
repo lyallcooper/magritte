@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui::AppContext as _;
 use gpui::{
     actions, div, px, uniform_list, AnyElement, AnyWindowHandle, App, ClipboardItem, Context,
     Entity, FocusHandle, Focusable, FontWeight, Hsla, IntoElement, KeyBinding, KeyDownEvent,
@@ -127,7 +128,7 @@ use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     bisect::Bisect, BisectMark, CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest,
     LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind,
-    Status, TagsAround,
+    Status, TagDistance,
 };
 
 /// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
@@ -267,6 +268,10 @@ struct SelAnchor {
 /// body at 72.
 const COMMIT_TITLE_LIMIT: usize = 50;
 const COMMIT_BODY_WIDTH: usize = 72;
+/// The commit editor's default message-box height, and the smallest the drag
+/// divider will shrink it to.
+const EDITOR_MESSAGE_HEIGHT_DEFAULT: f32 = 176.0;
+const EDITOR_MESSAGE_HEIGHT_MIN: f32 = 60.0;
 
 /// The three controls for an in-progress sequence.
 #[derive(Clone, Copy)]
@@ -604,7 +609,15 @@ struct StatusView {
     worktree_git_dir: Option<PathBuf>,
     /// The title-bar tag display: (nearest tag behind + commits-since, nearest
     /// tag ahead + commits-until). Refreshed with status when title-bar tags are on.
-    tag_info: TagsAround,
+    tag_info: Option<TagDistance>,
+    /// The commit editor's message-box height in px (the split between the
+    /// message and the diff preview), user-resizable and persisted per repo.
+    editor_message_height: f32,
+    /// An in-progress divider drag: (mouse y at press, height at press).
+    editor_resize: Option<(f32, f32)>,
+    /// The picker overlay child view — filtering notifies it instead of the
+    /// whole status view (see `picker_render::PickerOverlay`).
+    picker_overlay: Entity<picker_render::PickerOverlay>,
     /// Font/editor option lists for the settings screen — see [`SettingsCaches`].
     settings_caches: SettingsCaches,
     /// The bottom status bar's toast (message / copied value / keycaps / fade
@@ -702,6 +715,7 @@ impl StatusView {
             .map(|s| FoldKey::Section(*s))
             .collect();
         let mut commit_details_expanded = false;
+        let mut editor_message_height = EDITOR_MESSAGE_HEIGHT_DEFAULT;
         if let Some(dir) = &worktree_scope_dir {
             let folds = state::scoped_path(dir, state::FOLDS_FILE);
             let fold_state = state::load_toml_or_default::<state::FoldState>(&folds);
@@ -711,6 +725,9 @@ impl StatusView {
                 }
             }
             commit_details_expanded = fold_state.commit_details_expanded;
+            if let Some(h) = fold_state.commit_editor_height {
+                editor_message_height = h.clamp(EDITOR_MESSAGE_HEIGHT_MIN, 1200.0);
+            }
         }
 
         let mut view = StatusView {
@@ -719,7 +736,13 @@ impl StatusView {
             status: None,
             status_sections: StatusSections::default(),
             loading_sections: HashSet::new(),
-            tag_info: (None, None),
+            tag_info: None,
+            editor_message_height,
+            editor_resize: None,
+            picker_overlay: {
+                let parent = cx.weak_entity();
+                cx.new(|_| picker_render::PickerOverlay { parent })
+            },
             conflicted: HashSet::new(),
             sequence: None,
             bisect: None,

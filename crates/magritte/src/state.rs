@@ -75,6 +75,10 @@ pub struct FoldState {
     /// preference (magit-style: per repo, not per commit). Default collapsed.
     #[serde(default)]
     pub commit_details_expanded: bool,
+    /// The commit editor's message-box height (px), when the user resized it
+    /// away from the default via the drag divider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_editor_height: Option<f32>,
 }
 
 /// Last saved application window placement.
@@ -117,6 +121,7 @@ mod tests {
             &FoldState {
                 collapsed: vec!["staged".into(), "ignored".into()],
                 commit_details_expanded: false,
+                commit_editor_height: None,
             },
         );
         assert_eq!(

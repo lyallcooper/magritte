@@ -890,6 +890,24 @@ impl StatusView {
             .into_iter()
             .map(|(_, title, search)| (title, search))
             .unzip();
+        // Precompute the key/id hints for every row now, instead of lazily on
+        // first paint — resolving them inside the palette's opening frame was
+        // part of its perceived open lag.
+        let hints: std::collections::HashMap<_, _> = choices
+            .iter()
+            .map(|label| {
+                let title = self.raw_command_title(label);
+                (
+                    SharedString::from(label.clone()),
+                    (
+                        commands::command_keys(self.screen_bindings(), &self.config, &title)
+                            .map(SharedString::from),
+                        commands::command_id_for_title(&self.config, &title)
+                            .map(SharedString::from),
+                    ),
+                )
+            })
+            .collect();
         self.open_picker_searchable(
             PickerAction::RunCommand,
             choices,
@@ -899,6 +917,9 @@ impl StatusView {
             window,
             cx,
         );
+        if let Some(Popup::Picker(p)) = self.popup.as_ref() {
+            *p.hints.borrow_mut() = hints;
+        }
     }
 
     /// Whether `key` is a single-stroke dispatch key: bound in the effective

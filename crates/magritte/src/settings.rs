@@ -911,7 +911,7 @@ impl StatusView {
                     self.toggle_control(
                         "show-tags",
                         self.config.show_tags_in_title_bar,
-                        "Show the nearest tag(s) (e.g. `Tag: v1.0 (5)`) in the title bar.",
+                        "Show the nearest reachable tag (e.g. `v1.0 (5)`) in the title bar.",
                         view,
                         // Needs the tag data fetched, so refresh on toggle.
                         true,
