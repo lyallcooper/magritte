@@ -1034,6 +1034,10 @@ impl StatusView {
         }
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
+        // Git state may have moved while the editor was open — a reword (`r w`)
+        // pauses a real rebase *before* the editor appears, so canceling must
+        // show the paused-rebase banner, not the pre-rebase status.
+        self.refresh(cx);
         cx.notify();
     }
 
