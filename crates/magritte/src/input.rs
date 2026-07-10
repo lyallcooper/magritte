@@ -697,7 +697,10 @@ impl StatusView {
             fd.visual.is_some() || fd.char_sel.is_some_and(|c| !c.is_empty())
         } else if let Some(log) = self.log() {
             log.visual.is_some() || log.char_sel.is_some_and(|c| !c.is_empty())
-        } else if matches!(self.screen, Screen::GitLog { .. } | Screen::Blame { .. }) {
+        } else if matches!(
+            self.screen,
+            Screen::GitLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
+        ) {
             self.pager_sel.char_sel.is_some_and(|c| !c.is_empty())
         } else {
             matches!(self.screen, Screen::Status)

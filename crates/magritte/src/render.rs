@@ -433,7 +433,14 @@ impl StatusView {
             .flex_wrap()
             .gap_1()
             .text_size(px(self.font_px() - 1.0));
-        for (id, label) in items {
+        for (i, (id, label)) in items.iter().enumerate() {
+            if i > 0 {
+                row = row.child(
+                    div()
+                        .text_color(self.palette.dim)
+                        .child(SharedString::from("·")),
+                );
+            }
             row = row.child(self.header_action(id, label, view));
         }
         row

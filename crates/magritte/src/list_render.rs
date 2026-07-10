@@ -152,7 +152,7 @@ impl StatusView {
     /// Wire a pager row for mouse text selection: the shared [`DragState`]
     /// transitions against `pager_sel`, with the row's text layout for
     /// pixel↔offset hit-testing.
-    fn pager_selectable(
+    pub(crate) fn pager_selectable(
         &self,
         el: gpui::Stateful<gpui::Div>,
         ix: usize,

@@ -20,8 +20,10 @@ pub(crate) struct ResolveView {
     /// The file as it was opened. When every choice is undone the rewrite
     /// emits these pristine bytes, so a full undo restores the exact original.
     pub(crate) original: Vec<u8>,
-    /// The cursor row (like every other list view; `j`/`k` move it). The
-    /// conflict verbs act on the conflict the cursor is in.
+    /// The cursor row: `j`/`k`/`n`/`p` land it on a conflict's first row (and
+    /// clicking a conflict moves it there). It has no highlight of its own —
+    /// the accent border on the conflict it's in is the visible cursor. The
+    /// conflict verbs act on that conflict.
     pub(crate) selected: usize,
     /// Conflicts in the order their choices were applied — `u` off a conflict
     /// undoes the most recent one.
@@ -29,6 +31,8 @@ pub(crate) struct ResolveView {
     /// Derived from `segments` + `choices`; rebuilt whenever a choice changes.
     pub(crate) rows: Vec<ResolveRow>,
     pub(crate) scroll: UniformListScrollHandle,
+    /// Tracked top row for the viewport scroll keys (`C-d`/`C-u`/…).
+    pub(crate) top: usize,
 }
 
 /// What a resolve row shows, driving its tint and text color.
@@ -281,7 +285,9 @@ impl StatusView {
                         applied: Vec::new(),
                         rows,
                         scroll: UniformListScrollHandle::new(),
+                        top: 0,
                     });
+                    this.pager_sel = PagerSelection::default();
                     cx.notify();
                 }
                 Err(e) => this.set_status(format!("resolve failed: {e}"), false, cx),
@@ -310,9 +316,9 @@ impl StatusView {
         }
     }
 
-    /// Move the row cursor for the vi/pager motion keys (`j`/`k`, `C-d`/`C-u`,
-    /// `C-f`/`C-b`, `g`/`G`) — the same key mapping the pager scroll uses, but
-    /// applied to the cursor; the list scrolls to keep it visible.
+    /// The pager motions in the resolve view: `j`/`k` step between conflicts
+    /// (same as `n`/`p`), `g`/`G` jump to the first/last conflict, and the
+    /// paging keys (`C-d`/`C-u`/`C-f`/`C-b`/space) scroll the viewport.
     pub(crate) fn resolve_cursor_key(
         &mut self,
         key: &str,
@@ -321,21 +327,32 @@ impl StatusView {
         page: usize,
         cx: &mut Context<Self>,
     ) {
-        let Some(rv) = self.resolve_state_mut() else {
-            return;
-        };
-        // `scroll_target` encodes the vi key → delta mapping over an index in
-        // 0..len-page; reuse it with a full-length window so g/G land on the
-        // first/last row.
-        let Some(target) = scroll_target(rv.selected, rv.rows.len() + page, key, shift, ctrl, page)
-        else {
-            return;
-        };
-        let target = target.min(rv.rows.len().saturating_sub(1));
-        if target != rv.selected {
-            rv.selected = target;
-            self.scroll_resolve_cursor_into_view();
-            cx.notify();
+        match (key, shift, ctrl) {
+            ("j", _, false) => return self.resolve_move(1, cx),
+            ("k", _, false) => return self.resolve_move(-1, cx),
+            ("g", shift, false) => {
+                let Some(rv) = self.resolve_state_mut() else {
+                    return;
+                };
+                let target = if shift {
+                    rv.choices.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                if let Some(row) = conflict_first_row(&rv.rows, target) {
+                    rv.selected = row;
+                    self.scroll_resolve_cursor_into_view();
+                    cx.notify();
+                }
+            }
+            _ => {
+                let Some(rv) = self.resolve_state_mut() else {
+                    return;
+                };
+                let len = rv.rows.len();
+                apply_scroll_key(&rv.scroll, &mut rv.top, len, key, shift, ctrl, page);
+                cx.notify();
+            }
         }
     }
 
@@ -471,9 +488,7 @@ impl StatusView {
                         let at_point = rv.rows.get(rv.selected).and_then(|r| r.conflict);
                         range
                             .filter_map(|ix| rv.rows.get(ix).map(|r| (ix, r)))
-                            .map(|(ix, row)| {
-                                this.render_resolve_row(ix, row, rv.selected, at_point, &view)
-                            })
+                            .map(|(ix, row)| this.render_resolve_row(ix, row, at_point, &view))
                             .collect::<Vec<_>>()
                     }
                     None => Vec::new(),
@@ -523,18 +538,18 @@ impl StatusView {
     }
 
     /// One resolve row: the line, tinted by its region (ours like added lines,
-    /// theirs like removed, base dim on a subtle wash). The cursor row wears
-    /// the selection wash; the conflict the cursor is in gets a left accent
-    /// border on every row.
+    /// theirs like removed, base dim on a subtle wash). The conflict the
+    /// cursor is in gets a left accent border on every row — that accent *is*
+    /// the cursor; rows have no highlight of their own. Text drag-selects
+    /// (the shared pager selection); a plain click on a conflict makes it
+    /// current.
     fn render_resolve_row(
         &self,
         ix: usize,
         row: &ResolveRow,
-        selected: usize,
         at_point: Option<usize>,
         view: &Entity<Self>,
     ) -> AnyElement {
-        let is_cursor = ix == selected;
         let in_current = row.conflict.is_some() && row.conflict == at_point;
         let (bg, fg) = match row.kind {
             ResolveRowKind::Text => (None, self.palette.dim),
@@ -547,13 +562,8 @@ impl StatusView {
             | ResolveRowKind::Separator
             | ResolveRowKind::TheirsMarker => (None, self.palette.dim),
         };
-        // The cursor wash wins over a block's tint, like the diff views.
-        let bg = if is_cursor {
-            Some(self.palette.selection)
-        } else {
-            bg
-        };
-        let hover = self.palette.hover;
+        let sel = self.pager_sel.char_sel.and_then(|c| c.range_on(ix));
+        let (styled, layout) = self.selectable_text(row.text.clone(), Vec::new(), sel);
         let mut el = div()
             .id(("resolve-row", ix))
             .h(px(self.row_h()))
@@ -573,22 +583,37 @@ impl StatusView {
             });
         if let Some(bg) = bg {
             el = el.bg(bg);
-        } else {
-            el = el.hover(move |s| s.bg(hover));
         }
-        let view = view.clone();
-        el = el
-            .cursor_pointer()
-            .on_click(move |_, _window, cx: &mut App| {
-                view.update(cx, |this, vcx| {
-                    if let Some(rv) = this.resolve_state_mut() {
-                        rv.selected = ix;
+        let conflict = row.conflict;
+        let v_click = view.clone();
+        // Registered before pager_selectable's click handler, which clears
+        // `char_click` — this one must still see it to know the click only
+        // dismissed a selection.
+        el = el.on_click(move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
+            // A drag already selected text; only a stationary click on a
+            // conflict moves the cursor there.
+            if let gpui::ClickEvent::Mouse(e) = ev {
+                if (e.up.position.x - e.down.position.x).abs() > px(4.0)
+                    || (e.up.position.y - e.down.position.y).abs() > px(4.0)
+                {
+                    return;
+                }
+            }
+            let Some(conflict) = conflict else { return };
+            v_click.update(cx, |this, vcx| {
+                if this.pager_sel.char_click {
+                    return;
+                }
+                if let Some(rv) = this.resolve_state_mut() {
+                    if let Some(first) = conflict_first_row(&rv.rows, conflict) {
+                        rv.selected = first;
                         vcx.notify();
                     }
-                });
+                }
             });
-        el.child(SharedString::from(row.text.clone()))
-            .into_any_element()
+        });
+        let el = self.pager_selectable(el, ix, layout, view);
+        el.child(styled).into_any_element()
     }
 }
 

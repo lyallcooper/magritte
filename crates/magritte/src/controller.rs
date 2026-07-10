@@ -1902,6 +1902,10 @@ impl StatusView {
                         let rows = rows.clone();
                         Box::new(move |ix| rows.get(ix).map(list_render::blame_row_text))
                     }
+                    Screen::Resolve(rv) => {
+                        let texts: Vec<String> = rv.rows.iter().map(|r| r.text.clone()).collect();
+                        Box::new(move |ix| texts.get(ix).cloned())
+                    }
                     _ => Box::new(|_| None),
                 };
                 sel.rows()
