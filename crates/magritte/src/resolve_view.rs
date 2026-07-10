@@ -305,13 +305,13 @@ impl StatusView {
 
     /// Jump the cursor to the neighboring conflict block (smerge-next/prev),
     /// resolved ones included — that's how the cursor reaches one to undo.
-    pub(crate) fn resolve_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_move(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
         if let Some(row) = neighbor_conflict_row(&rv.rows, rv.selected, delta) {
             rv.selected = row;
-            self.scroll_resolve_cursor_into_view();
+            self.scroll_resolve_conflict_into_view(window);
             cx.notify();
         }
     }
@@ -324,12 +324,12 @@ impl StatusView {
         key: &str,
         shift: bool,
         ctrl: bool,
-        page: usize,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
         match (key, shift, ctrl) {
-            ("j", _, false) => return self.resolve_move(1, cx),
-            ("k", _, false) => return self.resolve_move(-1, cx),
+            ("j", _, false) => return self.resolve_move(1, window, cx),
+            ("k", _, false) => return self.resolve_move(-1, window, cx),
             ("g", shift, false) => {
                 let Some(rv) = self.resolve_state_mut() else {
                     return;
@@ -341,11 +341,12 @@ impl StatusView {
                 };
                 if let Some(row) = conflict_first_row(&rv.rows, target) {
                     rv.selected = row;
-                    self.scroll_resolve_cursor_into_view();
+                    self.scroll_resolve_conflict_into_view(window);
                     cx.notify();
                 }
             }
             _ => {
+                let page = page_rows(window, self.row_h());
                 let Some(rv) = self.resolve_state_mut() else {
                     return;
                 };
@@ -356,18 +357,44 @@ impl StatusView {
         }
     }
 
-    fn scroll_resolve_cursor_into_view(&mut self) {
+    /// Scroll the conflict at the cursor fully into view: nothing when the
+    /// whole block is already visible, its end pulled up when it runs off the
+    /// bottom, its start pinned to the top when it starts above the viewport
+    /// or is taller than it.
+    fn scroll_resolve_conflict_into_view(&mut self, window: &Window) {
+        let page = page_rows(window, self.row_h());
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
-        rv.scroll
-            .scroll_to_item(rv.selected, gpui::ScrollStrategy::Top);
+        let (first, last) = match rv.rows.get(rv.selected).and_then(|r| r.conflict) {
+            Some(c) => {
+                let first = conflict_first_row(&rv.rows, c).unwrap_or(rv.selected);
+                let last = rv
+                    .rows
+                    .iter()
+                    .rposition(|r| r.conflict == Some(c))
+                    .unwrap_or(rv.selected);
+                (first, last)
+            }
+            None => (rv.selected, rv.selected),
+        };
+        let top = scroll_top_index(&rv.scroll);
+        if last - first >= page || first < top {
+            rv.scroll.scroll_to_item(first, gpui::ScrollStrategy::Top);
+        } else if last >= top + page {
+            rv.scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
+        }
     }
 
     /// Apply `res` to the conflict at point: record the choice, rewrite the
     /// file on disk, and advance to the next unresolved conflict. When it was
     /// the last one, offer to stage the file (magit's stage-to-resolve).
-    pub(crate) fn resolve_choose(&mut self, res: Resolution, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_choose(
+        &mut self,
+        res: Resolution,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(current) = self.resolve_conflict_at_point() else {
             self.set_status("No conflict at point".to_string(), true, cx);
             return;
@@ -395,7 +422,7 @@ impl StatusView {
             rv.selected =
                 target.unwrap_or_else(|| rv.selected.min(rv.rows.len().saturating_sub(1)));
         }
-        self.scroll_resolve_cursor_into_view();
+        self.scroll_resolve_conflict_into_view(window);
         if all_resolved {
             self.confirm = Some((
                 format!("All conflicts resolved — stage {path}?"),
@@ -408,7 +435,7 @@ impl StatusView {
     /// Undo a choice: the conflict at point when the cursor is on a resolved
     /// one, else the most recently applied choice — so `u` right after a keep
     /// always takes it back. Restores the markers and rewrites the file.
-    pub(crate) fn resolve_undo(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_undo(&mut self, window: &Window, cx: &mut Context<Self>) {
         let at_point = self.resolve_conflict_at_point();
         let Some(rv) = self.resolve_state_mut() else {
             return;
@@ -429,7 +456,7 @@ impl StatusView {
                 rv.selected = row;
             }
         }
-        self.scroll_resolve_cursor_into_view();
+        self.scroll_resolve_conflict_into_view(window);
         cx.notify();
     }
 

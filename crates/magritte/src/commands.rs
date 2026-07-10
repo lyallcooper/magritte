@@ -828,35 +828,35 @@ pub(crate) fn commands() -> &'static [Command] {
             "Next conflict",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "n",
-            |t, _w, cx| t.resolve_move(1, cx)
+            |t, w, cx| t.resolve_move(1, w, cx)
         ),
         verb!(
             "resolve-prev",
             "Previous conflict",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "p",
-            |t, _w, cx| t.resolve_move(-1, cx)
+            |t, w, cx| t.resolve_move(-1, w, cx)
         ),
         verb!(
             "resolve-ours",
             "Keep ours",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "o",
-            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Ours, cx)
+            |t, w, cx| t.resolve_choose(magritte_core::Resolution::Ours, w, cx)
         ),
         verb!(
             "resolve-theirs",
             "Keep theirs",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "t",
-            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Theirs, cx)
+            |t, w, cx| t.resolve_choose(magritte_core::Resolution::Theirs, w, cx)
         ),
         verb!(
             "resolve-both",
             "Keep both",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "b",
-            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Both, cx)
+            |t, w, cx| t.resolve_choose(magritte_core::Resolution::Both, w, cx)
         ),
         verb!(
             "resolve-base",
@@ -864,14 +864,14 @@ pub(crate) fn commands() -> &'static [Command] {
             ScreenSet::of(&[ScreenKind::Resolve]),
             "B",
             |t: &StatusView| t.resolve_current_has_base(),
-            |t, _w, cx| t.resolve_choose(magritte_core::Resolution::Base, cx)
+            |t, w, cx| t.resolve_choose(magritte_core::Resolution::Base, w, cx)
         ),
         verb!(
             "resolve-undo",
             "Undo choice",
             ScreenSet::of(&[ScreenKind::Resolve]),
             "u",
-            |t, _w, cx| t.resolve_undo(cx)
+            |t, w, cx| t.resolve_undo(w, cx)
         ),
         verb!(
             "resolve-open-editor",
