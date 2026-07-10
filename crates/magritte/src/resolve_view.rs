@@ -380,35 +380,35 @@ impl StatusView {
             }
             None => (rv.selected, rv.selected),
         };
-        let (viewport, top_ix, top_off, pending) = {
+        let (viewport, scrolled) = {
             let state = rv.scroll.0.borrow();
-            let (ix, off) = state.base_handle.logical_scroll_top();
-            (
-                state.base_handle.bounds().size.height,
-                ix,
-                off,
-                state.deferred_scroll_to_item.as_ref().map(|d| {
-                    (
-                        d.item_index,
-                        matches!(d.strategy, gpui::ScrollStrategy::Top),
-                    )
-                }),
-            )
+            let viewport = state.base_handle.bounds().size.height;
+            // A uniform list scrolls by a pixel offset (y ≤ 0, more negative
+            // further down); the base handle's logical_scroll_top() reads
+            // per-child bounds that uniform lists never record, so it can't
+            // be used here. A pending (not-yet-painted) scroll-to-item is
+            // projected, so rapid keys within one frame decide against where
+            // the view is headed.
+            let scrolled = match state.deferred_scroll_to_item.as_ref() {
+                Some(d) if matches!(d.strategy, gpui::ScrollStrategy::Top) => {
+                    row * d.item_index as f32
+                }
+                Some(d) => row * (d.item_index + 1) as f32 - viewport,
+                None => -state.base_handle.offset().y,
+            };
+            (viewport, scrolled)
         };
-        // Row i's top edge relative to the viewport — projected through a
-        // pending (not-yet-painted) scroll so rapid keys within one frame
-        // still decide against where the view is headed.
-        let y = |i: usize| -> gpui::Pixels {
-            match pending {
-                Some((t, true)) => row * (i as f32 - t as f32),
-                Some((b, false)) => viewport - row * (b as f32 + 1.0 - i as f32),
-                None => row * (i as f32 - top_ix as f32) - top_off,
-            }
-        };
+        // Row i's top edge relative to the viewport.
+        let y = |i: usize| row * i as f32 - scrolled;
+        // Strict scrolls: the non-strict variants no-op whenever the target
+        // row is visible at all, which would leave a partially-shown block
+        // (its first row on screen, its tail cut off) alone.
         if row * (last - first + 1) as f32 > viewport || y(first) < px(0.0) {
-            rv.scroll.scroll_to_item(first, gpui::ScrollStrategy::Top);
+            rv.scroll
+                .scroll_to_item_strict(first, gpui::ScrollStrategy::Top);
         } else if y(last) + row > viewport + px(1.0) {
-            rv.scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
+            rv.scroll
+                .scroll_to_item_strict(last, gpui::ScrollStrategy::Bottom);
         }
     }
 
