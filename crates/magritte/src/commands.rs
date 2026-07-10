@@ -1621,6 +1621,10 @@ pub(crate) const EVIL_COLLECTION_BINDINGS: &[(&str, &str)] = &[
     ("V", "visual"),
     // magit-mode-map's C-w (copy the value at point) — kept in both presets.
     ("ctrl-w", "yank"),
+    // Cmd-Z as undo in the resolve view (its command is Resolve-scoped, so
+    // the alias lands only there); the Edit menu's key equivalent covers the
+    // macOS path, this covers platforms whose menus don't intercept it.
+    ("cmd-z", "resolve-undo"),
     // evil-collection-magit's `y` yank family: `y` is a prefix, so copy is
     // `yy`/`ys` (both our context copy — we don't split whole-line from
     // section-value), plus `yb` buffer revision and `yr` show-refs. `Cmd-C`
@@ -1694,6 +1698,10 @@ pub(crate) const VANILLA_BINDINGS: &[(&str, &str)] = &[
     // Region selection on set-mark; copy on magit's `magit-copy-section-value`.
     ("ctrl-space", "visual"),
     ("ctrl-w", "yank"),
+    // Cmd-Z as undo in the resolve view (its command is Resolve-scoped, so
+    // the alias lands only there); the Edit menu's key equivalent covers the
+    // macOS path, this covers platforms whose menus don't intercept it.
+    ("cmd-z", "resolve-undo"),
     ("cmd-c", "yank"),
     // Worktree's secondary key (magit binds both `Z` and `%`); the primary `Z`
     // comes from `default_key_for_command`.

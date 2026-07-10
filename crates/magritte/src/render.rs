@@ -392,8 +392,19 @@ impl StatusView {
         label: &'static str,
         view: &Entity<Self>,
     ) -> impl IntoElement {
-        let default = commands().iter().find(|c| c.id == id).and_then(|c| c.key);
-        let key = current_key(self.screen_bindings(), id, default).unwrap_or_default();
+        self.header_action_tinted(id, label, self.palette.dim, view)
+    }
+
+    /// [`header_action`](Self::header_action) with the label in a caller-chosen
+    /// color — the resolve footer tints ours/theirs/base to match their blocks.
+    pub(crate) fn header_action_tinted(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        color: Hsla,
+        view: &Entity<Self>,
+    ) -> impl IntoElement {
+        let key = self.command_key(id);
         let view = view.clone();
         div()
             .id(id)
@@ -412,33 +423,83 @@ impl StatusView {
                 &self.font,
                 &self.system_ui_font,
             ))
+            .child(self.hover_label(label, color))
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| v.invoke_command(id, window, vcx));
+            })
+    }
+
+    /// A hint for two sibling commands sharing one label (`[n]/[p] conflict`) —
+    /// half the width of two separate hints. Clicking runs the first command.
+    pub(crate) fn header_action_pair(
+        &self,
+        id: &'static str,
+        id_b: &'static str,
+        label: &'static str,
+        view: &Entity<Self>,
+    ) -> impl IntoElement {
+        let (key_a, key_b) = (self.command_key(id), self.command_key(id_b));
+        let view = view.clone();
+        div()
+            .id(id)
+            .relative()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .group(KBD_ROW_GROUP)
+            .child(track_target(id))
+            .child(kbd::key_chip(
+                &key_a,
+                self.palette.dim,
+                &self.font,
+                &self.system_ui_font,
+            ))
+            .child(
+                div()
+                    .text_color(self.palette.dim)
+                    .child(SharedString::from("/")),
+            )
+            .child(kbd::key_chip(
+                &key_b,
+                self.palette.dim,
+                &self.font,
+                &self.system_ui_font,
+            ))
             .child(self.hover_label(label, self.palette.dim))
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(id, window, vcx));
             })
     }
 
-    /// A footer row of key hints for a screen's local verbs: each a clickable
-    /// keycap + label dispatching its registry command (see
-    /// [`header_action`](Self::header_action)), so the hints double as buttons
-    /// and follow remaps.
-    pub(crate) fn hint_footer(
-        &self,
-        view: &Entity<Self>,
-        items: &[(&'static str, &'static str)],
-    ) -> gpui::Div {
+    /// A command's current key in this screen's live keymap (falling back to
+    /// its registry default), for hint rendering.
+    fn command_key(&self, id: &str) -> String {
+        let default = commands().iter().find(|c| c.id == id).and_then(|c| c.key);
+        current_key(self.screen_bindings(), id, default).unwrap_or_default()
+    }
+
+    /// Open the `?` dispatch menu — the hint footers' `? help` item (the `?`
+    /// accelerator itself is fixed, outside the keymap).
+    pub(crate) fn open_help(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.popup = Some(Popup::Dispatch(dispatch_menu_for(self)));
+        cx.notify();
+    }
+
+    /// A footer row of key hints for a screen's local verbs — each element a
+    /// clickable keycap + label (see [`header_action`](Self::header_action)),
+    /// `·`-separated, with a sliver of air before the window's bottom edge.
+    pub(crate) fn hint_footer(&self, items: Vec<gpui::AnyElement>) -> gpui::Div {
         let mut row = div()
             .flex()
             .items_center()
             .flex_wrap()
             .gap_1()
-            // A sliver of air between the hints and the window's bottom edge,
-            // and enough right inset to keep the last hint clear of the
-            // floating `?` help button (28px circle at right_4).
             .pb_2()
-            .pr(px(36.0))
             .text_size(px(self.font_px() - 1.0));
-        for (i, (id, label)) in items.iter().enumerate() {
+        for (i, item) in items.into_iter().enumerate() {
             if i > 0 {
                 row = row.child(
                     div()
@@ -446,7 +507,7 @@ impl StatusView {
                         .child(SharedString::from("·")),
                 );
             }
-            row = row.child(self.header_action(id, label, view));
+            row = row.child(item);
         }
         row
     }
@@ -1115,7 +1176,10 @@ impl StatusView {
             || self.selection.visual.is_some()
             || self.toast.message.is_some()
             || self.pending_prefix.is_some();
-        if self.popup.is_none() && !bottom_bar {
+        // Screens with a hint footer carry a `? help` item there instead of
+        // the floating button (which would overlap the footer's last hints).
+        let has_hint_footer = matches!(self.screen, Screen::Resolve(_) | Screen::RebaseTodo(_));
+        if self.popup.is_none() && !bottom_bar && !has_hint_footer {
             let tip_font = self.font.clone();
             root = root.child(
                 div()
@@ -1273,6 +1337,15 @@ impl Render for StatusView {
             .on_action(
                 cx.listener(|this, _: &gpui_component::input::Copy, _window, cx| {
                     this.copy_at_point(cx)
+                }),
+            )
+            // Cmd-Z arrives as the Edit menu's Undo (an OS key equivalent, so
+            // it never reaches on_key); on the resolve view it undoes a choice.
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Undo, _window, cx| {
+                    if matches!(this.screen, Screen::Resolve(_)) {
+                        this.resolve_undo(cx);
+                    }
                 }),
             )
             // Right-click menu actions, applied to the row at point / selection.

@@ -666,19 +666,25 @@ impl StatusView {
                 view,
             ))
             .child(body)
-            .child(self.hint_footer(
-                view,
-                &[
-                    ("resolve-ours", "ours"),
-                    ("resolve-theirs", "theirs"),
-                    ("resolve-both", "both"),
-                    ("resolve-base", "base"),
-                    ("resolve-undo", "undo"),
-                    ("resolve-next", "next"),
-                    ("resolve-prev", "previous"),
-                    ("resolve-open-editor", "open in editor"),
-                ],
-            ))
+            // The keep labels wear their blocks' colors so the association
+            // with the tinted regions above reads at a glance; `both` keeps
+            // the neutral color (it takes from both sides).
+            .child(self.hint_footer(vec![
+                self.header_action_tinted("resolve-ours", "ours", self.palette.added, view)
+                    .into_any_element(),
+                self.header_action_tinted("resolve-theirs", "theirs", self.palette.removed, view)
+                    .into_any_element(),
+                self.header_action("resolve-both", "both", view)
+                    .into_any_element(),
+                self.header_action_tinted("resolve-base", "base", self.palette.modified, view)
+                    .into_any_element(),
+                self.header_action("resolve-undo", "undo", view)
+                    .into_any_element(),
+                self.header_action_pair("resolve-next", "resolve-prev", "conflict", view)
+                    .into_any_element(),
+                self.key_action("footer-help", "?", "help", view, Self::open_help)
+                    .into_any_element(),
+            ]))
     }
 
     /// One resolve row: the line, tinted by its region (ours like added lines,
