@@ -429,8 +429,8 @@ impl StatusView {
                 .bottom(px(0.0))
                 .left(px(5.0))
                 .right(px(5.0))
-                .h(px(3.0))
-                .rounded(px(1.5))
+                .h(px(2.5))
+                .rounded(px(1.25))
                 .overflow_hidden()
                 .flex();
             for &color in underline {
