@@ -508,6 +508,33 @@ impl StatusRows<'_> {
         rows
     }
 
+    /// Push a section's spacer + header row, deriving its fold/refresh state.
+    /// Returns whether the section is expanded (so the caller should emit its
+    /// contents).
+    fn begin_section(
+        &self,
+        rows: &mut Vec<Row>,
+        id: SectionId,
+        title: &str,
+        count: Option<usize>,
+    ) -> bool {
+        rows.push(spacer());
+        let expanded = self.expanded.contains(&FoldKey::Section(id));
+        rows.push(Row {
+            indent: 0,
+            selectable: true,
+            fold: Some(FoldKey::Section(id)),
+            target: None,
+            kind: RowKind::Section {
+                title: title.to_string(),
+                count,
+                expanded,
+                refreshing: self.loading_sections.contains(&id),
+            },
+        });
+        expanded
+    }
+
     fn push_section(
         &self,
         rows: &mut Vec<Row>,
@@ -519,21 +546,7 @@ impl StatusRows<'_> {
         if entries.is_empty() {
             return;
         }
-        rows.push(spacer());
-        let expanded = self.expanded.contains(&FoldKey::Section(id));
-        rows.push(Row {
-            indent: 0,
-            selectable: true,
-            fold: Some(FoldKey::Section(id)),
-            target: None,
-            kind: RowKind::Section {
-                title: title.to_string(),
-                count: Some(entries.len()),
-                expanded,
-                refreshing: self.loading_sections.contains(&id),
-            },
-        });
-        if !expanded {
+        if !self.begin_section(rows, id, title, Some(entries.len())) {
             return;
         }
 
@@ -584,21 +597,7 @@ impl StatusRows<'_> {
         if commits.is_empty() {
             return;
         }
-        rows.push(spacer());
-        let expanded = self.expanded.contains(&FoldKey::Section(id));
-        rows.push(Row {
-            indent: 0,
-            selectable: true,
-            fold: Some(FoldKey::Section(id)),
-            target: None,
-            kind: RowKind::Section {
-                title: title.to_string(),
-                count,
-                expanded,
-                refreshing: self.loading_sections.contains(&id),
-            },
-        });
-        if !expanded {
+        if !self.begin_section(rows, id, title, count) {
             return;
         }
         let upstream = self.status.head.upstream.as_deref();
@@ -625,22 +624,7 @@ impl StatusRows<'_> {
         if stashes.is_empty() {
             return;
         }
-        let id = SectionId::Stashes;
-        rows.push(spacer());
-        let expanded = self.expanded.contains(&FoldKey::Section(id));
-        rows.push(Row {
-            indent: 0,
-            selectable: true,
-            fold: Some(FoldKey::Section(id)),
-            target: None,
-            kind: RowKind::Section {
-                title: "Stashes".to_string(),
-                count: Some(stashes.len()),
-                expanded,
-                refreshing: self.loading_sections.contains(&id),
-            },
-        });
-        if !expanded {
+        if !self.begin_section(rows, SectionId::Stashes, "Stashes", Some(stashes.len())) {
             return;
         }
         for s in stashes {
@@ -664,22 +648,12 @@ impl StatusRows<'_> {
         if ignored.is_empty() {
             return;
         }
-        let id = SectionId::Ignored;
-        rows.push(spacer());
-        let expanded = self.expanded.contains(&FoldKey::Section(id));
-        rows.push(Row {
-            indent: 0,
-            selectable: true,
-            fold: Some(FoldKey::Section(id)),
-            target: None,
-            kind: RowKind::Section {
-                title: "Ignored files".to_string(),
-                count: Some(ignored.len()),
-                expanded,
-                refreshing: self.loading_sections.contains(&id),
-            },
-        });
-        if !expanded {
+        if !self.begin_section(
+            rows,
+            SectionId::Ignored,
+            "Ignored files",
+            Some(ignored.len()),
+        ) {
             return;
         }
         for path in ignored {

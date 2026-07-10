@@ -58,9 +58,7 @@ impl Repo {
 
     /// Commits unique to `HEAD` (unpushed-to-push) and to its push target
     /// (unpulled-from-push), each capped at [`SECTION_COMMIT_CAP`]. The push
-    /// ref is derived from config (like the status view's push target): git
-    /// refuses to resolve `@{push}` under the default `push.default = simple`
-    /// in a triangular workflow — exactly the case these sections report.
+    /// ref is derived from config, not `@{push}` — see `push_remote_config`.
     /// Empty when there is no push target (or its ref doesn't exist yet).
     pub fn push_divergence(&self) -> Result<(Vec<LogEntry>, Vec<LogEntry>)> {
         let Some(branch) = self.current_branch()? else {
@@ -70,12 +68,7 @@ impl Repo {
             return Ok((Vec::new(), Vec::new()));
         };
         let push = format!("{remote}/{branch}");
-        if !self.succeeds([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/{push}"),
-        ])? {
+        if !self.rev_exists(&format!("refs/remotes/{push}")) {
             return Ok((Vec::new(), Vec::new()));
         }
         self.divergence("HEAD", &push)

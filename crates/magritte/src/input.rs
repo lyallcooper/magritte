@@ -217,48 +217,29 @@ impl StatusView {
             return self.pager_key(&key, shift, ctrl, alt, cmd, window, cx);
         }
 
-        // The interactive-rebase todo editor: set an action, reorder, then start.
-        if self.rebase_todo().is_some() {
-            // While the "discard edits?" confirmation is up, capture y / n / esc.
-            if self.rebase_todo().is_some_and(|rt| rt.confirming_cancel) {
-                match key.as_str() {
-                    "y" => self.discard_rebase_todo(window, cx),
-                    "n" | "escape" => self.keep_editing_rebase_todo(window, cx),
-                    _ => {}
-                }
-                return;
+        // The rebase-todo editor's "discard edits?" confirmation captures
+        // y / n / esc before anything else.
+        if self.rebase_todo().is_some_and(|rt| rt.confirming_cancel) {
+            match key.as_str() {
+                "y" => self.discard_rebase_todo(window, cx),
+                "n" | "escape" => self.keep_editing_rebase_todo(window, cx),
+                _ => {}
             }
-            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
 
-        // The commit- and diff-view flat diffs share the same apply-engine verbs
-        // (apply/reverse/reverse-index, visual toggle, details) — all in the
-        // registry, keyed per-context. `Esc`/`q` (the `close` verb) cancels a
-        // visual selection first, then leaves the view.
-        if self.commit_view().is_some() || self.diff_view().is_some() {
-            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
-            return;
-        }
-
-        // The commit-log view: every verb (open/select/cherry-pick/revert/
-        // reset/rebase-since/relimit) is a registry command scoped to the Log
-        // context; motions and copy resolve through the shared dispatch too.
-        if self.log().is_some() {
-            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
-            return;
-        }
-
-        // The refs browser: motions move the cursor (skipping headers); Enter
-        // checks out the ref at point, the preset delete key removes it.
-        if self.refs_view().is_some() {
-            self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
-            return;
-        }
-
-        // The worktree browser: motions move the cursor; the registry owns visit,
-        // remove, and the add/branch/move creators.
-        if self.worktree_view().is_some() {
+        // The cursor views whose verbs all live in the registry, keyed
+        // per-context: the rebase-todo editor, the commit- and diff-view flat
+        // diffs (the shared apply-engine verbs), the commit log, the refs
+        // browser, and the worktree browser. Motions and copy resolve through
+        // the same dispatch.
+        if self.rebase_todo().is_some()
+            || self.commit_view().is_some()
+            || self.diff_view().is_some()
+            || self.log().is_some()
+            || self.refs_view().is_some()
+            || self.worktree_view().is_some()
+        {
             self.dispatch_or_report(&key, shift, ctrl, alt, cmd, window, cx);
             return;
         }
@@ -337,9 +318,7 @@ impl StatusView {
                 return;
             }
         }
-        self.scroll
-            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-        cx.notify();
+        self.scroll_cursor_into_view(cx);
     }
 
     /// Mouse click on a transient suffix: toggle a switch, or invoke an action.
@@ -642,10 +621,14 @@ impl StatusView {
     /// The repo-relative path of the file at point (its row, or the file a
     /// hunk/line belongs to), if any.
     pub(crate) fn path_at_point(&self) -> Option<String> {
-        match self.rows.get(self.selected)?.target.as_ref()? {
-            Target::File(f) => Some(f.path.clone()),
-            Target::Hunk { file, .. } | Target::Line { file, .. } => Some(file.path.clone()),
-        }
+        Some(
+            self.rows
+                .get(self.selected)?
+                .target
+                .as_ref()?
+                .path()
+                .to_string(),
+        )
     }
 
     /// Run a resolved custom command (`sh -c`), surfacing its full output as a

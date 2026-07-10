@@ -135,8 +135,8 @@ impl Repo {
     }
 
     /// The base argv for diffing a [`DiffSource`] (`--cached` for the index).
-    fn diff_source_args(&self, source: DiffSource) -> Vec<String> {
-        let mut args = self.diff_base(&[]);
+    fn diff_source_args(&self, source: DiffSource, extra: &[String]) -> Vec<String> {
+        let mut args = self.diff_base(extra);
         if source == DiffSource::Staged {
             args.push("--cached".to_string());
         }
@@ -156,7 +156,7 @@ impl Repo {
     ) -> Result<Option<FileDiff>> {
         let mut paths = vec![path.to_string()];
         paths.extend(orig.map(str::to_string));
-        let mut diffs = self.diff_with(self.diff_source_args(source), &paths)?;
+        let mut diffs = self.diff_with(self.diff_source_args(source, &[]), &paths)?;
         Ok(if diffs.is_empty() {
             None
         } else {
@@ -168,7 +168,7 @@ impl Repo {
     /// --cached` for all staged changes). Used to show the full staged diff in
     /// the commit editor.
     pub fn diff_all(&self, source: DiffSource) -> Result<Vec<FileDiff>> {
-        self.diff_with(self.diff_source_args(source), &[])
+        self.diff_with(self.diff_source_args(source, &[]), &[])
     }
 
     /// Every tracked change vs. HEAD (`git diff HEAD`): staged and unstaged
@@ -178,24 +178,20 @@ impl Repo {
     /// On an unborn branch there is no HEAD (so `git diff HEAD` would error) and
     /// nothing is tracked yet, so the staged diff is the whole story.
     pub fn diff_tracked_vs_head(&self) -> Result<Vec<FileDiff>> {
-        if !self.succeeds(["rev-parse", "--verify", "--quiet", "HEAD"])? {
+        if !self.rev_exists("HEAD") {
             return self.diff_all(DiffSource::Staged);
         }
-        let mut args = self.diff_base(&[]);
-        args.push("HEAD".to_string());
-        self.diff_with(args, &[])
+        self.diff_range("HEAD", &[], &[])
     }
 
     /// The standalone diff transient's unstaged action (`git diff [args]`).
     pub fn diff_unstaged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
-        self.diff_with(self.diff_base(extra), paths)
+        self.diff_with(self.diff_source_args(DiffSource::Unstaged, extra), paths)
     }
 
     /// The standalone diff transient's staged action (`git diff --cached [args]`).
     pub fn diff_staged(&self, extra: &[String], paths: &[String]) -> Result<Vec<FileDiff>> {
-        let mut args = self.diff_base(extra);
-        args.push("--cached".to_string());
-        self.diff_with(args, paths)
+        self.diff_with(self.diff_source_args(DiffSource::Staged, extra), paths)
     }
 
     /// The whole working tree against a revision (Magit's `Diff worktree`,
@@ -206,9 +202,7 @@ impl Repo {
         extra: &[String],
         paths: &[String],
     ) -> Result<Vec<FileDiff>> {
-        let mut args = self.diff_base(extra);
-        args.push(rev.to_string());
-        self.diff_with(args, paths)
+        self.diff_range(rev, extra, paths)
     }
 
     /// Diff an arbitrary revision or range (`git diff <rev-or-range> [-- paths]`).
@@ -239,7 +233,7 @@ impl Repo {
         // git's well-known empty-tree object, for diffing a parentless commit.
         const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
         let parent = format!("{rev}^");
-        let base = if self.succeeds(["rev-parse", "--verify", "--quiet", &parent])? {
+        let base = if self.rev_exists(&parent) {
             parent
         } else {
             EMPTY_TREE.to_string()

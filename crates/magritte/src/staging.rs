@@ -56,22 +56,33 @@ pub(crate) fn section_source(section: SectionId) -> Option<DiffSource> {
     }
 }
 
+impl Target {
+    /// The status section the target's file belongs to.
+    pub(crate) fn section(&self) -> SectionId {
+        match self {
+            Target::File(f) => f.section,
+            Target::Hunk { file, .. } | Target::Line { file, .. } => file.section,
+        }
+    }
+
+    /// The repo-relative path of the target's file.
+    pub(crate) fn path(&self) -> &str {
+        match self {
+            Target::File(f) => &f.path,
+            Target::Hunk { file, .. } | Target::Line { file, .. } => &file.path,
+        }
+    }
+}
+
 /// The repo-relative path of the file a target belongs to.
 pub(crate) fn target_path(target: &Target) -> &str {
-    match target {
-        Target::File(f) => &f.path,
-        Target::Hunk { file, .. } | Target::Line { file, .. } => &file.path,
-    }
+    target.path()
 }
 
 /// Which staging verbs apply to a target, by section: `(stage, unstage,
 /// discard)`. Populates the right-click menu with only meaningful actions.
 pub(crate) fn target_ops(target: &Target) -> (bool, bool, bool) {
-    let section = match target {
-        Target::File(f) => f.section,
-        Target::Hunk { file, .. } | Target::Line { file, .. } => file.section,
-    };
-    match section {
+    match target.section() {
         // Untracked/unstaged content can be staged or discarded.
         SectionId::Untracked | SectionId::Unstaged => (true, false, true),
         // Staged content can be unstaged or discarded.
@@ -680,10 +691,7 @@ impl StatusView {
         let Some(target) = self.rows.get(self.selected).and_then(|r| r.target.clone()) else {
             return;
         };
-        let path = match &target {
-            Target::File(f) => f.path.clone(),
-            Target::Hunk { file, .. } | Target::Line { file, .. } => file.path.clone(),
-        };
+        let path = target.path().to_string();
         let line = self.diff_target_line(&target);
         let Some(repo) = self.repo.as_ref() else {
             return;
@@ -938,12 +946,8 @@ impl StatusView {
         let Some(target) = self.rows.get(self.selected).and_then(|r| r.target.as_ref()) else {
             return;
         };
-        let section = match target {
-            Target::File(f) => f.section,
-            Target::Hunk { file, .. } | Target::Line { file, .. } => file.section,
-        };
-        let path = target_path(target).to_string();
-        match section {
+        let path = target.path().to_string();
+        match target.section() {
             SectionId::Untracked => {
                 self.set_status(format!("{path} is already untracked"), false, cx)
             }

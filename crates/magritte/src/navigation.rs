@@ -334,8 +334,21 @@ impl StatusView {
     // One [keymap] drives motion in every cursor view: the registry's
     // Navigation commands resolve to these, dispatched to the active screen.
 
-    /// Move the cursor/selection by `delta` rows in the active view.
-    pub(crate) fn nav_line(&mut self, delta: isize, cx: &mut Context<Self>) {
+    /// Scroll the status list so the cursor row is in view, and repaint.
+    pub(crate) fn scroll_cursor_into_view(&mut self, cx: &mut Context<Self>) {
+        self.scroll
+            .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    /// Route a `delta`-row motion to the active view's cursor; on the status
+    /// screen, `fallback` moves the row cursor (line- or page-wise).
+    fn nav_move(
+        &mut self,
+        delta: isize,
+        fallback: impl FnOnce(&mut Self, isize),
+        cx: &mut Context<Self>,
+    ) {
         match self.screen {
             Screen::Log(_) => self.log_move(delta, cx),
             Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
@@ -343,12 +356,15 @@ impl StatusView {
             Screen::Refs(_) => self.refs_move(delta, cx),
             Screen::Worktree(_) => self.worktrees_move(delta, cx),
             _ => {
-                self.move_selection(delta);
-                self.scroll
-                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
+                fallback(self, delta);
+                self.scroll_cursor_into_view(cx);
             }
         }
+    }
+
+    /// Move the cursor/selection by `delta` rows in the active view.
+    pub(crate) fn nav_line(&mut self, delta: isize, cx: &mut Context<Self>) {
+        self.nav_move(delta, Self::move_selection, cx);
     }
 
     /// Page the cursor by a half- or full-screen in the active view.
@@ -362,19 +378,7 @@ impl StatusView {
         let page = page_rows(window, self.row_h()) as isize;
         let amount = if full { page } else { (page / 2).max(1) };
         let delta = if down { amount } else { -amount };
-        match self.screen {
-            Screen::Log(_) => self.log_move(delta, cx),
-            Screen::Commit { .. } | Screen::Diff { .. } => self.flat_diff_move(delta, cx),
-            Screen::RebaseTodo(_) => self.rebase_todo_move(delta, cx),
-            Screen::Refs(_) => self.refs_move(delta, cx),
-            Screen::Worktree(_) => self.worktrees_move(delta, cx),
-            _ => {
-                self.page_selection(delta);
-                self.scroll
-                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
-            }
-        }
+        self.nav_move(delta, Self::page_selection, cx);
     }
 
     /// Jump to the first/last row of the active view.
@@ -395,9 +399,7 @@ impl StatusView {
             ),
             _ => {
                 self.select_edge(to_bottom);
-                self.scroll
-                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-                cx.notify();
+                self.scroll_cursor_into_view(cx);
             }
         }
     }
@@ -407,9 +409,7 @@ impl StatusView {
     pub(crate) fn nav_section(&mut self, forward: bool, cx: &mut Context<Self>) {
         if matches!(self.screen, Screen::Status) {
             self.select_section(forward);
-            self.scroll
-                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
+            self.scroll_cursor_into_view(cx);
         }
     }
 
@@ -417,9 +417,7 @@ impl StatusView {
     pub(crate) fn nav_section_sibling(&mut self, forward: bool, cx: &mut Context<Self>) {
         if matches!(self.screen, Screen::Status) {
             self.select_section_sibling(forward);
-            self.scroll
-                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
+            self.scroll_cursor_into_view(cx);
         }
     }
 
@@ -442,9 +440,7 @@ impl StatusView {
             .find(|&i| section_depth(&self.rows[i]).is_some_and(|d| d < depth));
         if let Some(i) = parent {
             self.selected = i;
-            self.scroll
-                .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
-            cx.notify();
+            self.scroll_cursor_into_view(cx);
         }
     }
 
@@ -557,8 +553,7 @@ impl StatusView {
         match header {
             Some(i) => {
                 self.selected = i;
-                self.scroll
-                    .scroll_to_item(self.selected, gpui::ScrollStrategy::Top);
+                self.scroll_cursor_into_view(cx);
             }
             None => {
                 let label = match id {
@@ -576,7 +571,6 @@ impl StatusView {
                 self.set_status(format!("No {label} section"), true, cx);
             }
         }
-        cx.notify();
     }
 
     /// Shared key handling for the cursor views (status / log / commit / rebase

@@ -8,6 +8,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{Context, InteractiveElement, ParentElement, StatefulInteractiveElement, Window};
 use magritte_core::conflict::{parse_conflicts, resolve, Conflict, Resolution, Segment};
 
+use crate::render::click_was_drag;
 use crate::*;
 
 /// The Resolve screen's state: the parsed file, one choice slot per conflict,
@@ -400,8 +401,8 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         match (key, shift, ctrl) {
-            ("j", _, false) => return self.resolve_move(1, cx),
-            ("k", _, false) => return self.resolve_move(-1, cx),
+            ("j", _, false) => self.resolve_move(1, cx),
+            ("k", _, false) => self.resolve_move(-1, cx),
             ("g", shift, false) => {
                 let Some(rv) = self.resolve_state_mut() else {
                     return;
@@ -642,12 +643,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_3()
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(format!("Resolve: {}", rv.path))),
-            )
+            .child(self.view_title(format!("Resolve: {}", rv.path)))
             .child(
                 div()
                     .text_color(self.palette.dim)
@@ -768,12 +764,8 @@ impl StatusView {
         el = el.on_click(move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
             // A drag already selected text; only a stationary click on a
             // conflict moves the cursor there.
-            if let gpui::ClickEvent::Mouse(e) = ev {
-                if (e.up.position.x - e.down.position.x).abs() > px(4.0)
-                    || (e.up.position.y - e.down.position.y).abs() > px(4.0)
-                {
-                    return;
-                }
+            if click_was_drag(ev) {
+                return;
             }
             let Some(conflict) = conflict else { return };
             v_click.update(cx, |this, vcx| {

@@ -280,12 +280,55 @@ impl StatusView {
         self.set_status(COPIED_LABEL.to_string(), true, cx);
     }
 
+    /// The cancellable-job shell for a job whose finish needs a `Window`
+    /// (opening an editor, a picker): the same cancel-flag / spinner
+    /// invariants as [`run_job_core`](Self::run_job_core), but `spawn_in` so
+    /// `finish` runs with the window. `progress` is optional — `None` runs
+    /// silently, with no toast or activity accounting.
+    pub(crate) fn run_job_core_in<T, F, G>(
+        &mut self,
+        progress: Option<String>,
+        op: F,
+        finish: G,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) where
+        T: Send + 'static,
+        F: FnOnce(Repo) -> T + Send + 'static,
+        G: FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+    {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let (repo, cancel) = repo.cancellable();
+        self.job_cancel = Some(cancel.clone());
+        let show_activity = progress.is_some();
+        if let Some(progress) = progress {
+            self.set_progress(progress, cx);
+            self.begin_activity(cx);
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { op(repo) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.clear_job_cancel(&cancel);
+                if show_activity {
+                    this.end_activity(cx);
+                }
+                finish(this, result, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The shared shell of every rebase-driving job: run `op` with a cancel
     /// flag (and optional progress + spinner), probe git's stopped-sha on
     /// success, and hand both to `finish` on the UI thread — which typically
-    /// routes a pending reword stop into the in-app editor before reporting.
-    /// `spawn_in`, because opening that editor needs a `Window` (the plain
-    /// `run_job` family doesn't carry one).
+    /// routes a pending reword stop into the in-app editor before reporting
+    /// (hence the `Window`).
     pub(crate) fn run_rebase_job<T, F, G>(
         &mut self,
         progress: Option<String>,
@@ -304,40 +347,21 @@ impl StatusView {
                 &mut Context<Self>,
             ) + 'static,
     {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        let show_activity = progress.is_some();
-        if let Some(progress) = progress {
-            self.set_progress(progress, cx);
-            self.begin_activity(cx);
-        }
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let result = op(&repo);
-                    let stopped = if result.is_ok() {
-                        repo.rebase_stopped_sha()
-                    } else {
-                        None
-                    };
-                    (result, stopped)
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                let (result, stopped) = outcome;
-                this.clear_job_cancel(&cancel);
-                if show_activity {
-                    this.end_activity(cx);
-                }
-                finish(this, result, stopped, window, cx);
-            })
-            .ok();
-        })
-        .detach();
+        self.run_job_core_in(
+            progress,
+            move |repo| {
+                let result = op(&repo);
+                let stopped = if result.is_ok() {
+                    repo.rebase_stopped_sha()
+                } else {
+                    None
+                };
+                (result, stopped)
+            },
+            move |this, (result, stopped), window, cx| finish(this, result, stopped, window, cx),
+            window,
+            cx,
+        );
     }
 
     /// (Re)start the background auto-fetch loop. Bumping the generation retires

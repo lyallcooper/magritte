@@ -294,6 +294,34 @@ pub(super) fn line_end(text: &str, pos: usize) -> usize {
     text[pos..].find('\n').map_or(text.len(), |i| pos + i)
 }
 
+/// [`line_end`] extended through `count` lines: the end of the line
+/// `count - 1` lines below the one containing `pos`, clamped to the last
+/// line. `count == 1` is `line_end` itself.
+pub(super) fn line_end_n(text: &str, pos: usize, count: usize) -> usize {
+    let mut end = line_end(text, pos);
+    for _ in 1..count {
+        if end >= text.len() {
+            break;
+        }
+        end = line_end(text, next_char(text, end));
+    }
+    end
+}
+
+/// Offset up to `count` chars forward from `pos`, stopping at the end of
+/// its line.
+pub(super) fn advance_in_line(text: &str, pos: usize, count: usize) -> usize {
+    let end = line_end(text, pos);
+    let mut to = pos;
+    for _ in 0..count {
+        if to >= end {
+            break;
+        }
+        to = next_char(text, to);
+    }
+    to
+}
+
 /// Offset just past the char starting at `pos` (or `len` if at the end).
 pub(super) fn next_char(text: &str, pos: usize) -> usize {
     match text[pos.min(text.len())..].chars().next() {

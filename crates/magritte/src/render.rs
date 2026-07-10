@@ -11,7 +11,7 @@ use gpui::{
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, StyledText,
     TextLayout, Window,
 };
-use gpui_component::menu::ContextMenuExt;
+use gpui_component::menu::{ContextMenu, ContextMenuExt};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
@@ -135,6 +135,37 @@ pub(crate) fn offset_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>
     }
 }
 
+/// Whether a click's press and release positions diverged enough to be a drag.
+/// A drag already selected text, so a row's click handler should not also act.
+pub(crate) fn click_was_drag(ev: &gpui::ClickEvent) -> bool {
+    if let gpui::ClickEvent::Mouse(e) = ev {
+        (e.up.position.x - e.down.position.x).abs() > px(4.0)
+            || (e.up.position.y - e.down.position.y).abs() > px(4.0)
+    } else {
+        false
+    }
+}
+
+/// Attach the shared right-click Copy menu for `value`: the press stashes the
+/// value in `pending_copy` (and flags the menu open, which suppresses
+/// tooltips) before the menu paints. The handlers sit on the element itself so
+/// its hitbox isn't occluded by a wrapper.
+pub(crate) fn with_copy_menu<E>(el: E, view: &Entity<StatusView>, value: String) -> ContextMenu<E>
+where
+    E: InteractiveElement + ParentElement + Styled,
+{
+    let view = view.clone();
+    el.on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
+        let value = value.clone();
+        view.update(cx, |v, vcx| {
+            v.pending_copy = Some(value);
+            v.ctx_menu_open = true;
+            vcx.notify();
+        });
+    })
+    .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+}
+
 impl StatusView {
     /// The effective base font size (px) — see [`theme::effective_font_size`].
     pub(crate) fn font_px(&self) -> f32 {
@@ -210,16 +241,22 @@ impl StatusView {
         (styled, layout)
     }
 
-    /// The run style for a ref name embedded in a row's text — the same look
-    /// refs always had (color-coded by kind: local blue, remote green, tag
-    /// yellow, current branch bold), now as a selectable text run.
-    pub(crate) fn ref_style(&self, kind: RefKind) -> HighlightStyle {
-        let (color, bold) = match kind {
+    /// The `(color, bold)` face for a ref of `kind` — the app-wide rule: local
+    /// branch blue, remote green, tag yellow, current branch bold. Shared by
+    /// the inline run style and the ref chips so the coloring can't drift.
+    pub(crate) fn ref_face(&self, kind: RefKind) -> (Hsla, bool) {
+        match kind {
             RefKind::Tag => (self.palette.tag, false),
             RefKind::Head => (self.palette.branch_local, true),
             RefKind::Local => (self.palette.branch_local, false),
             RefKind::Remote | RefKind::SyncedHead => (self.palette.branch_remote, false),
-        };
+        }
+    }
+
+    /// The run style for a ref name embedded in a row's text — the
+    /// [`ref_face`](Self::ref_face) coloring as a selectable text run.
+    pub(crate) fn ref_style(&self, kind: RefKind) -> HighlightStyle {
+        let (color, bold) = self.ref_face(kind);
         HighlightStyle {
             color: Some(color),
             font_weight: bold.then_some(FontWeight::BOLD),
@@ -360,6 +397,22 @@ impl StatusView {
             .px_4()
             .pt_4()
             .gap_3()
+    }
+
+    /// A view/banner heading: semibold in the section color.
+    pub(crate) fn view_title(&self, text: impl Into<SharedString>) -> gpui::Div {
+        div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(self.palette.section)
+            .child(text.into())
+    }
+
+    /// A dim one-line note standing in for a list body (loading, failed, empty).
+    pub(crate) fn load_note(&self, text: impl Into<SharedString>) -> AnyElement {
+        div()
+            .text_color(self.palette.dim)
+            .child(text.into())
+            .into_any_element()
     }
 
     /// A view's header row: the given `left` content, with a right-aligned `Esc`
@@ -760,14 +813,10 @@ impl StatusView {
                 .on_click({
                     let view = view.clone();
                     move |ev: &gpui::ClickEvent, window, cx: &mut App| {
-                        // A drag (moved between down and up) already selected text;
-                        // don't also click (which would move the cursor / fold).
-                        if let gpui::ClickEvent::Mouse(e) = ev {
-                            if (e.up.position.x - e.down.position.x).abs() > px(4.0)
-                                || (e.up.position.y - e.down.position.y).abs() > px(4.0)
-                            {
-                                return;
-                            }
+                        // A drag already selected text; don't also click (which
+                        // would move the cursor / fold).
+                        if click_was_drag(ev) {
+                            return;
                         }
                         let double = ev.click_count() >= 2;
                         view.update(cx, |v, cx| {

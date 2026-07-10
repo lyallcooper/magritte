@@ -22,22 +22,7 @@ impl VimState {
         let Some(body) = rest.strip_prefix("s/") else {
             return Vec::new();
         };
-        let (pat, _, flags) = split_substitute(body);
-        let (mut global, mut icase) = (false, false);
-        for f in flags.chars() {
-            match f {
-                'g' => global = true,
-                'i' => icase = true,
-                _ => return Vec::new(),
-            }
-        }
-        if pat.is_empty() {
-            return Vec::new();
-        }
-        let Ok(re) = regex::RegexBuilder::new(&pat)
-            .case_insensitive(icase)
-            .build()
-        else {
+        let Ok((re, _, global)) = parse_substitute(body) else {
             return Vec::new();
         };
         let (a, b) = (range.0.clamp(1, lines), range.1.clamp(1, lines));
@@ -109,24 +94,9 @@ impl VimState {
     /// last line with a match. No match in the range is an error (Vim's
     /// E486), as is an invalid regex or an unknown flag.
     fn ex_substitute(&mut self, text: &str, first: usize, last: usize, body: &str) -> Vec<Action> {
-        let (pat, rep, flags) = split_substitute(body);
-        let (mut global, mut icase) = (false, false);
-        for f in flags.chars() {
-            match f {
-                'g' => global = true,
-                'i' => icase = true,
-                _ => return self.err(format!("Trailing characters: {flags}")),
-            }
-        }
-        // No reuse of the last pattern (Vim's `:s//`), so empty is an error.
-        if pat.is_empty() {
-            return self.err("Empty pattern".into());
-        }
-        let Ok(re) = regex::RegexBuilder::new(&pat)
-            .case_insensitive(icase)
-            .build()
-        else {
-            return self.err(format!("Invalid pattern: {pat}"));
+        let (re, rep, global) = match parse_substitute(body) {
+            Ok(parsed) => parsed,
+            Err(msg) => return self.err(msg),
         };
         let rep = sub_replacement(&rep);
         let start = line_offset(text, first);
@@ -150,7 +120,7 @@ impl VimState {
             }
         }
         let Some(line_at) = last_match else {
-            return self.err(format!("Pattern not found: {pat}"));
+            return self.err(format!("Pattern not found: {}", re.as_str()));
         };
         let post = splice(text, &(start..end), &out);
         let cursor = first_non_blank(&post, (start + line_at).min(post.len()));
@@ -162,11 +132,82 @@ impl VimState {
     }
 }
 
+/// Which prompt a line edit belongs to — selects the history it steps.
+pub(super) enum PromptHist {
+    Search,
+    Ex,
+}
+
+/// What one key did to a prompt line, for the caller to map back onto its
+/// `Pending` variant.
+pub(super) enum PromptOutcome {
+    /// The prompt stays open with this content.
+    Keep(String),
+    /// Backspace on an empty line: close the prompt.
+    Cancel,
+    /// Enter: execute this line (already pushed to its history if non-empty).
+    Commit(String),
+    /// Nowhere to step, or an unhandled key that must not destroy the typed
+    /// line: beep, leaving `self.pending` holding the prompt.
+    Beep,
+}
+
+impl VimState {
+    /// One key into a `/`/`?`/`:` prompt line: char append, backspace-cancel,
+    /// Up/Down/`C-p`/`C-n` history stepping, Enter commit.
+    pub(super) fn prompt_key(
+        &mut self,
+        mut line: String,
+        key: Key,
+        hist: PromptHist,
+    ) -> PromptOutcome {
+        match key {
+            Key::Char(c) => {
+                self.hist_ix = None;
+                line.push(c);
+                PromptOutcome::Keep(line)
+            }
+            Key::Backspace => {
+                self.hist_ix = None;
+                // Backspace on an empty line cancels, like Vim.
+                if line.pop().is_some() {
+                    PromptOutcome::Keep(line)
+                } else {
+                    PromptOutcome::Cancel
+                }
+            }
+            Key::Up | Key::Down | Key::Ctrl('p') | Key::Ctrl('n') => {
+                let older = matches!(key, Key::Up | Key::Ctrl('p'));
+                let hist = match hist {
+                    PromptHist::Search => &self.search_hist,
+                    PromptHist::Ex => &self.ex_hist,
+                };
+                match hist_step(hist, &mut self.hist_ix, &mut self.hist_stash, &line, older) {
+                    Some(stepped) => PromptOutcome::Keep(stepped),
+                    None => PromptOutcome::Beep,
+                }
+            }
+            Key::Enter => {
+                self.hist_ix = None;
+                if !line.is_empty() {
+                    let hist = match hist {
+                        PromptHist::Search => &mut self.search_hist,
+                        PromptHist::Ex => &mut self.ex_hist,
+                    };
+                    push_hist(hist, &line);
+                }
+                PromptOutcome::Commit(line)
+            }
+            _ => PromptOutcome::Beep,
+        }
+    }
+}
+
 /// Step a prompt through its history: `older` is Up/`C-p`. Returns the new
 /// line, or None when there's nowhere to go (empty history, already at the
 /// oldest, or Down on the live line). Browsing starts by stashing the live
 /// line; Down past the newest entry restores it.
-pub(super) fn hist_step(
+fn hist_step(
     hist: &[String],
     ix: &mut Option<usize>,
     stash: &mut String,
@@ -202,7 +243,7 @@ pub(super) fn hist_step(
 
 /// Append an executed prompt line to its history (consecutive repeats and
 /// anything past 50 entries dropped).
-pub(super) fn push_hist(hist: &mut Vec<String>, line: &str) {
+fn push_hist(hist: &mut Vec<String>, line: &str) {
     if hist.last().map(String::as_str) == Some(line) {
         return;
     }
@@ -255,6 +296,31 @@ fn ex_addr(s: &str, current: usize, last: usize) -> Option<(usize, &str)> {
     }
     let digits = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     (digits > 0).then(|| (s[..digits].parse().unwrap_or(usize::MAX), &s[digits..]))
+}
+
+/// Parse the `pat/rep/flags` body after `:s/` into the compiled pattern, the
+/// raw replacement, and the `g` flag (`i` folds into the regex), so the live
+/// preview and the actual substitution can't drift. `Err` is the message to
+/// echo: an unknown flag, an empty pattern (no reuse of the last pattern,
+/// Vim's `:s//`), or an invalid regex.
+fn parse_substitute(body: &str) -> Result<(regex::Regex, String, bool), String> {
+    let (pat, rep, flags) = split_substitute(body);
+    let (mut global, mut icase) = (false, false);
+    for f in flags.chars() {
+        match f {
+            'g' => global = true,
+            'i' => icase = true,
+            _ => return Err(format!("Trailing characters: {flags}")),
+        }
+    }
+    if pat.is_empty() {
+        return Err("Empty pattern".into());
+    }
+    let re = regex::RegexBuilder::new(&pat)
+        .case_insensitive(icase)
+        .build()
+        .map_err(|_| format!("Invalid pattern: {pat}"))?;
+    Ok((re, rep, global))
 }
 
 /// Split the `pat/rep/flags` after `:s/` on unescaped `/`: `\/` is a literal

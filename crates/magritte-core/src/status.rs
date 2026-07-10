@@ -240,12 +240,9 @@ impl Repo {
         let Some(branch) = head.branch.clone() else {
             return;
         };
-        // Derive the push remote from config rather than resolving `@{push}`:
-        // under the default `push.default = simple`, git refuses to resolve
-        // `@{push}` in a triangular workflow ("cannot resolve 'simple' push to a
-        // single destination") — exactly the case this reports. Without a
-        // configured push remote, pushes follow the upstream (already shown),
-        // so there is no distinct push target.
+        // Derived from config, not `@{push}` — see `push_remote_config`.
+        // Without a configured push remote, pushes follow the upstream
+        // (already shown), so there is no distinct push target.
         let Some(remote) = self.push_remote_config(&branch) else {
             return;
         };

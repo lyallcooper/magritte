@@ -42,59 +42,45 @@ fn key_word(token: &str) -> String {
     }
 }
 
+/// The runtime name of a named key, accepting the common aliases (`Esc`,
+/// `Ret`, `SPC`, …) case-insensitively; `None` for anything else. The one
+/// table behind both [`normalize_key_name`] and [`is_known_key`].
+fn named_key(base: &str) -> Option<&'static str> {
+    match base.to_ascii_lowercase().as_str() {
+        "esc" | "escape" => Some("escape"),
+        "ret" | "return" | "enter" => Some("enter"),
+        "spc" | "space" => Some("space"),
+        "tab" => Some("tab"),
+        "bs" | "backspace" => Some("backspace"),
+        "del" | "delete" => Some("delete"),
+        "up" => Some("up"),
+        "down" => Some("down"),
+        "left" => Some("left"),
+        "right" => Some("right"),
+        "home" => Some("home"),
+        "end" => Some("end"),
+        "pageup" => Some("pageup"),
+        "pagedown" => Some("pagedown"),
+        "insert" => Some("insert"),
+        _ => None,
+    }
+}
+
 /// Normalize a base key name to the runtime form the app matches against
 /// (`escape`/`enter`/`space`/…), accepting the common aliases (`Esc`, `Ret`,
 /// `SPC`, …). Single-character keys are returned verbatim, case preserved, so
 /// `K` stays distinct from `k`.
 pub(crate) fn normalize_key_name(base: &str) -> String {
-    match base.to_ascii_lowercase().as_str() {
-        "esc" | "escape" => "escape".into(),
-        "ret" | "return" | "enter" => "enter".into(),
-        "spc" | "space" => "space".into(),
-        "tab" => "tab".into(),
-        "bs" | "backspace" => "backspace".into(),
-        "del" | "delete" => "delete".into(),
-        "up" | "down" | "left" | "right" | "home" | "end" | "pageup" | "pagedown" | "insert" => {
-            base.to_ascii_lowercase()
-        }
-        _ => base.to_string(),
-    }
+    named_key(base).unwrap_or(base).to_string()
 }
 
 /// Whether a base token names a key we recognize: a single character, a named
 /// key (including its aliases), or a function key (`f1`..`f12`).
 fn is_known_key(base: &str) -> bool {
-    if base.chars().count() == 1 {
+    if base.chars().count() == 1 || named_key(base).is_some() {
         return true;
     }
-    let lower = base.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "esc"
-            | "escape"
-            | "ret"
-            | "return"
-            | "enter"
-            | "spc"
-            | "space"
-            | "tab"
-            | "bs"
-            | "backspace"
-            | "del"
-            | "delete"
-            | "up"
-            | "down"
-            | "left"
-            | "right"
-            | "home"
-            | "end"
-            | "pageup"
-            | "pagedown"
-            | "insert"
-    ) {
-        return true;
-    }
-    lower
+    base.to_ascii_lowercase()
         .strip_prefix('f')
         .and_then(|n| n.parse::<u8>().ok())
         .is_some_and(|n| (1..=12).contains(&n))

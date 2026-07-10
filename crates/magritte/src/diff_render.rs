@@ -11,9 +11,8 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::Sizable;
 
-use crate::render::{color_run, offset_at, StyleRuns};
+use crate::render::{click_was_drag, color_run, offset_at, with_copy_menu, StyleRuns};
 use crate::*;
-use gpui_component::menu::ContextMenuExt;
 
 /// The tallest the editor's message box may be in this window: the resize
 /// drag and the height restored at editor open both clamp to this, so the
@@ -809,17 +808,9 @@ impl StatusView {
                                     })
                                     .on_click(
                                         move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
-                                            // A drag (moved between down and up) already
-                                            // selected; don't also click.
-                                            if let gpui::ClickEvent::Mouse(e) = ev {
-                                                let moved = (e.up.position.x - e.down.position.x)
-                                                    .abs()
-                                                    > px(4.0)
-                                                    || (e.up.position.y - e.down.position.y).abs()
-                                                        > px(4.0);
-                                                if moved {
-                                                    return;
-                                                }
+                                            // A drag already selected; don't also click.
+                                            if click_was_drag(ev) {
+                                                return;
                                             }
                                             v_click.update(cx, |view, vcx| {
                                                 if let Some(fd) = view.flat_diff_mut() {
@@ -909,39 +900,31 @@ impl StatusView {
         let (styled, layout) = self.selectable_text(text, runs, sel);
         let (down_layout, move_layout) = (layout.clone(), layout);
         let (v_down, v_move, v_up) = (view.clone(), view.clone(), view.clone());
-        let title = div()
-            .id("commit-view-rev")
-            .flex()
-            .items_center()
-            .child(styled)
-            .on_mouse_down(gpui::MouseButton::Left, {
-                move |ev: &gpui::MouseDownEvent, _window, cx: &mut gpui::App| {
-                    let offset = offset_at(&down_layout, ev.position);
-                    v_down.update(cx, |v, vcx| {
-                        if let Some(cv) = v.commit_view_mut() {
-                            // One active selection: a header drag replaces any
-                            // body selection.
-                            cv.body.char_sel = None;
-                            cv.body.visual = None;
-                            cv.header_sel = None;
-                            cv.header_drag = Some(offset);
-                            vcx.notify();
-                        }
-                    });
-                }
-            })
-            .on_mouse_down(gpui::MouseButton::Right, {
-                let view = view.clone();
-                move |_, _window, cx: &mut gpui::App| {
-                    let value = rev.clone();
-                    view.update(cx, |v, vcx| {
-                        v.pending_copy = Some(value);
-                        v.ctx_menu_open = true;
-                        vcx.notify();
-                    });
-                }
-            })
-            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)));
+        let title = with_copy_menu(
+            div()
+                .id("commit-view-rev")
+                .flex()
+                .items_center()
+                .child(styled)
+                .on_mouse_down(gpui::MouseButton::Left, {
+                    move |ev: &gpui::MouseDownEvent, _window, cx: &mut gpui::App| {
+                        let offset = offset_at(&down_layout, ev.position);
+                        v_down.update(cx, |v, vcx| {
+                            if let Some(cv) = v.commit_view_mut() {
+                                // One active selection: a header drag replaces any
+                                // body selection.
+                                cv.body.char_sel = None;
+                                cv.body.visual = None;
+                                cv.header_sel = None;
+                                cv.header_drag = Some(offset);
+                                vcx.notify();
+                            }
+                        });
+                    }
+                }),
+            view,
+            rev,
+        );
 
         // The drag's move/up handlers live on the whole scaffold, not the
         // title: a fast drag overshoots the (text-sized) title's hitbox in a

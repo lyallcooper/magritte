@@ -578,26 +578,30 @@ pub struct Transient {
 }
 
 impl Transient {
+    /// All suffixes across all groups, flattened — the accessors below are
+    /// filters over this.
+    fn suffixes(&self) -> impl Iterator<Item = &Suffix> {
+        self.groups.iter().flat_map(|g| g.suffixes.iter())
+    }
+
+    fn suffixes_mut(&mut self) -> impl Iterator<Item = &mut Suffix> {
+        self.groups.iter_mut().flat_map(|g| g.suffixes.iter_mut())
+    }
+
     /// All switches across all groups.
     pub fn switches(&self) -> impl Iterator<Item = &Switch> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .filter_map(|s| match s {
-                Suffix::Switch(sw) => Some(sw),
-                _ => None,
-            })
+        self.suffixes().filter_map(|s| match s {
+            Suffix::Switch(sw) => Some(sw),
+            _ => None,
+        })
     }
 
     /// All value-reading options across all groups.
     pub fn options(&self) -> impl Iterator<Item = &Opt> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .filter_map(|s| match s {
-                Suffix::Option(o) => Some(o),
-                _ => None,
-            })
+        self.suffixes().filter_map(|s| match s {
+            Suffix::Option(o) => Some(o),
+            _ => None,
+        })
     }
 
     /// The option bound to `key`, if any.
@@ -607,79 +611,53 @@ impl Transient {
 
     /// The action bound to `key` (its primary or secondary key), if any.
     pub fn action_for(&self, key: &str) -> Option<&Action> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .find_map(|s| match s {
-                Suffix::Action(a) if a.key == key || a.also_key == Some(key) => Some(a),
-                _ => None,
-            })
+        self.suffixes().find_map(|s| match s {
+            Suffix::Action(a) if a.key == key || a.also_key == Some(key) => Some(a),
+            _ => None,
+        })
     }
 
     /// The user-injected custom suffix bound to `key`, if any.
     pub fn custom_for(&self, key: &str) -> Option<&Custom> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .find_map(|s| match s {
-                Suffix::Custom(c) if c.key == key => Some(c),
-                _ => None,
-            })
+        self.suffixes().find_map(|s| match s {
+            Suffix::Custom(c) if c.key == key => Some(c),
+            _ => None,
+        })
     }
 
     /// All git-config variables across all groups.
     pub fn variables_ref(&self) -> impl Iterator<Item = &Variable> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .filter_map(|s| match s {
-                Suffix::Variable(v) => Some(v),
-                _ => None,
-            })
+        self.suffixes().filter_map(|s| match s {
+            Suffix::Variable(v) => Some(v),
+            _ => None,
+        })
     }
 
     /// All git-config variables across all groups (mutable — the frontend fills
     /// their current values at open time and updates them on set).
     pub fn variables_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
-        self.groups
-            .iter_mut()
-            .flat_map(|g| g.suffixes.iter_mut())
-            .filter_map(|s| match s {
-                Suffix::Variable(v) => Some(v),
-                _ => None,
-            })
+        self.suffixes_mut().filter_map(|s| match s {
+            Suffix::Variable(v) => Some(v),
+            _ => None,
+        })
     }
 
     /// The config variable bound to `key`, if any.
     pub fn variable_for(&self, key: &str) -> Option<&Variable> {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
-            .find_map(|s| match s {
-                Suffix::Variable(v) if v.key == key => Some(v),
-                _ => None,
-            })
+        self.variables_ref().find(|v| v.key == key)
     }
 
     /// The config variable bound to `key`, mutably (to update its value in place
     /// after a set).
     pub fn variable_for_mut(&mut self, key: &str) -> Option<&mut Variable> {
-        self.groups
-            .iter_mut()
-            .flat_map(|g| g.suffixes.iter_mut())
-            .find_map(|s| match s {
-                Suffix::Variable(v) if v.key == key => Some(v),
-                _ => None,
-            })
+        self.variables_mut().find(|v| v.key == key)
     }
 
     /// Whether some action/custom suffix key strictly extends `prefix` — i.e.
     /// the keystrokes typed so far could still resolve to a multi-key suffix
     /// (magit's `fu`/`pu` jump keys).
     pub fn has_key_prefix(&self, prefix: &str) -> bool {
-        self.groups
-            .iter()
-            .flat_map(|g| g.suffixes.iter())
+        self.suffixes()
             .flat_map(|s| match s {
                 Suffix::Action(a) => vec![Some(a.key), a.also_key],
                 Suffix::Custom(c) => vec![Some(c.key.as_str())],

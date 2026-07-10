@@ -768,21 +768,10 @@ impl StatusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let (repo, cancel) = repo.cancellable();
-        self.job_cancel = Some(cancel.clone());
-        self.set_progress("Merging…".to_string(), cx);
-        self.begin_activity(cx);
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { repo.merge(&target, &args) })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                this.clear_job_cancel(&cancel);
-                this.end_activity(cx);
+        self.run_job_core_in(
+            Some("Merging…".to_string()),
+            move |repo| repo.merge(&target, &args),
+            |this, result, window, cx| {
                 this.refresh(cx);
                 match result {
                     Ok(_) => {
@@ -795,10 +784,10 @@ impl StatusView {
                     }
                     Err(e) => this.report_error(e, cx),
                 }
-            })
-            .ok();
-        })
-        .detach();
+            },
+            window,
+            cx,
+        );
     }
 
     /// The repo-relative path of the file at the cursor (file/hunk/line rows),
@@ -941,10 +930,7 @@ impl StatusView {
                 return Some(source);
             }
         }
-        match row.target.as_ref()? {
-            Target::File(f) => section_source(f.section),
-            Target::Hunk { file, .. } | Target::Line { file, .. } => section_source(file.section),
-        }
+        section_source(row.target.as_ref()?.section())
     }
 
     /// Append the chosen pattern to the gitignore file for `dest` (off the UI

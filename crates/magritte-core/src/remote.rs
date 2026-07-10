@@ -154,32 +154,19 @@ impl Repo {
         let Some(b) = branch.clone() else {
             return Ok(RemoteTargets::default());
         };
-        let push_remote = self
-            .config_get(&format!("branch.{b}.pushRemote"))?
-            .or(self.config_get("remote.pushDefault")?);
-        let upstream = self
-            .run_optional([
-                "rev-parse",
-                "--abbrev-ref",
-                "--symbolic-full-name",
-                &format!("{b}@{{upstream}}"),
-            ])?
-            .map(|o| o.stdout_text())
-            .filter(|s| !s.is_empty())
-            .and_then(|s| parse_upstream(&s));
-        let sole_remote = match self.remotes()?.as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        };
+        let upstream = self.upstream_of(&b)?.and_then(|s| parse_upstream(&s));
         // Fall back to the upstream's remote (as `from_head` does) so the
         // push/pull menus collapse consistently on this path too.
-        let push_remote = push_remote.or_else(|| upstream.as_ref().map(|u| u.remote.clone()));
+        let push_remote = self
+            .push_remote_config(&b)
+            .or_else(|| upstream.as_ref().map(|u| u.remote.clone()));
         Ok(RemoteTargets {
             branch,
             push_remote,
             upstream,
-            sole_remote,
-        })
+            sole_remote: None,
+        }
+        .with_remotes(&self.remotes()?))
     }
 
     /// Persist a branch's push-remote (`branch.<b>.pushRemote`) so future pushes

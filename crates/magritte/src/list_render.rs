@@ -6,7 +6,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, TextLayout};
 use gpui_component::menu::ContextMenuExt;
 
-use crate::render::{color_run, offset_at, push_run, push_styled, word_range, StyleRuns};
+use crate::render::{
+    click_was_drag, color_run, offset_at, push_run, push_styled, word_range, StyleRuns,
+};
 use crate::*;
 
 fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
@@ -55,10 +57,7 @@ impl StatusView {
         let count = self.git_log_rows().len();
 
         let body = if count == 0 {
-            div()
-                .text_color(self.palette.dim)
-                .child(SharedString::from("No commands have run yet."))
-                .into_any_element()
+            self.load_note("No commands have run yet.")
         } else {
             uniform_list("command-log-rows", count, {
                 let view = view.clone();
@@ -78,16 +77,7 @@ impl StatusView {
         };
 
         self.screen_scaffold()
-            .child(
-                self.view_header(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(self.palette.section)
-                        .child(SharedString::from("Command log")),
-                    "close",
-                    view,
-                ),
-            )
+            .child(self.view_header(self.view_title("Command log"), "close", view))
             .child(body)
     }
 
@@ -136,16 +126,7 @@ impl StatusView {
         .flex_grow(1.0);
 
         self.screen_scaffold()
-            .child(
-                self.view_header(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(self.palette.section)
-                        .child(SharedString::from(format!("Blame: {path}"))),
-                    "close",
-                    view,
-                ),
-            )
+            .child(self.view_header(self.view_title(format!("Blame: {path}")), "close", view))
             .child(body)
     }
 
@@ -423,16 +404,10 @@ impl StatusView {
         // `+`/`-` adjust), rather than pretending it's complete.
         let capped = count >= log.limit;
 
-        let note = |text: String, color: Hsla| {
-            div()
-                .text_color(color)
-                .child(SharedString::from(text))
-                .into_any_element()
-        };
         let body = match &log.load {
-            LogLoad::Loading => note("Loading…".to_string(), self.palette.dim),
-            LogLoad::Failed(e) => note(format!("log failed: {e}"), self.palette.dim),
-            LogLoad::Loaded if count == 0 => note("No commits".to_string(), self.palette.dim),
+            LogLoad::Loading => self.load_note("Loading…"),
+            LogLoad::Failed(e) => self.load_note(format!("log failed: {e}")),
+            LogLoad::Loaded if count == 0 => self.load_note("No commits"),
             LogLoad::Loaded => uniform_list("log-rows", count, {
                 let view = view.clone();
                 move |range, _window, cx| {
@@ -510,12 +485,11 @@ impl StatusView {
                 .collect();
             commit_diff_view::diff_title(title, &paths)
         };
-        let mut left = div().flex().items_center().gap_3().child(
-            div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(self.palette.section)
-                .child(SharedString::from(title)),
-        );
+        let mut left = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(self.view_title(title));
         if capped {
             // `--reverse` shows the same most-recent N commits oldest-first, so
             // "first N" would read as the oldest; say "last N" there instead.
@@ -563,16 +537,10 @@ impl StatusView {
     /// tag yellow, current branch bold).
     pub(crate) fn render_refs(&self, refs: &RefsView, view: &Entity<Self>) -> gpui::Div {
         let count = refs.rows.len();
-        let note = |text: String, color: Hsla| {
-            div()
-                .text_color(color)
-                .child(SharedString::from(text))
-                .into_any_element()
-        };
         let body = match &refs.load {
-            RefsLoad::Loading => note("Loading…".to_string(), self.palette.dim),
-            RefsLoad::Failed(e) => note(format!("refs failed: {e}"), self.palette.dim),
-            RefsLoad::Loaded if count == 0 => note("No refs".to_string(), self.palette.dim),
+            RefsLoad::Loading => self.load_note("Loading…"),
+            RefsLoad::Failed(e) => self.load_note(format!("refs failed: {e}")),
+            RefsLoad::Loaded if count == 0 => self.load_note("No refs"),
             RefsLoad::Loaded => uniform_list("refs-rows", count, {
                 let view = view.clone();
                 move |range, _window, cx| {
@@ -593,10 +561,7 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let title = div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(self.palette.section)
-            .child(SharedString::from("Refs"));
+        let title = self.view_title("Refs");
 
         self.screen_scaffold()
             .child(self.view_header(title, "close", view))
@@ -614,15 +579,13 @@ impl StatusView {
         view: &Entity<Self>,
     ) -> AnyElement {
         if let RefsRow::Header(title) = row {
-            return div()
+            return self
+                .view_title(*title)
                 .h(px(self.row_h()))
                 .flex()
                 .items_center()
                 .px_2()
                 .pt_1()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(self.palette.section)
-                .child(SharedString::from(*title))
                 .into_any_element();
         }
         let (label, kind, current, ahead, behind) = match row {
@@ -704,18 +667,10 @@ impl StatusView {
     /// window); the delete key removes it.
     pub(crate) fn render_worktrees(&self, wt: &WorktreeView, view: &Entity<Self>) -> gpui::Div {
         let count = wt.worktrees.len();
-        let note = |text: String, color: Hsla| {
-            div()
-                .text_color(color)
-                .child(SharedString::from(text))
-                .into_any_element()
-        };
         let body = match &wt.load {
-            WorktreeLoad::Loading => note("Loading…".to_string(), self.palette.dim),
-            WorktreeLoad::Failed(e) => note(format!("worktrees failed: {e}"), self.palette.dim),
-            WorktreeLoad::Loaded if count == 0 => {
-                note("No worktrees".to_string(), self.palette.dim)
-            }
+            WorktreeLoad::Loading => self.load_note("Loading…"),
+            WorktreeLoad::Failed(e) => self.load_note(format!("worktrees failed: {e}")),
+            WorktreeLoad::Loaded if count == 0 => self.load_note("No worktrees"),
             WorktreeLoad::Loaded => uniform_list("worktree-rows", count, {
                 let view = view.clone();
                 move |range, _window, cx| {
@@ -736,10 +691,7 @@ impl StatusView {
             .into_any_element(),
         };
 
-        let title = div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(self.palette.section)
-            .child(SharedString::from("Worktrees"));
+        let title = self.view_title("Worktrees");
 
         self.screen_scaffold()
             .child(self.view_header(title, "close", view))
@@ -851,13 +803,7 @@ impl StatusView {
                 )
                 .into_any_element();
         }
-        let (color, bold) = match kind {
-            RefKind::Tag => (self.palette.tag, false),
-            RefKind::Head => (self.palette.branch_local, true),
-            RefKind::Local => (self.palette.branch_local, false),
-            RefKind::Remote => (self.palette.branch_remote, false),
-            RefKind::SyncedHead => unreachable!("handled above"),
-        };
+        let (color, bold) = self.ref_face(kind);
         let chip = div()
             .flex_shrink_0()
             .text_color(color)
@@ -1004,12 +950,8 @@ impl StatusView {
             })
             .on_click(move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
                 // A drag selected text; don't also open the commit.
-                if let gpui::ClickEvent::Mouse(e) = ev {
-                    if (e.up.position.x - e.down.position.x).abs() > px(4.0)
-                        || (e.up.position.y - e.down.position.y).abs() > px(4.0)
-                    {
-                        return;
-                    }
+                if click_was_drag(ev) {
+                    return;
                 }
                 v_open.update(cx, |this, vcx| {
                     if let Some(log) = this.log_mut() {
@@ -1123,12 +1065,7 @@ impl StatusView {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(SharedString::from("Discard rebase edits?")),
-                    )
+                    .child(self.view_title("Discard rebase edits?"))
                     .child(self.key_action(
                         "rebase-todo-discard",
                         "y",
@@ -1149,15 +1086,10 @@ impl StatusView {
                     .items_center()
                     .justify_between()
                     .w_full()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(self.palette.section)
-                            .child(SharedString::from(match rt.mode {
-                                RebaseTodoMode::Start => format!("Rebase {}..HEAD", rt.base),
-                                RebaseTodoMode::Edit => "Edit rebase todo".to_string(),
-                            })),
-                    )
+                    .child(self.view_title(match rt.mode {
+                        RebaseTodoMode::Start => format!("Rebase {}..HEAD", rt.base),
+                        RebaseTodoMode::Edit => "Edit rebase todo".to_string(),
+                    }))
                     .child(
                         div()
                             .flex()

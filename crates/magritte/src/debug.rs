@@ -30,8 +30,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use gpui::{
-    point, px, AnyWindowHandle, AppContext, AsyncApp, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+    point, px, AnyWindowHandle, App, AppContext, AsyncApp, Keystroke, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, Window,
 };
 
 /// The control directory, if debug mode is enabled.
@@ -145,54 +145,22 @@ async fn run_command(
             Ok(None)
         }
         "click" | "shift-click" => {
-            let mut parts = rest.split_whitespace();
-            let x: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("click needs: x y")?;
-            let y: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("click needs: x y")?;
+            let (x, y) = parse_xy(rest, "click")?;
             dispatch_click(handle, x, y, click_modifiers(verb), cx)?;
             Ok(None)
         }
         "move" => {
-            let mut parts = rest.split_whitespace();
-            let x: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("move needs: x y")?;
-            let y: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("move needs: x y")?;
+            let (x, y) = parse_xy(rest, verb)?;
             dispatch_move(handle, x, y, cx)?;
             Ok(None)
         }
         "rclick" => {
-            let mut parts = rest.split_whitespace();
-            let x: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("rclick needs: x y")?;
-            let y: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("rclick needs: x y")?;
+            let (x, y) = parse_xy(rest, verb)?;
             dispatch_right_click(handle, x, y, cx)?;
             Ok(None)
         }
         "dblclick" => {
-            let mut parts = rest.split_whitespace();
-            let x: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("dblclick needs: x y")?;
-            let y: f32 = parts
-                .next()
-                .and_then(|s| s.parse().ok())
-                .ok_or("dblclick needs: x y")?;
+            let (x, y) = parse_xy(rest, verb)?;
             dispatch_double_click(handle, x, y, cx)?;
             Ok(None)
         }
@@ -201,7 +169,7 @@ async fn run_command(
                 .split_whitespace()
                 .filter_map(|s| s.parse().ok())
                 .collect();
-            if coords.len() < 4 || coords.len() % 2 != 0 {
+            if coords.len() < 4 || !coords.len().is_multiple_of(2) {
                 return Err("drag needs: x1 y1 x2 y2 [x3 y3 …]".into());
             }
             let points: Vec<(f32, f32)> = coords.chunks(2).map(|p| (p[0], p[1])).collect();
@@ -294,19 +262,76 @@ async fn run_command(
     }
 }
 
+/// The `x y` argument pair of a mouse verb.
+fn parse_xy(rest: &str, verb: &str) -> Result<(f32, f32), String> {
+    let mut parts = rest.split_whitespace();
+    let mut coord = || parts.next().and_then(|s| s.parse().ok());
+    match (coord(), coord()) {
+        (Some(x), Some(y)) => Ok((x, y)),
+        _ => Err(format!("{verb} needs: x y")),
+    }
+}
+
+fn move_event(
+    pos: Point<Pixels>,
+    pressed_button: Option<MouseButton>,
+    m: Modifiers,
+) -> PlatformInput {
+    PlatformInput::MouseMove(MouseMoveEvent {
+        position: pos,
+        pressed_button,
+        modifiers: m,
+    })
+}
+
+fn down_event(
+    button: MouseButton,
+    pos: Point<Pixels>,
+    m: Modifiers,
+    click_count: usize,
+) -> PlatformInput {
+    PlatformInput::MouseDown(MouseDownEvent {
+        button,
+        position: pos,
+        modifiers: m,
+        click_count,
+        first_mouse: false,
+    })
+}
+
+fn up_event(
+    button: MouseButton,
+    pos: Point<Pixels>,
+    m: Modifiers,
+    click_count: usize,
+) -> PlatformInput {
+    PlatformInput::MouseUp(MouseUpEvent {
+        button,
+        position: pos,
+        modifiers: m,
+        click_count,
+    })
+}
+
+/// The button press+release pair every click-like gesture ends with.
+fn press(
+    window: &mut Window,
+    cx: &mut App,
+    button: MouseButton,
+    pos: Point<Pixels>,
+    m: Modifiers,
+    click_count: usize,
+) {
+    window.dispatch_event(down_event(button, pos, m, click_count), cx);
+    window.dispatch_event(up_event(button, pos, m, click_count), cx);
+}
+
 /// Dispatch a bare mouse move (no button) to a window-relative point — e.g. to
 /// hover an element and trigger its tooltip.
 fn dispatch_move(handle: AnyWindowHandle, x: f32, y: f32, cx: &mut AsyncApp) -> Result<(), String> {
     let pos = point(px(x), px(y));
     cx.update_window(handle, |_, window, cx| {
-        window.dispatch_event(
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: pos,
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }),
-            cx,
-        );
+        window.dispatch_event(move_event(pos, None, Modifiers::default()), cx);
     })
     .map_err(|e| e.to_string())
 }
@@ -334,33 +359,8 @@ fn dispatch_right_click(
     let pos = point(px(x), px(y));
     let m = Modifiers::default();
     cx.update_window(handle, |_, window, cx| {
-        window.dispatch_event(
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: pos,
-                pressed_button: None,
-                modifiers: m,
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Right,
-                position: pos,
-                modifiers: m,
-                click_count: 1,
-                first_mouse: false,
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Right,
-                position: pos,
-                modifiers: m,
-                click_count: 1,
-            }),
-            cx,
-        );
+        window.dispatch_event(move_event(pos, None, m), cx);
+        press(window, cx, MouseButton::Right, pos, m, 1);
     })
     .map_err(|e| e.to_string())
 }
@@ -378,25 +378,7 @@ fn dispatch_double_click(
     let m = Modifiers::default();
     cx.update_window(handle, |_, window, cx| {
         for count in [1, 2] {
-            window.dispatch_event(
-                PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position: pos,
-                    modifiers: m,
-                    click_count: count,
-                    first_mouse: false,
-                }),
-                cx,
-            );
-            window.dispatch_event(
-                PlatformInput::MouseUp(MouseUpEvent {
-                    button: MouseButton::Left,
-                    position: pos,
-                    modifiers: m,
-                    click_count: count,
-                }),
-                cx,
-            );
+            press(window, cx, MouseButton::Left, pos, m, count);
         }
     })
     .map_err(|e| e.to_string())
@@ -413,33 +395,8 @@ fn dispatch_click(
 ) -> Result<(), String> {
     let pos = point(px(x), px(y));
     cx.update_window(handle, |_, window, cx| {
-        window.dispatch_event(
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: pos,
-                pressed_button: None,
-                modifiers,
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
-                position: pos,
-                modifiers,
-                click_count: 1,
-                first_mouse: false,
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
-                position: pos,
-                modifiers,
-                click_count: 1,
-            }),
-            cx,
-        );
+        window.dispatch_event(move_event(pos, None, modifiers), cx);
+        press(window, cx, MouseButton::Left, pos, modifiers, 1);
     })
     .map_err(|e| e.to_string())
 }
@@ -457,25 +414,10 @@ fn dispatch_drag(
     let first = points[0];
     let last = points[points.len() - 1];
     let start_pos = point(px(first.0), px(first.1));
+    let m = Modifiers::default();
     cx.update_window(handle, |_, window, cx| {
-        window.dispatch_event(
-            PlatformInput::MouseMove(MouseMoveEvent {
-                position: start_pos,
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }),
-            cx,
-        );
-        window.dispatch_event(
-            PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
-                position: start_pos,
-                modifiers: Modifiers::default(),
-                click_count: 1,
-                first_mouse: false,
-            }),
-            cx,
-        );
+        window.dispatch_event(move_event(start_pos, None, m), cx);
+        window.dispatch_event(down_event(MouseButton::Left, start_pos, m, 1), cx);
         // Interpolate button-held moves along each leg so every crossed row
         // fires its handler.
         const STEPS: u32 = 8;
@@ -487,23 +429,11 @@ fn dispatch_drag(
                     px(from.0 + (to.0 - from.0) * t),
                     px(from.1 + (to.1 - from.1) * t),
                 );
-                window.dispatch_event(
-                    PlatformInput::MouseMove(MouseMoveEvent {
-                        position: pos,
-                        pressed_button: Some(MouseButton::Left),
-                        modifiers: Modifiers::default(),
-                    }),
-                    cx,
-                );
+                window.dispatch_event(move_event(pos, Some(MouseButton::Left), m), cx);
             }
         }
         window.dispatch_event(
-            PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
-                position: point(px(last.0), px(last.1)),
-                modifiers: Modifiers::default(),
-                click_count: 1,
-            }),
+            up_event(MouseButton::Left, point(px(last.0), px(last.1)), m, 1),
             cx,
         );
     })

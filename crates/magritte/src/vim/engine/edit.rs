@@ -11,14 +11,7 @@ impl VimState {
         cursor: usize,
         count: usize,
     ) -> Vec<Action> {
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                break;
-            }
-            to = next_char(text, to);
-        }
+        let to = advance_in_line(text, cursor, count);
         if to == cursor {
             return self.beep();
         }
@@ -72,13 +65,9 @@ impl VimState {
         count: usize,
     ) -> Vec<Action> {
         // `r` fails when there aren't `count` chars left on the line.
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                return self.beep();
-            }
-            to = next_char(text, to);
+        let to = advance_in_line(text, cursor, count);
+        if text[cursor..to].chars().count() < count {
+            return self.beep();
         }
         // `{count}r<CR>` replaces all `count` chars with a single line break,
         // cursor at the start of the new line (`:help r`).
@@ -97,14 +86,7 @@ impl VimState {
     }
 
     pub(super) fn toggle_case(&mut self, text: &str, cursor: usize, count: usize) -> Vec<Action> {
-        let end = line_end(text, cursor);
-        let mut to = cursor;
-        for _ in 0..count {
-            if to >= end {
-                break;
-            }
-            to = next_char(text, to);
-        }
+        let to = advance_in_line(text, cursor, count);
         if to == cursor {
             return self.beep();
         }

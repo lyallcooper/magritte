@@ -4,11 +4,11 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, Window};
-use gpui_component::menu::ContextMenuExt;
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
 use gpui_component::Sizable;
 
+use crate::render::with_copy_menu;
 use crate::*;
 
 /// A title-bar remote-tracking chunk (the upstream or a distinct push target):
@@ -66,13 +66,10 @@ impl StatusView {
     /// right-click copies the name).
     pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> impl IntoElement {
         let branch_click = view.clone();
-        let branch_copy = view.clone();
-        let value = branch.to_string();
         let tip_font = self.font.clone();
         // The branch name chip: left-click opens the branch transient; right-click
-        // copies the name via the shared Copy menu. The right-down + context menu
-        // sit on this same interactive element so its hitbox isn't occluded.
-        div()
+        // copies the name via the shared Copy menu.
+        let chip = div()
             .id("titlebar-branch")
             .relative()
             .flex()
@@ -98,16 +95,8 @@ impl StatusView {
             })
             .on_click(move |_, window, cx: &mut App| {
                 branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
-            })
-            .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
-                let value = value.clone();
-                branch_copy.update(cx, |v, vcx| {
-                    v.pending_copy = Some(value);
-                    v.ctx_menu_open = true;
-                    vcx.notify();
-                });
-            })
-            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+            });
+        with_copy_menu(chip, view, branch.to_string())
     }
 
     /// The in-progress sequence banner (merge/rebase/cherry-pick/revert/am):
@@ -197,12 +186,7 @@ impl StatusView {
             .bg(self.palette.banner)
             .border_b_1()
             .border_color(self.palette.border)
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.palette.section)
-                    .child(SharedString::from(seq.heading.clone())),
-            )
+            .child(self.view_title(seq.heading.clone()))
             .child(steps)
             .child(actions)
     }
@@ -263,12 +247,7 @@ impl StatusView {
             .bg(self.palette.banner)
             .border_b_1()
             .border_color(self.palette.border)
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(self.palette.section)
-                    .child(SharedString::from("Bisecting")),
-            )
+            .child(self.view_title("Bisecting"))
             .child(lines)
             .child(actions)
     }
@@ -333,11 +312,28 @@ impl StatusView {
         copy: Option<String>,
         child: impl IntoElement,
     ) -> impl IntoElement {
-        let copy_view = view.clone();
+        self.titlebar_item(view, id.into(), tip.into(), copy, child, |d| d)
+    }
+
+    /// Shared core of [`titlebar_tip`]/[`titlebar_action`]: an id'd wrapper
+    /// with the hover tooltip and the optional right-click Copy menu; `decorate`
+    /// adds the action variant's click affordances to the wrapper itself, so
+    /// their hitbox isn't occluded. `context_menu` changes the element type,
+    /// so the copy variants branch into `AnyElement`.
+    ///
+    /// [`titlebar_tip`]: Self::titlebar_tip
+    /// [`titlebar_action`]: Self::titlebar_action
+    fn titlebar_item(
+        &self,
+        view: &Entity<Self>,
+        id: SharedString,
+        tip: SharedString,
+        copy: Option<String>,
+        child: impl IntoElement,
+        decorate: impl FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div>,
+    ) -> gpui::AnyElement {
         let font = self.font.clone();
-        let tip = tip.into();
-        let base = div()
-            .id(id.into())
+        let base = decorate(div().id(id))
             .child(child)
             // Suppress the tooltip while a Copy menu is open so it can't paint
             // over the menu.
@@ -349,20 +345,8 @@ impl StatusView {
                 })
                 .tooltip_show_delay(Duration::from_millis(400))
             });
-        // When `copy` is set, right-click offers a Copy context menu for the
-        // value (on this same element so its hitbox isn't occluded).
         match copy {
-            Some(value) => base
-                .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
-                    let value = value.clone();
-                    copy_view.update(cx, |v, vcx| {
-                        v.pending_copy = Some(value);
-                        v.ctx_menu_open = true;
-                        vcx.notify();
-                    });
-                })
-                .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
-                .into_any_element(),
+            Some(value) => with_copy_menu(base, view, value).into_any_element(),
             None => base.into_any_element(),
         }
     }
@@ -447,48 +431,16 @@ impl StatusView {
         copy: Option<String>,
         child: impl IntoElement,
     ) -> impl IntoElement {
-        let view = view.clone();
-        let copy_view = view.clone();
+        let click_view = view.clone();
         let id = id.into();
-        let font = self.font.clone();
-        let tip = tip.into();
-        let base = div()
-            .id(id.clone())
-            .relative()
-            .cursor_pointer()
-            .child(track_target(id))
-            .child(child)
-            // Suppress the tooltip while a Copy menu is open so it can't paint
-            // over the menu.
-            .when(!self.ctx_menu_open, |d| {
-                d.tooltip(move |window, cx| {
-                    let (font, tip) = (font.clone(), tip.clone());
-                    Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
-                        .build(window, cx)
+        self.titlebar_item(view, id.clone(), tip.into(), copy, child, move |d| {
+            d.relative()
+                .cursor_pointer()
+                .child(track_target(id))
+                .on_click(move |_, window, cx: &mut App| {
+                    click_view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
                 })
-                .tooltip_show_delay(Duration::from_millis(400))
-            })
-            .on_click(move |_, window, cx: &mut App| {
-                view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
-            });
-        // When `copy` is set, right-click copies the value via the shared Copy
-        // menu. The handlers sit on this same interactive element so its hitbox
-        // isn't occluded by a wrapper — the custom title bar otherwise swallows
-        // the menu (`context_menu` changes the type, so we branch here).
-        match copy {
-            Some(value) => base
-                .on_mouse_down(MouseButton::Right, move |_, _window, cx: &mut App| {
-                    let value = value.clone();
-                    copy_view.update(cx, |v, vcx| {
-                        v.pending_copy = Some(value);
-                        v.ctx_menu_open = true;
-                        vcx.notify();
-                    });
-                })
-                .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
-                .into_any_element(),
-            None => base.into_any_element(),
-        }
+        })
     }
 
     /// The custom window title bar: the repo name, the current branch as a chip,

@@ -191,6 +191,26 @@ fn prepare_spawn(cmd: &mut Command) {
     }
 }
 
+/// A `git` command rooted at `cwd`, with the config pins and spawn environment
+/// every internal invocation shares:
+///
+/// - `core.quotepath=false` keeps output stable and machine-readable
+///   regardless of user config.
+/// - `GIT_OPTIONAL_LOCKS=0` skips the *optional* index lock: read-only
+///   commands like `status`/`diff` otherwise grab `.git/index.lock` to write
+///   back a refreshed stat cache, and we cancel (SIGKILL) superseded reads on
+///   every overlapping refresh — which would orphan that lock. Commands that
+///   *require* the lock (commit, add, …) are unaffected.
+fn git_at(cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(cwd)
+        .args(["-c", "core.quotepath=false"])
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    prepare_spawn(&mut cmd);
+    cmd
+}
+
 /// How long, after SIGTERM, to let a cancelled child clean up before we SIGKILL
 /// it. Runs on a background worker thread, so it never blocks the UI.
 const TERMINATE_GRACE_MS: u64 = 300;
@@ -230,6 +250,13 @@ impl GitOutput {
     /// query (a ref name, a config value, a count).
     pub(crate) fn stdout_text(&self) -> String {
         String::from_utf8_lossy(&self.stdout).trim().to_string()
+    }
+
+    /// Trimmed stdout, or `None` when empty — the shape of every optional
+    /// single-value query (an unset config key, a branch with no upstream).
+    pub(crate) fn text_opt(&self) -> Option<String> {
+        let s = self.stdout_text();
+        (!s.is_empty()).then_some(s)
     }
 
     /// stdout as trimmed, non-empty lines — the shape of every name-listing
@@ -398,19 +425,49 @@ impl Repo {
     /// A `git` command rooted at the working tree, with the spawn environment
     /// git needs under our worker threads (see [`prepare_spawn`]).
     fn git(&self) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C")
-            .arg(&self.workdir)
-            // Keep output stable and machine-readable regardless of user config.
-            .args(["-c", "core.quotepath=false"])
-            // Don't take the *optional* index lock: read-only commands like
-            // `status`/`diff` otherwise grab `.git/index.lock` to write back a
-            // refreshed stat cache, and we cancel (SIGKILL) superseded reads on
-            // every overlapping refresh — which would orphan that lock. Commands
-            // that *require* the lock (commit, add, …) are unaffected.
-            .env("GIT_OPTIONAL_LOCKS", "0");
-        prepare_spawn(&mut cmd);
-        cmd
+        git_at(&self.workdir)
+    }
+
+    /// Execute one internal git invocation — the shared front half of every
+    /// `run*` variant: collect the argv, spawn through [`git`](Self::git) (with
+    /// an optional extra env var and stdin), time it, and record it in the
+    /// command log. The caller applies its own exit-status policy.
+    fn execute<I, S>(
+        &self,
+        args: I,
+        env: Option<(&str, &str)>,
+        input: Option<&[u8]>,
+    ) -> Result<(Vec<String>, GitOutput, ExitStatus)>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let arg_vec: Vec<String> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect();
+        let mut cmd = self.git();
+        if let Some((key, value)) = env {
+            cmd.env(key, value);
+        }
+        cmd.args(&arg_vec);
+        let start = Instant::now();
+        let (stdout, stderr, status) = self.collect_output_with(cmd, input)?;
+        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
+        Ok((arg_vec, GitOutput { stdout, stderr }, status))
+    }
+
+    /// Map a non-zero exit to [`Error::Git`] — the policy of the erroring
+    /// `run*` variants.
+    fn checked(args: Vec<String>, out: GitOutput, status: ExitStatus) -> Result<GitOutput> {
+        if !status.success() {
+            return Err(Error::Git {
+                args,
+                status: status.code(),
+                stderr: out.stderr,
+            });
+        }
+        Ok(out)
     }
 
     /// Run `git <args>` in the working tree, returning stdout as raw bytes so
@@ -421,16 +478,8 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let arg_vec: Vec<String> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_string_lossy().into_owned())
-            .collect();
-
-        let mut cmd = self.git();
-        cmd.args(&arg_vec);
-        let start = Instant::now();
-        let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
+        let (args, out, status) = self.execute(args, None, None)?;
+        Self::checked(args, out, status)
     }
 
     /// Run a user-typed command from the `!` prompt — git by default, or an
@@ -454,15 +503,10 @@ impl Repo {
         let cwd = self.workdir.join(dir);
         let cmd = match program {
             None => {
-                // Like [`git`](Self::git), but rooted at `cwd` so path-relative
+                // Rooted at `cwd` (not the toplevel) so path-relative
                 // subcommands (`git add .`) resolve where the user expects.
-                let mut c = Command::new("git");
-                c.arg("-C")
-                    .arg(&cwd)
-                    .args(["-c", "core.quotepath=false"])
-                    .env("GIT_OPTIONAL_LOCKS", "0")
-                    .args(args);
-                prepare_spawn(&mut c);
+                let mut c = git_at(&cwd);
+                c.args(args);
                 c
             }
             Some(p) => {
@@ -655,27 +699,6 @@ impl Repo {
         self.collect_output_with(cmd, None)
     }
 
-    /// The shared tail of the erroring `run*` variants: record the invocation,
-    /// then map a non-zero exit to [`Error::Git`].
-    fn finish(
-        &self,
-        arg_vec: Vec<String>,
-        stdout: Vec<u8>,
-        stderr: String,
-        status: ExitStatus,
-        elapsed: Duration,
-    ) -> Result<GitOutput> {
-        self.record_git(&arg_vec, status.code(), &stderr, elapsed);
-        if !status.success() {
-            return Err(Error::Git {
-                args: arg_vec,
-                status: status.code(),
-                stderr,
-            });
-        }
-        Ok(GitOutput { stdout, stderr })
-    }
-
     /// Like [`run`](Self::run) but with one extra environment variable set.
     /// Used to point `GIT_EDITOR` at the user's editor for an interactive
     /// `git commit` (which blocks until the editor exits), without disturbing
@@ -685,38 +708,21 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let arg_vec: Vec<String> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_string_lossy().into_owned())
-            .collect();
-
-        let mut cmd = self.git();
-        cmd.env(key, value).args(&arg_vec);
-        let start = Instant::now();
-        let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
+        let (args, out, status) = self.execute(args, Some((key, value)), None)?;
+        Self::checked(args, out, status)
     }
 
     /// Like [`run`](Self::run) but feeds `input` to git's stdin. Used to pipe
-    /// patches to `git apply`.
+    /// patches to `git apply`. The stdin path honors the cancel flag and
+    /// timeout like every other variant (a wedged hook reading the patch can't
+    /// hang forever, and C-g/Esc kills it).
     pub fn run_with_input<I, S>(&self, args: I, input: &[u8]) -> Result<GitOutput>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let arg_vec: Vec<String> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_string_lossy().into_owned())
-            .collect();
-
-        let mut cmd = self.git();
-        cmd.args(&arg_vec);
-        // Route through collect_output_with so the stdin path also honors the
-        // cancel flag and timeout (a wedged hook reading the patch can't hang
-        // forever, and C-g/Esc kills it).
-        let start = Instant::now();
-        let (stdout, stderr, status) = self.collect_output_with(cmd, Some(input))?;
-        self.finish(arg_vec, stdout, stderr, status, start.elapsed())
+        let (args, out, status) = self.execute(args, None, Some(input))?;
+        Self::checked(args, out, status)
     }
 
     /// Run `git <args>` where git would normally open the **sequence editor**
@@ -753,15 +759,7 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let arg_vec: Vec<String> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_string_lossy().into_owned())
-            .collect();
-        let mut cmd = self.git();
-        cmd.args(&arg_vec);
-        let start = Instant::now();
-        let (_stdout, stderr, status) = self.collect_output(cmd)?;
-        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
+        let (_args, _out, status) = self.execute(args, None, None)?;
         Ok(status.success())
     }
 
@@ -773,28 +771,29 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let arg_vec: Vec<String> = args
-            .into_iter()
-            .map(|s| s.as_ref().to_string_lossy().into_owned())
-            .collect();
-        let mut cmd = self.git();
-        cmd.args(&arg_vec);
-        let start = Instant::now();
-        let (stdout, stderr, status) = self.collect_output(cmd)?;
-        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
-        if !status.success() {
-            return Ok(None);
-        }
-        Ok(Some(GitOutput { stdout, stderr }))
+        let (_args, out, status) = self.execute(args, None, None)?;
+        Ok(status.success().then_some(out))
     }
 
     /// Read a single git config value (`git config --get <key>`), `None` if
     /// unset.
     pub fn config_get(&self, key: &str) -> Result<Option<String>> {
-        Ok(self.run_optional(["config", "--get", key])?.and_then(|o| {
-            let v = o.stdout_text();
-            (!v.is_empty()).then_some(v)
-        }))
+        Ok(self
+            .run_optional(["config", "--get", key])?
+            .and_then(|o| o.text_opt()))
+    }
+
+    /// Whether `rev` resolves to an object (`git rev-parse --verify --quiet`).
+    pub fn rev_exists(&self, rev: &str) -> bool {
+        self.succeeds(["rev-parse", "--verify", "--quiet", rev])
+            .unwrap_or(false)
+    }
+
+    /// Whether a local branch named `name` exists (`git show-ref --verify`).
+    pub fn branch_exists(&self, name: &str) -> bool {
+        let r = format!("refs/heads/{name}");
+        self.succeeds(["show-ref", "--verify", "--quiet", r.as_str()])
+            .unwrap_or(false)
     }
 
     /// Read a boolean git config value (`git config --type=bool --get <key>`),
@@ -819,17 +818,12 @@ impl Repo {
         self.run_optional(["config", "--unset", key]).map(|_| ())
     }
 
-    /// The nearest tag reachable from HEAD, with the commits since it —
-    /// magit's `magit-get-current-tag`. (The "next" tag *containing* HEAD is
-    /// deliberately not surfaced: with an upstream ahead of HEAD it reports
-    /// tags on commits you haven't even pulled, which reads as noise in the
-    /// title bar.)
+    /// The nearest tag reachable from HEAD, with the commits since it
+    /// (`git describe --long --tags`) — magit's `magit-get-current-tag`;
+    /// `None` if untagged. (The "next" tag *containing* HEAD is deliberately
+    /// not surfaced: with an upstream ahead of HEAD it reports tags on commits
+    /// you haven't even pulled, which reads as noise in the title bar.)
     pub fn nearest_tag(&self) -> Option<TagDistance> {
-        self.current_tag()
-    }
-
-    /// `git describe --long --tags` → `(tag, commits-since)`; `None` if untagged.
-    fn current_tag(&self) -> Option<TagDistance> {
         let out = self
             .run_optional(["describe", "--long", "--tags"])
             .ok()

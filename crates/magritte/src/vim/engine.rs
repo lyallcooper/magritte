@@ -24,7 +24,7 @@ mod ex;
 mod hints;
 
 use block::{block_replicate, BlockInsert};
-use ex::{hist_step, push_hist};
+use ex::{PromptHist, PromptOutcome};
 
 /// One `>`/`<` indent step: two spaces (the hanging-bullet width; Vim's
 /// 'shiftwidth' default of 8 is wrong for commit messages).
@@ -804,103 +804,44 @@ impl VimState {
                 typed.push(c);
                 return self.user_advance(text, typed);
             }
-            Pending::Search { mut query, back } => {
-                match key {
-                    Key::Char(c) => {
-                        self.hist_ix = None;
-                        query.push(c);
+            Pending::Search { query, back } => {
+                return match self.prompt_key(query, key, PromptHist::Search) {
+                    PromptOutcome::Keep(query) => {
                         self.pending = Pending::Search { query, back };
+                        Vec::new()
                     }
-                    Key::Backspace => {
-                        self.hist_ix = None;
-                        // Backspace on an empty query cancels, like Vim.
-                        if query.pop().is_some() {
-                            self.pending = Pending::Search { query, back };
-                        } else {
-                            self.pending = Pending::None;
-                        }
-                    }
-                    Key::Up | Key::Down | Key::Ctrl('p') | Key::Ctrl('n') => {
-                        let older = matches!(key, Key::Up | Key::Ctrl('p'));
-                        let stepped = hist_step(
-                            &self.search_hist,
-                            &mut self.hist_ix,
-                            &mut self.hist_stash,
-                            &query,
-                            older,
-                        );
-                        let beep = stepped.is_none();
-                        self.pending = Pending::Search {
-                            query: stepped.unwrap_or(query),
-                            back,
-                        };
-                        if beep {
-                            return vec![Action::Beep];
-                        }
-                    }
-                    Key::Enter => {
+                    PromptOutcome::Cancel => {
                         self.pending = Pending::None;
-                        self.hist_ix = None;
+                        Vec::new()
+                    }
+                    PromptOutcome::Commit(query) => {
+                        self.pending = Pending::None;
                         // An empty `/` repeats the last search.
                         if !query.is_empty() {
-                            push_hist(&mut self.search_hist, &query);
                             self.last_search = Some((query, back));
                         }
-                        return self.search(text, cursor, back);
+                        self.search(text, cursor, back)
                     }
-                    // An unhandled key must not destroy the typed query:
-                    // beep, keeping the prompt (self.pending still holds it).
-                    _ => return vec![Action::Beep],
-                }
-                return Vec::new();
+                    PromptOutcome::Beep => vec![Action::Beep],
+                };
             }
-            Pending::Ex { mut input, visual } => {
-                match key {
-                    Key::Char(c) => {
-                        self.hist_ix = None;
-                        input.push(c);
+            Pending::Ex { input, visual } => {
+                return match self.prompt_key(input, key, PromptHist::Ex) {
+                    PromptOutcome::Keep(input) => {
                         self.pending = Pending::Ex { input, visual };
+                        Vec::new()
                     }
-                    Key::Backspace => {
-                        self.hist_ix = None;
-                        // Backspace on an empty line cancels, like Vim.
-                        if input.pop().is_some() {
-                            self.pending = Pending::Ex { input, visual };
-                        } else {
-                            self.pending = Pending::None;
-                        }
-                    }
-                    Key::Up | Key::Down | Key::Ctrl('p') | Key::Ctrl('n') => {
-                        let older = matches!(key, Key::Up | Key::Ctrl('p'));
-                        let stepped = hist_step(
-                            &self.ex_hist,
-                            &mut self.hist_ix,
-                            &mut self.hist_stash,
-                            &input,
-                            older,
-                        );
-                        let beep = stepped.is_none();
-                        self.pending = Pending::Ex {
-                            input: stepped.unwrap_or(input),
-                            visual,
-                        };
-                        if beep {
-                            return vec![Action::Beep];
-                        }
-                    }
-                    Key::Enter => {
+                    PromptOutcome::Cancel => {
                         self.pending = Pending::None;
-                        self.hist_ix = None;
-                        if !input.is_empty() {
-                            push_hist(&mut self.ex_hist, &input);
-                        }
-                        self.in_ex = true;
-                        return self.ex_execute(text, cursor, &input, visual);
+                        Vec::new()
                     }
-                    // Beep without wiping the typed command line, as above.
-                    _ => return vec![Action::Beep],
-                }
-                return Vec::new();
+                    PromptOutcome::Commit(input) => {
+                        self.pending = Pending::None;
+                        self.in_ex = true;
+                        self.ex_execute(text, cursor, &input, visual)
+                    }
+                    PromptOutcome::Beep => vec![Action::Beep],
+                };
             }
             Pending::None | Pending::AwaitMotion(_) => {}
         }
@@ -1058,8 +999,27 @@ impl VimState {
         c: char,
         consumer: Consumer,
     ) -> Vec<Action> {
+        // Keys shared by every pending operator: `i`/`a` = text object,
+        // `g` = the `gg`/`g_`-style motions. Each consumer's match below
+        // then adds only its own doubled-key form.
+        if consumer != Consumer::Move {
+            match c {
+                'i' | 'a' => {
+                    self.pending = Pending::Object {
+                        consumer,
+                        around: c == 'a',
+                    };
+                    return Vec::new();
+                }
+                'g' => {
+                    self.pending = Pending::G(consumer);
+                    return Vec::new();
+                }
+                _ => {}
+            }
+        }
         // Operator-pending: doubled operator = linewise on count lines;
-        // `s` after `y`/`c`/`d` = surround; `i`/`a` = text object.
+        // `s` after `y`/`c`/`d` = surround.
         if let Consumer::Op { op, count } = consumer {
             match c {
                 _ if c == op.key() => {
@@ -1079,112 +1039,49 @@ impl VimState {
                     self.pending = Pending::SurroundChangeFrom;
                     return Vec::new();
                 }
-                'i' | 'a' => {
-                    self.pending = Pending::Object {
-                        consumer,
-                        around: c == 'a',
-                    };
-                    return Vec::new();
-                }
-                'g' => {
-                    self.pending = Pending::G(consumer);
-                    return Vec::new();
-                }
                 _ => return self.beep(),
             }
         }
         if consumer == Consumer::SurroundAdd {
-            match c {
-                // `yss`: the line's content, sans leading/trailing blanks.
-                's' => {
-                    let start = first_non_blank(text, cursor);
-                    let mut end = line_end(text, cursor);
-                    while end > start
-                        && matches!(char_at(text, prev_char(text, end)), Some(' ' | '\t'))
-                    {
-                        end = prev_char(text, end);
-                    }
-                    if start >= end {
-                        return self.beep();
-                    }
-                    self.pending = Pending::SurroundChar { start, end };
-                    return Vec::new();
+            // `yss`: the line's content, sans leading/trailing blanks.
+            if c == 's' {
+                let start = first_non_blank(text, cursor);
+                let mut end = line_end(text, cursor);
+                while end > start && matches!(char_at(text, prev_char(text, end)), Some(' ' | '\t'))
+                {
+                    end = prev_char(text, end);
                 }
-                'i' | 'a' => {
-                    self.pending = Pending::Object {
-                        consumer,
-                        around: c == 'a',
-                    };
-                    return Vec::new();
+                if start >= end {
+                    return self.beep();
                 }
-                'g' => {
-                    self.pending = Pending::G(consumer);
-                    return Vec::new();
-                }
-                _ => return self.beep(),
+                self.pending = Pending::SurroundChar { start, end };
+                return Vec::new();
             }
+            return self.beep();
         }
         if let Consumer::Shift { dedent, count } = consumer {
-            match c {
-                // `>>`/`<<`: the current `count` lines, like `dd`.
-                _ if c == if dedent { '<' } else { '>' } => {
-                    self.pending = Pending::None;
-                    let count = total(count, self.take_count());
-                    let start = line_start(text, cursor);
-                    let mut end = line_end(text, cursor);
-                    for _ in 1..count {
-                        if end >= text.len() {
-                            break;
-                        }
-                        end = line_end(text, next_char(text, end));
-                    }
-                    return self.shift_lines(text, start..end, dedent);
-                }
-                'i' | 'a' => {
-                    self.pending = Pending::Object {
-                        consumer,
-                        around: c == 'a',
-                    };
-                    return Vec::new();
-                }
-                'g' => {
-                    self.pending = Pending::G(consumer);
-                    return Vec::new();
-                }
-                _ => return self.beep(),
+            // `>>`/`<<`: the current `count` lines, like `dd`.
+            if c == if dedent { '<' } else { '>' } {
+                self.pending = Pending::None;
+                let count = total(count, self.take_count());
+                let start = line_start(text, cursor);
+                let end = line_end_n(text, cursor, count);
+                return self.shift_lines(text, start..end, dedent);
             }
+            return self.beep();
         }
         if consumer == Consumer::Reflow {
-            match c {
-                // `gqq`: the current `count` lines, like Vim — an overlong
-                // line breaks onto new lines (nothing joins upward; the
-                // paragraph form is `gqip`).
-                'q' => {
-                    self.pending = Pending::None;
-                    let count = self.take_count().max(1);
-                    let start = line_start(text, cursor);
-                    let mut end = line_end(text, cursor);
-                    for _ in 1..count {
-                        if end >= text.len() {
-                            break;
-                        }
-                        end = line_end(text, next_char(text, end));
-                    }
-                    return vec![Action::ReflowRange(start..end)];
-                }
-                'i' | 'a' => {
-                    self.pending = Pending::Object {
-                        consumer,
-                        around: c == 'a',
-                    };
-                    return Vec::new();
-                }
-                'g' => {
-                    self.pending = Pending::G(consumer);
-                    return Vec::new();
-                }
-                _ => return self.beep(),
+            // `gqq`: the current `count` lines, like Vim — an overlong
+            // line breaks onto new lines (nothing joins upward; the
+            // paragraph form is `gqip`).
+            if c == 'q' {
+                self.pending = Pending::None;
+                let count = self.take_count().max(1);
+                let start = line_start(text, cursor);
+                let end = line_end_n(text, cursor, count);
+                return vec![Action::ReflowRange(start..end)];
             }
+            return self.beep();
         }
 
         // Visual-mode commands.
@@ -1435,14 +1332,7 @@ impl VimState {
                 // Substitute = change `count` chars; on an empty line it just
                 // enters Insert (op_on_range's empty-Change case).
                 let count = self.take_count().max(1);
-                let mut to = cursor;
-                let end = line_end(text, cursor);
-                for _ in 0..count {
-                    if to >= end {
-                        break;
-                    }
-                    to = next_char(text, to);
-                }
+                let to = advance_in_line(text, cursor, count);
                 self.op_on_range(text, Op::Change, cursor..to, false, cursor)
             }
             'D' => {
@@ -1472,13 +1362,7 @@ impl VimState {
             'J' => {
                 let count = self.take_count().max(2);
                 let start = line_start(text, cursor);
-                let mut end = line_end(text, cursor);
-                for _ in 1..count {
-                    if end >= text.len() {
-                        break;
-                    }
-                    end = line_end(text, next_char(text, end));
-                }
+                let end = line_end_n(text, cursor, count);
                 self.join_range(text, start..end)
             }
             'p' => {
@@ -1906,13 +1790,7 @@ impl VimState {
     /// cursor's line.
     fn op_lines(&mut self, text: &str, cursor: usize, op: Op, count: usize) -> Vec<Action> {
         let start = line_start(text, cursor);
-        let mut end = line_end(text, cursor);
-        for _ in 1..count {
-            if end >= text.len() {
-                break;
-            }
-            end = line_end(text, next_char(text, end));
-        }
+        let end = line_end_n(text, cursor, count);
         let end = (end + usize::from(end < text.len())).min(text.len());
         self.op_on_range(text, op, start..end, true, cursor)
     }
@@ -1920,13 +1798,7 @@ impl VimState {
     /// `D`/`C`: cursor to line end, charwise; a count extends to the end of
     /// `count - 1` lines below (`:help D`).
     fn op_to_line_end(&mut self, text: &str, cursor: usize, op: Op, count: usize) -> Vec<Action> {
-        let mut end = line_end(text, cursor);
-        for _ in 1..count {
-            if end >= text.len() {
-                break;
-            }
-            end = line_end(text, next_char(text, end));
-        }
+        let end = line_end_n(text, cursor, count);
         self.op_on_range(text, op, cursor..end, false, cursor)
     }
 

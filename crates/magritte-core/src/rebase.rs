@@ -204,11 +204,9 @@ impl Repo {
     /// the upstream are candidates. `None` when there's no upstream or no merge
     /// base (a fresh branch), leaving the caller to pick a base.
     pub fn upstream_merge_base(&self) -> Option<String> {
-        let out = self
-            .run_optional(["merge-base", "@{upstream}", "HEAD"])
-            .ok()??;
-        let base = out.stdout_text();
-        (!base.is_empty()).then_some(base)
+        self.run_optional(["merge-base", "@{upstream}", "HEAD"])
+            .ok()??
+            .text_opt()
     }
 
     /// The original commit at which an interactive rebase is currently stopped,

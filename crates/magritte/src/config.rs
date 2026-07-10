@@ -11,12 +11,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{atomic_write_text, atomic_write_toml};
+use crate::state::{atomic_write_text, atomic_write_toml, load_toml_or_default, unix_now};
 
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).
@@ -749,13 +748,6 @@ pub struct CommandUse {
 /// The score halves every this-many days of disuse.
 const FRECENCY_HALF_LIFE_DAYS: f64 = 30.0;
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 impl Usage {
     /// The current frecency score for a command id (0 if never used).
     pub fn score(&self, id: &str) -> f64 {
@@ -764,7 +756,7 @@ impl Usage {
 
     /// Record a use now: decay the prior score by how long it's been, then +1.
     pub fn record(&mut self, id: &str) {
-        let now = now_secs();
+        let now = unix_now();
         let entry = self.command.entry(id.to_string()).or_insert(CommandUse {
             score: 0.0,
             last_used: now,
@@ -782,12 +774,8 @@ pub fn usage_path() -> Option<PathBuf> {
 
 /// Load the persisted command usage, or defaults if missing/unreadable.
 pub fn load_usage() -> Usage {
-    let Some(path) = usage_path() else {
-        return Usage::default();
-    };
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
+    usage_path()
+        .map(|p| load_toml_or_default(&p))
         .unwrap_or_default()
 }
 
@@ -828,10 +816,7 @@ pub fn repo_transient_arguments_path(repo_dir: &Path) -> PathBuf {
 /// Load the saved transient argument sets from a specific file, or empty if it's
 /// missing/unreadable. Used for both scopes (global and a repo's `.git/magritte`).
 pub fn load_transient_arguments_at(path: &Path) -> TransientArguments {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
-        .unwrap_or_default()
+    load_toml_or_default(path)
 }
 
 /// Persist the saved transient argument sets to a specific file (atomic temp-file

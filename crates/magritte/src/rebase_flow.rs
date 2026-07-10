@@ -17,16 +17,59 @@ impl StatusView {
         args: Vec<String>,
         cx: &mut Context<Self>,
     ) {
+        let for_load = base.clone();
+        self.open_rebase_todo_editor(
+            "Loading commits…",
+            "No commits to rebase",
+            base,
+            args,
+            RebaseTodoMode::Start,
+            move |repo| repo.rebase_todo(&for_load),
+            cx,
+        );
+    }
+
+    /// Open the todo editor on an in-progress rebase's remaining steps
+    /// (`r e` → `git rebase --edit-todo`). Reads the current todo off the UI
+    /// thread; an empty plan (nothing left to reorder) just says so.
+    pub(crate) fn open_rebase_edit_todo(&mut self, cx: &mut Context<Self>) {
+        self.open_rebase_todo_editor(
+            "Loading rebase todo…",
+            "No remaining steps to edit",
+            String::new(),
+            Vec::new(),
+            RebaseTodoMode::Edit,
+            |repo| repo.rebase_current_todo(),
+            cx,
+        );
+    }
+
+    /// The shared shell of the two todo-editor entry points: `load` the plan
+    /// off the UI thread, then show the editor — or report when the plan is
+    /// empty / the load fails. In `Edit` mode a step with a pending reword is
+    /// re-marked `reword`, so the pause it caused stays visible in the plan.
+    #[allow(clippy::too_many_arguments)]
+    fn open_rebase_todo_editor<F>(
+        &mut self,
+        progress: &str,
+        empty_msg: &'static str,
+        base: String,
+        args: Vec<String>,
+        mode: RebaseTodoMode,
+        load: F,
+        cx: &mut Context<Self>,
+    ) where
+        F: FnOnce(&Repo) -> magritte_core::Result<Vec<magritte_core::RebaseStep>> + Send + 'static,
+    {
         let Some(repo) = self.repo.clone() else {
             return;
         };
         let gen = self.next_screen_gen();
-        self.set_progress("Loading commits…".to_string(), cx);
+        self.set_progress(progress.to_string(), cx);
         cx.spawn(async move |this, cx| {
-            let for_load = base.clone();
             let loaded = cx
                 .background_executor()
-                .spawn(async move { repo.rebase_todo(&for_load) })
+                .spawn(async move { load(&repo) })
                 .await;
             this.update(cx, |this, cx| {
                 // Drop a load a newer screen request superseded.
@@ -35,9 +78,16 @@ impl StatusView {
                 }
                 match loaded {
                     Ok(steps) if steps.is_empty() => {
-                        this.set_status("No commits to rebase".to_string(), true, cx);
+                        this.set_status(empty_msg.to_string(), true, cx);
                     }
-                    Ok(steps) => {
+                    Ok(mut steps) => {
+                        if mode == RebaseTodoMode::Edit {
+                            for step in &mut steps {
+                                if this.pending_rebase_reword_matches(&step.oid) {
+                                    step.action = RebaseAction::Reword;
+                                }
+                            }
+                        }
                         this.screen = Screen::RebaseTodo(RebaseTodoView {
                             base,
                             args,
@@ -45,55 +95,7 @@ impl StatusView {
                             steps,
                             selected: 0,
                             scroll: UniformListScrollHandle::new(),
-                            mode: RebaseTodoMode::Start,
-                            confirming_cancel: false,
-                        });
-                        this.clear_status(cx);
-                    }
-                    Err(e) => this.set_status(format!("error: {e}"), false, cx),
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Open the todo editor on an in-progress rebase's remaining steps
-    /// (`r e` → `git rebase --edit-todo`). Reads the current todo off the UI
-    /// thread; an empty plan (nothing left to reorder) just says so.
-    pub(crate) fn open_rebase_edit_todo(&mut self, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else {
-            return;
-        };
-        let gen = self.next_screen_gen();
-        self.set_progress("Loading rebase todo…".to_string(), cx);
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move { repo.rebase_current_todo() })
-                .await;
-            this.update(cx, |this, cx| {
-                if !this.screen_gen.is_current(gen) {
-                    return;
-                }
-                match loaded {
-                    Ok(steps) if steps.is_empty() => {
-                        this.set_status("No remaining steps to edit".to_string(), true, cx);
-                    }
-                    Ok(mut steps) => {
-                        for step in &mut steps {
-                            if this.pending_rebase_reword_matches(&step.oid) {
-                                step.action = RebaseAction::Reword;
-                            }
-                        }
-                        this.screen = Screen::RebaseTodo(RebaseTodoView {
-                            base: String::new(),
-                            args: Vec::new(),
-                            initial: steps.clone(),
-                            steps,
-                            selected: 0,
-                            scroll: UniformListScrollHandle::new(),
-                            mode: RebaseTodoMode::Edit,
+                            mode,
                             confirming_cancel: false,
                         });
                         this.clear_status(cx);

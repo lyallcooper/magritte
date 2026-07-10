@@ -22,8 +22,7 @@ impl Repo {
         // None rather than an error.
         Ok(self
             .run_optional(["symbolic-ref", "--short", "-q", "HEAD"])?
-            .map(|out| out.stdout_text())
-            .filter(|name| !name.is_empty()))
+            .and_then(|out| out.text_opt()))
     }
 
     /// The repo's default branch, with the remote whose recorded HEAD named it:
@@ -49,18 +48,14 @@ impl Repo {
                     "-q",
                     &format!("refs/remotes/{remote}/HEAD"),
                 ])?
-                .map(|out| out.stdout_text())
-                .filter(|s| !s.is_empty());
+                .and_then(|out| out.text_opt());
             if let Some(head) = head {
                 let name = head.strip_prefix(&format!("{remote}/")).unwrap_or(&head);
                 return Ok(Some((Some(remote.to_string()), name.to_string())));
             }
         }
         for name in ["main", "master", "next", "trunk", "development"] {
-            if self
-                .run_optional(["show-ref", "--verify", "-q", &format!("refs/heads/{name}")])?
-                .is_some()
-            {
+            if self.branch_exists(name) {
                 return Ok(Some((None, name.to_string())));
             }
         }
@@ -96,8 +91,7 @@ impl Repo {
                 "--symbolic-full-name",
                 &format!("{branch}@{{upstream}}"),
             ])?
-            .map(|o| o.stdout_text())
-            .filter(|s| !s.is_empty()))
+            .and_then(|o| o.text_opt()))
     }
 
     /// Local branches with their ahead/behind vs their upstream, in one
@@ -150,12 +144,7 @@ impl Repo {
     fn checkout_arg(&self, target: &str) -> Result<String> {
         // An existing local branch: switch to it as-is (covers slashy names like
         // `feature/x` that would otherwise look like a remote ref).
-        if self.succeeds([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{target}"),
-        ])? {
+        if self.branch_exists(target) {
             return Ok(target.to_string());
         }
         // A `remote/branch` ref for a configured remote: check out the short
