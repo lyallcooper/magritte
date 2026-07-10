@@ -4,6 +4,7 @@
 //! per-conflict keep-ours/theirs/both/base verbs that rewrite the file on
 //! disk as choices are made. `impl StatusView` like the other view slices.
 
+use gpui::prelude::FluentBuilder;
 use gpui::{Context, InteractiveElement, ParentElement, StatefulInteractiveElement, Window};
 use magritte_core::conflict::{parse_conflicts, resolve, Conflict, Resolution, Segment};
 
@@ -669,32 +670,41 @@ impl StatusView {
             // The keep labels are underlined in their blocks' colors so the
             // association with the tinted regions above reads at a glance;
             // `both` splits its bar ours-then-theirs (the order it keeps).
-            .child(self.hint_footer(vec![
-                self.header_action_tinted("resolve-ours", "ours", &[self.palette.added], view)
+            // The footer yields while a popup (the `?` help) floats over the
+            // bottom of the window.
+            .when(self.popup.is_none(), |el| {
+                el.child(self.hint_footer(vec![
+                    self.header_action_tinted("resolve-ours", "ours", &[self.palette.added], view)
+                        .into_any_element(),
+                    self.header_action_tinted(
+                        "resolve-theirs",
+                        "theirs",
+                        &[self.palette.removed],
+                        view,
+                    )
                     .into_any_element(),
-                self.header_action_tinted(
-                    "resolve-theirs",
-                    "theirs",
-                    &[self.palette.removed],
-                    view,
-                )
-                .into_any_element(),
-                self.header_action_tinted(
-                    "resolve-both",
-                    "both",
-                    &[self.palette.added, self.palette.removed],
-                    view,
-                )
-                .into_any_element(),
-                self.header_action_tinted("resolve-base", "base", &[self.palette.modified], view)
+                    self.header_action_tinted(
+                        "resolve-both",
+                        "both",
+                        &[self.palette.added, self.palette.removed],
+                        view,
+                    )
                     .into_any_element(),
-                self.header_action_pair("resolve-next", "resolve-prev", "next/previous", view)
+                    self.header_action_tinted(
+                        "resolve-base",
+                        "base",
+                        &[self.palette.modified],
+                        view,
+                    )
                     .into_any_element(),
-                self.header_action("resolve-undo", "undo", view)
-                    .into_any_element(),
-                self.key_action("footer-help", "?", "help", view, Self::open_help)
-                    .into_any_element(),
-            ]))
+                    self.header_action_pair("resolve-next", "resolve-prev", "next/previous", view)
+                        .into_any_element(),
+                    self.header_action("resolve-undo", "undo", view)
+                        .into_any_element(),
+                    self.key_action("footer-help", "?", "help", view, Self::open_help)
+                        .into_any_element(),
+                ]))
+            })
     }
 
     /// One resolve row: the line, tinted by its region (ours like added lines,

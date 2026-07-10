@@ -1175,29 +1175,33 @@ impl StatusView {
                     )
             })
             .child(body)
-            .child(self.hint_footer(vec![
-                self.header_action("rebase-todo-pick", "pick", view)
+            // The footer yields while a popup (the `?` help) floats over the
+            // bottom of the window.
+            .when(self.popup.is_none(), |el| {
+                el.child(self.hint_footer(vec![
+                    self.header_action("rebase-todo-pick", "pick", view)
+                        .into_any_element(),
+                    self.header_action("rebase-todo-reword", "reword", view)
+                        .into_any_element(),
+                    self.header_action("rebase-todo-edit", "edit", view)
+                        .into_any_element(),
+                    self.header_action("rebase-todo-squash", "squash", view)
+                        .into_any_element(),
+                    self.header_action("rebase-todo-fixup", "fixup", view)
+                        .into_any_element(),
+                    self.header_action("rebase-todo-drop", "drop", view)
+                        .into_any_element(),
+                    self.header_action_pair(
+                        "rebase-todo-reorder-up",
+                        "rebase-todo-reorder-down",
+                        "reorder",
+                        view,
+                    )
                     .into_any_element(),
-                self.header_action("rebase-todo-reword", "reword", view)
-                    .into_any_element(),
-                self.header_action("rebase-todo-edit", "edit", view)
-                    .into_any_element(),
-                self.header_action("rebase-todo-squash", "squash", view)
-                    .into_any_element(),
-                self.header_action("rebase-todo-fixup", "fixup", view)
-                    .into_any_element(),
-                self.header_action("rebase-todo-drop", "drop", view)
-                    .into_any_element(),
-                self.header_action_pair(
-                    "rebase-todo-reorder-up",
-                    "rebase-todo-reorder-down",
-                    "reorder",
-                    view,
-                )
-                .into_any_element(),
-                self.key_action("footer-help", "?", "help", view, Self::open_help)
-                    .into_any_element(),
-            ]))
+                    self.key_action("footer-help", "?", "help", view, Self::open_help)
+                        .into_any_element(),
+                ]))
+            })
     }
 
     /// One row of the rebase-todo editor.
