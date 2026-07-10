@@ -392,11 +392,12 @@ impl StatusView {
         label: &'static str,
         view: &Entity<Self>,
     ) -> impl IntoElement {
-        self.header_action_tinted(id, label, self.palette.dim, view)
+        self.header_action_hint(id, label, None, view)
     }
 
-    /// [`header_action`](Self::header_action) with the label in a caller-chosen
-    /// color — the resolve footer tints ours/theirs/base to match their blocks.
+    /// [`header_action`](Self::header_action) with the label underlined in a
+    /// caller-chosen color — the resolve footer marks ours/theirs/base with
+    /// their blocks' tints without recoloring the text itself.
     pub(crate) fn header_action_tinted(
         &self,
         id: &'static str,
@@ -404,8 +405,29 @@ impl StatusView {
         color: Hsla,
         view: &Entity<Self>,
     ) -> impl IntoElement {
+        self.header_action_hint(id, label, Some(color), view)
+    }
+
+    fn header_action_hint(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        underline: Option<Hsla>,
+        view: &Entity<Self>,
+    ) -> impl IntoElement {
         let key = self.command_key(id);
         let view = view.clone();
+        let label_el = match underline {
+            Some(color) => div()
+                .px_1()
+                .rounded(px(3.0))
+                .text_color(self.palette.dim)
+                .text_decoration_1()
+                .text_decoration_color(color)
+                .group_hover(KBD_ROW_GROUP, |s| s.bg(self.palette.visual))
+                .child(SharedString::from(label.to_string())),
+            None => self.hover_label(label, self.palette.dim),
+        };
         div()
             .id(id)
             .relative()
@@ -423,7 +445,7 @@ impl StatusView {
                 &self.font,
                 &self.system_ui_font,
             ))
-            .child(self.hover_label(label, color))
+            .child(label_el)
             .on_click(move |_, window, cx: &mut App| {
                 view.update(cx, |v, vcx| v.invoke_command(id, window, vcx));
             })

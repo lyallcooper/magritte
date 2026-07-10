@@ -666,9 +666,9 @@ impl StatusView {
                 view,
             ))
             .child(body)
-            // The keep labels wear their blocks' colors so the association
-            // with the tinted regions above reads at a glance; `both` keeps
-            // the neutral color (it takes from both sides).
+            // The keep labels are underlined in their blocks' colors so the
+            // association with the tinted regions above reads at a glance;
+            // `both` stays unmarked (it takes from both sides).
             .child(self.hint_footer(vec![
                 self.header_action_tinted("resolve-ours", "ours", self.palette.added, view)
                     .into_any_element(),
@@ -678,9 +678,9 @@ impl StatusView {
                     .into_any_element(),
                 self.header_action_tinted("resolve-base", "base", self.palette.modified, view)
                     .into_any_element(),
-                self.header_action("resolve-undo", "undo", view)
+                self.header_action_pair("resolve-next", "resolve-prev", "next/previous", view)
                     .into_any_element(),
-                self.header_action_pair("resolve-next", "resolve-prev", "conflict", view)
+                self.header_action("resolve-undo", "undo", view)
                     .into_any_element(),
                 self.key_action("footer-help", "?", "help", view, Self::open_help)
                     .into_any_element(),
