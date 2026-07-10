@@ -654,7 +654,17 @@ impl StatusView {
             );
 
         self.screen_scaffold()
-            .child(self.view_header(left, "close", view))
+            .child(self.view_header(
+                left,
+                // A mergetool session ends here (reporting to git), rather
+                // than returning to the status view.
+                if self.mergetool.is_some() {
+                    "finish"
+                } else {
+                    "close"
+                },
+                view,
+            ))
             .child(body)
             .child(self.hint_footer(
                 view,

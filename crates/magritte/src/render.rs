@@ -432,6 +432,11 @@ impl StatusView {
             .items_center()
             .flex_wrap()
             .gap_1()
+            // A sliver of air between the hints and the window's bottom edge,
+            // and enough right inset to keep the last hint clear of the
+            // floating `?` help button (28px circle at right_4).
+            .pb_2()
+            .pr(px(36.0))
             .text_size(px(self.font_px() - 1.0));
         for (i, (id, label)) in items.iter().enumerate() {
             if i > 0 {
