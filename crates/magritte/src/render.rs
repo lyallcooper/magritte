@@ -418,14 +418,25 @@ impl StatusView {
         let key = self.command_key(id);
         let view = view.clone();
         let label_el = match underline {
+            // A hand-drawn bar rather than a text decoration: slightly thicker
+            // (2px, rounded) and inset a touch from the label's ends.
             Some(color) => div()
+                .relative()
                 .px_1()
                 .rounded(px(3.0))
                 .text_color(self.palette.dim)
-                .text_decoration_1()
-                .text_decoration_color(color)
                 .group_hover(KBD_ROW_GROUP, |s| s.bg(self.palette.visual))
-                .child(SharedString::from(label.to_string())),
+                .child(SharedString::from(label.to_string()))
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(0.0))
+                        .left(px(6.0))
+                        .right(px(6.0))
+                        .h(px(2.0))
+                        .rounded(px(1.0))
+                        .bg(color),
+                ),
             None => self.hover_label(label, self.palette.dim),
         };
         div()
