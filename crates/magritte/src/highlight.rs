@@ -368,6 +368,37 @@ pub fn highlight_diff(
     })
 }
 
+/// Highlight a document given as display lines (no trailing newlines),
+/// returning one span list per line. The lines are joined and parsed as one
+/// document, so multi-line constructs highlight correctly. `None` past
+/// [`MAX_HIGHLIGHT_LINES`], leaving the caller's plain rendering.
+pub fn highlight_text_lines(
+    lines: &[String],
+    lang: &str,
+    theme: &HighlightTheme,
+    default: Hsla,
+) -> Option<Vec<Arc<[Span]>>> {
+    if lines.len() > MAX_HIGHLIGHT_LINES {
+        return None;
+    }
+    register_extra_highlight_queries();
+    let mut doc = String::new();
+    let mut ranges = Vec::with_capacity(lines.len());
+    for line in lines {
+        let start = doc.len();
+        doc.push_str(line);
+        ranges.push(start..doc.len());
+        doc.push('\n');
+    }
+    Some(with_highlighter(lang, |highlighter| {
+        highlighter.update(None, &Rope::from(doc.as_str()), None);
+        ranges
+            .iter()
+            .map(|range| Arc::from(line_spans(highlighter, &doc, range, theme, default)))
+            .collect()
+    }))
+}
+
 thread_local! {
     /// Per-thread highlighter cache. `SyntaxHighlighter::new` compiles the
     /// language's tree-sitter queries (~16ms), which dwarfs the parse/style

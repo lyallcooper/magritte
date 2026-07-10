@@ -30,6 +30,8 @@ pub(crate) struct ResolveView {
     pub(crate) applied: Vec<usize>,
     /// Derived from `segments` + `choices`; rebuilt whenever a choice changes.
     pub(crate) rows: Vec<ResolveRow>,
+    /// The file's detected language, for re-highlighting after each rewrite.
+    pub(crate) lang: Option<&'static str>,
     pub(crate) scroll: UniformListScrollHandle,
     /// Tracked top row for the viewport scroll keys (`C-d`/`C-u`/…).
     pub(crate) top: usize,
@@ -64,6 +66,9 @@ pub(crate) struct ResolveRow {
     pub(crate) text: String,
     pub(crate) kind: ResolveRowKind,
     pub(crate) conflict: Option<usize>,
+    /// Syntax-highlighted spans for the line (concatenating to `text`), when
+    /// the file's language is known — see [`attach_resolve_highlights`].
+    pub(crate) spans: Option<Arc<[Span]>>,
 }
 
 /// Split `bytes` into display lines: one `String` per line, line endings
@@ -90,6 +95,7 @@ pub(crate) fn build_resolve_rows(
         text,
         kind,
         conflict,
+        spans: None,
     };
     let mut rows = Vec::new();
     let mut ix = 0;
@@ -157,6 +163,42 @@ pub(crate) fn build_resolve_rows(
         }
     }
     rows
+}
+
+/// Syntax-highlight the resolve rows. A conflicted file doesn't parse as
+/// written (the markers break the syntax), so the rows are regrouped into
+/// coherent virtual documents — the file as if every unresolved conflict kept
+/// ours, theirs, or base — each parsed whole so multi-line constructs keep
+/// their context. Plain and resolved lines read the same in any variant and
+/// take the ours view; each conflict block takes its own. Marker rows stay
+/// plain, as do all rows when the file is too large or the language unknown.
+pub(crate) fn attach_resolve_highlights(
+    rows: &mut [ResolveRow],
+    lang: &str,
+    theme: &gpui_component::highlighter::HighlightTheme,
+    default: Hsla,
+) {
+    use ResolveRowKind::*;
+    for keep in [Ours, Theirs, Base] {
+        if keep != Ours && !rows.iter().any(|r| r.kind == keep) {
+            continue;
+        }
+        let members: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r.kind, Text | Resolved) || r.kind == keep)
+            .map(|(i, _)| i)
+            .collect();
+        let lines: Vec<String> = members.iter().map(|&i| rows[i].text.clone()).collect();
+        let Some(spans) = highlight::highlight_text_lines(&lines, lang, theme, default) else {
+            return;
+        };
+        for (n, &i) in members.iter().enumerate() {
+            if rows[i].kind == keep || (keep == Ours && matches!(rows[i].kind, Text | Resolved)) {
+                rows[i].spans = Some(spans[n].clone());
+            }
+        }
+    }
 }
 
 /// The next unresolved conflict after `from`, scanning forward and wrapping —
@@ -254,26 +296,40 @@ impl StatusView {
         };
         self.clear_status(cx);
         let load_path = path.clone();
+        let style = self.diff_style(cx);
         cx.spawn(async move |this, cx| {
+            // Parse and highlight off the UI thread; the language comes from
+            // the path plus a head/tail sniff of the content (modelines).
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    repo.read_worktree_file(&load_path)
-                        .map(|bytes| (parse_conflicts(&bytes), bytes))
+                    repo.read_worktree_file(&load_path).map(|bytes| {
+                        let segments = parse_conflicts(&bytes);
+                        let conflicts = segments
+                            .iter()
+                            .filter(|s| matches!(s, Segment::Conflict(_)))
+                            .count();
+                        let choices = vec![None; conflicts];
+                        let mut rows = build_resolve_rows(&segments, &choices);
+                        let head =
+                            String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).into_owned();
+                        let tail =
+                            String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(1024)..])
+                                .into_owned();
+                        let lang = highlight::detect_language(&load_path, &head, &tail);
+                        if let Some(lang) = lang {
+                            attach_resolve_highlights(&mut rows, lang, &style.theme, style.default);
+                        }
+                        (segments, choices, rows, lang, bytes)
+                    })
                 })
                 .await;
             this.update(cx, |this, cx| match result {
-                Ok((segments, original)) => {
-                    let conflicts = segments
-                        .iter()
-                        .filter(|s| matches!(s, Segment::Conflict(_)))
-                        .count();
-                    if conflicts == 0 {
+                Ok((segments, choices, rows, lang, original)) => {
+                    if choices.is_empty() {
                         this.set_status(format!("No conflict markers in {path}"), true, cx);
                         return;
                     }
-                    let choices = vec![None; conflicts];
-                    let rows = build_resolve_rows(&segments, &choices);
                     // Open with the cursor on the first conflict.
                     let selected = conflict_first_row(&rows, 0).unwrap_or(0);
                     this.screen = Screen::Resolve(ResolveView {
@@ -284,6 +340,7 @@ impl StatusView {
                         selected,
                         applied: Vec::new(),
                         rows,
+                        lang,
                         scroll: UniformListScrollHandle::new(),
                         top: 0,
                     });
@@ -485,10 +542,16 @@ impl StatusView {
     /// (atomic replace). With every choice undone, the pristine original bytes
     /// are written back. The status refresh picks up the on-disk change.
     fn rewrite_resolved_file(&mut self, cx: &mut Context<Self>) {
+        let style = self.diff_style(cx);
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
         rv.rows = build_resolve_rows(&rv.segments, &rv.choices);
+        // Re-highlight in place: cheap with the per-language highlighter
+        // already warm from the open (and skipped for oversized files).
+        if let Some(lang) = rv.lang {
+            attach_resolve_highlights(&mut rv.rows, lang, &style.theme, style.default);
+        }
         let bytes = if rv.choices.iter().all(Option::is_none) {
             rv.original.clone()
         } else {
@@ -611,7 +674,13 @@ impl StatusView {
             | ResolveRowKind::TheirsMarker => (None, self.palette.dim),
         };
         let sel = self.pager_sel.char_sel.and_then(|c| c.range_on(ix));
-        let (styled, layout) = self.selectable_text(row.text.clone(), Vec::new(), sel);
+        // Highlighted rows carry per-token spans; the rest render in the
+        // block's single color.
+        let (text, runs) = match &row.spans {
+            Some(spans) => Self::spans_text_runs(spans),
+            None => (row.text.clone(), Vec::new()),
+        };
+        let (styled, layout) = self.selectable_text(text, runs, sel);
         let mut el = div()
             .id(("resolve-row", ix))
             .h(px(self.row_h()))
@@ -762,6 +831,46 @@ mod tests {
         let done = vec![Some(Resolution::Ours), Some(Resolution::Theirs)];
         assert_eq!(next_unresolved(&done, 0), None);
         assert_eq!(next_unresolved(&[], 0), None);
+    }
+
+    #[test]
+    fn highlights_map_to_each_side_and_skip_markers() {
+        use ResolveRowKind::*;
+        let segments = vec![
+            text("fn shared() -> u32 {\n"),
+            conflict(
+                "    let ours = 1;\n",
+                Some("    let base = 0;\n"),
+                "    let theirs = 2;\n",
+            ),
+            text("}\n"),
+        ];
+        let mut rows = build_resolve_rows(&segments, &[None]);
+        attach_resolve_highlights(
+            &mut rows,
+            "rust",
+            &gpui_component::highlighter::HighlightTheme::default_dark(),
+            gpui::black(),
+        );
+        for row in &rows {
+            match row.kind {
+                Text | Ours | Base | Theirs => {
+                    let spans = row.spans.as_ref().expect("content rows highlight");
+                    let joined: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+                    assert_eq!(joined, row.text, "spans must concatenate to the row text");
+                }
+                _ => assert!(row.spans.is_none(), "marker rows stay plain"),
+            }
+        }
+        // Each side got real token colors, not just the fallback.
+        let colored = |kind: ResolveRowKind| {
+            rows.iter().filter(|r| r.kind == kind).any(|r| {
+                r.spans
+                    .as_ref()
+                    .is_some_and(|s| s.iter().any(|(_, c)| *c != gpui::black()))
+            })
+        };
+        assert!(colored(Ours) && colored(Theirs) && colored(Base) && colored(Text));
     }
 
     #[test]
