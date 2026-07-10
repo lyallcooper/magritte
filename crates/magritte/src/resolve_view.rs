@@ -291,6 +291,12 @@ impl StatusView {
             self.set_status("No conflicted file at point".to_string(), true, cx);
             return;
         };
+        self.open_resolve_path(path, cx);
+    }
+
+    /// Open the resolve view on `path` (repo-relative), the shared body of the
+    /// at-point verb and the `--mergetool` startup.
+    pub(crate) fn open_resolve_path(&mut self, path: String, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -355,6 +361,14 @@ impl StatusView {
     }
 
     pub(crate) fn close_resolve(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A mergetool session is single-purpose: leaving the resolve view ends
+        // the process, reporting the file's marker state to git via the exit
+        // code (cx.quit() can't — the platform quit exits 0 unconditionally).
+        if self.mergetool.is_some() {
+            self.flush_settings_save(cx);
+            crate::mergetool_exit_if_active(cx);
+            return;
+        }
         self.screen = Screen::Status;
         self.focus.focus(window, cx);
         cx.notify();
@@ -502,10 +516,19 @@ impl StatusView {
         }
         self.scroll_resolve_conflict_into_view();
         if all_resolved {
-            self.confirm = Some((
-                format!("All conflicts resolved — stage {path}?"),
-                Confirm::StageResolved(path),
-            ));
+            // In a mergetool session, git stages the file itself once we exit
+            // successfully — offer to finish rather than stage.
+            self.confirm = Some(if self.mergetool.is_some() {
+                (
+                    "All conflicts resolved — finish?".to_string(),
+                    Confirm::FinishMergetool,
+                )
+            } else {
+                (
+                    format!("All conflicts resolved — stage {path}?"),
+                    Confirm::StageResolved(path),
+                )
+            });
         }
         cx.notify();
     }

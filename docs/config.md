@@ -167,6 +167,25 @@ then watches the worktree instead of rescanning it, which makes `git status`
 near-instant on large trees. The hint never repeats for a repo, and it stays
 quiet if `core.fsmonitor` is already set to anything (including `false`).
 
+## As a git mergetool
+
+Magritte's conflict-resolution view can serve as your `git mergetool`, so
+terminal-driven merges and rebases get the same per-conflict keep-ours/theirs
+UI. Configure it in your git config:
+
+```ini
+[merge]
+    tool = magritte
+[mergetool "magritte"]
+    cmd = magritte --mergetool "$MERGED"
+    trustExitCode = true
+```
+
+`git mergetool` then opens Magritte directly on each conflicted file. Resolve
+the conflicts and confirm the finish prompt (or quit) -- the exit code tells
+git whether the file was fully resolved, and git stages it on success.
+Closing the window with conflicts remaining counts as giving up on that file.
+
 ## Keymap
 
 The default keymap mirrors evil-collection-magit. Set `keymap_preset = "vanilla"`

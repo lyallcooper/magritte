@@ -297,6 +297,9 @@ pub(crate) enum Confirm {
     /// The resolve view finished its last conflict: on `y`, stage the carried
     /// path (marking it resolved) and return to the status view.
     StageResolved(String),
+    /// The same, in a `--mergetool` session (git stages the file itself): on
+    /// `y`, quit — main reports success to the waiting `git mergetool`.
+    FinishMergetool,
     /// Remove the worktree at point in the browser: on `y`, `git worktree
     /// remove` its path (non-force, so git refuses a dirty worktree).
     RemoveWorktree(String),
@@ -1016,6 +1019,10 @@ impl StatusView {
                     move |repo| repo.stage_file(&path).map(|()| String::new()),
                     cx,
                 );
+            }
+            Some((_, Confirm::FinishMergetool)) => {
+                self.flush_settings_save(cx);
+                crate::mergetool_exit_if_active(cx);
             }
             Some((_, Confirm::RemoveWorktree(path))) => self.remove_worktree(path, cx),
             Some((_, Confirm::StageAll)) => self.run_action(Action::StageAll, cx),

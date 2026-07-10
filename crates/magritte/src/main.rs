@@ -577,6 +577,10 @@ struct StatusView {
     /// Whether this session already evaluated the slow-status fsmonitor hint,
     /// so one slow refresh can't queue several checks.
     fsmonitor_hint_checked: bool,
+    /// `--mergetool` mode: the repo-relative path of the file git asked us to
+    /// resolve. The view opens straight into its resolve screen; finishing or
+    /// leaving it quits the app (main reports the outcome via the exit code).
+    mergetool: Option<String>,
     /// A prefix key awaiting the next key of a sequence (e.g. `g` before `g r`),
     /// with the generation that scopes its timeout. Any key that starts a
     /// multi-key binding can be a prefix; `None` when none is pending.
@@ -833,6 +837,7 @@ impl StatusView {
             last_refresh: None,
             pager_sel: PagerSelection::default(),
             fsmonitor_hint_checked: false,
+            mergetool: None,
             pending_prefix: None,
             prefix_gen: Generation::default(),
             window_bounds_save_gen: Generation::default(),
@@ -876,6 +881,20 @@ impl StatusView {
         // Warm the settings screen's font/editor lists off-thread so the first
         // open doesn't stall on system font enumeration.
         view.prewarm_settings_caches(cx);
+        // A `--mergetool` run opens straight into the resolve view for the
+        // file git handed us (made repo-relative; the worktree needs
+        // canonicalizing too — /tmp vs /private/tmp on macOS).
+        if let Some(file) = cx.try_global::<GlobalMergetool>().map(|m| m.0.clone()) {
+            let rel = view
+                .repo
+                .as_ref()
+                .and_then(|r| std::fs::canonicalize(r.workdir()).ok())
+                .and_then(|wd| file.strip_prefix(&wd).map(|p| p.to_path_buf()).ok())
+                .unwrap_or_else(|| file.clone());
+            let rel = rel.to_string_lossy().into_owned();
+            view.mergetool = Some(rel.clone());
+            view.open_resolve_path(rel, cx);
+        }
         view
     }
 
@@ -1171,6 +1190,31 @@ type RepoWindows = Rc<RefCell<HashMap<PathBuf, AnyWindowHandle>>>;
 pub(crate) struct GlobalRepoWindows(pub(crate) RepoWindows);
 impl gpui::Global for GlobalRepoWindows {}
 
+/// `--mergetool` session state: the conflicted file git asked us to resolve.
+/// Present as a global only in mergetool mode; the view opens straight into
+/// the resolve screen for it, and every quit route ends the process through
+/// [`mergetool_exit_if_active`] so the waiting `git mergetool` gets the right
+/// exit code.
+pub(crate) struct GlobalMergetool(pub(crate) PathBuf);
+impl gpui::Global for GlobalMergetool {}
+
+/// In a mergetool session, end the process now with the outcome exit code —
+/// 0 only when the file no longer carries conflict markers. Every quit route
+/// must come through here rather than `cx.quit()`: on macOS the platform quit
+/// terminates the process itself (`main` never resumes), which would report
+/// success regardless. Returns normally when not in a mergetool session.
+pub(crate) fn mergetool_exit_if_active(cx: &App) {
+    let Some(file) = cx.try_global::<GlobalMergetool>().map(|m| m.0.clone()) else {
+        return;
+    };
+    let resolved = std::fs::read(&file).is_ok_and(|bytes| {
+        magritte_core::conflict::parse_conflicts(&bytes)
+            .iter()
+            .all(|s| matches!(s, magritte_core::conflict::Segment::Text(_)))
+    });
+    std::process::exit(if resolved { 0 } else { 1 });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -1189,10 +1233,12 @@ fn main() {
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
-            "Usage: magritte [--foreground] [PATH]\n\n\
+            "Usage: magritte [--foreground] [PATH]\n       \
+             magritte --mergetool FILE\n\n\
              Open the git repository containing PATH (default: current directory).\n\n\
              Options:\n\
                --foreground      Keep the app attached to the terminal.\n\
+               --mergetool FILE  Resolve FILE's conflicts and exit (for git mergetool).\n\
                --version, -V     Print the Magritte version.\n\
                --check-version   Check GitHub for the latest release.\n\n\
              Magritte detaches into the background so the shell returns immediately.\n\
@@ -1201,9 +1247,36 @@ fn main() {
         );
         return;
     }
-    // First non-flag argument is a path inside the repo to open (defaults to cwd).
-    let start_dir = args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from);
-    let single_instance = ipc::enabled();
+    // `--mergetool FILE` (git mergetool's $MERGED): open straight into the
+    // resolve view for FILE, stay attached (git waits on us), and exit 0 only
+    // when no conflict markers remain.
+    let mergetool = match args.iter().position(|a| a == "--mergetool") {
+        Some(i) => match args.get(i + 1).filter(|a| !a.starts_with('-')) {
+            Some(file) => Some(std::fs::canonicalize(file).unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .map(|d| d.join(file))
+                    .unwrap_or_else(|_| PathBuf::from(file))
+            })),
+            None => {
+                eprintln!("magritte: --mergetool requires a file argument");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    // First non-flag argument is a path inside the repo to open (defaults to
+    // cwd; in mergetool mode, the conflicted file's directory).
+    let start_dir = mergetool
+        .as_ref()
+        .map(|f| {
+            f.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf()
+        })
+        .or_else(|| args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from));
+    // A mergetool run is its own short-lived process: no handoff to a running
+    // instance (git waits on *this* one) and no background detach.
+    let single_instance = mergetool.is_none() && ipc::enabled();
     if single_instance && ipc::try_handoff(start_dir.as_deref()) {
         return;
     }
@@ -1211,14 +1284,19 @@ fn main() {
     // Detach into the background by default, like a GUI app launched from a
     // shell. Opt out with --foreground or MAGRITTE_FOREGROUND (the debug harness
     // sets the latter so it can read the app's log and control channel).
-    let foreground = args.iter().any(|a| a == "--foreground")
+    let foreground = mergetool.is_some()
+        || args.iter().any(|a| a == "--foreground")
         || std::env::var_os("MAGRITTE_FOREGROUND").is_some();
     if !foreground && detach_into_background(&args) {
         return;
     }
 
+    let mergetool_file = mergetool.clone();
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     app.run(move |cx: &mut App| {
+        if let Some(file) = mergetool_file.clone() {
+            cx.set_global(GlobalMergetool(file));
+        }
         // Required before using any gpui-component widgets/themes.
         gpui_component::init(cx);
         theme::register_bundled_themes(cx);
@@ -1252,6 +1330,7 @@ fn main() {
                     })
                     .ok();
             }
+            mergetool_exit_if_active(cx);
             cx.quit();
         });
         cx.bind_keys([
@@ -1265,6 +1344,7 @@ fn main() {
         // Closing the last window (red traffic light included) quits the app.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                mergetool_exit_if_active(cx);
                 cx.quit();
             }
         })
@@ -1306,6 +1386,17 @@ fn main() {
             let _ = window;
         }
     });
+    // Mergetool sessions normally exit through `mergetool_exit_if_active`
+    // inside the quit paths (on macOS the platform quit never returns here);
+    // this covers a run loop that does return.
+    if let Some(file) = mergetool {
+        let resolved = std::fs::read(&file).is_ok_and(|bytes| {
+            magritte_core::conflict::parse_conflicts(&bytes)
+                .iter()
+                .all(|s| matches!(s, magritte_core::conflict::Segment::Text(_)))
+        });
+        std::process::exit(if resolved { 0 } else { 1 });
+    }
 }
 
 #[cfg(test)]
