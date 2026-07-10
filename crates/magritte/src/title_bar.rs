@@ -265,17 +265,7 @@ impl StatusView {
         action: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
         let view = view.clone();
-        let mut row = div()
-            .id(id)
-            .relative()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_1()
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .group(KBD_ROW_GROUP)
-            .child(track_target(id));
+        let mut row = self.hint_row(id).gap_1();
         if let Some(keys) = keys {
             row = row.child(kbd::key_chip(
                 &keys,

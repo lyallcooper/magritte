@@ -740,100 +740,56 @@ impl StatusView {
                                     this.render_commit_diff_row(row, highlighted, collapsed, sel);
                                 // Plain click positions the cursor / toggles a fold; a
                                 // left-drag selects — char-wise while it stays on this
-                                // row, line-wise once it spans rows (see the handlers).
+                                // row, line-wise once it spans rows.
                                 let hover = this.palette.hover;
-                                let (down_layout, move_layout) = (layout.clone(), layout);
-                                let (v_down, v_move, v_up, v_click) =
-                                    (view.clone(), view.clone(), view.clone(), view.clone());
                                 // No hover wash while this row shows a char selection,
                                 // so the per-char background isn't washed over.
                                 let hoverable = !highlighted && !has_char_sel;
-                                div()
-                                    .id(("flat-diff-row", ix))
-                                    .w_full()
-                                    .cursor_pointer()
-                                    .when(hoverable, |d| d.hover(move |s| s.bg(hover)))
-                                    .child(content)
-                                    .on_mouse_down(MouseButton::Left, {
-                                        move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                                            let offset = down_layout
-                                                .as_ref()
-                                                .map(|l| offset_at(l, ev.position));
-                                            v_down.update(cx, |view, vcx| {
-                                                if view.popup.is_some() {
-                                                    return;
-                                                }
-                                                // This press is on a diff row (which
-                                                // manages its own selection), not a
-                                                // click-to-dismiss off the content.
-                                                view.click_hit_selectable = true;
-                                                if let Some(cv) = view.commit_view_mut() {
-                                                    cv.header_sel = None;
-                                                }
-                                                if let Some(fd) = view.flat_diff_mut() {
-                                                    fd.drag().mouse_down(ix, offset);
-                                                    vcx.notify();
-                                                }
-                                            });
+                                this.drag_selectable(
+                                    div()
+                                        .id(("flat-diff-row", ix))
+                                        .w_full()
+                                        .cursor_pointer()
+                                        .when(hoverable, |d| d.hover(move |s| s.bg(hover)))
+                                        .child(content),
+                                    ix,
+                                    layout,
+                                    &view,
+                                    |v| v.flat_diff_mut().map(|fd| fd.drag()),
+                                    |_, _| true,
+                                    // A press here drops the commit header's own
+                                    // little selection.
+                                    |v, _, _, _| {
+                                        if let Some(cv) = v.commit_view_mut() {
+                                            cv.header_sel = None;
                                         }
-                                    })
-                                    .on_mouse_move({
-                                        move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
-                                            if ev.pressed_button != Some(MouseButton::Left) {
+                                        false
+                                    },
+                                    move |view, ev, _window, vcx| {
+                                        // A drag already selected; don't also click.
+                                        if click_was_drag(ev) {
+                                            return;
+                                        }
+                                        if let Some(fd) = view.flat_diff_mut() {
+                                            // A click on a row that had a char
+                                            // selection only clears it (no fold).
+                                            if fd.char_click {
+                                                fd.char_click = false;
+                                                fd.char_sel = None;
+                                                vcx.notify();
                                                 return;
                                             }
-                                            let offset = move_layout
-                                                .as_ref()
-                                                .map(|l| offset_at(l, ev.position));
-                                            v_move.update(cx, |view, vcx| {
-                                                let Some(fd) = view.flat_diff_mut() else {
-                                                    return;
-                                                };
-                                                if fd.drag().mouse_move(ix, offset) {
-                                                    vcx.notify();
-                                                }
-                                            });
-                                        }
-                                    })
-                                    .on_mouse_up(MouseButton::Left, {
-                                        move |_, _window, cx: &mut App| {
-                                            v_up.update(cx, |view, vcx| {
-                                                if let Some(fd) = view.flat_diff_mut() {
-                                                    if fd.drag().mouse_up() {
-                                                        vcx.notify();
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    })
-                                    .on_click(
-                                        move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
-                                            // A drag already selected; don't also click.
-                                            if click_was_drag(ev) {
-                                                return;
+                                            fd.selected = ix;
+                                            fd.visual = None;
+                                            fd.char_sel = None;
+                                            if foldable {
+                                                fd.toggle_fold(ix);
                                             }
-                                            v_click.update(cx, |view, vcx| {
-                                                if let Some(fd) = view.flat_diff_mut() {
-                                                    // A click on a row that had a char
-                                                    // selection only clears it (no fold).
-                                                    if fd.char_click {
-                                                        fd.char_click = false;
-                                                        fd.char_sel = None;
-                                                        vcx.notify();
-                                                        return;
-                                                    }
-                                                    fd.selected = ix;
-                                                    fd.visual = None;
-                                                    fd.char_sel = None;
-                                                    if foldable {
-                                                        fd.toggle_fold(ix);
-                                                    }
-                                                    vcx.notify();
-                                                }
-                                            });
-                                        },
-                                    )
-                                    .into_any_element()
+                                            vcx.notify();
+                                        }
+                                    },
+                                )
+                                .into_any_element()
                             })
                             .collect::<Vec<_>>()
                     }
@@ -846,38 +802,16 @@ impl StatusView {
         // A drag past the list's ends clamps to the first/last visible row
         // instead of freezing (see drag_row_beyond_list). Indices map through
         // the fold projection, like the row handlers.
-        .on_mouse_move({
-            let view = view.clone();
-            let scroll = fd.scroll.clone();
-            move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                if ev.pressed_button != Some(MouseButton::Left) {
-                    return;
-                }
-                view.update(cx, |v, vcx| {
-                    let row_h = v.row_h();
-                    let Some(fd) = v.flat_diff_mut() else {
-                        return;
-                    };
-                    let Some(anchor) = fd.drag_anchor else {
-                        return;
-                    };
-                    let vis = fd.visible_rows();
-                    let Some(pos) = drag_row_beyond_list(&scroll, vis.len(), ev.position, row_h)
-                    else {
-                        return;
-                    };
-                    let Some(&ix) = vis.get(pos) else {
-                        return;
-                    };
-                    if ix == anchor {
-                        return;
-                    }
-                    if fd.drag().mouse_move(ix, None) {
-                        vcx.notify();
-                    }
-                });
-            }
-        })
+        .on_mouse_move(Self::on_drag_beyond_list(
+            view,
+            fd.scroll.clone(),
+            |v| v.flat_diff_mut().map(|fd| fd.drag()),
+            |v| v.flat_diff().map_or(0, |fd| fd.visible_rows().len()),
+            |v, pos, _| {
+                v.flat_diff()
+                    .and_then(|fd| fd.visible_rows().get(pos).copied())
+            },
+        ))
     }
 
     /// Render a commit's diff detail (opened from the log): a header with the

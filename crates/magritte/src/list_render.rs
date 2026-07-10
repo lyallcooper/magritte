@@ -140,55 +140,23 @@ impl StatusView {
         layout: TextLayout,
         view: &Entity<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (down_layout, move_layout) = (layout.clone(), layout);
-        let (v_down, v_move, v_up, v_click) =
-            (view.clone(), view.clone(), view.clone(), view.clone());
-        el.on_mouse_down(MouseButton::Left, {
-            move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                let offset = offset_at(&down_layout, ev.position);
-                v_down.update(cx, |v, vcx| {
-                    if v.popup.is_some() {
-                        return;
-                    }
-                    v.click_hit_selectable = true;
-                    v.pager_sel.drag().mouse_down(ix, Some(offset));
+        self.drag_selectable(
+            el,
+            ix,
+            Some(layout),
+            view,
+            |v| Some(v.pager_sel.drag()),
+            |_, _| true,
+            |_, _, _, _| false,
+            // A click on a row that had a char selection only clears it.
+            |v, _ev, _window, vcx| {
+                if v.pager_sel.char_click {
+                    v.pager_sel.char_click = false;
+                    v.pager_sel.char_sel = None;
                     vcx.notify();
-                });
-            }
-        })
-        .on_mouse_move({
-            move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
-                if ev.pressed_button != Some(MouseButton::Left) {
-                    return;
                 }
-                let offset = offset_at(&move_layout, ev.position);
-                v_move.update(cx, |v, vcx| {
-                    if v.pager_sel.drag().mouse_move(ix, Some(offset)) {
-                        vcx.notify();
-                    }
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            move |_, _window, cx: &mut App| {
-                v_up.update(cx, |v, vcx| {
-                    if v.pager_sel.drag().mouse_up() {
-                        vcx.notify();
-                    }
-                });
-            }
-        })
-        .on_click({
-            move |_: &gpui::ClickEvent, _window, cx: &mut App| {
-                v_click.update(cx, |v, vcx| {
-                    if v.pager_sel.char_click {
-                        v.pager_sel.char_click = false;
-                        v.pager_sel.char_sel = None;
-                        vcx.notify();
-                    }
-                });
-            }
-        })
+            },
+        )
     }
 
     fn render_blame_row(
@@ -427,35 +395,13 @@ impl StatusView {
             .flex_grow(1.0)
             // A drag past the list's ends clamps to the first/last commit
             // instead of freezing (see drag_row_beyond_list).
-            .on_mouse_move({
-                let view = view.clone();
-                let scroll = log.scroll.clone();
-                move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                    if ev.pressed_button != Some(MouseButton::Left) {
-                        return;
-                    }
-                    view.update(cx, |v, vcx| {
-                        let row_h = v.row_h();
-                        let Some(log) = v.log_mut() else {
-                            return;
-                        };
-                        let Some(anchor) = log.drag_anchor else {
-                            return;
-                        };
-                        let Some(ix) =
-                            drag_row_beyond_list(&scroll, log.entries.len(), ev.position, row_h)
-                        else {
-                            return;
-                        };
-                        if ix == anchor {
-                            return;
-                        }
-                        if log.drag().mouse_move(ix, None) {
-                            vcx.notify();
-                        }
-                    });
-                }
-            })
+            .on_mouse_move(Self::on_drag_beyond_list(
+                view,
+                log.scroll.clone(),
+                |v| v.log_mut().map(|l| l.drag()),
+                |v| v.log().map_or(0, |l| l.entries.len()),
+                |_, ix, _| Some(ix),
+            ))
             .into_any_element(),
         };
 
@@ -891,120 +837,78 @@ impl StatusView {
         let row_text = text.clone();
         let (line, layout) = self.selectable_text(text, runs, sel);
         row = row.child(line);
-        let (down_layout, move_layout, right_layout) = (layout.clone(), layout.clone(), layout);
-        let (v_down, v_move, v_up, v_open, v_right) = (
-            view.clone(),
-            view.clone(),
-            view.clone(),
-            view.clone(),
-            view.clone(),
+        let right_layout = layout.clone();
+        let v_right = view.clone();
+        let row = row.child(div().flex_grow(1.0)).child(
+            div()
+                .flex_shrink_0()
+                .text_color(self.palette.dim)
+                .child(SharedString::from(entry.date.clone())),
         );
-        row.child(div().flex_grow(1.0))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(entry.date.clone())),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                    let offset = offset_at(&down_layout, ev.position);
-                    v_down.update(cx, |this, vcx| {
-                        // Match the other surfaces: a press under an open popup
-                        // is a dismiss, not a selection.
-                        if this.popup.is_some() {
-                            return;
-                        }
-                        // This press is on a log row (which manages its own
-                        // selection), not a click-to-dismiss off the content.
-                        this.click_hit_selectable = true;
-                        if let Some(log) = this.log_mut() {
-                            log.drag().mouse_down(ix, Some(offset));
-                            vcx.notify();
-                        }
-                    });
-                },
-            )
-            .on_mouse_move(move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
-                if ev.pressed_button != Some(MouseButton::Left) {
-                    return;
-                }
-                let offset = offset_at(&move_layout, ev.position);
-                v_move.update(cx, |this, vcx| {
-                    if let Some(log) = this.log_mut() {
-                        if log.drag().mouse_move(ix, Some(offset)) {
-                            vcx.notify();
-                        }
-                    }
-                });
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _window, cx: &mut App| {
-                v_up.update(cx, |this, vcx| {
-                    if let Some(log) = this.log_mut() {
-                        if log.drag().mouse_up() {
-                            vcx.notify();
-                        }
-                    }
-                });
-            })
-            .on_click(move |ev: &gpui::ClickEvent, _window, cx: &mut App| {
+        self.drag_selectable(
+            row,
+            ix,
+            Some(layout),
+            view,
+            |v| v.log_mut().map(|l| l.drag()),
+            |_, _| true,
+            |_, _, _, _| false,
+            move |this, ev, _window, vcx| {
                 // A drag selected text; don't also open the commit.
                 if click_was_drag(ev) {
                     return;
                 }
-                v_open.update(cx, |this, vcx| {
+                if let Some(log) = this.log_mut() {
+                    // A click on a row that had a selection just clears it.
+                    if log.char_click || log.visual.is_some() {
+                        log.char_click = false;
+                        log.char_sel = None;
+                        log.visual = None;
+                        log.selected = ix;
+                        vcx.notify();
+                        return;
+                    }
+                    log.char_sel = None;
+                    log.selected = ix;
+                }
+                this.open_commit_view(vcx);
+            },
+        )
+        // Right-click selects the word (sha / ref / token) under the cursor;
+        // the context menu then offers to copy it.
+        .on_mouse_down(
+            MouseButton::Right,
+            move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                let offset = offset_at(&right_layout, ev.position);
+                let word = word_range(&row_text, offset);
+                v_right.update(cx, |this, vcx| {
+                    // This row's Copy uses the selection, not a chrome value.
+                    this.pending_copy = None;
                     if let Some(log) = this.log_mut() {
-                        // A click on a row that had a selection just clears it.
-                        if log.char_click || log.visual.is_some() {
+                        // Keep the selection when right-clicking inside it (the
+                        // menu copies it); elsewhere clear it and select the word.
+                        let inside = if let Some(anchor) = log.visual {
+                            let (lo, hi) = (anchor.min(log.selected), anchor.max(log.selected));
+                            ix >= lo && ix <= hi
+                        } else if let Some(c) = log.char_sel {
+                            c.range_on(ix)
+                                .is_some_and(|r| offset >= r.start && offset <= r.end)
+                        } else {
+                            false
+                        };
+                        if !inside {
                             log.char_click = false;
-                            log.char_sel = None;
-                            log.visual = None;
+                            log.char_sel = (!word.is_empty())
+                                .then(|| CharSelection::on_row(ix, word.start, word.end));
                             log.selected = ix;
                             vcx.notify();
-                            return;
                         }
-                        log.char_sel = None;
-                        log.selected = ix;
                     }
-                    this.open_commit_view(vcx);
                 });
-            })
-            // Right-click selects the word (sha / ref / token) under the cursor;
-            // the context menu then offers to copy it.
-            .on_mouse_down(
-                MouseButton::Right,
-                move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                    let offset = offset_at(&right_layout, ev.position);
-                    let word = word_range(&row_text, offset);
-                    v_right.update(cx, |this, vcx| {
-                        // This row's Copy uses the selection, not a chrome value.
-                        this.pending_copy = None;
-                        if let Some(log) = this.log_mut() {
-                            // Keep the selection when right-clicking inside it (the
-                            // menu copies it); elsewhere clear it and select the word.
-                            let inside = if let Some(anchor) = log.visual {
-                                let (lo, hi) = (anchor.min(log.selected), anchor.max(log.selected));
-                                ix >= lo && ix <= hi
-                            } else if let Some(c) = log.char_sel {
-                                c.range_on(ix)
-                                    .is_some_and(|r| offset >= r.start && offset <= r.end)
-                            } else {
-                                false
-                            };
-                            if !inside {
-                                log.char_click = false;
-                                log.char_sel = (!word.is_empty())
-                                    .then(|| CharSelection::on_row(ix, word.start, word.end));
-                                log.selected = ix;
-                                vcx.notify();
-                            }
-                        }
-                    });
-                },
-            )
-            .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
-            .into_any_element()
+            },
+        )
+        .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
+        .into_any_element()
     }
 
     /// The action keyword + its color for a rebase-todo row.

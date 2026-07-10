@@ -418,6 +418,26 @@ impl StatusView {
             .child(row)
     }
 
+    /// The [`hint_row`](Self::hint_row) shell for a suffix whose click
+    /// dispatches `key` through [`click_suffix`](Self::click_suffix) (switches
+    /// and key-dispatched actions).
+    fn suffix_row(
+        &self,
+        key: SharedString,
+        is_switch: bool,
+        view: &Entity<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let view = view.clone();
+        let click_key = key.clone();
+        self.hint_row(key)
+            .gap_2()
+            .on_click(move |_, window, cx: &mut App| {
+                view.update(cx, |v, vcx| {
+                    v.click_suffix(click_key.clone(), is_switch, window, vcx)
+                });
+            })
+    }
+
     /// One transient suffix as a clickable row (switch, value option, action,
     /// or `?`-menu info).
     pub(crate) fn render_suffix(
@@ -455,19 +475,8 @@ impl StatusView {
                     div().text_color(flag_color)
                 };
                 let paren = || div().text_color(self.palette.fg);
-                let view = view.clone();
                 let key = SharedString::from(sw.key.clone());
-                div()
-                    .id(key.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(key.clone()))
+                self.suffix_row(key, true, view)
                     .child(kbd::switch_chip(
                         &sw.key,
                         self.palette.dim,
@@ -487,9 +496,6 @@ impl StatusView {
                             .child(flag.child(SharedString::from(shown_flag)))
                             .child(paren().child(SharedString::from(")"))),
                     )
-                    .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), true, window, vcx));
-                    })
                     .into_any_element()
             }
             // A value-reading option: like a switch, but the parens show the
@@ -507,17 +513,8 @@ impl StatusView {
                 };
                 let view = view.clone();
                 let okey = o.key.to_string();
-                div()
-                    .id(o.key)
-                    .relative()
-                    .flex()
-                    .items_center()
+                self.hint_row(o.key)
                     .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(o.key))
                     .child(kbd::switch_chip(
                         o.key,
                         self.palette.dim,
@@ -539,7 +536,6 @@ impl StatusView {
                     .into_any_element()
             }
             Suffix::Action(a) => {
-                let view = view.clone();
                 let key = SharedString::from(a.key);
                 // A collapsed push-remote/upstream entry shows both keys (`p/u`).
                 let keycap = match a.also_key {
@@ -572,39 +568,17 @@ impl StatusView {
                 } else {
                     self.palette.fg
                 };
-                div()
-                    .id(a.key)
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(a.key))
+                self.suffix_row(key, false, view)
                     .child(keycap)
                     .child(self.hover_label(&a.description, label_color))
-                    .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
-                    })
                     .into_any_element()
             }
             // A dispatch command row: keycap + label, clickable to run.
             Suffix::Info(i) => {
                 let view = view.clone();
                 let key = SharedString::from(i.keys.clone());
-                div()
-                    .id(key.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
+                self.hint_row(key.clone())
                     .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(key.clone()))
                     .child(self.key_tokens(&i.keys))
                     .child(self.hover_label(&i.description, self.palette.fg))
                     .on_click(move |_, window, cx: &mut App| {
@@ -615,19 +589,8 @@ impl StatusView {
             // A user-injected suffix (from `[transient]`): keycap + label,
             // clickable; dispatched by key like an action.
             Suffix::Custom(c) => {
-                let view = view.clone();
                 let key = SharedString::from(c.key.clone());
-                div()
-                    .id(key.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(key.clone()))
+                self.suffix_row(key, false, view)
                     .child(kbd::key_chip(
                         &c.key,
                         self.palette.dim,
@@ -635,28 +598,14 @@ impl StatusView {
                         &self.system_ui_font,
                     ))
                     .child(self.hover_label(&c.description, self.palette.fg))
-                    .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
-                    })
                     .into_any_element()
             }
             // A git-config variable (magit's Configure rows): keycap, name, then
             // the current value — cycling choices render `[a|b|fallback:x]` with
             // the active one accented; free-text shows `(value)` or a dim `unset`.
             Suffix::Variable(var) => {
-                let view = view.clone();
                 let key = SharedString::from(var.key.clone());
-                div()
-                    .id(key.clone())
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .group(KBD_ROW_GROUP)
-                    .child(track_target(key.clone()))
+                self.suffix_row(key, false, view)
                     .child(kbd::key_chip(
                         &var.key,
                         self.palette.dim,
@@ -665,9 +614,6 @@ impl StatusView {
                     ))
                     .child(self.hover_label(&var.description, self.palette.fg))
                     .child(self.render_variable_value(var))
-                    .on_click(move |_, window, cx: &mut App| {
-                        view.update(cx, |v, vcx| v.click_suffix(key.clone(), false, window, vcx));
-                    })
                     .into_any_element()
             }
         }

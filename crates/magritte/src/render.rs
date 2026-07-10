@@ -349,6 +349,24 @@ impl StatusView {
         ))
     }
 
+    /// The shared shell of a clickable keycap-hint row: an id'd, rounded
+    /// [`KBD_ROW_GROUP`] hover group with its [`track_target`] marker as the
+    /// first child. Callers add the gap, the keycap/label payload, and the
+    /// click handler.
+    pub(crate) fn hint_row(&self, id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
+        let id = id.into();
+        div()
+            .id(id.clone())
+            .relative()
+            .flex()
+            .items_center()
+            .px_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .group(KBD_ROW_GROUP)
+            .child(track_target(id))
+    }
+
     /// A clickable key hint: a keycap + label that runs `action` (the same
     /// behavior its key triggers). Lets shown keys double as mouse buttons —
     /// used by the commit editor and settings screen.
@@ -361,17 +379,8 @@ impl StatusView {
         action: fn(&mut Self, &mut Window, &mut Context<Self>),
     ) -> impl IntoElement {
         let view = view.clone();
-        div()
-            .id(id)
-            .relative()
-            .flex()
-            .items_center()
+        self.hint_row(id)
             .gap_1()
-            .px_1()
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .group(KBD_ROW_GROUP)
-            .child(track_target(id))
             .child(kbd::key_chip(
                 key,
                 self.palette.dim,
@@ -498,17 +507,8 @@ impl StatusView {
                 .child(SharedString::from(label.to_string()))
                 .child(bar)
         };
-        div()
-            .id(id)
-            .relative()
-            .flex()
-            .items_center()
+        self.hint_row(id)
             .gap_1()
-            .px_1()
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .group(KBD_ROW_GROUP)
-            .child(track_target(id))
             .child(kbd::key_chip(
                 &key,
                 self.palette.dim,
@@ -532,17 +532,8 @@ impl StatusView {
     ) -> impl IntoElement {
         let (key_a, key_b) = (self.command_key(id), self.command_key(id_b));
         let view = view.clone();
-        div()
-            .id(id)
-            .relative()
-            .flex()
-            .items_center()
+        self.hint_row(id)
             .gap_1()
-            .px_1()
-            .rounded(px(4.0))
-            .cursor_pointer()
-            .group(KBD_ROW_GROUP)
-            .child(track_target(id))
             .child(kbd::key_chip(
                 &key_a,
                 self.palette.dim,
@@ -629,6 +620,139 @@ impl StatusView {
                 .build(window, cx)
             })
             .tooltip_show_delay(Duration::ZERO)
+    }
+
+    /// Wire a row into the shared [`DragState`] mouse-selection machine: a
+    /// left press arms a drag (unless a popup is open or `gate` rejects the
+    /// row), movement extends it char- or line-wise, release disarms, and a
+    /// stationary click lands on `click`. Each surface supplies:
+    ///
+    /// - `drag`: its [`DragState`] accessor (`None` when the surface is gone —
+    ///   the handlers then do nothing);
+    /// - `gate`: which rows a press/drag may touch (both check it, so a drag
+    ///   can neither start on nor extend onto a rejected row);
+    /// - `press`: a pre-drag hook, returning `true` when it consumed the press
+    ///   (the drag is not armed but the view still repaints);
+    /// - `click`: the plain-click behavior, including its own
+    ///   [`click_was_drag`] policy.
+    ///
+    /// `layout` (for a laid-out text row) supplies the byte offset under the
+    /// pointer, so a same-row drag selects char-wise.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn drag_selectable(
+        &self,
+        el: gpui::Stateful<gpui::Div>,
+        ix: usize,
+        layout: Option<TextLayout>,
+        view: &Entity<Self>,
+        drag: fn(&mut Self) -> Option<DragState<'_>>,
+        gate: fn(&Self, usize) -> bool,
+        press: fn(&mut Self, &MouseDownEvent, usize, Option<usize>) -> bool,
+        click: impl Fn(&mut Self, &gpui::ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (down_layout, move_layout) = (layout.clone(), layout);
+        let (v_down, v_move, v_up, v_click) =
+            (view.clone(), view.clone(), view.clone(), view.clone());
+        el.on_mouse_down(MouseButton::Left, {
+            move |ev: &MouseDownEvent, _window, cx: &mut App| {
+                let offset = down_layout.as_ref().map(|l| offset_at(l, ev.position));
+                v_down.update(cx, |v, vcx| {
+                    // A press under an open popup is a dismiss, not a selection.
+                    if v.popup.is_some() {
+                        return;
+                    }
+                    if !gate(v, ix) {
+                        return;
+                    }
+                    // This press is on a row that manages its own selection —
+                    // the root's bubble handler must not treat it as a
+                    // click-to-dismiss off the content.
+                    v.click_hit_selectable = true;
+                    if press(v, ev, ix, offset) {
+                        vcx.notify();
+                    } else if let Some(mut d) = drag(v) {
+                        d.mouse_down(ix, offset);
+                        vcx.notify();
+                    }
+                });
+            }
+        })
+        .on_mouse_move({
+            move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                let offset = move_layout.as_ref().map(|l| offset_at(l, ev.position));
+                v_move.update(cx, |v, vcx| {
+                    if !gate(v, ix) {
+                        return;
+                    }
+                    if let Some(mut d) = drag(v) {
+                        if d.mouse_move(ix, offset) {
+                            vcx.notify();
+                        }
+                    }
+                });
+            }
+        })
+        .on_mouse_up(MouseButton::Left, {
+            move |_, _window, cx: &mut App| {
+                v_up.update(cx, |v, vcx| {
+                    if let Some(mut d) = drag(v) {
+                        if d.mouse_up() {
+                            vcx.notify();
+                        }
+                    }
+                });
+            }
+        })
+        .on_click({
+            move |ev: &gpui::ClickEvent, window, cx: &mut App| {
+                v_click.update(cx, |v, vcx| click(v, ev, window, vcx));
+            }
+        })
+    }
+
+    /// The list-container `on_mouse_move` for a held drag that overshoots the
+    /// row area: [`drag_row_beyond_list`] clamps the pointer to the first/last
+    /// list slot, `project` maps that slot to a surface row (fold or
+    /// selectable projections; identity elsewhere, given the slot and the drag
+    /// anchor), and the result feeds the surface's [`DragState`] with no char
+    /// offset. Rows still under the pointer keep their own precise tracking,
+    /// so the anchor row's char state is left alone.
+    pub(crate) fn on_drag_beyond_list(
+        view: &Entity<Self>,
+        scroll: gpui::UniformListScrollHandle,
+        drag: fn(&mut Self) -> Option<DragState<'_>>,
+        count: fn(&Self) -> usize,
+        project: fn(&Self, usize, usize) -> Option<usize>,
+    ) -> impl Fn(&gpui::MouseMoveEvent, &mut Window, &mut App) + 'static {
+        let view = view.clone();
+        move |ev, _window, cx| {
+            if ev.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            view.update(cx, |v, vcx| {
+                let Some(anchor) = drag(v).and_then(|d| *d.drag_anchor) else {
+                    return;
+                };
+                let Some(slot) = drag_row_beyond_list(&scroll, count(v), ev.position, v.row_h())
+                else {
+                    return;
+                };
+                let Some(ix) = project(v, slot, anchor) else {
+                    return;
+                };
+                if ix == anchor {
+                    return;
+                }
+                if let Some(mut d) = drag(v) {
+                    if d.mouse_move(ix, None) {
+                        vcx.notify();
+                    }
+                }
+            });
+        }
     }
 
     pub(crate) fn render_row(&self, ix: usize, view: &Entity<Self>) -> AnyElement {
@@ -806,106 +930,59 @@ impl StatusView {
         if clickable {
             // A right-click's word-select uses the row's layout + canonical text.
             let right_layout = diff_layout.clone();
-            let (down_layout, move_layout) = (diff_layout.clone(), diff_layout);
-            let el = content
-                .relative()
-                .child(track_target(row_id.to_string()))
-                .on_click({
-                    let view = view.clone();
-                    move |ev: &gpui::ClickEvent, window, cx: &mut App| {
-                        // A drag already selected text; don't also click (which
-                        // would move the cursor / fold).
-                        if click_was_drag(ev) {
-                            return;
+            // Click-and-drag selects a range, like pressing `v` and moving.
+            // Shift-click extends a selection from the current cursor (or the
+            // existing anchor) to the clicked row, like a list widget.
+            let el = self.drag_selectable(
+                content.relative().child(track_target(row_id.to_string())),
+                ix,
+                diff_layout,
+                view,
+                |v| Some(v.status_drag()),
+                |v, ix| v.rows.get(ix).is_some_and(|r| r.selectable),
+                |v, ev, ix, _offset| {
+                    if !ev.modifiers.shift {
+                        v.selection.shift_click = false;
+                        return false;
+                    }
+                    let anchor = v.selection.visual.unwrap_or(v.selected);
+                    v.selection.visual = (ix != anchor).then_some(anchor);
+                    v.selected = ix;
+                    v.selection.drag_anchor = None;
+                    v.selection.char_anchor = None;
+                    v.char_sel = None;
+                    v.selection.shift_click = true;
+                    v.selection.char_click = false;
+                    true
+                },
+                move |v, ev, window, cx| {
+                    // A drag already selected text; don't also click (which
+                    // would move the cursor / fold).
+                    if click_was_drag(ev) {
+                        return;
+                    }
+                    // A click on a row that had a char selection only clears
+                    // it — the next click acts as usual.
+                    if v.selection.char_click {
+                        v.selection.char_click = false;
+                        v.char_sel = None;
+                        cx.notify();
+                        return;
+                    }
+                    v.char_sel = None;
+                    // A lone click positions the cursor / toggles a fold; only
+                    // a real double-click fires Enter (open) — so clicking a
+                    // selected foldable row still expands/collapses it.
+                    if ev.click_count() >= 2 {
+                        v.selected = ix;
+                        if let Some(id) = v.resolve_binding("enter") {
+                            v.invoke_command(&id, window, cx);
                         }
-                        let double = ev.click_count() >= 2;
-                        view.update(cx, |v, cx| {
-                            // A click on a row that had a char selection only clears
-                            // it — the next click acts as usual.
-                            if v.selection.char_click {
-                                v.selection.char_click = false;
-                                v.char_sel = None;
-                                cx.notify();
-                                return;
-                            }
-                            v.char_sel = None;
-                            // A lone click positions the cursor / toggles a fold; only
-                            // a real double-click fires Enter (open) — so clicking a
-                            // selected foldable row still expands/collapses it.
-                            if double {
-                                v.selected = ix;
-                                if let Some(id) = v.resolve_binding("enter") {
-                                    v.invoke_command(&id, window, cx);
-                                }
-                            } else {
-                                v.click_row(ix, cx);
-                            }
-                        });
+                    } else {
+                        v.click_row(ix, cx);
                     }
-                })
-                // Click-and-drag selects a range, like pressing `v` and moving.
-                // Shift-click extends a selection from the current cursor (or
-                // the existing anchor) to the clicked row, like a list widget.
-                .on_mouse_down(MouseButton::Left, {
-                    let view = view.clone();
-                    move |ev: &MouseDownEvent, _window, cx: &mut App| {
-                        // Byte offset under the press (only on a diff line); the
-                        // anchor for a same-row char drag.
-                        let offset = down_layout.as_ref().map(|l| offset_at(l, ev.position));
-                        view.update(cx, |v, vcx| {
-                            if v.popup.is_some() {
-                                return;
-                            }
-                            if !v.rows.get(ix).is_some_and(|r| r.selectable) {
-                                return;
-                            }
-                            // This press is on selectable text; the root's bubble
-                            // handler must not treat it as a click-to-dismiss.
-                            v.click_hit_selectable = true;
-                            if ev.modifiers.shift {
-                                let anchor = v.selection.visual.unwrap_or(v.selected);
-                                v.selection.visual = (ix != anchor).then_some(anchor);
-                                v.selected = ix;
-                                v.selection.drag_anchor = None;
-                                v.selection.char_anchor = None;
-                                v.char_sel = None;
-                                v.selection.shift_click = true;
-                                v.selection.char_click = false;
-                            } else {
-                                v.status_drag().mouse_down(ix, offset);
-                                v.selection.shift_click = false;
-                            }
-                            vcx.notify();
-                        });
-                    }
-                })
-                .on_mouse_move({
-                    let view = view.clone();
-                    move |ev: &gpui::MouseMoveEvent, _window, cx: &mut App| {
-                        if ev.pressed_button != Some(MouseButton::Left) {
-                            return;
-                        }
-                        let offset = move_layout.as_ref().map(|l| offset_at(l, ev.position));
-                        view.update(cx, |v, vcx| {
-                            if !v.rows.get(ix).is_some_and(|r| r.selectable) {
-                                return;
-                            }
-                            if v.status_drag().mouse_move(ix, offset) {
-                                vcx.notify();
-                            }
-                        });
-                    }
-                })
-                .on_mouse_up(MouseButton::Left, {
-                    let view = view.clone();
-                    move |_, _window, cx: &mut App| {
-                        view.update(cx, |v, vcx| {
-                            if v.status_drag().mouse_up() {
-                                vcx.notify();
-                            }
-                        });
-                    }
-                });
+                },
+            );
             // Right-click selects the word (sha / ref / path token) under the
             // cursor — unless a line-wise region is in progress — then shows a
             // menu: the staging verbs that apply to the row, plus Copy.
@@ -1562,42 +1639,21 @@ impl Render for StatusView {
                     .px_2()
                     // A drag that overshoots the list's ends clamps to the
                     // first/last selectable row instead of freezing wherever
-                    // the pointer last crossed a row (see drag_row_beyond_list).
-                    .on_mouse_move({
-                        let view = view.clone();
-                        move |ev: &gpui::MouseMoveEvent, _window, cx| {
-                            if ev.pressed_button != Some(MouseButton::Left) {
-                                return;
+                    // the pointer last crossed a row, snapping past the
+                    // headers/spacers that pad the list's ends.
+                    .on_mouse_move(Self::on_drag_beyond_list(
+                        &view,
+                        self.scroll.clone(),
+                        |v| Some(v.status_drag()),
+                        |v| v.rows.len(),
+                        |v, ix, anchor| {
+                            if ix >= anchor {
+                                (0..=ix).rev().find(|&i| v.rows[i].selectable)
+                            } else {
+                                (ix..v.rows.len()).find(|&i| v.rows[i].selectable)
                             }
-                            view.update(cx, |v, vcx| {
-                                let Some(anchor) = v.selection.drag_anchor else {
-                                    return;
-                                };
-                                let Some(ix) = drag_row_beyond_list(
-                                    &v.scroll,
-                                    v.rows.len(),
-                                    ev.position,
-                                    v.row_h(),
-                                ) else {
-                                    return;
-                                };
-                                // Snap to a selectable row (headers/spacers pad
-                                // the list's ends), and leave the anchor row's
-                                // precise char state alone.
-                                let ix = if ix >= anchor {
-                                    (0..=ix).rev().find(|&i| v.rows[i].selectable)
-                                } else {
-                                    (ix..v.rows.len()).find(|&i| v.rows[i].selectable)
-                                };
-                                let Some(ix) = ix.filter(|&i| i != anchor) else {
-                                    return;
-                                };
-                                if v.status_drag().mouse_move(ix, None) {
-                                    vcx.notify();
-                                }
-                            });
-                        }
-                    }),
+                        },
+                    )),
                 )
                 .vertical_scrollbar(&self.scroll),
         );

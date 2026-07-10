@@ -55,7 +55,7 @@ impl KeymapPreset {
 #[serde(default)]
 pub struct Config {
     /// "auto" (follow the system), "light", or "dark". Empty = "auto".
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(skip_serializing_if = "is_default_appearance")]
     pub appearance: String,
     /// Theme used in light mode (registry name). Empty = default.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -501,7 +501,13 @@ fn default_published_branches() -> Vec<String> {
 
 // `skip_serializing_if` predicates: a saved config omits keys left at their
 // default, so the file stays minimal (and a `command = []` can't break a later
-// hand-added `[[command]]`). Each returns true when the field is at its default.
+// hand-added `[[command]]`). Each returns true when the field is at its
+// default. `save_settings_at` derives its write-or-omit decisions from these
+// too (via serde), so they are the only encoding of the defaults.
+fn is_default_appearance(s: &str) -> bool {
+    // Empty and "auto" both mean "follow the system".
+    matches!(s, "" | "auto")
+}
 fn is_true(b: &bool) -> bool {
     *b
 }
@@ -848,8 +854,8 @@ pub fn ensure_file() -> Option<PathBuf> {
 
 /// Persist only the top-level fields owned by the Settings screen, preserving
 /// the rest of the user's TOML (comments, ordering, custom command tables,
-/// transient/keymap sections, etc.). Defaults are removed just like the serde
-/// `skip_serializing_if` rules, but unrelated syntax is left untouched.
+/// transient/keymap sections, etc.). Default-valued keys are omitted per the
+/// serde `skip_serializing_if` rules, but unrelated syntax is left untouched.
 /// A failure (typically an on-disk file that no longer parses) is returned for
 /// the caller to surface — the GUI runs with detached stdio, so stderr is
 /// invisible and a silent no-op save would look like it worked.
@@ -870,132 +876,96 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
     };
 
-    set_string(
-        &mut doc,
-        "appearance",
-        &config.appearance,
-        config.appearance.is_empty() || config.appearance == "auto",
-    );
-    set_string(
-        &mut doc,
-        "light_theme",
-        &config.light_theme,
-        config.light_theme.is_empty(),
-    );
-    set_string(
-        &mut doc,
-        "dark_theme",
-        &config.dark_theme,
-        config.dark_theme.is_empty(),
-    );
-    set_string(&mut doc, "font", &config.font, config.font.is_empty());
-    // Unset removes the key outright: set_setting's omit only skips writing
-    // when the key is absent, and there is no "unset" number to write.
-    match config.font_size {
-        Some(n) => set_int(&mut doc, "font_size", n as i64, false),
-        None => {
-            doc.as_table_mut().remove("font_size");
+    // Serializing through serde applies the struct's `skip_serializing_if`
+    // rules, so a key's presence in this table *is* the is-it-still-default
+    // decision — there is no second list of defaults to keep in sync.
+    let serialized = toml::Table::try_from(config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // The Settings-screen-owned keys, in write order: key, a legacy spelling
+    // to migrate away from, and the current value. A `None` value removes the
+    // key outright: set_setting's omit only skips writing when the key is
+    // absent, and there is no "unset" number to write (font_size).
+    type Value = toml_edit::Value;
+    let owned: [(&str, Option<&str>, Option<Value>); 17] = [
+        ("appearance", None, Some(config.appearance.as_str().into())),
+        (
+            "light_theme",
+            None,
+            Some(config.light_theme.as_str().into()),
+        ),
+        ("dark_theme", None, Some(config.dark_theme.as_str().into())),
+        ("font", None, Some(config.font.as_str().into())),
+        (
+            "font_size",
+            None,
+            config.font_size.map(|n| Value::from(n as i64)),
+        ),
+        ("ui_font", None, Some(config.ui_font.as_str().into())),
+        ("app_icon", None, Some(config.app_icon.as_str().into())),
+        (
+            "commit_title_ruler",
+            None,
+            Some(config.commit_title_ruler.into()),
+        ),
+        (
+            "commit_body_wrap",
+            None,
+            Some(config.commit_body_wrap.into()),
+        ),
+        ("commit_vim_mode", None, Some(config.commit_vim_mode.into())),
+        ("editor", None, Some(config.editor.as_str().into())),
+        (
+            "commit_in_editor",
+            None,
+            Some(config.commit_in_editor.into()),
+        ),
+        (
+            "commit_editor",
+            None,
+            Some(config.commit_editor.as_str().into()),
+        ),
+        (
+            "keymap_preset",
+            None,
+            Some(config.keymap_preset.as_str().into()),
+        ),
+        (
+            "refresh_on_focus",
+            None,
+            Some(config.refresh_on_focus.into()),
+        ),
+        (
+            "show_tags_in_title_bar",
+            Some("show_tags"),
+            Some(config.show_tags_in_title_bar.into()),
+        ),
+        (
+            "check_for_updates",
+            None,
+            Some(config.check_for_updates.into()),
+        ),
+    ];
+
+    for (key, alias, value) in owned {
+        if let Some(alias) = alias {
+            if !doc.as_table().contains_key(key) {
+                if let Some(item) = doc.as_table_mut().remove(alias) {
+                    doc[key] = item;
+                }
+            } else {
+                doc.as_table_mut().remove(alias);
+            }
+        }
+        match value {
+            Some(value) => set_setting(&mut doc, key, !serialized.contains_key(key), value),
+            None => {
+                doc.as_table_mut().remove(key);
+            }
         }
     }
-    set_string(
-        &mut doc,
-        "ui_font",
-        &config.ui_font,
-        config.ui_font.is_empty(),
-    );
-    set_string(
-        &mut doc,
-        "app_icon",
-        &config.app_icon,
-        config.app_icon.is_empty(),
-    );
-    set_bool(
-        &mut doc,
-        "commit_title_ruler",
-        config.commit_title_ruler,
-        config.commit_title_ruler,
-    );
-    set_bool(
-        &mut doc,
-        "commit_body_wrap",
-        config.commit_body_wrap,
-        config.commit_body_wrap,
-    );
-    set_bool(
-        &mut doc,
-        "commit_vim_mode",
-        config.commit_vim_mode,
-        !config.commit_vim_mode,
-    );
-    set_string(&mut doc, "editor", &config.editor, config.editor.is_empty());
-    set_bool(
-        &mut doc,
-        "commit_in_editor",
-        config.commit_in_editor,
-        !config.commit_in_editor,
-    );
-    set_string(
-        &mut doc,
-        "commit_editor",
-        &config.commit_editor,
-        config.commit_editor.is_empty(),
-    );
-    set_string(
-        &mut doc,
-        "keymap_preset",
-        config.keymap_preset.as_str(),
-        config.keymap_preset == KeymapPreset::default(),
-    );
-    set_bool(
-        &mut doc,
-        "refresh_on_focus",
-        config.refresh_on_focus,
-        config.refresh_on_focus,
-    );
-    set_bool_with_alias(
-        &mut doc,
-        "show_tags_in_title_bar",
-        "show_tags",
-        config.show_tags_in_title_bar,
-        !config.show_tags_in_title_bar,
-    );
-    set_bool(
-        &mut doc,
-        "check_for_updates",
-        config.check_for_updates,
-        config.check_for_updates,
-    );
 
     atomic_write_text(path, &doc.to_string())
-}
-
-fn set_string(doc: &mut toml_edit::DocumentMut, key: &str, value: &str, omit: bool) {
-    set_setting(doc, key, omit, toml_edit::Value::from(value));
-}
-
-fn set_bool(doc: &mut toml_edit::DocumentMut, key: &str, value: bool, omit: bool) {
-    set_setting(doc, key, omit, toml_edit::Value::from(value));
-}
-
-fn set_int(doc: &mut toml_edit::DocumentMut, key: &str, value: i64, omit: bool) {
-    set_setting(doc, key, omit, toml_edit::Value::from(value));
-}
-
-fn set_bool_with_alias(
-    doc: &mut toml_edit::DocumentMut,
-    key: &str,
-    alias: &str,
-    value: bool,
-    omit: bool,
-) {
-    if !doc.as_table().contains_key(key) {
-        if let Some(item) = doc.as_table_mut().remove(alias) {
-            doc[key] = item;
-        }
-    } else {
-        doc.as_table_mut().remove(alias);
-    }
-    set_bool(doc, key, value, omit);
 }
 
 fn set_setting(
@@ -1257,6 +1227,58 @@ run = "git fetch && git push"
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("show_tags_in_title_bar = false # old spelling"));
         assert!(!saved.contains("show_tags ="));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn settings_save_round_trips_every_owned_field() {
+        let path = std::env::temp_dir().join(format!(
+            "magritte-settings-owned-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "").unwrap();
+
+        // Every Settings-owned field non-default: reading the file back must
+        // reproduce the config exactly, so a key wrongly treated as default
+        // (and left unwritten) fails the equality.
+        let cfg = Config {
+            appearance: "dark".into(),
+            light_theme: "Selenized Light".into(),
+            dark_theme: "Selenized Dark".into(),
+            font: "Berkeley Mono".into(),
+            font_size: Some(15),
+            ui_font: "Inter".into(),
+            app_icon: "classic".into(),
+            commit_title_ruler: false,
+            commit_body_wrap: false,
+            commit_vim_mode: true,
+            editor: "zed".into(),
+            commit_in_editor: true,
+            commit_editor: "zed --wait".into(),
+            keymap_preset: KeymapPreset::Vanilla,
+            refresh_on_focus: false,
+            show_tags_in_title_bar: true,
+            check_for_updates: false,
+            ..Config::default()
+        };
+        save_settings_at(&path, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(toml::from_str::<Config>(&saved).unwrap(), cfg);
+
+        // Saving the same state again does not churn the file.
+        save_settings_at(&path, &cfg).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+
+        // Everything at its default adds nothing to an empty file — including
+        // the settings screen's explicit "auto" appearance.
+        std::fs::write(&path, "").unwrap();
+        let auto = Config {
+            appearance: "auto".into(),
+            ..Config::default()
+        };
+        save_settings_at(&path, &auto).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "");
 
         let _ = std::fs::remove_file(&path);
     }
