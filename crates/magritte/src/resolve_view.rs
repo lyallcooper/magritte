@@ -504,33 +504,22 @@ impl StatusView {
                     .child(SharedString::from(counter)),
             );
 
-        // The ⏎ glyph is thin/tofu in many monospace fonts, so it draws in the
-        // platform UI font like the keycaps do.
-        let hint = |t: &str| {
-            div()
-                .text_color(self.palette.dim)
-                .child(SharedString::from(t.to_string()))
-        };
         self.screen_scaffold()
             .child(self.view_header(left, "close", view))
             .child(body)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .text_size(px(self.font_px() - 1.0))
-                    .child(hint(
-                        "o ours · t theirs · b both · B base · u undo · n/p conflict · \
-                         j/k move · ",
-                    ))
-                    .child(
-                        div()
-                            .font_family(self.system_ui_font.clone())
-                            .text_color(self.palette.dim)
-                            .child(SharedString::from("⏎")),
-                    )
-                    .child(hint(" open in editor")),
-            )
+            .child(self.hint_footer(
+                view,
+                &[
+                    ("resolve-ours", "ours"),
+                    ("resolve-theirs", "theirs"),
+                    ("resolve-both", "both"),
+                    ("resolve-base", "base"),
+                    ("resolve-undo", "undo"),
+                    ("resolve-next", "next"),
+                    ("resolve-prev", "previous"),
+                    ("resolve-open-editor", "open in editor"),
+                ],
+            ))
     }
 
     /// One resolve row: the line, tinted by its region (ours like added lines,

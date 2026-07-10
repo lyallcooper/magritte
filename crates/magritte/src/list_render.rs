@@ -1175,14 +1175,19 @@ impl StatusView {
                     )
             })
             .child(body)
-            .child(
-                div()
-                    .text_size(px(self.font_px() - 1.0))
-                    .text_color(self.palette.dim)
-                    .child(SharedString::from(
-                        "p pick · r/w reword · e edit · s squash · f fixup · d drop · j/k move · J/K reorder",
-                    )),
-            )
+            .child(self.hint_footer(
+                view,
+                &[
+                    ("rebase-todo-pick", "pick"),
+                    ("rebase-todo-reword", "reword"),
+                    ("rebase-todo-edit", "edit"),
+                    ("rebase-todo-squash", "squash"),
+                    ("rebase-todo-fixup", "fixup"),
+                    ("rebase-todo-drop", "drop"),
+                    ("rebase-todo-reorder-up", "reorder up"),
+                    ("rebase-todo-reorder-down", "reorder down"),
+                ],
+            ))
     }
 
     /// One row of the rebase-todo editor.

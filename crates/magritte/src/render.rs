@@ -418,6 +418,27 @@ impl StatusView {
             })
     }
 
+    /// A footer row of key hints for a screen's local verbs: each a clickable
+    /// keycap + label dispatching its registry command (see
+    /// [`header_action`](Self::header_action)), so the hints double as buttons
+    /// and follow remaps.
+    pub(crate) fn hint_footer(
+        &self,
+        view: &Entity<Self>,
+        items: &[(&'static str, &'static str)],
+    ) -> gpui::Div {
+        let mut row = div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_1()
+            .text_size(px(self.font_px() - 1.0));
+        for (id, label) in items {
+            row = row.child(self.header_action(id, label, view));
+        }
+        row
+    }
+
     /// A small dimmed `(i)` icon that reveals `explanation` in a tooltip on
     /// hover — for clarifying what a settings control does.
     pub(crate) fn info_icon(&self, id: String, explanation: &'static str) -> impl IntoElement {
