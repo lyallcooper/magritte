@@ -392,52 +392,58 @@ impl StatusView {
         label: &'static str,
         view: &Entity<Self>,
     ) -> impl IntoElement {
-        self.header_action_hint(id, label, None, view)
+        self.header_action_hint(id, label, &[], view)
     }
 
-    /// [`header_action`](Self::header_action) with the label underlined in a
-    /// caller-chosen color — the resolve footer marks ours/theirs/base with
-    /// their blocks' tints without recoloring the text itself.
+    /// [`header_action`](Self::header_action) with the label underlined in
+    /// caller-chosen colors — the resolve footer marks ours/theirs/base with
+    /// their blocks' tints without recoloring the text itself. Several colors
+    /// split the bar into equal segments (`both` shows ours-then-theirs).
     pub(crate) fn header_action_tinted(
         &self,
         id: &'static str,
         label: &'static str,
-        color: Hsla,
+        colors: &[Hsla],
         view: &Entity<Self>,
     ) -> impl IntoElement {
-        self.header_action_hint(id, label, Some(color), view)
+        self.header_action_hint(id, label, colors, view)
     }
 
     fn header_action_hint(
         &self,
         id: &'static str,
         label: &'static str,
-        underline: Option<Hsla>,
+        underline: &[Hsla],
         view: &Entity<Self>,
     ) -> impl IntoElement {
         let key = self.command_key(id);
         let view = view.clone();
-        let label_el = match underline {
+        let label_el = if underline.is_empty() {
+            self.hover_label(label, self.palette.dim)
+        } else {
             // A hand-drawn bar rather than a text decoration: slightly thicker
-            // (2px, rounded) and inset a touch from the label's ends.
-            Some(color) => div()
+            // (2px, rounded) and inset a touch from the label's ends; multiple
+            // colors tile it in equal segments.
+            let mut bar = div()
+                .absolute()
+                .bottom(px(0.0))
+                .left(px(6.0))
+                .right(px(6.0))
+                .h(px(2.0))
+                .rounded(px(1.0))
+                .overflow_hidden()
+                .flex();
+            for &color in underline {
+                bar = bar.child(div().flex_grow(1.0).h_full().bg(color));
+            }
+            div()
                 .relative()
                 .px_1()
                 .rounded(px(3.0))
                 .text_color(self.palette.dim)
                 .group_hover(KBD_ROW_GROUP, |s| s.bg(self.palette.visual))
                 .child(SharedString::from(label.to_string()))
-                .child(
-                    div()
-                        .absolute()
-                        .bottom(px(0.0))
-                        .left(px(6.0))
-                        .right(px(6.0))
-                        .h(px(2.0))
-                        .rounded(px(1.0))
-                        .bg(color),
-                ),
-            None => self.hover_label(label, self.palette.dim),
+                .child(bar)
         };
         div()
             .id(id)

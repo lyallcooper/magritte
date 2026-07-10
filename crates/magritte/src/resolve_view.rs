@@ -668,15 +668,25 @@ impl StatusView {
             .child(body)
             // The keep labels are underlined in their blocks' colors so the
             // association with the tinted regions above reads at a glance;
-            // `both` stays unmarked (it takes from both sides).
+            // `both` splits its bar ours-then-theirs (the order it keeps).
             .child(self.hint_footer(vec![
-                self.header_action_tinted("resolve-ours", "ours", self.palette.added, view)
+                self.header_action_tinted("resolve-ours", "ours", &[self.palette.added], view)
                     .into_any_element(),
-                self.header_action_tinted("resolve-theirs", "theirs", self.palette.removed, view)
-                    .into_any_element(),
-                self.header_action("resolve-both", "both", view)
-                    .into_any_element(),
-                self.header_action_tinted("resolve-base", "base", self.palette.modified, view)
+                self.header_action_tinted(
+                    "resolve-theirs",
+                    "theirs",
+                    &[self.palette.removed],
+                    view,
+                )
+                .into_any_element(),
+                self.header_action_tinted(
+                    "resolve-both",
+                    "both",
+                    &[self.palette.added, self.palette.removed],
+                    view,
+                )
+                .into_any_element(),
+                self.header_action_tinted("resolve-base", "base", &[self.palette.modified], view)
                     .into_any_element(),
                 self.header_action_pair("resolve-next", "resolve-prev", "next/previous", view)
                     .into_any_element(),
