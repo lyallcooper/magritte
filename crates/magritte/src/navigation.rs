@@ -673,12 +673,12 @@ impl StatusView {
             }
             _ => (key, shift),
         };
+        let page = page_rows(window, self.row_h());
         // The resolve view's motions step its conflict cursor (which keeps
         // itself in view) rather than the viewport.
         if matches!(self.screen, Screen::Resolve(_)) {
-            return self.resolve_cursor_key(skey, sshift, ctrl, window, cx);
+            return self.resolve_cursor_key(skey, sshift, ctrl, page, cx);
         }
-        let page = page_rows(window, self.row_h());
         let len = match &self.screen {
             Screen::GitLog { .. } => self.git_log_rows().len(),
             Screen::Blame { rows, .. } => rows.len(),
@@ -1113,7 +1113,7 @@ pub(crate) fn scroll_target(
 /// `logical_scroll_top_index`, re-derived over its public state. A pending
 /// (not-yet-painted) scroll-to-top is honored so rapid keys within one frame
 /// compound; a pending Bottom pin is not (its index is the *last* row).
-pub(crate) fn scroll_top_index(handle: &UniformListScrollHandle) -> usize {
+fn scroll_top_index(handle: &UniformListScrollHandle) -> usize {
     let state = handle.0.borrow();
     match state.deferred_scroll_to_item.as_ref() {
         Some(d) if matches!(d.strategy, gpui::ScrollStrategy::Top) => d.item_index,

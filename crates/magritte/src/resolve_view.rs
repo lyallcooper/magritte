@@ -305,13 +305,13 @@ impl StatusView {
 
     /// Jump the cursor to the neighboring conflict block (smerge-next/prev),
     /// resolved ones included — that's how the cursor reaches one to undo.
-    pub(crate) fn resolve_move(&mut self, delta: isize, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_move(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
         if let Some(row) = neighbor_conflict_row(&rv.rows, rv.selected, delta) {
             rv.selected = row;
-            self.scroll_resolve_conflict_into_view(window);
+            self.scroll_resolve_conflict_into_view();
             cx.notify();
         }
     }
@@ -324,12 +324,12 @@ impl StatusView {
         key: &str,
         shift: bool,
         ctrl: bool,
-        window: &Window,
+        page: usize,
         cx: &mut Context<Self>,
     ) {
         match (key, shift, ctrl) {
-            ("j", _, false) => return self.resolve_move(1, window, cx),
-            ("k", _, false) => return self.resolve_move(-1, window, cx),
+            ("j", _, false) => return self.resolve_move(1, cx),
+            ("k", _, false) => return self.resolve_move(-1, cx),
             ("g", shift, false) => {
                 let Some(rv) = self.resolve_state_mut() else {
                     return;
@@ -341,12 +341,11 @@ impl StatusView {
                 };
                 if let Some(row) = conflict_first_row(&rv.rows, target) {
                     rv.selected = row;
-                    self.scroll_resolve_conflict_into_view(window);
+                    self.scroll_resolve_conflict_into_view();
                     cx.notify();
                 }
             }
             _ => {
-                let page = page_rows(window, self.row_h());
                 let Some(rv) = self.resolve_state_mut() else {
                     return;
                 };
@@ -360,9 +359,12 @@ impl StatusView {
     /// Scroll the conflict at the cursor fully into view: nothing when the
     /// whole block is already visible, its end pulled up when it runs off the
     /// bottom, its start pinned to the top when it starts above the viewport
-    /// or is taller than it.
-    fn scroll_resolve_conflict_into_view(&mut self, window: &Window) {
-        let page = page_rows(window, self.row_h());
+    /// or the block is taller than it. The geometry comes from the scroll
+    /// handle itself — the list's painted bounds and sub-row offset — since a
+    /// window-height estimate over-counts by the surrounding chrome and
+    /// leaves blocks half-hidden behind the footer.
+    fn scroll_resolve_conflict_into_view(&mut self) {
+        let row = px(self.row_h());
         let Some(rv) = self.resolve_state_mut() else {
             return;
         };
@@ -378,10 +380,34 @@ impl StatusView {
             }
             None => (rv.selected, rv.selected),
         };
-        let top = scroll_top_index(&rv.scroll);
-        if last - first >= page || first < top {
+        let (viewport, top_ix, top_off, pending) = {
+            let state = rv.scroll.0.borrow();
+            let (ix, off) = state.base_handle.logical_scroll_top();
+            (
+                state.base_handle.bounds().size.height,
+                ix,
+                off,
+                state.deferred_scroll_to_item.as_ref().map(|d| {
+                    (
+                        d.item_index,
+                        matches!(d.strategy, gpui::ScrollStrategy::Top),
+                    )
+                }),
+            )
+        };
+        // Row i's top edge relative to the viewport — projected through a
+        // pending (not-yet-painted) scroll so rapid keys within one frame
+        // still decide against where the view is headed.
+        let y = |i: usize| -> gpui::Pixels {
+            match pending {
+                Some((t, true)) => row * (i as f32 - t as f32),
+                Some((b, false)) => viewport - row * (b as f32 + 1.0 - i as f32),
+                None => row * (i as f32 - top_ix as f32) - top_off,
+            }
+        };
+        if row * (last - first + 1) as f32 > viewport || y(first) < px(0.0) {
             rv.scroll.scroll_to_item(first, gpui::ScrollStrategy::Top);
-        } else if last >= top + page {
+        } else if y(last) + row > viewport + px(1.0) {
             rv.scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
         }
     }
@@ -389,12 +415,7 @@ impl StatusView {
     /// Apply `res` to the conflict at point: record the choice, rewrite the
     /// file on disk, and advance to the next unresolved conflict. When it was
     /// the last one, offer to stage the file (magit's stage-to-resolve).
-    pub(crate) fn resolve_choose(
-        &mut self,
-        res: Resolution,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn resolve_choose(&mut self, res: Resolution, cx: &mut Context<Self>) {
         let Some(current) = self.resolve_conflict_at_point() else {
             self.set_status("No conflict at point".to_string(), true, cx);
             return;
@@ -422,7 +443,7 @@ impl StatusView {
             rv.selected =
                 target.unwrap_or_else(|| rv.selected.min(rv.rows.len().saturating_sub(1)));
         }
-        self.scroll_resolve_conflict_into_view(window);
+        self.scroll_resolve_conflict_into_view();
         if all_resolved {
             self.confirm = Some((
                 format!("All conflicts resolved — stage {path}?"),
@@ -435,7 +456,7 @@ impl StatusView {
     /// Undo a choice: the conflict at point when the cursor is on a resolved
     /// one, else the most recently applied choice — so `u` right after a keep
     /// always takes it back. Restores the markers and rewrites the file.
-    pub(crate) fn resolve_undo(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_undo(&mut self, cx: &mut Context<Self>) {
         let at_point = self.resolve_conflict_at_point();
         let Some(rv) = self.resolve_state_mut() else {
             return;
@@ -456,7 +477,7 @@ impl StatusView {
                 rv.selected = row;
             }
         }
-        self.scroll_resolve_conflict_into_view(window);
+        self.scroll_resolve_conflict_into_view();
         cx.notify();
     }
 
