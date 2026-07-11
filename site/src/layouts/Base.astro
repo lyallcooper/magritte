@@ -1,0 +1,50 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  wide?: boolean;
+}
+
+const { title, description, wide = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class:list={['container', { wide }]}>
+        <a class="wordmark" href="/">magritte</a>
+        <nav>
+          <a href="/docs/config/">Configuration</a>
+          <a href="https://github.com/lyallcooper/magritte">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <div class:list={['container', { wide }]}>
+        <slot />
+      </div>
+    </main>
+    <footer class="site-footer">
+      <div class:list={['container', { wide }]}>
+        <span>MIT licensed</span>
+        <a href="https://github.com/lyallcooper/magritte">github.com/lyallcooper/magritte</a>
+      </div>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .container.wide {
+    max-width: 62rem;
+  }
+</style>

@@ -1,0 +1,175 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="Magritte — a keyboard-first Git client for macOS"
+  description="Magritte is a fast, keyboard-first Git client inspired by Magit: the status-centered workflow as a standalone macOS app, no Emacs required."
+>
+  <h1>Magritte</h1>
+  <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
+
+  <p class="lede">
+    A fast, keyboard-first Git client for macOS, inspired by
+    <a href="https://magit.vc/">Magit</a>. The status view shows the whole
+    repository; move to a file, hunk, or commit and act on it. Commands such as
+    commit, branch, push, and rebase open focused menus that show their
+    options. No Emacs required.
+  </p>
+
+  <pre class="install"><code>brew install lyallcooper/magritte/magritte</code></pre>
+
+  <div class="window">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <picture>
+      <source
+        srcset="/screenshots/status-dark-mobile.png"
+        media="(max-width: 40rem) and (prefers-color-scheme: dark)"
+      />
+      <source srcset="/screenshots/status-light-mobile.png" media="(max-width: 40rem)" />
+      <source srcset="/screenshots/status-dark.png" media="(prefers-color-scheme: dark)" />
+      <img
+        src="/screenshots/status-light.png"
+        width="730"
+        height="702"
+        alt="Magritte's status view on its own repository: untracked, unstaged, and staged sections, an expanded file diff with a syntax-highlighted hunk, and recent commits"
+      />
+    </picture>
+  </div>
+
+  <h2>One view, acted on at point</h2>
+  <p>
+    Everything starts from the status view. <kbd>Tab</kbd> unfolds the item at
+    the cursor — a file into its diff, a section into its contents. Commands
+    apply to the item at point: <kbd>s</kbd> stages the current hunk when the
+    cursor is on a hunk, the file when it is on a file, the whole section when
+    it is on a heading. Visual selection applies an action to several rows at
+    once.
+  </p>
+
+  <div class="keys">
+    <div><span class="k"><kbd>j</kbd> / <kbd>k</kbd></span> Move down or up</div>
+    <div><span class="k"><kbd>c</kbd></span> Commit menu</div>
+    <div><span class="k"><kbd>Tab</kbd></span> Expand or collapse</div>
+    <div><span class="k"><kbd>b</kbd></span> Branch menu</div>
+    <div><span class="k"><kbd>s</kbd> / <kbd>u</kbd></span> Stage or unstage</div>
+    <div><span class="k"><kbd>p</kbd> / <kbd>F</kbd></span> Push or pull menu</div>
+    <div><span class="k"><kbd>x</kbd></span> Discard (confirmed)</div>
+    <div><span class="k"><kbd>l</kbd></span> Log menu</div>
+    <div><span class="k"><kbd>:</kbd></span> Search all commands</div>
+    <div><span class="k"><kbd>?</kbd></span> Commands and their keys</div>
+  </div>
+
+  <h2>If you know Magit</h2>
+  <p>
+    You already know Magritte. The default keymap follows
+    evil-collection-magit; a vanilla Emacs/Magit preset is one setting away.
+    Transient menus, act-at-point, section folding, and the safety
+    confirmations work the way Magit's do — where behavior differs, it is
+    documented. <a href="https://github.com/lyallcooper/magritte/blob/main/docs/dev/magit-parity.md">Magit parity</a>
+    lists what is supported and what is missing, feature by feature.
+  </p>
+
+  <h2>Configuration</h2>
+  <p>
+    Themes, fonts, and the keymap preset live in the Settings screen
+    (<kbd>,</kbd>). Everything else — key remapping, custom commands, status
+    sections, background fetching, transient menu changes — is a TOML file that
+    reloads on save, with an optional per-repository overlay. See the
+    <a href="/docs/config/">configuration guide</a>.
+  </p>
+
+  <h2>Status</h2>
+  <p>Magritte is under active development. Current limitations:</p>
+  <ul>
+    <li>macOS on Apple silicon is the supported release target; Linux x86_64 builds are best effort.</li>
+    <li>Release builds are ad hoc signed, not notarized.</li>
+    <li>Requires <code>git</code> on your <code>PATH</code>; it refreshes on focus and after its own commands rather than watching the filesystem.</li>
+  </ul>
+</Base>
+
+<style>
+  .tagline {
+    margin: 0 0 1.25rem;
+    color: var(--muted);
+  }
+
+  .lede {
+    font-size: 1.05rem;
+    max-width: 40rem;
+  }
+
+  .install {
+    margin: 1.5rem 0;
+  }
+
+  /* The status-view screenshot, framed as the window it was captured from.
+     The offscreen capture omits the native traffic lights; the title bar
+     leaves their standard inset, so CSS dots restore them. */
+  .window {
+    position: relative;
+    container-type: inline-size;
+    margin: 2rem 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+    box-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.25);
+    line-height: 0;
+  }
+
+  .window img {
+    width: 100%;
+    height: auto;
+  }
+
+  /* Sized in cqw so the dots track the screenshot's title bar (33 logical px
+     tall at a natural width of 730) as the image scales. */
+  .dot {
+    position: absolute;
+    top: 1.44cqw;
+    width: 1.64cqw;
+    height: 1.64cqw;
+    border-radius: 50%;
+  }
+
+  .dot.red { left: 1.92cqw; background: #ec6a5e; }
+  .dot.yellow { left: 4.66cqw; background: #f4bf4f; }
+  .dot.green { left: 7.4cqw; background: #61c554; }
+
+  /* The mobile capture is 640 logical px wide (vs 730), so the title bar is
+     proportionally taller; rescale the dots to it. */
+  @media (max-width: 40rem) {
+    .dot {
+      top: 1.64cqw;
+      width: 1.88cqw;
+      height: 1.88cqw;
+    }
+
+    .dot.red { left: 2.19cqw; }
+    .dot.yellow { left: 5.31cqw; }
+    .dot.green { left: 8.44cqw; }
+  }
+
+  /* Key reference: two columns where they fit, one on narrow screens */
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    column-gap: 3rem;
+    max-width: 42rem;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+
+  .keys > div {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .keys .k {
+    flex: 0 0 4.5rem;
+    white-space: nowrap;
+  }
+</style>

@@ -1,0 +1,274 @@
+/* Palette: Selenized Light / Selenized Dark, taken from the app's bundled
+   theme (crates/magritte/themes/selenized.json), so the site renders in
+   Magritte's own default colors. */
+:root {
+  --bg: #fbf3db;
+  --fg: #53676d;
+  --muted: #909995;
+  --border: #d5cdb6;
+  --surface: #ece3cc;
+  --sel: #d5cdb6;
+  --accent: #0072d4;
+  --red: #d2212d;
+  --green: #489100;
+  --yellow: #ad8900;
+  --magenta: #ca4898;
+  --cyan: #009c8f;
+  --add-bg: #4891001f;
+  --del-bg: #d2212d1f;
+  --mono: ui-monospace, 'SF Mono', 'Menlo', 'Cascadia Mono', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #103c48;
+    --fg: #adbcbc;
+    --muted: #72898f;
+    --border: #2d5b69;
+    --surface: #184956;
+    --sel: #2d5b69;
+    --accent: #4695f7;
+    --red: #fa5750;
+    --green: #75b938;
+    --yellow: #dbb32d;
+    --magenta: #f275be;
+    --cyan: #41c7b9;
+    --add-bg: #75b9381f;
+    --del-bg: #fa57501f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* Site header */
+.site-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.site-header .container {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--fg);
+}
+
+.wordmark:hover {
+  text-decoration: none;
+  color: var(--accent);
+}
+
+.site-header nav {
+  margin-left: auto;
+  display: flex;
+  gap: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.site-header nav a {
+  color: var(--fg);
+}
+
+.site-header nav a:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+main {
+  padding: 2.5rem 0 4rem;
+}
+
+/* Footer */
+.site-footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.site-footer .container {
+  display: flex;
+  gap: 1.25rem;
+  padding-top: 1rem;
+  padding-bottom: 2.5rem;
+}
+
+.site-footer a {
+  color: var(--muted);
+}
+
+/* Type */
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 1.7rem;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin: 2.6rem 0 0.75rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 1.8rem 0 0.5rem;
+}
+
+p,
+ul,
+ol {
+  margin: 0.75rem 0;
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--mono);
+}
+
+code {
+  font-size: 0.875em;
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+kbd {
+  font-size: 0.85em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.05em 0.4em;
+}
+
+pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 1em;
+}
+
+/* Shiki dual-theme output (defaultColor: false emits only variables). The
+   block background stays our surface color in both modes for cohesion. */
+.astro-code,
+.astro-code span {
+  color: var(--shiki-light);
+}
+
+@media (prefers-color-scheme: dark) {
+  .astro-code,
+  .astro-code span {
+    color: var(--shiki-dark);
+  }
+}
+
+.astro-code {
+  background-color: var(--surface) !important;
+}
+
+/* Tables */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.75rem 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+}
+
+blockquote {
+  margin: 1rem 0;
+  padding: 0 0 0 1rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+@media (max-width: 40rem) {
+  /* The docs' reference tables are wider than a phone; scroll them in place
+     rather than widening the page. */
+  table {
+    display: block;
+    overflow-x: auto;
+  }
+
+  .site-header .container {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .site-header nav {
+    flex-wrap: wrap;
+    gap: 0.9rem;
+  }
+}
