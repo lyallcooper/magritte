@@ -294,7 +294,6 @@ impl StatusView {
                 {
                     cx.notify();
                 }
-                return;
             }
             // Everything else resolves through the effective keymap (the
             // shift-cased keystroke → command id), so remap/unbind take effect.
@@ -315,10 +314,8 @@ impl StatusView {
                 if !cmd && !alt && !ctrl {
                     self.report_unbound(&cased, cx);
                 }
-                return;
             }
         }
-        self.scroll_cursor_into_view(cx);
     }
 
     /// Mouse click on a transient suffix: toggle a switch, or invoke an action.
