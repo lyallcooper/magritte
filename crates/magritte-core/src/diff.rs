@@ -27,6 +27,19 @@ pub enum LineKind {
     NoNewline,
 }
 
+/// What a contiguous run of changed lines does, as a gutter indicator shows
+/// it. Runs are maximal stretches of non-context lines: a `-U3` hunk can
+/// carry several separate changes, each classified on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineChange {
+    /// The run only adds lines.
+    Added,
+    /// The run only removes lines.
+    Removed,
+    /// The run replaces lines (both removals and additions).
+    Changed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub kind: LineKind,
@@ -72,6 +85,39 @@ impl Hunk {
             .find(|l| l.kind == LineKind::Added)
             .and_then(|l| l.new_lineno)
             .unwrap_or(self.new_start)
+    }
+
+    /// Classify each line by the change run it belongs to: `None` for context,
+    /// otherwise the run's [`LineChange`]. A `\ No newline` marker inside a run
+    /// (between its removed and added halves, or trailing it) stays part of the
+    /// run; one following context is context.
+    pub fn line_changes(&self) -> Vec<Option<LineChange>> {
+        let mut out = vec![None; self.lines.len()];
+        let mut ix = 0;
+        while ix < self.lines.len() {
+            if !matches!(self.lines[ix].kind, LineKind::Added | LineKind::Removed) {
+                ix += 1;
+                continue;
+            }
+            let start = ix;
+            let (mut added, mut removed) = (false, false);
+            while ix < self.lines.len() {
+                match self.lines[ix].kind {
+                    LineKind::Added => added = true,
+                    LineKind::Removed => removed = true,
+                    LineKind::NoNewline => {}
+                    LineKind::Context => break,
+                }
+                ix += 1;
+            }
+            let change = match (added, removed) {
+                (true, true) => LineChange::Changed,
+                (true, false) => LineChange::Added,
+                _ => LineChange::Removed,
+            };
+            out[start..ix].fill(Some(change));
+        }
+        out
     }
 }
 

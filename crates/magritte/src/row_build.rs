@@ -700,6 +700,7 @@ impl StatusRows<'_> {
                         continue;
                     }
                     let file_hl = self.diff_cache.highlight(&(source, file.path.clone()));
+                    let changes = hunk.line_changes();
                     for (line_ix, line) in hunk.lines.iter().enumerate() {
                         // Use cached highlight spans if present, else a single
                         // fallback span in the default color.
@@ -725,6 +726,7 @@ impl StatusRows<'_> {
                             }),
                             kind: RowKind::Diff {
                                 kind: line.kind,
+                                change: changes[line_ix],
                                 spans,
                             },
                         });

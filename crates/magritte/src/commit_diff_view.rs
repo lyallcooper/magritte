@@ -1225,6 +1225,7 @@ mod tests {
     fn line() -> CommitDiffRow {
         CommitDiffRow::Line {
             kind: LineKind::Context,
+            change: None,
             spans: Arc::from(Vec::new()),
         }
     }

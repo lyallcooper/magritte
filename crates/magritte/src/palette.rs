@@ -39,6 +39,15 @@ pub(crate) struct Palette {
 }
 
 impl Palette {
+    /// The gutter-indicator color for a diff line's change run.
+    pub(crate) fn change_color(&self, change: LineChange) -> Hsla {
+        match change {
+            LineChange::Added => self.added,
+            LineChange::Removed => self.removed,
+            LineChange::Changed => self.modified,
+        }
+    }
+
     pub(crate) fn from_theme(cx: &App) -> Self {
         let t = cx.theme();
         // Diff/status colors come from the highlight theme's git status colors

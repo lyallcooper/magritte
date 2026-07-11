@@ -113,8 +113,14 @@ pub(crate) enum CommitDiffRow {
     /// A hunk header (`@@ … @@`).
     Hunk(String),
     /// A diff line: its kind plus syntax-highlighted (or fallback) content.
-    /// `Arc` so rows can be built on the background executor.
-    Line { kind: LineKind, spans: Arc<[Span]> },
+    /// `Arc` so rows can be built on the background executor. `change` is the
+    /// change run the line belongs to (`None` for context), for the left-edge
+    /// gutter indicator.
+    Line {
+        kind: LineKind,
+        change: Option<LineChange>,
+        spans: Arc<[Span]>,
+    },
     /// A dim status note (e.g. when the staged diff couldn't be loaded).
     Note(String),
     /// A dim note with a leading spinner, for an async load still in flight.
@@ -206,6 +212,7 @@ pub(crate) fn diff_rows(
         };
         for (hi, hunk) in diff.hunks.iter().enumerate() {
             rows.push(CommitDiffRow::Hunk(status_label::hunk_header_text(hunk)));
+            let changes = hunk.line_changes();
             for (li, line) in hunk.lines.iter().enumerate() {
                 let spans = hl
                     .as_ref()
@@ -221,6 +228,7 @@ pub(crate) fn diff_rows(
                     });
                 rows.push(CommitDiffRow::Line {
                     kind: line.kind,
+                    change: changes[li],
                     spans,
                 });
             }

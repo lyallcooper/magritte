@@ -394,3 +394,67 @@ fn parse_diff_keeps_non_utf8_line_bytes() {
     // The header was pure ASCII, so no raw copy is kept.
     assert!(files[0].header_raw.is_none());
 }
+
+#[test]
+fn line_changes_classifies_each_run() {
+    let raw = "\
+diff --git a/f b/f
+index 1111111..2222222 100644
+--- a/f
++++ b/f
+@@ -1,6 +1,7 @@
+ ctx
+-replaced
++replacement a
++replacement b
+ ctx
++added
+ ctx
+-removed
+ ctx
+";
+    use magritte_core::LineChange::{Added, Changed, Removed};
+    let files = parse_diff(raw.as_bytes()).unwrap();
+    assert_eq!(
+        files[0].hunks[0].line_changes(),
+        vec![
+            None,
+            Some(Changed),
+            Some(Changed),
+            Some(Changed),
+            None,
+            Some(Added),
+            None,
+            Some(Removed),
+            None,
+        ]
+    );
+}
+
+#[test]
+fn line_changes_keeps_no_newline_marker_in_its_run() {
+    let raw = "\
+diff --git a/f b/f
+index 1111111..2222222 100644
+--- a/f
++++ b/f
+@@ -1,2 +1,2 @@
+ ctx
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+";
+    use magritte_core::LineChange::Changed;
+    let files = parse_diff(raw.as_bytes()).unwrap();
+    assert_eq!(
+        files[0].hunks[0].line_changes(),
+        vec![
+            None,
+            Some(Changed),
+            Some(Changed),
+            Some(Changed),
+            Some(Changed),
+        ]
+    );
+}

@@ -135,6 +135,19 @@ pub(crate) fn offset_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>
     }
 }
 
+/// The thin left-edge strip marking a diff line's change run (added/removed/
+/// changed), painted over the row's tint and any cursor wash. The parent row
+/// must be `.relative()`.
+pub(crate) fn change_bar(color: Hsla) -> gpui::Div {
+    div()
+        .absolute()
+        .left_0()
+        .top_0()
+        .bottom_0()
+        .w(px(3.0))
+        .bg(color)
+}
+
 /// Whether a click's press and release positions diverged enough to be a drag.
 /// A drag already selected text, so a row's click handler should not also act.
 pub(crate) fn click_was_drag(ev: &gpui::ClickEvent) -> bool {
@@ -782,8 +795,12 @@ impl StatusView {
             .gap_2()
             .h(px(self.row_h()))
             .w_full()
+            .overflow_hidden()
             .when(clickable, |el| el.cursor_pointer())
-            .pl(px(ROW_PAD_LEFT + row.indent as f32 * INDENT_STEP));
+            .pl(px(LIST_INSET_X
+                + ROW_PAD_LEFT
+                + row.indent as f32 * INDENT_STEP))
+            .pr(px(LIST_INSET_X));
         // In visual mode the whole region — including the current line — uses
         // the region color, so the cursor line doesn't stand out from it.
         // Otherwise the current line gets the selection accent.
@@ -876,7 +893,7 @@ impl StatusView {
                 el
             }
             RowKind::HunkHeader { expanded, .. } => el.child(chevron(*expanded, self.palette.dim)),
-            RowKind::Diff { kind, .. } => {
+            RowKind::Diff { kind, change, .. } => {
                 let tint = match kind {
                     LineKind::Added => Some(self.palette.added_bg),
                     LineKind::Removed => Some(self.palette.removed_bg),
@@ -898,6 +915,12 @@ impl StatusView {
                     if !wash && !in_region {
                         el = el.bg(t);
                     }
+                }
+                // The change-run gutter strip stays visible over any wash.
+                if let Some(change) = change {
+                    el = el
+                        .relative()
+                        .child(change_bar(self.palette.change_color(*change)));
                 }
                 el.child(
                     div()
@@ -1636,7 +1659,6 @@ impl Render for StatusView {
                     .track_scroll(&self.scroll)
                     .size_full()
                     .py_2()
-                    .px_2()
                     // A drag that overshoots the list's ends clamps to the
                     // first/last selectable row instead of freezing wherever
                     // the pointer last crossed a row, snapping past the

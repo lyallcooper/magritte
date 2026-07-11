@@ -11,7 +11,7 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::Sizable;
 
-use crate::render::{click_was_drag, color_run, offset_at, with_copy_menu, StyleRuns};
+use crate::render::{change_bar, click_was_drag, color_run, offset_at, with_copy_menu, StyleRuns};
 use crate::*;
 
 /// The tallest the editor's message box may be in this window: the resize
@@ -666,7 +666,11 @@ impl StatusView {
                     .into_any_element(),
                 None,
             ),
-            CommitDiffRow::Line { kind, spans } => {
+            CommitDiffRow::Line {
+                kind,
+                change,
+                spans,
+            } => {
                 let (sign, sign_color, tint) = match kind {
                     LineKind::Added => ('+', self.palette.added, Some(self.palette.added_bg)),
                     LineKind::Removed => ('-', self.palette.removed, Some(self.palette.removed_bg)),
@@ -682,6 +686,12 @@ impl StatusView {
                     if let Some(t) = tint {
                         el = el.bg(t);
                     }
+                }
+                // The change-run gutter strip stays visible over any wash.
+                if let Some(change) = change {
+                    el = el
+                        .relative()
+                        .child(change_bar(self.palette.change_color(*change)));
                 }
                 (
                     el.child(

@@ -129,8 +129,8 @@ use gpui_component::{ActiveTheme, IndexPath};
 use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     bisect::Bisect, BisectMark, CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest,
-    LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence, SequenceKind,
-    StashKind, Status, TagDistance,
+    LineChange, LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence,
+    SequenceKind, StashKind, Status, TagDistance,
 };
 
 /// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
@@ -239,6 +239,10 @@ const GIT_MISSING_MESSAGE: &str =
 const INDENT_STEP: f32 = 16.0;
 /// Base left padding (points) before any indent.
 const ROW_PAD_LEFT: f32 = 8.0;
+/// Horizontal inset (points) the status list's rows carry themselves (instead
+/// of padding on the list), so a row's cursor wash or diff tint bleeds to the
+/// window edges even when the text overflows a narrow window.
+const LIST_INSET_X: f32 = 8.0;
 /// Fixed width (points) of the status-word column on file rows.
 const STATUS_COL_WIDTH: f32 = 84.0;
 /// Group name shared by keycap+label button rows so hovering a row highlights

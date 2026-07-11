@@ -250,6 +250,9 @@ pub(crate) enum RowKind {
     },
     Diff {
         kind: LineKind,
+        /// The change run this line belongs to (`None` for context) — drives
+        /// the left-edge gutter indicator.
+        change: Option<LineChange>,
         /// Syntax-highlighted (or fallback) content runs, shared with the
         /// highlight cache (see [`FileHighlights`]).
         spans: Arc<[Span]>,
