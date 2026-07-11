@@ -29,7 +29,7 @@ which_key_delay_ms = 1000
 refresh_on_focus = true
 show_tags_in_title_bar = false
 check_for_updates = true
-published_branches = ["origin/main", "upstream/main"] # Warns when rewriting on these
+published_branches = ["origin/main", "origin/master"] # Warns when rewriting on these
 
 # Status sections appear in this order. Remove an id to hide that section.
 [status]
