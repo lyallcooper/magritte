@@ -11,6 +11,8 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
         transient::Suffix::Info(transient::Info {
             keys: keys.to_string(),
             description: description.to_string(),
+            // The sheet documents modal editor keys; the rows aren't buttons.
+            clickable: false,
         })
     };
     let group = |title: &str, suffixes| transient::Group {

@@ -573,8 +573,10 @@ impl StatusView {
                     .child(self.hover_label(&a.description, label_color))
                     .into_any_element()
             }
-            // A dispatch command row: keycap + label, clickable to run.
-            Suffix::Info(i) => {
+            // A dispatch command row: keycap + label, clickable to run. A
+            // non-clickable Info (the vim cheat sheet) renders the same row
+            // inert: no pointer, no hover wash, no handler.
+            Suffix::Info(i) if i.clickable => {
                 let view = view.clone();
                 let key = SharedString::from(i.keys.clone());
                 self.hint_row(key.clone())
@@ -586,6 +588,19 @@ impl StatusView {
                     })
                     .into_any_element()
             }
+            Suffix::Info(i) => div()
+                .flex()
+                .items_center()
+                .px_1()
+                .gap_2()
+                .child(self.key_tokens(&i.keys))
+                .child(
+                    div()
+                        .px_1()
+                        .text_color(self.palette.fg)
+                        .child(SharedString::from(i.description.clone())),
+                )
+                .into_any_element(),
             // A user-injected suffix (from `[transient]`): keycap + label,
             // clickable; dispatched by key like an action.
             Suffix::Custom(c) => {

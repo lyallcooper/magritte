@@ -422,6 +422,10 @@ pub struct Info {
     pub keys: String,
     /// Owned so user `[[command]]` titles (not `'static`) can appear too.
     pub description: String,
+    /// Clicking the row dispatches `keys` (the `?` menu's rows). False for
+    /// purely documentary rows — the vim cheat sheet, whose keys are modal
+    /// editor input that the app keymap can't dispatch.
+    pub clickable: bool,
 }
 
 /// A user-injected suffix (from the `[transient]` config): a key + label that

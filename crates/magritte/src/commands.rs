@@ -2413,6 +2413,7 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
                 };
                 keys.map(|keys| {
                     Suffix::Info(transient::Info {
+                        clickable: true,
                         keys,
                         description: c.title.to_string(),
                     })
@@ -2426,6 +2427,7 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
     let mut essential = group(Category::Essential);
     if matches!(config.keymap_preset, config::KeymapPreset::EvilCollection) {
         essential.suffixes.push(Suffix::Info(transient::Info {
+            clickable: true,
             keys: ":".to_string(),
             description: "Command palette".to_string(),
         }));
@@ -2446,6 +2448,7 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
             continue; // unbound → palette-only, like keyless built-ins
         };
         let info = Suffix::Info(transient::Info {
+            clickable: true,
             keys,
             description: c.title.clone(),
         });
@@ -2464,6 +2467,7 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
 pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
     let info = |keys: &str, description: &str| {
         Suffix::Info(transient::Info {
+            clickable: true,
             keys: keys.to_string(),
             description: description.to_string(),
         })
@@ -2528,6 +2532,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
                 )
                 .map(|keys| {
                     Suffix::Info(transient::Info {
+                        clickable: true,
                         keys,
                         description: c.title.to_string(),
                     })
@@ -2590,6 +2595,7 @@ fn derived_screen_menu(view: &StatusView, kind: ScreenKind, copy_key: &str) -> T
             continue;
         };
         let suffix = Suffix::Info(transient::Info {
+            clickable: true,
             keys,
             description: c.title.to_string(),
         });
@@ -2606,6 +2612,7 @@ fn derived_screen_menu(view: &StatusView, kind: ScreenKind, copy_key: &str) -> T
         ScreenKind::GitLog | ScreenKind::RebaseTodo | ScreenKind::Resolve
     ) {
         commands_group.push(Suffix::Info(transient::Info {
+            clickable: true,
             keys: copy_key.to_string(),
             description: "Copy".to_string(),
         }));
