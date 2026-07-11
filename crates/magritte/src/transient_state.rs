@@ -449,7 +449,7 @@ pub(crate) enum PickerAction {
     /// carried mode, optionally limited to the carried pathspecs.
     StashMessage {
         kind: magritte_core::StashKind,
-        include_untracked: bool,
+        untracked: magritte_core::StashUntracked,
         paths: Vec<String>,
     },
     /// Step 1 of stash-branch (magit-stash-branch): the chosen value is the

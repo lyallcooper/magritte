@@ -458,7 +458,8 @@ Log.
 | `push-pushremote` / `push-upstream` / `push-elsewhere` / `push-other` / `push-tag` / `push-tags` | none | Push variants |
 | `pull-pushremote` / `pull-upstream` / `pull-elsewhere` | none | Pull variants |
 | `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | none | Fetch variants |
-| `stash-push` / `stash-push-all` / `stash-index` / `stash-keep-index` / `stash-apply` / `stash-pop` / `stash-drop` / `stash-branch` | none | Stash variants |
+| `stash-push` / `stash-index` / `stash-keep-index` / `stash-apply` / `stash-pop` / `stash-drop` / `stash-branch` | none | Stash variants |
+| `stash-snapshot` / `stash-snapshot-index` / `stash-snapshot-worktree` | none | Record the state on the stash list without resetting anything |
 | `merge-editmsg` / `merge-preview` | none | Edit a merge message or preview a merge |
 | `reset-branch` / `file-checkout` | none | Reset a branch or check out a file from a revision |
 | `tag-create` / `tag-delete` | none | Tag variants |

@@ -76,9 +76,28 @@ impl StatusView {
             .into_any_element()
         };
 
-        self.screen_scaffold()
-            .child(self.view_header(self.view_title("Command log"), "close", view))
-            .child(body)
+        // The header carries the query-visibility toggle beside close, so the
+        // pager's one command is discoverable without the `?` menu.
+        let queries_label = if self.git_log_show_all() {
+            "hide queries"
+        } else {
+            "show queries"
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .w_full()
+            .child(self.view_title("Command log"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(self.header_action("git-log-toggle-queries", queries_label, view))
+                    .child(self.key_action("close-view", "esc", "close", view, Self::close_screen)),
+            );
+        self.screen_scaffold().child(header).child(body)
     }
 
     /// A file's `git blame`: a monospace, scrollable list of annotated lines

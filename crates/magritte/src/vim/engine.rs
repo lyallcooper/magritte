@@ -271,6 +271,13 @@ impl VimState {
         }
     }
 
+    /// Open directly in Insert mode — for an editor starting on an empty
+    /// message, where the first thing anyone does is type. Esc still lands in
+    /// Normal with the usual entry bookkeeping defaults.
+    pub(crate) fn start_in_insert(&mut self) {
+        self.mode = Mode::Insert;
+    }
+
     pub(crate) fn mode(&self) -> Mode {
         self.mode
     }

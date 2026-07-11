@@ -88,13 +88,31 @@ impl StatusView {
             IgnoreToplevel | IgnoreSubdir | IgnorePrivate | IgnoreGlobal => {
                 self.dispatch_ignore(command, window, cx)
             }
-            StashPush => self.prompt_stash_message(StashKind::Both, false, paths, window, cx),
-            StashPushAll => self.prompt_stash_message(StashKind::Both, true, paths, window, cx),
+            StashPush => {
+                let u = StashUntracked::from_args(&args);
+                self.prompt_stash_message(StashKind::Both, u, paths, window, cx)
+            }
             StashPushStaged => {
-                self.prompt_stash_message(StashKind::Staged, false, paths, window, cx)
+                let u = StashUntracked::from_args(&args);
+                self.prompt_stash_message(StashKind::Staged, u, paths, window, cx)
             }
             StashPushKeepIndex => {
-                self.prompt_stash_message(StashKind::KeepIndex, false, paths, window, cx)
+                let u = StashUntracked::from_args(&args);
+                self.prompt_stash_message(StashKind::KeepIndex, u, paths, window, cx)
+            }
+            StashSnapshotBoth | StashSnapshotIndex | StashSnapshotWorktree => {
+                let snapshot = match command {
+                    StashSnapshotBoth => SnapshotKind::Both,
+                    StashSnapshotIndex => SnapshotKind::Index,
+                    _ => SnapshotKind::Worktree,
+                };
+                let u = StashUntracked::from_args(&args);
+                self.run_job(
+                    "Saving snapshot…",
+                    "Snapshot saved",
+                    move |repo| repo.stash_snapshot(snapshot, u),
+                    cx,
+                );
             }
             StashApply | StashPop | StashDrop | StashBranch => {
                 self.dispatch_stash(command, window, cx)
@@ -1702,9 +1720,9 @@ impl StatusView {
                 PickerAction::Ignore(dest) => self.run_ignore(dest, chosen.to_string(), cx),
                 PickerAction::StashMessage {
                     kind,
-                    include_untracked,
+                    untracked,
                     paths,
-                } => self.run_stash_push(kind, include_untracked, paths, chosen.to_string(), cx),
+                } => self.run_stash_push(kind, untracked, paths, chosen.to_string(), cx),
                 // Worktree create/move: step one captures the ref/branch and
                 // opens the directory prompt; step two runs the git command.
                 PickerAction::WorktreeAddRef => {
@@ -2112,7 +2130,7 @@ impl StatusView {
     pub(crate) fn prompt_stash_message(
         &mut self,
         kind: StashKind,
-        include_untracked: bool,
+        untracked: StashUntracked,
         paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2120,7 +2138,7 @@ impl StatusView {
         self.open_picker(
             PickerAction::StashMessage {
                 kind,
-                include_untracked,
+                untracked,
                 paths,
             },
             Vec::new(),
@@ -2134,7 +2152,7 @@ impl StatusView {
     pub(crate) fn run_stash_push(
         &mut self,
         kind: StashKind,
-        include_untracked: bool,
+        untracked: StashUntracked,
         paths: Vec<String>,
         message: String,
         cx: &mut Context<Self>,
@@ -2142,7 +2160,7 @@ impl StatusView {
         self.run_job(
             "Stashing…",
             "Stashed",
-            move |repo| repo.stash_push(kind, Some(&message), include_untracked, &paths),
+            move |repo| repo.stash_push(kind, Some(&message), untracked, &paths),
             cx,
         );
     }

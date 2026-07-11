@@ -1020,9 +1020,20 @@ pub(crate) fn commands() -> &'static [Command] {
             Leaf::StashPush
         ),
         leaf!(
-            "stash-push-all",
-            "Stash including untracked",
-            Leaf::StashPushAll
+            "stash-snapshot",
+            "Snapshot worktree and index",
+            &["snapshot"],
+            Leaf::StashSnapshotBoth
+        ),
+        leaf!(
+            "stash-snapshot-index",
+            "Snapshot index",
+            Leaf::StashSnapshotIndex
+        ),
+        leaf!(
+            "stash-snapshot-worktree",
+            "Snapshot worktree",
+            Leaf::StashSnapshotWorktree
         ),
         leaf!(
             "stash-index",

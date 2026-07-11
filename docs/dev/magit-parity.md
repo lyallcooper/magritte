@@ -29,8 +29,8 @@ differ, the entry lists both.
 
 Magritte does not yet cover submodules, clone and init, notes, subtree,
 sparse-checkout, bundle, cherry, or WIP modes. The largest gaps in existing
-menus are log filtering and formatting options plus stash worktree and snapshot
-variants.
+menus are log filtering and formatting options plus the stash worktree
+variant.
 
 Bisect, blame, patch creation and application, `git am`, additional push
 targets, tag pushes, merge message editing and preview, merge strategies,
@@ -371,11 +371,11 @@ row / log view).
 
 ### Stash (magit `z` / ours `Z` evil, `z` vanilla)
 
-**Arguments**: magit `-u --include-untracked` ≈ (ours models untracked
-inclusion as the separate `Z` action, so it can't combine with future
-variants); `-a --all` (untracked + ignored) ✗; `--` file limiting ✓ (from
+**Arguments**: magit `-u --include-untracked` ✓; `-a --all` (untracked +
+ignored) ✓ (both apply to the push variants and the both/worktree snapshots;
+the index variants ignore them, as magit's do); `--` file limiting ✓ (from
 magit's `z P` push sub-transient; ours lives on the one stash menu and
-applies to every push variant).
+applies to every push variant — snapshots ignore it).
 
 **Actions**
 
@@ -386,7 +386,7 @@ applies to every push variant).
 | `x` | keeping index | ✓ (`--keep-index`; same message prompt) |
 | `w` | worktree only | ✗ |
 | `P` | push… sub-transient (level 5; `--` file limiting, keep-index) | ≈ folded into the one stash menu: `--` file limiting and `x` keep-index live here |
-| `Z` / `I` / `W` | snapshots | ✗ (our `Z` key is taken by "both incl. untracked") |
+| `Z` / `I` / `W` | snapshots | ✓ (plumbing port of `magit-stash-save` with `keep`: records on `refs/stash` without touching the index or worktree; honors `-u`/`-a`) |
 | `r` | wip-commit | ✗ (no wip mode) |
 | `a` / `p` / `k` | apply / pop / drop | ✓ (picker; also stash-row keys) |
 | `l` | list | ≈ the Stashes status section; no dedicated buffer |
@@ -794,7 +794,7 @@ workflows:
   staged and unstaged changes.
 - Support `+`, `-`, and `0` context changes in commit and standalone diff views.
 - Add Magit's remaining log filters and direct limit entry.
-- Add stash worktree and snapshot variants.
+- Add the stash worktree variant.
 - Add section-local fold levels and local cycle commands.
 - Reserve rebase-todo `x` for `exec`, or remove the conflicting alias before
   adding `exec` support.

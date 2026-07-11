@@ -626,15 +626,26 @@ impl StatusView {
         // Focus on the next frame, not now: the keystroke that opened the editor
         // (`c`) is still mid-dispatch, and focusing synchronously would let that
         // character land in the message (see open_picker for the same reasoning).
-        // Vim mode opens in Normal, which keeps focus on the view instead —
-        // the input is only focused for Insert.
+        // Vim mode focuses per its starting mode: the input in Insert (a fresh
+        // message), the view in Normal (which hides the input's caret).
         let to_focus = state.clone();
         cx.on_next_frame(window, move |this, window, cx| {
             if this.editor().is_some_and(|e| e.vim.is_none()) {
                 to_focus.read(cx).focus_handle(cx).focus(window, cx);
+            } else {
+                this.sync_vim_focus(window, cx);
             }
         });
         let diff_expected = !matches!(after_submit, CommitAfterSubmit::CreateTag { .. });
+        // A fresh message (create/tag — not amend/reword's seeded baseline, not
+        // a merge's prepared MERGE_MSG) starts in Insert: the first thing
+        // anyone does with an empty message is type.
+        let seeded = mode != CommitMode::Create
+            || (after_submit == CommitAfterSubmit::Commit
+                && self
+                    .sequence
+                    .as_ref()
+                    .is_some_and(|s| s.kind == SequenceKind::Merge));
         self.screen = Screen::Editor(CommitEditor {
             state: state.clone(),
             mode,
@@ -651,9 +662,12 @@ impl StatusView {
             diff_scroll: UniformListScrollHandle::new(),
             diff_collapsed: std::collections::HashSet::new(),
             vim: self.config.commit_vim_mode.then(|| {
-                Box::new(vim::VimState::with_user_map(vim::parse_user_map(
-                    &self.config.vim.keymap,
-                )))
+                let mut vim =
+                    vim::VimState::with_user_map(vim::parse_user_map(&self.config.vim.keymap));
+                if !seeded {
+                    vim.start_in_insert();
+                }
+                Box::new(vim)
             }),
             vim_error: None,
             vim_bell: false,

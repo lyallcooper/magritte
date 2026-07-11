@@ -342,24 +342,43 @@ pub fn stash_transient() -> Transient {
         groups: vec![
             Group {
                 title: plain_title("Arguments"),
-                // magit's file limit lives on the `z P` push sub-transient; we
-                // have one stash menu, so it rides here and applies to every
-                // push variant.
-                suffixes: vec![Suffix::Option(Opt {
-                    key: "--",
-                    arg: "",
-                    description: "Limit to files",
-                    completion: Completion::Files,
-                    pathspec: true,
-                })],
+                suffixes: vec![
+                    Suffix::Switch(Switch::new(
+                        "-u",
+                        "--include-untracked",
+                        "Also save untracked files",
+                    )),
+                    Suffix::Switch(Switch::new(
+                        "-a",
+                        "--all",
+                        "Also save untracked and ignored files",
+                    )),
+                    // magit's file limit lives on the `z P` push sub-transient;
+                    // we have one stash menu, so it rides here and applies to
+                    // every push variant (snapshots ignore it, like magit's).
+                    Suffix::Option(Opt {
+                        key: "--",
+                        arg: "",
+                        description: "Limit to files",
+                        completion: Completion::Files,
+                        pathspec: true,
+                    }),
+                ],
             },
             Group {
                 title: plain_title("Stash"),
                 suffixes: vec![
                     Action::suffix("z", "both", Command::StashPush),
-                    Action::suffix("Z", "both, incl. untracked", Command::StashPushAll),
                     Action::suffix("i", "index", Command::StashPushStaged),
                     Action::suffix("x", "keeping index", Command::StashPushKeepIndex),
+                ],
+            },
+            Group {
+                title: plain_title("Snapshot"),
+                suffixes: vec![
+                    Action::suffix("Z", "both", Command::StashSnapshotBoth),
+                    Action::suffix("I", "index", Command::StashSnapshotIndex),
+                    Action::suffix("W", "worktree", Command::StashSnapshotWorktree),
                 ],
             },
             Group {

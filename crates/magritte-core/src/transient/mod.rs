@@ -113,12 +113,17 @@ pub enum Command {
     RemoteConfigure,
     /// Stash the working tree and index.
     StashPush,
-    /// Stash including untracked files.
-    StashPushAll,
     /// Stash only the staged changes (`--staged`).
     StashPushStaged,
     /// Stash worktree and index but leave the index applied (`--keep-index`).
     StashPushKeepIndex,
+    /// Snapshot the working tree and index onto `refs/stash` without
+    /// resetting anything.
+    StashSnapshotBoth,
+    /// Snapshot only the index.
+    StashSnapshotIndex,
+    /// Snapshot only the working tree's unstaged changes.
+    StashSnapshotWorktree,
     /// Apply a stash, keeping it (prompts for which).
     StashApply,
     /// Pop a stash (prompts for which).

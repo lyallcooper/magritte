@@ -153,14 +153,16 @@ impl StatusView {
         let message = move |input: gpui::Div| {
             let wrapped = input
                 .relative()
-                // The Input's default vertical padding is dead space above the
-                // summary line and below the last one — zero it (the
-                // horizontal padding stays, from the Input's own default).
+                // Trim the Input's default padding: a hair of top inset (so
+                // the summary doesn't touch the box edge), none below the last
+                // line, and the app's 8px horizontal inset (the default 12px
+                // reads as a gutter next to the diff rows below).
                 .child(
                     Input::new(&ed.state)
                         .h_full()
-                        .pt_0()
+                        .pt(px(3.0))
                         .pb_0()
+                        .px(px(8.0))
                         // Row-height lines (like every list in the app): the
                         // snugger leading also sits the first line against
                         // the box's top edge.
