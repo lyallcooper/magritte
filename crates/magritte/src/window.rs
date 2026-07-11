@@ -17,6 +17,10 @@ pub(crate) fn detach_into_background(args: &[String]) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
+    // Relaunch through the stub bundle when the binary is bare, so macOS
+    // shows "Magritte" instead of the executable basename.
+    #[cfg(target_os = "macos")]
+    let exe = bundle_stub_exe(&exe).unwrap_or(exe);
     std::process::Command::new(exe)
         .args(args)
         .env("MAGRITTE_FOREGROUND", "1")
@@ -25,6 +29,68 @@ pub(crate) fn detach_into_background(args: &[String]) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+/// The path to run a *bare* binary through so LaunchServices names the app
+/// "Magritte" in the menu bar, Dock, and ⌘-tab — macOS otherwise displays the
+/// executable basename ("magritte"), and nothing a running process does can
+/// change that (`NSProcessInfo setProcessName:` is ignored; an embedded
+/// `__info_plist` section doesn't reach the display name either). The one
+/// supported mechanism is bundle identity, so this synthesizes a minimal
+/// `Magritte.app` in the user cache — an Info.plist matching the release
+/// bundle's identity plus a hard link to the real binary — and points the
+/// relaunch at it. The hard link is re-created whenever the binary changes
+/// (a cargo rebuild replaces the inode). Returns `None` when the binary
+/// already runs from a bundle, or on any filesystem trouble (the caller
+/// falls back to the bare exe — worst case is the lowercase name).
+#[cfg(target_os = "macos")]
+fn bundle_stub_exe(exe: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    if exe
+        .ancestors()
+        .any(|p| p.extension().is_some_and(|e| e == "app"))
+    {
+        return None;
+    }
+    let macos_dir = PathBuf::from(std::env::var_os("HOME")?)
+        .join("Library/Caches/co.lyall.magritte/Magritte.app/Contents/MacOS");
+    std::fs::create_dir_all(&macos_dir).ok()?;
+    let plist = macos_dir.parent().unwrap().join("Info.plist");
+    let contents = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>Magritte</string>
+  <key>CFBundleExecutable</key><string>magritte</string>
+  <key>CFBundleIdentifier</key><string>co.lyall.magritte</string>
+  <key>CFBundleName</key><string>Magritte</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>{v}</string>
+  <key>CFBundleVersion</key><string>{v}</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+"#,
+        v = env!("CARGO_PKG_VERSION")
+    );
+    if std::fs::read_to_string(&plist).ok().as_deref() != Some(&contents) {
+        std::fs::write(&plist, contents).ok()?;
+    }
+    let stub = macos_dir.join("magritte");
+    let same_file = |a: &Path, b: &Path| match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    };
+    if !same_file(exe, &stub) {
+        let _ = std::fs::remove_file(&stub);
+        // Cross-volume hard links fail; a copy still gets the right name at
+        // the cost of a one-time copy per build.
+        if std::fs::hard_link(exe, &stub).is_err() {
+            std::fs::copy(exe, &stub).ok()?;
+        }
+    }
+    Some(stub)
 }
 
 pub(crate) fn repo_window_key(start_dir: Option<&Path>) -> PathBuf {
