@@ -839,25 +839,21 @@ impl StatusView {
             .unwrap_or(true)
     }
 
-    /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     /// `S`: stage all tracked changes (`git add -u`, magit's stage-modified).
-    /// Confirms first when something is already staged — the operation blurs
-    /// the staged/unstaged split the user has built up (magit confirms too).
+    /// Confirms only when a file is partially staged — folding its worktree
+    /// hunks into the index would irreversibly merge the split; everything
+    /// else stage-all does is undoable, so it just runs.
     pub(crate) fn stage_all_command(&mut self, cx: &mut Context<Self>) {
-        let anything_staged = self
-            .status
-            .as_ref()
-            .is_some_and(|s| s.staged().next().is_some());
-        if anything_staged {
-            self.confirm = Some(("Stage all tracked changes?".to_string(), Confirm::StageAll));
+        if let Some(prompt) = self.partially_staged_prompt("stage all tracked changes") {
+            self.confirm = Some((prompt, Confirm::StageAll));
             cx.notify();
         } else {
             self.run_action(Action::StageAll, cx);
         }
     }
 
-    /// `U`: unstage everything. Errors when nothing is staged; confirms when
-    /// unstaged or untracked changes exist alongside (magit's rule).
+    /// `U`: unstage everything. Errors when nothing is staged; confirms only
+    /// when a file is partially staged (see [`Self::stage_all_command`]).
     pub(crate) fn unstage_all_command(&mut self, cx: &mut Context<Self>) {
         let Some(status) = self.status.as_ref() else {
             return;
@@ -866,15 +862,31 @@ impl StatusView {
             self.set_status("Nothing to unstage".to_string(), false, cx);
             return;
         }
-        let dirty = status.unstaged().next().is_some() || status.untracked().next().is_some();
-        if dirty {
-            self.confirm = Some(("Unstage all changes?".to_string(), Confirm::UnstageAll));
+        if let Some(prompt) = self.partially_staged_prompt("unstage all changes") {
+            self.confirm = Some((prompt, Confirm::UnstageAll));
             cx.notify();
         } else {
             self.run_action(Action::UnstageAll, cx);
         }
     }
 
+    /// The stage-all/unstage-all confirmation, naming the partially staged
+    /// file whose hunk split the operation would collapse; `None` when no
+    /// file has changes on both sides of the index (no prompt needed).
+    fn partially_staged_prompt(&self, verb: &str) -> Option<String> {
+        let mut paths = self
+            .status
+            .as_ref()?
+            .partially_staged()
+            .map(|e| e.path.as_str());
+        let first = paths.next()?;
+        Some(match paths.count() {
+            0 => format!("{first} is partially staged — {verb}?"),
+            n => format!("{first} and {n} more are partially staged — {verb}?"),
+        })
+    }
+
+    /// `s`/`u`/`x`: resolve and either run, or (for discard) ask to confirm.
     pub(crate) fn act(&mut self, op: Op, cx: &mut Context<Self>) {
         // A conflicted file in the selection: staging it marks it resolved, so
         // allow that once its markers are gone (manual resolution); otherwise

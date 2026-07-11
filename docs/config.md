@@ -377,8 +377,8 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `git-command` | `\|` (evil) / `:`, `Q` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
-| `stage-all` | `S` | Stage all tracked changes (confirms if something is already staged) |
-| `unstage-all` | `U` | Unstage all (confirms if unstaged changes exist alongside) |
+| `stage-all` | `S` | Stage all tracked changes (confirms if a file is partially staged) |
+| `unstage-all` | `U` | Unstage all (confirms if a file is partially staged) |
 | `discard` | `x` | Discard the selection |
 | `untrack` | `K` (vanilla) / `X` (evil) | Untrack the file at point (`git rm --cached`) |
 | `open-file` | `Return` | Open file at point in `editor` |

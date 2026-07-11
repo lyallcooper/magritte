@@ -150,6 +150,34 @@ fn partially_staged_file_appears_in_both_groups() {
     assert_eq!(entry.index, Change::Modified);
     assert_eq!(entry.worktree, Change::Modified);
     assert!(entry.is_staged() && entry.has_worktree_changes());
+    assert_eq!(
+        status
+            .partially_staged()
+            .map(|e| e.path.as_str())
+            .collect::<Vec<_>>(),
+        ["file.txt"]
+    );
+}
+
+#[test]
+fn disjoint_staged_and_unstaged_files_are_not_partially_staged() {
+    let t = TestRepo::new();
+    t.write("staged.txt", "a\n");
+    t.write("unstaged.txt", "b\n");
+    t.commit_all("initial");
+
+    t.write("staged.txt", "a edited\n");
+    t.git(["add", "staged.txt"]);
+    t.write("unstaged.txt", "b edited\n");
+    t.write("untracked.txt", "new\n");
+    t.git(["add", "-N", "untracked.txt"]);
+
+    let status = open(&t).status().unwrap();
+    assert!(status.staged().next().is_some());
+    assert!(status.unstaged().next().is_some());
+    // Disjoint file sets — and an intent-to-add placeholder — put nothing on
+    // both sides of the index.
+    assert_eq!(status.partially_staged().count(), 0);
 }
 
 #[test]

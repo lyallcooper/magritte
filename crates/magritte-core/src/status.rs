@@ -175,6 +175,16 @@ impl Status {
             .filter(|e| e.kind == EntryKind::Untracked)
     }
 
+    /// Files with real content on both sides of the index. Collapsing either
+    /// side (stage-all / unstage-all) merges the two hunk sets irreversibly.
+    /// Intent-to-add files (empty index placeholder) and conflicts (which
+    /// have their own resolution flow) don't count.
+    pub fn partially_staged(&self) -> impl Iterator<Item = &FileEntry> {
+        self.entries.iter().filter(|e| {
+            e.kind != EntryKind::Unmerged && e.index.is_modified() && e.worktree.is_modified()
+        })
+    }
+
     pub fn is_clean(&self) -> bool {
         self.entries.iter().all(|e| e.kind == EntryKind::Ignored)
     }
