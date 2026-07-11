@@ -27,17 +27,15 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
                     info("Z Q · :q · , k", "Cancel"),
                     info(":q!", "Discard without asking"),
                     info("g q", "Reflow over a motion"),
-                    info("g w", "Reflow, cursor stays put"),
                 ],
             ),
             group(
                 "Edit",
                 vec![
-                    info("d c y", "Delete / change / yank"),
-                    info("x r ~ J", "Char delete / replace / case / join"),
-                    info("p P", "Put after / before"),
-                    info("> <", "Indent / dedent"),
-                    info("u ctrl-r", "Undo / redo"),
+                    info("d · c · y", "Delete / change / yank"),
+                    info("p · P", "Put after / before"),
+                    info("> · <", "Indent / dedent"),
+                    info("u · ctrl-r", "Undo / redo"),
                     info(".", "Repeat last change"),
                     info("y s · c s · d s", "Surround add / change / delete"),
                 ],
@@ -45,8 +43,8 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
             group(
                 "Search & command line",
                 vec![
-                    info("/ ?", "Search forward / back"),
-                    info("n N", "Next / previous match"),
+                    info("/ · ?", "Search forward / back"),
+                    info("n · N", "Next / previous match"),
                     info(":s/pat/rep/", "Substitute (ranges, g flag)"),
                     info(":N", "Go to line N"),
                 ],
