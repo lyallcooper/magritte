@@ -46,19 +46,19 @@ impl VimState {
                     ("b", "Back a word"),
                     ("$", "To line end"),
                     ("0", "To line start"),
-                    ("g g · G", "First / last line"),
-                    ("f t", "Find / till a char"),
-                    ("i w · a w", "Inner / around word"),
-                    ("i \" · i ( · i p", "Quotes / parens / paragraph"),
+                    ("gg · G", "First / last line"),
+                    ("f · t", "Find / till a char"),
+                    ("iw · aw", "Inner / around word"),
+                    ("i\" · i( · ip", "Quotes / parens / paragraph"),
                 ]));
                 rows
             }
             Pending::Object { .. } => own(&[
-                ("w W", "Word"),
+                ("w · W", "Word"),
                 ("s", "Sentence"),
                 ("p", "Paragraph"),
-                ("\" ' `", "Quoted string"),
-                ("( [ {", "Bracket block"),
+                ("\" · ' · `", "Quoted string"),
+                ("( · [ · {", "Bracket block"),
                 ("t", "Tag block"),
             ]),
             Pending::G(consumer) => {
@@ -81,13 +81,13 @@ impl VimState {
                 ("q", "Reflow message"),
             ]),
             Pending::SurroundChar { .. } | Pending::SurroundChangeTo { .. } => own(&[
-                ("\" ' `", "Quotes"),
-                ("( [ { <", "Brackets, inner spaces"),
-                (") ] } >", "Brackets, snug"),
+                ("\" · ' · `", "Quotes"),
+                ("( · [ · { · <", "Brackets, inner spaces"),
+                (") · ] · } · >", "Brackets, snug"),
             ]),
             Pending::SurroundDelete | Pending::SurroundChangeFrom => own(&[
-                ("\" ' `", "Quotes"),
-                ("( [ { <", "Nearest bracket pair"),
+                ("\" · ' · `", "Quotes"),
+                ("( · [ · { · <", "Nearest bracket pair"),
                 ("t", "Tag"),
             ]),
             Pending::User(typed) => {
@@ -98,10 +98,9 @@ impl VimState {
                         seq.strip_prefix(typed.as_str())
                             .filter(|rest| !rest.is_empty())
                             .map(|rest| {
-                                // One keycap per remaining keystroke, like
-                                // every other sequence label.
-                                let keys =
-                                    rest.chars().map(String::from).collect::<Vec<_>>().join(" ");
+                                // Vim notation: the remaining keystrokes
+                                // read as one unspaced sequence cap.
+                                let keys = rest.to_string();
                                 (keys, cmd.describe().to_string())
                             })
                     })

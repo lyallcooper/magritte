@@ -261,7 +261,9 @@ pub(crate) fn format_keys(key: &str) -> String {
 /// cap with the modifier glyphs prefixed to the key (`[⌘x]`, `[⌃⏎]`); a sequence
 /// renders each step spaced (`[g] [r]`, `[⌃x] [⌃c]`). A `·` step draws as a
 /// bare dot instead of a cap — the separator between alternative bindings in
-/// one label (`Z Z · :wq`), needed since a space already means "next step".
+/// one label (`ZZ · :wq`), needed since a space already means "next step".
+/// Vim-mode sequences arrive unspaced (`ZZ`, `gq`) and render as one cap, in
+/// vim notation; app keymap sequences stay one cap per keystroke (`g r`).
 /// `font` is the monospace family; `ui_font` draws the glyphs.
 pub(crate) fn key_chip(
     key: &str,
