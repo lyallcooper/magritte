@@ -60,31 +60,31 @@ workflow:
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` | Move down or up |
-| `Tab` | Expand or collapse the item at the cursor |
-| `s` / `u` | Stage or unstage the selection |
-| `x` | Discard the selection after confirmation |
-| `c` | Open the commit menu |
-| `b` | Open the branch menu |
-| `p` / `F` | Open the push or pull menu |
-| `l` | Open the log menu |
-| `g r` | Refresh the repository |
-| `:` | Search all available commands |
-| `?` | Show commands and their keys |
-| `Esc` / `Ctrl-g` | Cancel the current action |
+| <kbd>j</kbd> / <kbd>k</kbd> | Move down or up |
+| <kbd>Tab</kbd> | Expand or collapse the item at the cursor |
+| <kbd>s</kbd> / <kbd>u</kbd> | Stage or unstage the selection |
+| <kbd>x</kbd> | Discard the selection after confirmation |
+| <kbd>c</kbd> | Open the commit menu |
+| <kbd>b</kbd> | Open the branch menu |
+| <kbd>p</kbd> / <kbd>F</kbd> | Open the push or pull menu |
+| <kbd>l</kbd> | Open the log menu |
+| <kbd>g r</kbd> | Refresh the repository |
+| <kbd>:</kbd> | Search all available commands |
+| <kbd>?</kbd> | Show commands and their keys |
+| <kbd>Esc</kbd> / <kbd>Ctrl-g</kbd> | Cancel the current action |
 
-Commands act on the item at the cursor. For example, `s` stages the current
+Commands act on the item at the cursor. For example, <kbd>s</kbd> stages the current
 hunk when the cursor is on a hunk, the current file when it is on a file, and
 the full section when it is on a section heading. Visual selection lets you
 apply an action to several rows at once.
 
-If you prefer standard Magit and Emacs bindings, open Settings with `,` and set
+If you prefer standard Magit and Emacs bindings, open Settings with <kbd>,</kbd> and set
 the keymap to Vanilla. You can also set `keymap_preset = "vanilla"` in the
 configuration file.
 
 ## Configure Magritte
 
-Press `,` or choose **Magritte > Settings** to change themes, fonts, editor
+Press <kbd>,</kbd> or choose **Magritte > Settings** to change themes, fonts, editor
 behavior, and the keymap preset.
 
 For key remapping, custom commands, status sections, background fetches, and
@@ -125,7 +125,7 @@ only after the selected file no longer contains unresolved conflict markers.
 - Paths that are not valid UTF-8 may be displayed with replacement characters.
 - Magritte does not watch the working tree. It refreshes after its own
   commands, when the window regains focus, during auto-fetch, or when you run
-  `g r`. This avoids expensive filesystem watching in large repositories.
+  <kbd>g r</kbd>. This avoids expensive filesystem watching in large repositories.
 
 See [Magit parity](docs/dev/magit-parity.md) for a detailed list of supported and
 missing Magit features.

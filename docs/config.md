@@ -6,7 +6,7 @@ fetching, custom commands, and changes to Magritte's command menus.
 
 ## Edit the configuration
 
-Press `,` or choose **Magritte > Settings** to change common options such as
+Press <kbd>,</kbd> or choose **Magritte > Settings** to change common options such as
 themes, fonts, editors, and the keymap preset. The Settings screen writes the
 global configuration file:
 
@@ -48,7 +48,7 @@ the default for that value. Fix the value and save again to clear the warning.
 ## Choose what to customize
 
 - Use [`[keymap]`](#keymap) to bind, remap, or unbind keys. Bindings can be one
-  key or a sequence such as `g r`.
+  key or a sequence such as <kbd>g r</kbd>.
 - Use [`[status]`](#status-sections) to choose which sections appear in the
   status view and how they are ordered.
 - Use [`[fetch]`](#auto-fetch) to fetch in the background on a schedule.
@@ -111,7 +111,7 @@ All scalar settings are top-level TOML keys. Every setting is optional.
 | `ui_font` | font family / `"system-ui"` | value of `font` | Font for menus, headings, and labels. Use `"system-ui"` for the platform font. |
 | `font_size` | pixels | system default | Base UI size, clamped to 9--24. The macOS default is 13. |
 | `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | Dock and app-switcher icon on macOS. This does not change the icon in Finder. |
-| `editor` | command or app name | OS default | Editor used by Open File (`Return`). See [External file editor](#external-file-editor). |
+| `editor` | command or app name | OS default | Editor used by Open File (<kbd>Return</kbd>). See [External file editor](#external-file-editor). |
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |
 | `commit_editor` | command | none | Blocking command used as `GIT_EDITOR`, such as `zed --wait`, `code --wait`, or `nvim`. Only used when `commit_in_editor` is true. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight summary text after column 50. |
@@ -126,9 +126,9 @@ All scalar settings are top-level TOML keys. Every setting is optional.
 
 Magritte saves the last 10 edited commit messages for each worktree. This
 includes messages discarded from the editor and messages from commits rejected
-by a hook. Press `Alt-p` in the commit editor to restore the newest message.
+by a hook. Press <kbd>Alt-p</kbd> in the commit editor to restore the newest message.
 Press it again to move through older messages. You can also run **Restore
-commit message** from the `:` palette.
+commit message** from the <kbd>:</kbd> palette.
 
 Theme names match the entries under **Light theme** and **Dark theme** in
 Settings. Magritte includes GitHub, Solarized, Selenized, Gruvbox, Catppuccin,
@@ -193,10 +193,10 @@ Push-target sections are hidden when the push target and upstream are the same.
 All empty sections are skipped. Commit rows show labels for branches, tags, and
 remotes.
 
-Actions follow the item at the cursor. `Return` opens a commit or stash, while
-`Cmd+C` copies its hash or reference. On a stash, `a` applies it, `A` pops it,
-and `x` in the Evil preset or `k` in the Vanilla preset drops it after
-confirmation. On a section heading, `s` or `u` acts on the whole section.
+Actions follow the item at the cursor. <kbd>Return</kbd> opens a commit or stash, while
+<kbd>Cmd+C</kbd> copies its hash or reference. On a stash, <kbd>a</kbd> applies it, <kbd>A</kbd> pops it,
+and <kbd>x</kbd> in the Evil preset or <kbd>k</kbd> in the Vanilla preset drops it after
+confirmation. On a section heading, <kbd>s</kbd> or <kbd>u</kbd> acts on the whole section.
 Discarded untracked files are moved to the system Trash.
 
 Set `show_tags_in_title_bar = true` to show the nearest reachable tag. For
@@ -225,7 +225,7 @@ repository.
 
 If `git status` takes more than about half a second and no filesystem monitor
 is configured, Magritte suggests enabling one. Run **Enable filesystem
-monitor** from the `:` palette to set `core.fsmonitor` and
+monitor** from the <kbd>:</kbd> palette to set `core.fsmonitor` and
 `core.untrackedCache` for the repository. Git can then avoid repeatedly
 scanning the full working tree.
 
@@ -253,8 +253,8 @@ window before then reports failure for that file.
 ## Keymap
 
 The default `evil` preset follows evil-collection-magit. Use `vanilla` for
-standard Magit and Emacs keys. The Vanilla preset includes `P` for push, `X`
-for reset, `z` for stash, `k` for discard, and `n` or `p` for section motion.
+standard Magit and Emacs keys. The Vanilla preset includes <kbd>P</kbd> for push, <kbd>X</kbd>
+for reset, <kbd>z</kbd> for stash, <kbd>k</kbd> for discard, and <kbd>n</kbd> or <kbd>p</kbd> for section motion.
 
 Add a `[keymap]` table to change either preset. Each entry maps a key to a
 [command id](#command-ids). Use `"unbound"` to remove a binding.
@@ -285,33 +285,33 @@ and the command log. These secondary bindings are useful when remapping:
 
 | Keys | Action |
 | --- | --- |
-| arrows, `ctrl-n` / `ctrl-p` | Move the cursor |
-| `space` | Page down. On a commit or stash, open it first |
-| `ctrl-d` / `ctrl-u` | Move down or up half a page |
-| `ctrl-f` / `ctrl-b` | Move down or up one page |
-| `ctrl-j` / `ctrl-k` | Move to the next or previous section in Evil |
-| `alt-j` / `alt-k` / `]` / `[` | Move to the next or previous sibling section in Evil |
-| `n` / `p`, `alt-n` / `alt-p` | Section motions in Vanilla |
-| `alt-1` through `alt-4` | Set fold level 1 through 4 |
-| `z a`, `z o`, `z c`, `z O`, `z C`, `z 1` through `z 4`, `z r` | Vim-style folds in Evil |
-| `g z`, `g n`, `g i`, `g u`, `g s`, `g f u`, `g f p`, `g p u`, `g p p` | Jump to status sections in Evil |
-| `y y` / `y s`, `y b`, `y r` | Copy the current value, copy the revision, or show refs in Evil |
-| `ctrl-w` | Copy the current value |
-| `v` / `V` | Start a visual selection in Evil |
-| `ctrl-space` | Start a visual selection in Vanilla |
-| `alt-<` / `alt->` | Move to the top or bottom in Vanilla |
-| `h` | Open help in Vanilla. `?` works in either preset |
-| `G` | Refresh in Vanilla |
-| `|` | Run a command in Evil |
-| `ctrl-x ctrl-c` | Quit Magritte |
+| arrows, <kbd>ctrl-n</kbd> / <kbd>ctrl-p</kbd> | Move the cursor |
+| <kbd>space</kbd> | Page down. On a commit or stash, open it first |
+| <kbd>ctrl-d</kbd> / <kbd>ctrl-u</kbd> | Move down or up half a page |
+| <kbd>ctrl-f</kbd> / <kbd>ctrl-b</kbd> | Move down or up one page |
+| <kbd>ctrl-j</kbd> / <kbd>ctrl-k</kbd> | Move to the next or previous section in Evil |
+| <kbd>alt-j</kbd> / <kbd>alt-k</kbd> / <kbd>]</kbd> / <kbd>[</kbd> | Move to the next or previous sibling section in Evil |
+| <kbd>n</kbd> / <kbd>p</kbd>, <kbd>alt-n</kbd> / <kbd>alt-p</kbd> | Section motions in Vanilla |
+| <kbd>alt-1</kbd> through <kbd>alt-4</kbd> | Set fold level 1 through 4 |
+| <kbd>z a</kbd>, <kbd>z o</kbd>, <kbd>z c</kbd>, <kbd>z O</kbd>, <kbd>z C</kbd>, <kbd>z 1</kbd> through <kbd>z 4</kbd>, <kbd>z r</kbd> | Vim-style folds in Evil |
+| <kbd>g z</kbd>, <kbd>g n</kbd>, <kbd>g i</kbd>, <kbd>g u</kbd>, <kbd>g s</kbd>, <kbd>g f u</kbd>, <kbd>g f p</kbd>, <kbd>g p u</kbd>, <kbd>g p p</kbd> | Jump to status sections in Evil |
+| <kbd>y y</kbd> / <kbd>y s</kbd>, <kbd>y b</kbd>, <kbd>y r</kbd> | Copy the current value, copy the revision, or show refs in Evil |
+| <kbd>ctrl-w</kbd> | Copy the current value |
+| <kbd>v</kbd> / <kbd>V</kbd> | Start a visual selection in Evil |
+| <kbd>ctrl-space</kbd> | Start a visual selection in Vanilla |
+| <kbd>alt-&lt;</kbd> / <kbd>alt-&gt;</kbd> | Move to the top or bottom in Vanilla |
+| <kbd>h</kbd> | Open help in Vanilla. <kbd>?</kbd> works in either preset |
+| <kbd>G</kbd> | Refresh in Vanilla |
+| <kbd>&#124;</kbd> | Run a command in Evil |
+| <kbd>ctrl-x ctrl-c</kbd> | Quit Magritte |
 
 Some keys are fixed and cannot be remapped:
 
-- `Esc` and `Ctrl-g` cancel a job, selection, pending sequence, or popup.
-- `Tab` expands or collapses the current item. You can bind another key to
-  `fold`, but `Tab` keeps this behavior.
-- `?` opens help.
-- An unbound `:`, `Alt-x`, `Cmd-P`, or `Cmd-K` opens the command palette.
+- <kbd>Esc</kbd> and <kbd>Ctrl-g</kbd> cancel a job, selection, pending sequence, or popup.
+- <kbd>Tab</kbd> expands or collapses the current item. You can bind another key to
+  `fold`, but <kbd>Tab</kbd> keeps this behavior.
+- <kbd>?</kbd> opens help.
+- An unbound <kbd>:</kbd>, <kbd>Alt-x</kbd>, <kbd>Cmd-P</kbd>, or <kbd>Cmd-K</kbd> opens the command palette.
 
 Transient menus, pickers, and the commit editor handle their own keys while
 they are active.
@@ -319,12 +319,12 @@ they are active.
 ### Vim mode keys (`[vim.keymap]`)
 
 Set `commit_vim_mode = true` to enable Normal, Insert, and Visual modes in the
-in-app commit editor. It supports counts, text objects, `d`, `c`, and `y`
+in-app commit editor. It supports counts, text objects, <kbd>d</kbd>, <kbd>c</kbd>, and <kbd>y</kbd>
 operators, surround commands, indentation, repeat, regex search, substitutions,
 prompt history, and undo.
 
-Use `ZZ` or `,,` to commit. Use `ZQ` or `,k` to cancel. `gq` reformats a line,
-motion, or visual selection, while `,q` reformats the whole message. For full
+Use <kbd>ZZ</kbd> or <kbd>,,</kbd> to commit. Use <kbd>ZQ</kbd> or <kbd>,k</kbd> to cancel. <kbd>gq</kbd> reformats a line,
+motion, or visual selection, while <kbd>,q</kbd> reformats the whole message. For full
 Vim behavior, use an external editor instead:
 
 ```toml
@@ -348,7 +348,7 @@ commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
 - Custom entries add to the defaults. An exact match replaces the default. For
   example, `"ZZ" = "cancel"` changes the built-in `ZZ` action.
 - The first key of a custom sequence shadows its normal Vim action. Mapping
-  `"dx"` makes `d` wait for `x`, so it no longer starts the delete operator.
+  `"dx"` makes <kbd>d</kbd> wait for <kbd>x</kbd>, so it no longer starts the delete operator.
   Choose prefixes you do not otherwise need.
 - A pending sequence appears beside the mode indicator. After the configured
   delay, Magritte shows its possible continuations.
@@ -359,11 +359,11 @@ commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
 
 Bind any id below from `[keymap]`. `none` in the default-key column means the
 command has no direct binding, but you can still find it in a transient menu or
-the `:` command palette.
+the <kbd>:</kbd> command palette.
 
 The palette shows only commands that apply to the current view and selection.
 For example, `jump-to-ignored` appears only when the Ignored section is visible.
-Some keys also change with context. On a commit, `a` applies that commit. On a
+Some keys also change with context. On a commit, <kbd>a</kbd> applies that commit. On a
 file, it stages the file.
 
 Search accepts common Git terms as well as Magritte's command names. `add`
@@ -372,80 +372,80 @@ Log.
 
 | id | default key | command |
 | --- | --- | --- |
-| `commit` | `c` | Commit (transient) |
-| `branch` | `b` | Branch (transient) |
-| `tag` | `t` | Tag (transient) |
-| `remote` | `M` | Remote (transient) |
-| `stash` | `Z` | Stash (transient) |
-| `reset` | `O` | Reset (transient) |
-| `rebase` | `r` | Rebase (transient) |
-| `merge` | `m` | Merge (transient) |
-| `ignore` | `i` | Ignore (transient) |
-| `log` | `l` | Log (transient) |
-| `diff` | `d` | Diff (transient) |
-| `worktree` | `Z` (vanilla) / `%` | Browse worktrees (visit / add / branch / move / remove) |
-| `push` | `p` | Push (transient) |
-| `pull` | `F` | Pull (transient) |
-| `fetch` | `f` | Fetch (transient) |
-| `patch` | `W` | Patch (transient: create patches, apply a diff, `git am` a mailbox) |
-| `bisect` | `B` | Bisect (transient; marks good/bad/skip/reset while a bisect runs) |
+| `commit` | <kbd>c</kbd> | Commit (transient) |
+| `branch` | <kbd>b</kbd> | Branch (transient) |
+| `tag` | <kbd>t</kbd> | Tag (transient) |
+| `remote` | <kbd>M</kbd> | Remote (transient) |
+| `stash` | <kbd>Z</kbd> | Stash (transient) |
+| `reset` | <kbd>O</kbd> | Reset (transient) |
+| `rebase` | <kbd>r</kbd> | Rebase (transient) |
+| `merge` | <kbd>m</kbd> | Merge (transient) |
+| `ignore` | <kbd>i</kbd> | Ignore (transient) |
+| `log` | <kbd>l</kbd> | Log (transient) |
+| `diff` | <kbd>d</kbd> | Diff (transient) |
+| `worktree` | <kbd>Z</kbd> (vanilla) / <kbd>%</kbd> | Browse worktrees (visit / add / branch / move / remove) |
+| `push` | <kbd>p</kbd> | Push (transient) |
+| `pull` | <kbd>F</kbd> | Pull (transient) |
+| `fetch` | <kbd>f</kbd> | Fetch (transient) |
+| `patch` | <kbd>W</kbd> | Patch (transient: create patches, apply a diff, `git am` a mailbox) |
+| `bisect` | <kbd>B</kbd> | Bisect (transient; marks good/bad/skip/reset while a bisect runs) |
 | `blame` | none | Blame the file at point |
-| `run` | `!` | Run a Git or shell command in the repository root or selected file's directory |
-| `git-command` | `\|` (evil) / `:`, `Q` (vanilla) | Run a command directly (git by default) |
-| `stage` | `s` | Stage the selection |
-| `unstage` | `u` | Unstage the selection |
-| `stage-all` | `S` | Stage all tracked changes (confirms if a file is partially staged) |
-| `unstage-all` | `U` | Unstage all (confirms if a file is partially staged) |
-| `discard` | `x` | Discard the selection |
-| `untrack` | `K` (vanilla) / `X` (evil) | Untrack the file at point (`git rm --cached`) |
-| `open-file` | `Return` | Open file at point in `editor` |
-| `open-commit` / `stash-show` | `Return` | Show the commit / stash at point |
-| `commit-apply` | `a` | Apply the changes of the commit at point |
-| `commit-cherry-pick` | `A` | Cherry-pick transient for the commit at point |
-| `revert-here` | `_` (evil) / `V` (vanilla) | Revert transient for the commit at point |
-| `revert-changes` | `-` (evil) / `v` (vanilla) | Revert the commit at point's changes without committing |
-| `reset-here` | `o` (evil) / `x` (vanilla) | Reset HEAD (mixed) to the commit at point (confirmed) |
-| `stash-row-apply` / `stash-row-pop` | `a` / `A` | Apply / pop the stash at point |
-| `stash-row-drop` | `x` (evil) / `k` (vanilla) | Drop the stash at point (confirmed) |
-| `commit-details` | `=` | Toggle the details panel in a commit view |
-| `fold` | `Tab` | Fold / unfold |
-| `cycle-folds` | `shift-tab` | Cycle every fold through sections, everything, and folded |
-| `fold-show` / `fold-hide` / `fold-show-children` / `fold-hide-children` | evil `z o` / `z c` / `z O` / `z C` | Explicit fold verbs (vim's `zo`/`zc`/`zO`/`zC`) |
-| `resolve-conflicts` | `e` | Resolve the conflicted file at point in the smerge-style view |
-| `diff-more-context` | `+` | More diff context lines |
-| `diff-less-context` | `-` | Fewer diff context lines |
-| `diff-default-context` | `0` | Default diff context (3 lines) |
-| `refresh` | `g r` (evil) / `g` (vanilla) | Refresh status |
-| `visual` | `v` | Toggle visual selection |
-| `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |
-| `copy-buffer-revision` | `y b` (evil) | Copy the current view's revision |
-| `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (Return visits the tip commit; `b` checkout, `x`/`k` delete, `R` rename) |
-| `settings` | `,` | Open Settings |
-| `command-log` | `$` | Open the command log |
-| `close` | `q` (and `Esc`) | Close the current secondary screen |
+| `run` | <kbd>!</kbd> | Run a Git or shell command in the repository root or selected file's directory |
+| `git-command` | <kbd>&#124;</kbd> (evil) / <kbd>:</kbd>, <kbd>Q</kbd> (vanilla) | Run a command directly (git by default) |
+| `stage` | <kbd>s</kbd> | Stage the selection |
+| `unstage` | <kbd>u</kbd> | Unstage the selection |
+| `stage-all` | <kbd>S</kbd> | Stage all tracked changes (confirms if a file is partially staged) |
+| `unstage-all` | <kbd>U</kbd> | Unstage all (confirms if a file is partially staged) |
+| `discard` | <kbd>x</kbd> | Discard the selection |
+| `untrack` | <kbd>K</kbd> (vanilla) / <kbd>X</kbd> (evil) | Untrack the file at point (`git rm --cached`) |
+| `open-file` | <kbd>Return</kbd> | Open file at point in `editor` |
+| `open-commit` / `stash-show` | <kbd>Return</kbd> | Show the commit / stash at point |
+| `commit-apply` | <kbd>a</kbd> | Apply the changes of the commit at point |
+| `commit-cherry-pick` | <kbd>A</kbd> | Cherry-pick transient for the commit at point |
+| `revert-here` | <kbd>_</kbd> (evil) / <kbd>V</kbd> (vanilla) | Revert transient for the commit at point |
+| `revert-changes` | <kbd>-</kbd> (evil) / <kbd>v</kbd> (vanilla) | Revert the commit at point's changes without committing |
+| `reset-here` | <kbd>o</kbd> (evil) / <kbd>x</kbd> (vanilla) | Reset HEAD (mixed) to the commit at point (confirmed) |
+| `stash-row-apply` / `stash-row-pop` | <kbd>a</kbd> / <kbd>A</kbd> | Apply / pop the stash at point |
+| `stash-row-drop` | <kbd>x</kbd> (evil) / <kbd>k</kbd> (vanilla) | Drop the stash at point (confirmed) |
+| `commit-details` | <kbd>=</kbd> | Toggle the details panel in a commit view |
+| `fold` | <kbd>Tab</kbd> | Fold / unfold |
+| `cycle-folds` | <kbd>shift-tab</kbd> | Cycle every fold through sections, everything, and folded |
+| `fold-show` / `fold-hide` / `fold-show-children` / `fold-hide-children` | evil <kbd>z o</kbd> / <kbd>z c</kbd> / <kbd>z O</kbd> / <kbd>z C</kbd> | Explicit fold verbs (vim's `zo`/`zc`/`zO`/`zC`) |
+| `resolve-conflicts` | <kbd>e</kbd> | Resolve the conflicted file at point in the smerge-style view |
+| `diff-more-context` | <kbd>+</kbd> | More diff context lines |
+| `diff-less-context` | <kbd>-</kbd> | Fewer diff context lines |
+| `diff-default-context` | <kbd>0</kbd> | Default diff context (3 lines) |
+| `refresh` | <kbd>g r</kbd> (evil) / <kbd>g</kbd> (vanilla) | Refresh status |
+| `visual` | <kbd>v</kbd> | Toggle visual selection |
+| `yank` | <kbd>y y</kbd> (evil) / <kbd>Ctrl-w</kbd>, <kbd>Cmd+C</kbd> | Copy the value at point |
+| `copy-buffer-revision` | <kbd>y b</kbd> (evil) | Copy the current view's revision |
+| `show-refs` | <kbd>y</kbd> (vanilla) / <kbd>y r</kbd> (evil) | Browse branches, remotes, tags (<kbd>Return</kbd> visits the tip commit; <kbd>b</kbd> checkout, <kbd>x</kbd>/<kbd>k</kbd> delete, <kbd>R</kbd> rename) |
+| `settings` | <kbd>,</kbd> | Open Settings |
+| `command-log` | <kbd>$</kbd> | Open the command log |
+| `close` | <kbd>q</kbd> (and <kbd>Esc</kbd>) | Close the current secondary screen |
 | `commit-restore-message` | none | Restore a saved message in the commit editor |
 | `fsmonitor-enable` | none | Enable Git's filesystem monitor for the repository |
 | `check-updates` | none | Check for updates |
 | `about` | none | Show the About panel and version |
-| `move-down` | `j` | Move cursor down |
-| `move-up` | `k` | Move cursor up |
-| `goto-top` | `g g` | Jump to top |
-| `goto-bottom` | `G` | Jump to bottom |
-| `next-section` | `ctrl-j` | Next file, commit, or hunk section in the status view |
-| `prev-section` | `ctrl-k` | Previous section start (status view) |
-| `next-sibling-section` | `g j` | Next section at the same depth |
-| `prev-sibling-section` | `g k` | Previous section at the same depth |
-| `section-up` | `^` | Jump to the parent section |
-| `show-level-1` through `show-level-4` | `1` through `4` | Fold to sections, files, hunks, or everything |
-| `status-jump` | vanilla `j` | Jump-to-section menu (magit-status-jump) |
+| `move-down` | <kbd>j</kbd> | Move cursor down |
+| `move-up` | <kbd>k</kbd> | Move cursor up |
+| `goto-top` | <kbd>g g</kbd> | Jump to top |
+| `goto-bottom` | <kbd>G</kbd> | Jump to bottom |
+| `next-section` | <kbd>ctrl-j</kbd> | Next file, commit, or hunk section in the status view |
+| `prev-section` | <kbd>ctrl-k</kbd> | Previous section start (status view) |
+| `next-sibling-section` | <kbd>g j</kbd> | Next section at the same depth |
+| `prev-sibling-section` | <kbd>g k</kbd> | Previous section at the same depth |
+| `section-up` | <kbd>^</kbd> | Jump to the parent section |
+| `show-level-1` through `show-level-4` | <kbd>1</kbd> through <kbd>4</kbd> | Fold to sections, files, hunks, or everything |
+| `status-jump` | vanilla <kbd>j</kbd> | Jump-to-section menu (magit-status-jump) |
 | `jump-to-untracked` / `jump-to-unstaged` / `jump-to-staged` / `jump-to-stashes` / `jump-to-ignored` | none | Jump to a file or stash section |
 | `jump-to-unpulled-upstream` / `jump-to-unpulled-pushremote` / `jump-to-unpushed-upstream` / `jump-to-unpushed-pushremote` | none | Jump to an incoming or outgoing commit section |
-| `half-page-down` | `ctrl-d` | Scroll down half a page |
-| `half-page-up` | `ctrl-u` | Scroll up half a page |
-| `page-down` | `ctrl-f` | Scroll down a page |
-| `page-up` | `ctrl-b` | Scroll up a page |
-| `help` | vanilla `h` | Open the `?` help menu |
-| `quit` | `ctrl-x ctrl-c` | Quit Magritte |
+| `half-page-down` | <kbd>ctrl-d</kbd> | Scroll down half a page |
+| `half-page-up` | <kbd>ctrl-u</kbd> | Scroll up half a page |
+| `page-down` | <kbd>ctrl-f</kbd> | Scroll down a page |
+| `page-up` | <kbd>ctrl-b</kbd> | Scroll up a page |
+| `help` | vanilla <kbd>h</kbd> | Open the `?` help menu |
+| `quit` | <kbd>ctrl-x ctrl-c</kbd> | Quit Magritte |
 | `commit-create` | none | Create commit |
 | `commit-amend` | none | Amend commit |
 | `commit-reword` | none | Reword commit |
@@ -470,12 +470,12 @@ Log.
 
 Secondary views add scoped ids that can be remapped in the same way. These
 include `refs-*`, `worktree-*`, `flat-*`, `rebase-todo-*`, `resolve-*`,
-`log-open`, and `git-log-toggle-queries`. Open the `:` palette in a view to see
+`log-open`, and `git-log-toggle-queries`. Open the <kbd>:</kbd> palette in a view to see
 every command available there.
 
 ## Transients
 
-Transient menus are the command menus opened by keys such as `c`, `b`, and `p`.
+Transient menus are the command menus opened by keys such as <kbd>c</kbd>, <kbd>b</kbd>, and <kbd>p</kbd>.
 Use `[transient.<id>]` to add an action or Git option, move an existing entry,
 or remove one. Valid ids include `commit`, `branch`, `tag`, `remote`, `stash`,
 `reset`, `rebase`, `merge`, `ignore`, `log`, `diff`, `push`, `pull`, and
@@ -498,8 +498,8 @@ or remove one. Valid ids include `commit`, `branch`, `tag`, `remote`, `stash`,
 
 - An action names a command id and runs with its default arguments.
 - A switch contains a Git option such as `"--depth=1"`. Use a table when you
-  also want a description or placement. Switch keys begin with a dash, so `-d`
-  appears under the menu's `-` prefix.
+  also want a description or placement. Switch keys begin with a dash, so <kbd>-d</kbd>
+  appears under the menu's <kbd>-</kbd> prefix.
 - Use `before` or `after` to place an entry beside another key. Use `group` to
   append it to a named group. Magritte creates a missing group at the end.
 - A table that contains only `before`, `after`, or `group` moves the built-in
@@ -529,14 +529,14 @@ Git configuration.
 
 ### Saved argument defaults
 
-Press `Ctrl-s` in a transient menu to save its current options as the defaults
+Press <kbd>Ctrl-s</kbd> in a transient menu to save its current options as the defaults
 for the next time you open it. Magritte asks where to save them:
 
-- Press `g` for all repositories. Magritte writes
+- Press <kbd>g</kbd> for all repositories. Magritte writes
   `transient-arguments.toml` beside your global configuration.
-- Press `l` for the current repository. Magritte writes
+- Press <kbd>l</kbd> for the current repository. Magritte writes
   `.git/magritte/transient-arguments.toml`.
-- Press `Esc` to cancel.
+- Press <kbd>Esc</kbd> to cancel.
 
 The file stores Git arguments rather than menu keys, so key remapping does not
 affect saved defaults:
@@ -556,7 +556,7 @@ reload automatically, and edits apply the next time you open the menu.
 
 ## Commands
 
-Use `[[command]]` to make a shell command available in the `:` palette and the
+Use `[[command]]` to make a shell command available in the <kbd>:</kbd> palette and the
 keymap.
 
 ```toml
@@ -599,12 +599,12 @@ Titles can also contain placeholders. A title such as
 If a title placeholder cannot be resolved, it remains visible as written.
 
 Bind a custom command by id, for example `"X" = "user.wip"`, or run it by title
-from the command palette. Bound commands also appear in the `?` menu under
+from the command palette. Bound commands also appear in the <kbd>?</kbd> menu under
 their `section`, which defaults to **Commands**.
 
 Command output appears in a notification. Failures remain until dismissed, and
-long output points to the `$` command log for the full text. Commands containing
+long output points to the <kbd>$</kbd> command log for the full text. Commands containing
 `clean`, `--hard`, `--force`, or `--force-with-lease` ask for confirmation.
 
 An empty `run`, duplicate id, or id that matches a built-in produces a warning.
-Use the `!` menu for a command you do not need to save.
+Use the <kbd>!</kbd> menu for a command you do not need to save.
