@@ -57,7 +57,7 @@ Important differences in shared features:
 Magritte also adds features with no direct Magit equivalent: a ranked `:`
 command palette, which-key hints, custom commands with placeholders,
 live-reloaded repository settings, optional auto-fetch, refresh on focus,
-update checks, command timings, clickable title-bar controls, a structured
+update checks, per-change gutter indicators on diff lines, command timings, clickable title-bar controls, a structured
 rebase editor, switches seeded from Git configuration, and repository-scoped
 transient defaults.
 

@@ -127,7 +127,7 @@ only after the selected file no longer contains unresolved conflict markers.
   commands, when the window regains focus, during auto-fetch, or when you run
   `g r`. This avoids expensive filesystem watching in large repositories.
 
-See [Magit parity](docs/magit-parity.md) for a detailed list of supported and
+See [Magit parity](docs/dev/magit-parity.md) for a detailed list of supported and
 missing Magit features.
 
 ## Develop
