@@ -43,7 +43,7 @@ sections = [
   "unpushed",
   "unpushed-pushremote",
   "recent",
-  # "ignored", # Off by default
+  "ignored", # Omitted by default; remove to hide ignored files
 ]
 recent_count = 20
 
@@ -54,32 +54,32 @@ interval_minutes = 30
 
 # Keys map to command ids. Sequences use spaces between keys.
 [keymap]
-# "K" = "branch-delete"
-# ". R" = "refresh"
-# "cmd-r" = "refresh"
-# ". S" = "user.sync"
-# "x" = "unbound"
+"K" = "branch-delete"
+". R" = "refresh"
+"cmd-r" = "refresh"
+". S" = "user.sync"
+"x" = "unbound"
 
 # Extra commit-editor Vim bindings use literal key sequences without spaces.
 [vim.keymap]
-# "Q" = "cancel"
-# ";w" = "commit"
-# "gz" = "help"
+"Q" = "cancel"
+";w" = "commit"
+"gz" = "help"
 
 # Custom commands run through sh -c in the repository root.
-# [[command]]
-# id = "user.sync"
-# title = "Sync {branch}"
-# run = "git pull --rebase && git push"
-# refresh = true
-# section = "My commands"
+[[command]]
+id = "user.sync"
+title = "Sync {branch}"
+run = "git pull --rebase && git push"
+refresh = true
+section = "My commands"
 
-# [[command]]
-# id = "user.test"
-# title = "Run tests"
-# run = "cargo test"
-# refresh = false
-# section = "My commands"
+[[command]]
+id = "user.test"
+title = "Run tests"
+run = "cargo test"
+refresh = false
+section = "My commands"
 
 # Available command placeholders:
 # {file}, {commit}, {branch}, {upstream}, {push-remote}, {default-branch},
@@ -88,15 +88,15 @@ interval_minutes = 30
 # Transient entries can add actions, add switches, move built-ins, or remove
 # built-ins. Entries apply in the order written.
 [transient.branch]
-# "X" = "branch-delete" # Bare action
+"X" = "branch-delete" # Bare action
 
 [transient.fetch]
-# "-d" = "--depth=1" # Bare switch
-# "-j" = { flag = "--jobs=4", description = "Use four parallel jobs", after = "-p" }
+"-d" = "--depth=1" # Bare switch
+"-j" = { flag = "--jobs=4", description = "Use four parallel jobs", after = "-p" }
 
 [transient.commit]
-# "Q" = { command = "user.test", before = "c" } # Placed action
-# "W" = { command = "user.sync", group = "Create" } # Grouped action
-# "f" = { after = "c" } # Move Fixup after Commit
-# "F" = { group = "Edit" } # Move Instant fixup into Edit
-# "-n" = "unbound" # Remove the built-in --no-verify switch
+"Q" = { command = "user.test", before = "c" } # Placed action
+"W" = { command = "user.sync", group = "Create" } # Grouped action
+"f" = { after = "c" } # Move Fixup after Commit
+"F" = { group = "Edit" } # Move Instant fixup into Edit
+"-n" = "unbound" # Remove the built-in --no-verify switch
