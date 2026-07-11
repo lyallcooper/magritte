@@ -155,14 +155,17 @@ impl StatusView {
                 .relative()
                 // Trim the Input's default padding: a hair of top inset (so
                 // the summary doesn't touch the box edge), none below the last
-                // line, and the app's 8px horizontal inset (the default 12px
-                // reads as a gutter next to the diff rows below).
+                // line, and no left padding at all — the code-editor Input
+                // reserves a 10px line-number right margin even with numbers
+                // off, and that alone reads as the app's 8px inset (any
+                // padding stacks on top of it as a gutter).
                 .child(
                     Input::new(&ed.state)
                         .h_full()
                         .pt(px(3.0))
                         .pb_0()
-                        .px(px(8.0))
+                        .pl(px(0.0))
+                        .pr(px(8.0))
                         // Row-height lines (like every list in the app): the
                         // snugger leading also sits the first line against
                         // the box's top edge.
