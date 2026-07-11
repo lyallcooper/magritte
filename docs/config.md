@@ -307,8 +307,6 @@ and the command log. These secondary bindings are useful when remapping:
 Some keys are fixed and cannot be remapped:
 
 - <kbd>Esc</kbd> and <kbd>Ctrl-g</kbd> cancel a job, selection, pending sequence, or popup.
-- <kbd>Tab</kbd> expands or collapses the current item. You can bind another key to
-  `fold`, but <kbd>Tab</kbd> keeps this behavior.
 - <kbd>?</kbd> opens help.
 - An unbound <kbd>:</kbd>, <kbd>Alt-x</kbd>, <kbd>Cmd-P</kbd>, or <kbd>Cmd-K</kbd> opens the command palette.
 

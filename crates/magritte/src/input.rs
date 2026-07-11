@@ -273,10 +273,10 @@ impl StatusView {
             }
         }
         match key.as_str() {
-            // Tab toggles a fold (also delivered via the ToggleFold action, since
-            // Root binds tab). Kept explicit — and out of the remappable keymap.
-            // Shift-Tab falls through so a user binding for it can dispatch.
-            "tab" if !shift => self.toggle_fold(cx),
+            // No raw-key arm for Tab: Root's binding delivers it as the
+            // ToggleFold action (never reaching this listener), and that
+            // handler dispatches "tab" through the keymap like any key — so
+            // rebinding/unbinding `tab` in `[keymap]` takes effect.
             "escape" if !shift => {
                 // Cancel a transient still opening (its config-variable load
                 // hasn't landed), so it can't pop up after the quit.
