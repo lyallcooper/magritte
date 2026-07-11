@@ -1,125 +1,150 @@
 # Configuration
 
-Magritte reads a single TOML file:
+Use this guide when the Settings screen does not expose the change you need.
+The configuration file supports key remapping, status layout, background
+fetching, custom commands, and changes to Magritte's command menus.
 
+## Edit the configuration
+
+Press `,` or choose **Magritte > Settings** to change common options such as
+themes, fonts, editors, and the keymap preset. The Settings screen writes the
+global configuration file:
+
+```text
+$XDG_CONFIG_HOME/magritte/config.toml
 ```
-$XDG_CONFIG_HOME/magritte/config.toml      # or, if XDG_CONFIG_HOME is unset:
+
+If `XDG_CONFIG_HOME` is not set, Magritte uses:
+
+```text
 ~/.config/magritte/config.toml
 ```
 
-It's loaded at startup and re-read live when the file changes — edits apply
-without a restart. The Settings screen (`,`, or **Magritte → Settings** / `Cmd+,`)
-writes the same file and is the easiest way to change appearance options; this
-doc covers editing by hand, plus the `[keymap]` remapping the UI doesn't expose.
+Create the file if it does not exist. Magritte uses its defaults for every
+setting you omit, so a useful configuration can stay small:
 
-A missing file means defaults. A file that fails to parse is ignored, with the
-error shown in the status bar — at startup that falls back to defaults; on a
-live reload your current settings stay in place. Individual bad values (an
-unknown theme, appearance mode, or key binding) are reported the same way and
-fall back to their default rather than failing the whole file. A successful
-live reload confirms with a brief "Settings reloaded from disk"; fixing a
-flagged value and saving again clears its warning.
+```toml
+appearance = "dark"
+dark_theme = "Dracula"
+editor = "zed"
+keymap_preset = "evil"
 
-A repository can override these settings for itself — see *Per-repo settings*.
+[keymap]
+"K" = "branch-delete"
+```
 
-## What you can customize
+For a fully annotated file with every supported section and setting type, see
+[`config.example.toml`](config.example.toml). Copy it into place, then remove
+the settings you do not need.
 
-The quick tour; each item links to its reference section below.
+Magritte reloads the file after every save. A valid reload shows a short
+confirmation in the status bar. If the file is invalid, the status bar shows
+the error. At startup, Magritte falls back to its defaults. During a live
+reload, it keeps the last valid configuration instead.
 
-- **Any key.** A [`[keymap]`](#keymap) entry maps a keystroke — or a sequence
-  like `g r` — to a command id, or to `"unbound"` to drop a default. Nearly
-  every command has a stable, bindable id, not just the top-level ones.
-- **The transient menus.** A [`[transient.<id>]`](#transients) table adds,
-  moves, or removes suffixes — magit's `transient-append-suffix` family. One
-  line gives the branch transient a `b X` delete action.
-- **Your own commands.** A [`[[command]]`](#commands) table turns a shell
-  command into a first-class command — in the `:` palette, the `?` menu once
-  bound, and bindable in `[keymap]` like any built-in:
+An invalid theme, appearance mode, or key binding produces a warning and uses
+the default for that value. Fix the value and save again to clear the warning.
 
-  ```toml
-  [[command]]
-  id = "user.sync"
-  title = "Sync"
-  run = "git pull --rebase && git push"
-  ```
+## Choose what to customize
 
-- **Prefix sequences.** Any key that begins a bound sequence becomes a prefix,
-  with an on-screen which-key hint after a configurable delay.
-- **The `:` palette** opens a fuzzy picker over every command, bound or not —
-  the way to reach rarely-used commands and discover their keys.
+- Use [`[keymap]`](#keymap) to bind, remap, or unbind keys. Bindings can be one
+  key or a sequence such as `g r`.
+- Use [`[status]`](#status-sections) to choose which sections appear in the
+  status view and how they are ordered.
+- Use [`[fetch]`](#auto-fetch) to fetch in the background on a schedule.
+- Use [`[[command]]`](#commands) to add a shell command to the command palette
+  and keymap.
+- Use [`[transient.<id>]`](#transients) to add, move, or remove entries in a
+  command menu.
+- Use a [per-repository configuration](#per-repo-settings) when one repository
+  needs different behavior.
 
-Not supported: an embedded scripting language, or live transient rewriting
-beyond the `[transient.<id>]` additions. Magritte drives the `git` CLI rather
-than hosting a Lisp environment.
+Magritte does not embed a scripting language. Custom commands run through the
+shell, and transient configuration changes the existing menu model.
 
 ## Per-repo settings
 
-Drop a `config.toml` (and/or `transient-arguments.toml`) in **`.git/magritte/`** to
-override settings for one repository. It's a *sparse overlay* on your global
-config — set only the keys you want to change; everything else falls through.
-The file lives in the repo's git dir, so it's private (never committed) and
-shared across the repo's worktrees, and it's re-read live like the global one.
-The easiest way to start one is the Settings screen's *Open repo config*
-button, which creates the file and watches it immediately; a `.git/magritte/`
-directory created outside the app mid-session is picked up at the next launch.
+Place a sparse override at `.git/magritte/config.toml` when one repository
+needs different settings. Set only the values that differ from your global
+configuration:
 
-Merge rules — global first, repo on top:
+```toml
+# .git/magritte/config.toml
+dark_theme = "Nord Dark"
 
-- **Scalars** (theme, font, editor, commit options, …): the repo value wins.
-- **`[keymap]`** and **`[transient.*]`**: merged entry by entry — the repo adds
-  or overrides individual bindings/suffixes; `"x" = "unbound"` still removes one.
-- **`[[command]]`**: concatenated, a repo command replacing a global one of the
-  same `id` (so a repo adds commands, or overrides one by id).
+[fetch]
+auto = true
+interval_minutes = 10
+```
 
-Handy for a distinct theme per repo (tell work from personal at a glance),
-repo-specific keybindings or commands, or — via `transient-arguments.toml` —
-per-repo argument defaults (see *Saved argument defaults*).
+The Settings screen's **Open repo config** button creates and opens this file.
+Magritte watches it immediately. If you create the `.git/magritte` directory
+outside Magritte while the app is running, restart Magritte once so it can
+begin watching the directory.
+
+The file is inside the Git directory, so it is not committed. Repositories
+with multiple worktrees share the same override.
+
+Magritte loads the global configuration first, then applies the repository
+configuration using these rules:
+
+- A top-level value such as `dark_theme`, `font`, or `editor` replaces the
+  global value.
+- `[keymap]`, `[vim.keymap]`, and `[transient.*]` merge one entry at a time.
+  Repository entries add or replace individual bindings.
+- `[[command]]` entries combine. A repository command replaces a global
+  command with the same `id`.
+
+Saved transient arguments have their own global and repository files. See
+[Saved argument defaults](#saved-argument-defaults).
 
 ## Settings
 
-All scalar keys are top-level. Every key is optional; omit one for its default.
+All scalar settings are top-level TOML keys. Every setting is optional.
 
 | Key | Values | Default | Meaning |
-|-----|--------|---------|---------|
-| `appearance` | `"auto"`* / `"light"` / `"dark"` | `auto` | `auto` follows the system; otherwise force one mode. |
+| --- | --- | --- | --- |
+| `appearance` | `"auto"` / `"light"` / `"dark"` | `auto` | Follow the system or force light or dark mode. |
 | `light_theme` | theme name | `Selenized Light` | Theme used in light mode. |
 | `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
-| `font` | font family | platform monospace | Monospace font for code, diffs, and tabular rows. |
-| `ui_font` | font family / `"system-ui"` | *(uses `font`)* | Proportional font for chrome (menus, headers, labels); `"system-ui"` is the platform's standard UI font. Empty = monospace everywhere. |
-| `font_size` | px | *(system)* | Base font size; row heights and the commit editor's line height scale with it. Clamped to 9--24. Unset = the platform's standard UI text size (13 on macOS). |
-| `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | macOS only. The Dock (and Cmd-Tab) icon. Sets the running app's icon, not the Finder icon, which macOS keeps fixed to the bundle default. |
-| `editor` | command or app name | OS default opener | External editor for "open file" (`Return`) — see below. |
+| `font` | font family | platform monospace | Font for code, diffs, and aligned rows. |
+| `ui_font` | font family / `"system-ui"` | value of `font` | Font for menus, headings, and labels. Use `"system-ui"` for the platform font. |
+| `font_size` | pixels | system default | Base UI size, clamped to 9--24. The macOS default is 13. |
+| `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | Dock and app-switcher icon on macOS. This does not change the icon in Finder. |
+| `editor` | command or app name | OS default | Editor used by Open File (`Return`). See [External file editor](#external-file-editor). |
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |
-| `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
-| `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
-| `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72; bullets and indented lines keep a hanging indent (paused while in Vim Normal/Visual mode). |
-| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor — see *Vim mode keys* under *Keymap*. |
-| `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
-| `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
-| `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
-| `keymap_preset` | `"evil"` / `"vanilla"` | `evil` | Built-in keymap family to layer before `[keymap]` overrides — see *Keymap*. (`"evil-collection"` is accepted as an alias.) |
-| `which_key_delay_ms` | milliseconds | `1000` | Delay before the which-key list of continuations appears after a prefix key (and after a pending Vim sequence in the commit editor) — see *Keymap*. |
-| `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
+| `commit_editor` | command | none | Blocking command used as `GIT_EDITOR`, such as `zed --wait`, `code --wait`, or `nvim`. Only used when `commit_in_editor` is true. |
+| `commit_title_ruler` | `true` / `false` | `true` | Highlight summary text after column 50. |
+| `commit_body_wrap` | `true` / `false` | `true` | Wrap commit bodies at column 72 while preserving indentation. Wrapping pauses in Vim Normal and Visual modes. |
+| `commit_vim_mode` | `true` / `false` | `false` | Enable modal editing in the in-app commit editor. See [Vim mode keys](#vim-mode-keys-vimkeymap). |
+| `refresh_on_focus` | `true` / `false` | `true` | Refresh the repository when the window regains focus. |
+| `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest reachable tag in the title bar. |
+| `check_for_updates` | `true` / `false` | `true` | Check for new releases and show a quiet notification. |
+| `keymap_preset` | `"evil"` / `"vanilla"` | `evil` | Base keymap applied before `[keymap]`. The legacy value `"evil-collection"` is also accepted. |
+| `which_key_delay_ms` | milliseconds | `1000` | Time before possible continuations appear for a key prefix or Vim sequence. |
+| `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches considered shared. Magritte warns before rewriting a commit reachable from one of them. Missing refs are ignored. Use `[]` to disable the warning. |
 
-\* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
+Magritte saves the last 10 edited commit messages for each worktree. This
+includes messages discarded from the editor and messages from commits rejected
+by a hook. Press `Alt-p` in the commit editor to restore the newest message.
+Press it again to move through older messages. You can also run **Restore
+commit message** from the `:` palette.
 
-Commit messages are never lost: a message discarded with edits, or rejected by
-a failing commit (e.g. a pre-commit hook), is saved to a per-worktree ring of
-the last 10. Press `alt-p` in the commit editor (or run *Restore commit
-message* from the `:` palette) to fill in the newest saved message; repeat to
-cycle older ones.
+Theme names match the entries under **Light theme** and **Dark theme** in
+Settings. Magritte includes GitHub, Solarized, Selenized, Gruvbox, Catppuccin,
+Nord, Dracula, and tao variants.
 
-**Theme names** are the entries in the Settings → *Light theme* / *Dark theme*
-dropdowns. Bundled families: GitHub, Solarized, Selenized, Gruvbox, Catppuccin,
-Nord, Dracula, tao (each with light and dark variants).
+### External file editor
 
-**`editor`** is either a CLI command run directly (`code -w`, `zed`, `subl -w`)
-or, on macOS, an application name opened via `open -a` (`Zed`,
-`Visual Studio Code`). Empty opens the file in the OS default app. The file
-opens at the line under the cursor for editors with a known goto syntax.
-Terminal editors are out of scope (a GUI app can't reliably launch one).
+Set `editor` to a command such as `code -w`, `zed`, or `subl -w`. On macOS, you
+can also use an application name such as `"Zed"` or `"Visual Studio Code"`.
+Leave it empty to use the system default application.
 
-### Example
+Magritte opens supported editors at the line under the cursor. Terminal
+editors are not supported for Open File because Magritte cannot attach them to
+your existing terminal session.
+
+### Settings example
 
 ```toml
 appearance = "dark"
@@ -135,8 +160,7 @@ commit_body_wrap = true
 
 ## Status sections
 
-The status view shows magit-style sections. A `[status]` table picks which
-sections appear and in what order:
+Use `[status]` to choose which sections appear and their order:
 
 ```toml
 [status]
@@ -148,37 +172,40 @@ sections = [
 recent_count = 10
 ```
 
-- `sections` is an **ordered list of ids** — order is display order, presence
-  includes a section, omission hides it. Omit `[status]` (or leave `sections`
-  empty) for the default order shown above. An unknown id warns at startup.
-- Ids:
-  - `untracked`, `unstaged`, `staged` — the file sections.
-  - `stashes` — the stash list.
-  - `unpushed` / `unpulled` — commits ahead of / behind the **upstream**.
-  - `unpushed-pushremote` / `unpulled-pushremote` — the same vs the **push
-    target** in a triangular workflow; empty (hidden) when the push target is
-    the upstream. In the default order, interleaved with the upstream ones.
-  - `recent` — the last `recent_count` commits.
-  - `ignored` — ignored files. **Off by default**; add it to opt in.
-- An empty section is skipped. `recent_count` (default 10) sizes the recent list.
-- Commit rows show their ref labels (branches, tags, remotes), colored.
-- Like everything else, this is per-repo overridable — drop a `[status]` in
-  `.git/magritte/config.toml` to reorder sections for one repository.
+`sections` is an ordered list. The list order becomes the display order, and an
+omitted section is hidden. Omit `[status]` or use an empty list to restore the
+default order shown above. Unknown section ids produce a warning.
 
-**Act at point** in a section: on a commit row, `Return` opens its diff and
-`Cmd+C` (or `ys`/`C-w`) copies the hash; on a stash row, `Return` shows it, `a`
-applies, `A` pops, `x` (evil) / `k` (vanilla) drops (confirmed), and `Cmd+C`
-copies the reference. File rows stage/unstage/discard as usual; discarded
-files go to the system trash. On a section header, `s`/`u` act on the whole
-section.
+| Section id | Contents |
+| --- | --- |
+| `untracked` | Untracked files |
+| `unstaged` | Changes not yet staged |
+| `staged` | Staged changes |
+| `stashes` | Saved stashes |
+| `unpulled` | Commits available from the upstream |
+| `unpushed` | Local commits not on the upstream |
+| `unpulled-pushremote` | Commits available from the push target |
+| `unpushed-pushremote` | Local commits not on the push target |
+| `recent` | The last `recent_count` commits |
+| `ignored` | Ignored files. Hidden by default |
 
-Set `show_tags_in_title_bar = true` to show the nearest reachable tag in the
-title bar — `v1.0 (5)` (commits since it). Off by default.
+Push-target sections are hidden when the push target and upstream are the same.
+All empty sections are skipped. Commit rows show labels for branches, tags, and
+remotes.
+
+Actions follow the item at the cursor. `Return` opens a commit or stash, while
+`Cmd+C` copies its hash or reference. On a stash, `a` applies it, `A` pops it,
+and `x` in the Evil preset or `k` in the Vanilla preset drops it after
+confirmation. On a section heading, `s` or `u` acts on the whole section.
+Discarded untracked files are moved to the system Trash.
+
+Set `show_tags_in_title_bar = true` to show the nearest reachable tag. For
+example, `v1.0 (5)` means the current commit is five commits after `v1.0`.
 
 ## Auto-fetch
 
-A `[fetch]` table runs a periodic background `git fetch` so the
-unpushed/unpulled counts stay current without a manual fetch. Off by default.
+Use `[fetch]` to keep incoming and outgoing commit counts current. Background
+fetching is off by default.
 
 ```toml
 [fetch]
@@ -186,28 +213,29 @@ auto = true            # default false
 interval_minutes = 30  # default 30; minimum 1
 ```
 
-- The fetch is a plain `git fetch` (the current branch's configured remote),
-  run quietly off the UI thread; the status view refreshes when it lands. It's
-  skipped while another operation is in flight, and a failure (offline, etc.)
-  is ignored until the next tick.
-- Like everything else, this is per-repo overridable — enable it (or set a
-  different interval) for one repository via `.git/magritte/config.toml`.
+Magritte runs `git fetch` for the current branch's configured remote, then
+refreshes the status view. It skips a fetch while another operation is running.
+If a fetch fails, for example while you are offline, Magritte waits until the
+next interval and tries again.
+
+Put this table in `.git/magritte/config.toml` to enable fetching only for one
+repository.
 
 ## Large repositories
 
-When reading the repository's status is slow (over ~half a second) and git's
-filesystem monitor isn't configured, Magritte suggests it once with a status
-notice. Run "Enable filesystem monitor" from the `:` palette (anytime, hint or
-not) to set `core.fsmonitor` and `core.untrackedCache` for the repo — git
-then watches the worktree instead of rescanning it, which makes `git status`
-near-instant on large trees. The hint never repeats for a repo, and it stays
-quiet if `core.fsmonitor` is already set to anything (including `false`).
+If `git status` takes more than about half a second and no filesystem monitor
+is configured, Magritte suggests enabling one. Run **Enable filesystem
+monitor** from the `:` palette to set `core.fsmonitor` and
+`core.untrackedCache` for the repository. Git can then avoid repeatedly
+scanning the full working tree.
+
+Magritte shows this suggestion once per repository. It does not appear when
+`core.fsmonitor` already has a value, including `false`.
 
 ## As a git mergetool
 
-Magritte's conflict-resolution view can serve as your `git mergetool`, so
-terminal-driven merges and rebases get the same per-conflict keep-ours/theirs
-UI. Configure it in your git config:
+Use Magritte's conflict view from terminal-driven merges and rebases by
+configuring it as your Git mergetool in your `.gitconfig`:
 
 ```ini
 [merge]
@@ -217,99 +245,92 @@ UI. Configure it in your git config:
     trustExitCode = true
 ```
 
-`git mergetool` then opens Magritte directly on each conflicted file. Resolve
-the conflicts and confirm the finish prompt (or quit) — the exit code tells
-git whether the file was fully resolved, and git stages it on success.
-Closing the window with conflicts remaining counts as giving up on that file.
+Run `git mergetool` to open each conflicted file in Magritte. Resolve the
+conflicts and confirm the finish prompt. Magritte returns success only when the
+file has no unresolved conflict markers, which lets Git stage it. Closing the
+window before then reports failure for that file.
 
 ## Keymap
 
-The default keymap mirrors evil-collection-magit. Set `keymap_preset = "vanilla"`
-for a vanilla Magit/Emacs base — `P` push, `X` reset, `z` stash, `k` discard,
-`n`/`p` section motion, `j` the jump-to-section menu, `:` run command, plus the
-Emacs staples (`C-n`/`C-p`, `C-v`/`M-v`, `M-<`/`M->`, `C-SPC` select, `C-w`
-copy, `h` help, DEL scroll back). A `[keymap]` table then overrides the selected
-preset: each entry maps a **keystroke** to a **command id**, or to the sentinel
-`"unbound"` to remove a default binding.
+The default `evil` preset follows evil-collection-magit. Use `vanilla` for
+standard Magit and Emacs keys. The Vanilla preset includes `P` for push, `X`
+for reset, `z` for stash, `k` for discard, and `n` or `p` for section motion.
+
+Add a `[keymap]` table to change either preset. Each entry maps a key to a
+[command id](#command-ids). Use `"unbound"` to remove a binding.
 
 ```toml
 keymap_preset = "evil"
 
-# [keymap] must come after the scalar keys above (TOML table rule).
+# TOML requires top-level settings to appear before this table.
 [keymap]
-"K" = "branch-delete"   # bind K to delete-branch
+"K" = "branch-delete"   # K now deletes a branch
 "x" = "unbound"         # remove the default discard binding
-"E" = "commit-extend"   # leaf commands work too, not just top-level ones
+"E" = "commit-extend"   # E now extends the current commit
 ```
 
-- **Keystrokes** are case-sensitive (`s` vs `S`, `f` fetch vs `F` pull). Most are
-  a single key; the rest are space-separated **sequences** of any length (`g g`,
-  `g r`, or your own `z b c`). An unknown command id is ignored with a startup
-  warning rather than silently dropped.
-- **Modifiers** are word prefixes on the key: `ctrl-`, `alt-`, `cmd-`. So
-  `ctrl-d` is Ctrl-d, and `ctrl-x ctrl-c` is a two-step sequence. A shifted
-  letter is just its uppercase (`G`, not `shift-g`).
-- **Prefixes are implicit**: any key that begins a sequence becomes a prefix.
-  Binding `". c" = "commit"` makes `.` a prefix automatically. Press the prefix
-  and a lightweight strip at the bottom shows the keys typed so far with a
-  trailing dash (`g-`); each further key extends the sequence until it resolves.
-  After `which_key_delay_ms` (default 1000) with no follow-up, the strip expands
-  into a which-key list of the available continuations.
-- **Unbound keys** report themselves: pressing a key or sequence with no binding
-  shows a brief "… is unbound" notice (emacs' echo-area feedback).
-- **One unified keymap** — the motions, paging, section jumps, quit, and every
-  command id below are ordinary keymap entries you can remap or unbind, in every
-  view (status, log, commit, rebase-todo, and the `$` pager). The default
-  *secondary* bindings remap the same way:
+- Keys are case-sensitive. For example, `s` and `S` are different bindings.
+- Write sequences with spaces between their keys, such as `g r` or
+  `ctrl-x ctrl-c`. A sequence can contain any number of keys.
+- Write modifiers as `ctrl-`, `alt-`, or `cmd-`. Use an uppercase letter for
+  Shift, such as `G` rather than `shift-g`.
+- Prefixes do not need separate bindings. If you bind `". c" = "commit"`, `.`
+  automatically becomes a prefix. Magritte shows the entered prefix and, after
+  `which_key_delay_ms`, its available continuations.
+- Unknown command ids produce a warning and are ignored. Pressing an unbound
+  key also shows a short notice.
 
-  | keys | does |
-  |------|------|
-  | arrows, `ctrl-n` / `ctrl-p` | move the cursor (alongside `j`/`k`) |
-  | `space` | page down; on a status commit/stash row, show it first (magit's show-or-scroll) |
-  | `ctrl-d` / `ctrl-u` | half-page down / up |
-  | `ctrl-j` / `ctrl-k` | next / previous section (evil; magit's `n`/`p` — visits files, commits, and hunks) |
-  | `alt-j` / `alt-k` / `]` / `[` | next / previous *sibling* section (evil; magit's `M-n`/`M-p`) |
-  | `n` / `p`, `alt-n` / `alt-p` | the same two motions (vanilla preset) |
-  | `alt-1` … `alt-4` | fold level 1–4 (alias of `1`–`4`) |
-  | `z a` `z o` `z c` `z O` `z C` `z 1`…`z 4` `z r` | vim-style folds (evil): toggle / show / hide / show children / hide children / levels / reveal all |
-  | `g z` `g n` `g i` `g u` `g s` `g f u` `g f p` `g p u` `g p p` | jump to a section (evil; vanilla uses the `j` menu) |
-  | `y y` / `y s` `y b` `y r` | copy the value at point / copy value, copy revision, show refs (evil's `y` yank family) |
-  | `ctrl-w` | copy the value at point (magit's `C-w`) |
-  | `V` | visual selection (alongside `v`, evil preset) |
-  | `ctrl-v` / `alt-v`, `backspace` | page down / up, page up (vanilla preset) |
-  | `alt-<` / `alt->` | top / bottom (vanilla preset) |
-  | `ctrl-space` | visual selection (vanilla preset) |
-  | `h` | help (vanilla preset; `?` everywhere) |
-  | `G` | refresh (vanilla preset) |
-  | `|` | run command (evil preset alias for Magit's `:`) |
-  | `ctrl-x ctrl-c` | quit |
+The same keymap controls the status view, logs, commit views, the rebase editor,
+and the command log. These secondary bindings are useful when remapping:
 
-  (`ctrl-f` / `ctrl-b` page down / up too — they're the *primary* keys for
-  `page-down` / `page-up`, listed below.)
-- **Fixed keys** (always act; not rebindable):
-  - `Esc` and `Ctrl-g` cancel/abort — a job, a selection, a pending sequence, a
-    popup (Emacs keyboard-quit).
-  - `Tab` folds/unfolds. (You can bind another key to the `fold` command, but
-    `Tab` itself stays fold.)
-  - `?` opens help, and unbound `:`, `Alt-x`, `Cmd-P`, and `Cmd-K` open the
-    command palette. Bound symbols such as `!`, `|`, `$`, vanilla `:`, and
-    `Cmd+C` go through the effective keymap.
+| Keys | Action |
+| --- | --- |
+| arrows, `ctrl-n` / `ctrl-p` | Move the cursor |
+| `space` | Page down. On a commit or stash, open it first |
+| `ctrl-d` / `ctrl-u` | Move down or up half a page |
+| `ctrl-f` / `ctrl-b` | Move down or up one page |
+| `ctrl-j` / `ctrl-k` | Move to the next or previous section in Evil |
+| `alt-j` / `alt-k` / `]` / `[` | Move to the next or previous sibling section in Evil |
+| `n` / `p`, `alt-n` / `alt-p` | Section motions in Vanilla |
+| `alt-1` through `alt-4` | Set fold level 1 through 4 |
+| `z a`, `z o`, `z c`, `z O`, `z C`, `z 1` through `z 4`, `z r` | Vim-style folds in Evil |
+| `g z`, `g n`, `g i`, `g u`, `g s`, `g f u`, `g f p`, `g p u`, `g p p` | Jump to status sections in Evil |
+| `y y` / `y s`, `y b`, `y r` | Copy the current value, copy the revision, or show refs in Evil |
+| `ctrl-w` | Copy the current value |
+| `v` / `V` | Start a visual selection in Evil |
+| `ctrl-space` | Start a visual selection in Vanilla |
+| `alt-<` / `alt->` | Move to the top or bottom in Vanilla |
+| `h` | Open help in Vanilla. `?` works in either preset |
+| `G` | Refresh in Vanilla |
+| `|` | Run a command in Evil |
+| `ctrl-x ctrl-c` | Quit Magritte |
 
-  Keys typed inside a transient, picker, or the commit editor are consumed by
-  that mode, not the keymap.
+Some keys are fixed and cannot be remapped:
+
+- `Esc` and `Ctrl-g` cancel a job, selection, pending sequence, or popup.
+- `Tab` expands or collapses the current item. You can bind another key to
+  `fold`, but `Tab` keeps this behavior.
+- `?` opens help.
+- An unbound `:`, `Alt-x`, `Cmd-P`, or `Cmd-K` opens the command palette.
+
+Transient menus, pickers, and the commit editor handle their own keys while
+they are active.
 
 ### Vim mode keys (`[vim.keymap]`)
 
-`commit_vim_mode = true` gives the in-app commit editor modal Vim editing:
-Normal/Insert/Visual modes, motions and counts, text objects (words,
-sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators,
-surround (`ys`/`cs`/`ds`), `>`/`<` indent, `.` repeat, `/` regex search
-(smartcase, live match highlighting), `:` commands (`:s` with live preview,
-`:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), mouse-drag Visual
-selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ`
-or `,k`; `gq` is the reflow operator (`gqq` line, `gq{motion}`, Visual `gq`,
-`,q` whole message). For full Vim fidelity, use `commit_in_editor` with
-`commit_editor = "nvim"` instead.
+Set `commit_vim_mode = true` to enable Normal, Insert, and Visual modes in the
+in-app commit editor. It supports counts, text objects, `d`, `c`, and `y`
+operators, surround commands, indentation, repeat, regex search, substitutions,
+prompt history, and undo.
+
+Use `ZZ` or `,,` to commit. Use `ZQ` or `,k` to cancel. `gq` reformats a line,
+motion, or visual selection, while `,q` reformats the whole message. For full
+Vim behavior, use an external editor instead:
+
+```toml
+commit_in_editor = true
+commit_editor = "nvim"
+```
 
 A `[vim.keymap]` table adds your own key sequences for the editor-level
 commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
@@ -318,43 +339,39 @@ commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
 ```toml
 [vim.keymap]
 "Q" = "cancel"      # a single key
-";w" = "commit"     # ; then w — multi-char sequences are successive keys
+";w" = "commit"     # press ; and then w
 "gz" = "help"
 ```
 
-- **Sequences are literal keys typed in order** — `";w"` is `;` then `w`, with
-  no spaces between the steps and no modifier notation (`ctrl-`/`alt-` chords
-  aren't supported here). Case matters: `Q` is shift-q.
-- **User entries add to the defaults** — `ZZ`, `ZQ`, `,,`/`,c`/`,k`/`,q`,
-  `:wq`/`:q`/`:q!`/`:help` all keep working. An exact collision wins: mapping
-  `"ZZ" = "cancel"` overrides the built-in `ZZ`.
-- **A sequence's first key shadows that built-in key.** Mapping `"dx"` makes
-  `d` wait for the sequence, so the delete operator dies; `";w"` above shadows
-  `;` (repeat find). Prefer leaders Vim mode doesn't use (`Q`, `;`, …). A
-  sequence that dead-ends beeps; the swallowed keys don't replay.
-- While a sequence is pending, the typed prefix shows by the mode indicator,
-  and after a beat a which-key panel lists the continuations.
-- Merged per entry with a repo's `.git/magritte/config.toml`, like `[keymap]`;
-  unknown command names are ignored. Changes apply live, even to an editor
-  that's already open.
+- Write Vim sequences as literal characters with no spaces. Modifier chords
+  are not supported. Case matters, so `Q` means Shift-Q.
+- Custom entries add to the defaults. An exact match replaces the default. For
+  example, `"ZZ" = "cancel"` changes the built-in `ZZ` action.
+- The first key of a custom sequence shadows its normal Vim action. Mapping
+  `"dx"` makes `d` wait for `x`, so it no longer starts the delete operator.
+  Choose prefixes you do not otherwise need.
+- A pending sequence appears beside the mode indicator. After the configured
+  delay, Magritte shows its possible continuations.
+- Repository settings merge these entries one at a time. Unknown actions are
+  ignored. Changes apply to an editor that is already open.
 
 ### Command ids
 
-Any id below can be bound to a key. Top-level ones have a default key; the rest
-are reachable today only through their prefix's transient or the `:` palette.
-The palette hides commands that don't apply right now — e.g. `jump-to-ignored`
-appears only while the (opt-in) Ignored section is shown, and the other
-`jump-to-*` commands only while their section has content. The *at point* ids
-act only on the row they target (a commit, stash, or conflicted file) and win
-over a general command sharing their key — so `a` is "apply commit" on a
-commit row but Stage on a file row.
+Bind any id below from `[keymap]`. `none` in the default-key column means the
+command has no direct binding, but you can still find it in a transient menu or
+the `:` command palette.
 
-The palette also matches common synonyms and git verbs, not just the label, so
-you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
-`Discard`, "yank" finds `Copy`, "history" finds `Log`.
+The palette shows only commands that apply to the current view and selection.
+For example, `jump-to-ignored` appears only when the Ignored section is visible.
+Some keys also change with context. On a commit, `a` applies that commit. On a
+file, it stages the file.
+
+Search accepts common Git terms as well as Magritte's command names. `add`
+finds Stage, `restore` finds Discard, `yank` finds Copy, and `history` finds
+Log.
 
 | id | default key | command |
-|----|-------------|---------|
+| --- | --- | --- |
 | `commit` | `c` | Commit (transient) |
 | `branch` | `b` | Branch (transient) |
 | `tag` | `t` | Tag (transient) |
@@ -372,8 +389,8 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `fetch` | `f` | Fetch (transient) |
 | `patch` | `W` | Patch (transient: create patches, apply a diff, `git am` a mailbox) |
 | `bisect` | `B` | Bisect (transient; marks good/bad/skip/reset while a bisect runs) |
-| `blame` | — | Blame the file at point |
-| `run` | `!` | Run… (transient: git or shell command, in the root — or the file at point's directory, offered when there is one) |
+| `blame` | none | Blame the file at point |
+| `run` | `!` | Run a Git or shell command in the repository root or selected file's directory |
 | `git-command` | `\|` (evil) / `:`, `Q` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
@@ -392,7 +409,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `stash-row-drop` | `x` (evil) / `k` (vanilla) | Drop the stash at point (confirmed) |
 | `commit-details` | `=` | Toggle the details panel in a commit view |
 | `fold` | `Tab` | Fold / unfold |
-| `cycle-folds` | `shift-tab` | Cycle every fold: sections → everything → folded (magit's `S-TAB`) |
+| `cycle-folds` | `shift-tab` | Cycle every fold through sections, everything, and folded |
 | `fold-show` / `fold-hide` / `fold-show-children` / `fold-hide-children` | evil `z o` / `z c` / `z O` / `z C` | Explicit fold verbs (vim's `zo`/`zc`/`zO`/`zC`) |
 | `resolve-conflicts` | `e` | Resolve the conflicted file at point in the smerge-style view |
 | `diff-more-context` | `+` | More diff context lines |
@@ -405,194 +422,189 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (Return visits the tip commit; `b` checkout, `x`/`k` delete, `R` rename) |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
-| `close` | `q` (and `Esc`) | Close the current secondary screen (log, commit, refs, …) |
-| `commit-restore-message` | — | Refill the commit editor from the saved-message ring (`alt-p` inside the editor) |
-| `fsmonitor-enable` | — | Enable git's filesystem monitor for the repo — see *Large repositories* |
-| `check-updates` | — | Check for updates |
-| `about` | — | Show the version / about panel |
+| `close` | `q` (and `Esc`) | Close the current secondary screen |
+| `commit-restore-message` | none | Restore a saved message in the commit editor |
+| `fsmonitor-enable` | none | Enable Git's filesystem monitor for the repository |
+| `check-updates` | none | Check for updates |
+| `about` | none | Show the About panel and version |
 | `move-down` | `j` | Move cursor down |
 | `move-up` | `k` | Move cursor up |
 | `goto-top` | `g g` | Jump to top |
 | `goto-bottom` | `G` | Jump to bottom |
-| `next-section` | `ctrl-j` | Next section start — files, commits, hunks (status view) |
+| `next-section` | `ctrl-j` | Next file, commit, or hunk section in the status view |
 | `prev-section` | `ctrl-k` | Previous section start (status view) |
 | `next-sibling-section` | `g j` | Next section at the same depth |
 | `prev-sibling-section` | `g k` | Previous section at the same depth |
 | `section-up` | `^` | Jump to the parent section |
-| `show-level-1` … `show-level-4` | `1` … `4` | Fold the buffer to level 1–4 (sections / files / hunks / everything) |
+| `show-level-1` through `show-level-4` | `1` through `4` | Fold to sections, files, hunks, or everything |
 | `status-jump` | vanilla `j` | Jump-to-section menu (magit-status-jump) |
-| `jump-to-untracked` / `jump-to-unstaged` / `jump-to-staged` / `jump-to-stashes` / `jump-to-ignored` | — | Jump to a file/stash section (evil: `g n`/`g u`/`g s`/`g z`/`g i`) |
-| `jump-to-unpulled-upstream` / `jump-to-unpulled-pushremote` / `jump-to-unpushed-upstream` / `jump-to-unpushed-pushremote` | — | Jump to a commits section (evil: `g f u`/`g f p`/`g p u`/`g p p`) |
+| `jump-to-untracked` / `jump-to-unstaged` / `jump-to-staged` / `jump-to-stashes` / `jump-to-ignored` | none | Jump to a file or stash section |
+| `jump-to-unpulled-upstream` / `jump-to-unpulled-pushremote` / `jump-to-unpushed-upstream` / `jump-to-unpushed-pushremote` | none | Jump to an incoming or outgoing commit section |
 | `half-page-down` | `ctrl-d` | Scroll down half a page |
 | `half-page-up` | `ctrl-u` | Scroll up half a page |
 | `page-down` | `ctrl-f` | Scroll down a page |
 | `page-up` | `ctrl-b` | Scroll up a page |
 | `help` | vanilla `h` | Open the `?` help menu |
 | `quit` | `ctrl-x ctrl-c` | Quit Magritte |
-| `commit-create` | — | Create commit |
-| `commit-amend` | — | Amend commit |
-| `commit-reword` | — | Reword commit |
-| `commit-extend` | — | Extend commit (keep message) |
-| `branch-checkout` | — | Checkout branch/revision |
-| `branch-create` | — | Create branch |
-| `branch-create-checkout` | — | Create and checkout branch |
-| `branch-rename` | — | Rename branch |
-| `branch-delete` | — | Delete branch |
-| `push-pushremote` / `push-upstream` / `push-elsewhere` / `push-other` / `push-tag` / `push-tags` | — | Push variants |
-| `pull-pushremote` / `pull-upstream` / `pull-elsewhere` | — | Pull variants |
-| `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | — | Fetch variants |
-| `stash-push` / `stash-push-all` / `stash-index` / `stash-keep-index` / `stash-apply` / `stash-pop` / `stash-drop` / `stash-branch` | — | Stash variants |
-| `merge-editmsg` / `merge-preview` | — | Merge and edit the message / preview a merge |
-| `reset-branch` / `file-checkout` | — | Reset a branch / checkout a file from a revision |
-| `tag-create` / `tag-delete` | — | Tag variants |
-| `remote-add` / `remote-rename` / `remote-remove` | — | Remote variants |
-| `log-current` / `log-all` / `log-other` / `log-file` / `log-reflog` | — | Log variants |
-| `diff-dwim` / `diff-range` / `diff-unstaged` / `diff-staged` / `diff-worktree` / `diff-commit` | — | Diff variants |
-| `cherry-pick` / `cherry-pick-range` / `cherry-apply` | — | Cherry-pick a commit / a range / apply without committing |
-| `revert` / `revert-range` / `revert-no-commit` | — | Revert a commit / a range / just its changes |
+| `commit-create` | none | Create commit |
+| `commit-amend` | none | Amend commit |
+| `commit-reword` | none | Reword commit |
+| `commit-extend` | none | Extend commit and keep its message |
+| `branch-checkout` | none | Check out a branch or revision |
+| `branch-create` | none | Create branch |
+| `branch-create-checkout` | none | Create and check out a branch |
+| `branch-rename` | none | Rename branch |
+| `branch-delete` | none | Delete branch |
+| `push-pushremote` / `push-upstream` / `push-elsewhere` / `push-other` / `push-tag` / `push-tags` | none | Push variants |
+| `pull-pushremote` / `pull-upstream` / `pull-elsewhere` | none | Pull variants |
+| `fetch-pushremote` / `fetch-upstream` / `fetch-all` / `fetch-elsewhere` | none | Fetch variants |
+| `stash-push` / `stash-push-all` / `stash-index` / `stash-keep-index` / `stash-apply` / `stash-pop` / `stash-drop` / `stash-branch` | none | Stash variants |
+| `merge-editmsg` / `merge-preview` | none | Edit a merge message or preview a merge |
+| `reset-branch` / `file-checkout` | none | Reset a branch or check out a file from a revision |
+| `tag-create` / `tag-delete` | none | Tag variants |
+| `remote-add` / `remote-rename` / `remote-remove` | none | Remote variants |
+| `log-current` / `log-all` / `log-other` / `log-file` / `log-reflog` | none | Log variants |
+| `diff-dwim` / `diff-range` / `diff-unstaged` / `diff-staged` / `diff-worktree` / `diff-commit` | none | Diff variants |
+| `cherry-pick` / `cherry-pick-range` / `cherry-apply` | none | Cherry-pick or apply commits |
+| `revert` / `revert-range` / `revert-no-commit` | none | Revert commits with or without committing |
 
-Secondary screens add their own scoped ids, remappable the same way:
-`refs-visit` / `refs-checkout` / `refs-delete` / `refs-rename` (the refs
-browser), `worktree-*` (`worktree-visit`, `worktree-add`, …), `flat-*` (the
-commit/diff views: `flat-apply`, `flat-fold`, …), `rebase-todo-*` (one per
-todo verb: `rebase-todo-reword`, `rebase-todo-squash`, …), `resolve-*`
-(`resolve-ours`, `resolve-next`, …), `log-open`, and `git-log-toggle-queries`
-(the `$` log). The `:` palette lists every command that applies to the
-current screen.
+Secondary views add scoped ids that can be remapped in the same way. These
+include `refs-*`, `worktree-*`, `flat-*`, `rebase-todo-*`, `resolve-*`,
+`log-open`, and `git-log-toggle-queries`. Open the `:` palette in a view to see
+every command available there.
 
 ## Transients
 
-A `[transient.<id>]` table customizes a transient menu — magit's
-`transient-append-suffix`/`transient-insert-suffix`. The section id is the
-transient's command id (`commit`, `branch`, `tag`, `remote`, `stash`, `reset`,
-`rebase`, `merge`, `ignore`, `log`, `diff`, `push`, `pull`, `fetch`); each entry
-maps a suffix key to an **action** (a command to run), a **switch** (a
-toggleable git flag), or — with only placement fields — a **move** of the
-built-in suffix at that key.
+Transient menus are the command menus opened by keys such as `c`, `b`, and `p`.
+Use `[transient.<id>]` to add an action or Git option, move an existing entry,
+or remove one. Valid ids include `commit`, `branch`, `tag`, `remote`, `stash`,
+`reset`, `rebase`, `merge`, `ignore`, `log`, `diff`, `push`, `pull`, and
+`fetch`.
 
 ```toml
 [transient.branch]
-"X" = "branch-delete"          # action: a command id → `b X` deletes a branch
+"X" = "branch-delete"          # b X deletes a branch
 
 [transient.fetch]
-"-d" = "--depth=1"             # switch: a bare `-`-prefixed flag, no label
+"-d" = "--depth=1"             # add a Git option
 
 [transient.commit]
-"A" = "commit-amend"           # action, default placement (a "Custom" section)
+"A" = "commit-amend"           # add an action to the Custom group
 "-v" = { flag = "--verbose", description = "Show diff in message", after = "-s" }
 "W" = { command = "user.wip", group = "Create" }
-"f" = { after = "c" }          # move: put built-in Fixup right after Commit
-"F" = { group = "Edit" }       # move: Instant fixup into another section
+"f" = { after = "c" }          # move Fixup after Commit
+"F" = { group = "Edit" }       # move Instant fixup into Edit
 ```
 
-- **Actions** — the value is a **command id** (no leading `-`); runs with
-  default arguments.
-- **Switches** — the value is a **git flag**: a bare string like `"--depth=1"`,
-  or a table `{ flag = "…", description = "…" }` to add a label. Keyed dash-first
-  (`-d`, toggled with `- d`), like the built-in switches.
-- **Placement** — the table form takes `before = "<key>"` or `after = "<key>"`
-  (one, not both) to sit next to the suffix invoked by that key, or `group`
-  (a section title) to append into that section — created at the end when no
-  section has the title. A `before`/`after` key that isn't in the menu falls
-  back to the `group`; with no placement at all, switches land in **Arguments**
-  and actions in a **Custom** section.
-- **Moves** — a table with *only* placement fields relocates the built-in
-  suffix at that key, e.g. `"F" = { after = "c" }`. A move whose key or target
-  isn't in the menu does nothing; moving the last suffix out of a section
-  removes the section.
-- **Remove** a built-in suffix with the sentinel `"key" = "unbound"` (like
-  `[keymap]`), e.g. `"-n" = "unbound"` drops commit's `--no-verify`.
+- An action names a command id and runs with its default arguments.
+- A switch contains a Git option such as `"--depth=1"`. Use a table when you
+  also want a description or placement. Switch keys begin with a dash, so `-d`
+  appears under the menu's `-` prefix.
+- Use `before` or `after` to place an entry beside another key. Use `group` to
+  append it to a named group. Magritte creates a missing group at the end.
+- A table that contains only `before`, `after`, or `group` moves the built-in
+  entry at that key.
+- Set an entry to `"unbound"` to remove it. For example,
+  `"-n" = "unbound"` removes commit's `--no-verify` option.
 
-Entries apply **in the order written** — the global config's first, then the
-repo overlay's additions — so a later entry can place itself relative to an
-earlier one. A key already used by a built-in suffix is left alone (the
-built-in wins); to repurpose one, unbind it and add yours at another key. A
-section that isn't a real transient, an action naming an unknown command, or a
-switch whose key isn't dash-prefixed warns at startup.
+Entries apply in file order, with global entries before repository entries.
+This lets a later entry refer to one added earlier. A built-in keeps its key if
+a custom entry tries to reuse it. Invalid menu ids, command ids, and switch
+keys produce a warning.
 
 ### Config-derived switches
 
-Some built-in switches reflect a git config that git itself honors, so they
-open already enabled when that config is set: commit `--gpg-sign`
-(`commit.gpgSign`), pull `--rebase` (`pull.rebase`, including a per-branch
-`branch.<name>.rebase` override), fetch `--prune` (`fetch.prune`), and rebase
-`--autosquash` (`rebase.autoSquash`). Toggling such a switch *off* sends the
-negation explicitly (e.g. `--no-gpg-sign`), shown highlighted so it's clear
-you're overriding the configured default.
+Some switches start with the value from your Git configuration:
+
+| Menu option | Git configuration |
+| --- | --- |
+| commit `--gpg-sign` | `commit.gpgSign` |
+| pull `--rebase` | `pull.rebase` or `branch.<name>.rebase` |
+| fetch `--prune` | `fetch.prune` |
+| rebase `--autosquash` | `rebase.autoSquash` |
+
+Turning one of these switches off passes its negated form, such as
+`--no-gpg-sign`. Magritte highlights the switch to show that it overrides your
+Git configuration.
 
 ### Saved argument defaults
 
-Inside any transient, **`Ctrl-s`** saves the current switch toggles and option
-values as that transient's defaults (magit's `transient-save`); reopening it
-starts from them.
-`Ctrl-s` then asks for a **scope** — press **`g`** to save *globally* or **`l`**
-to save *for this repo* (anything else, incl. `Esc`, cancels):
+Press `Ctrl-s` in a transient menu to save its current options as the defaults
+for the next time you open it. Magritte asks where to save them:
 
-- **Global** → `transient-arguments.toml` beside the config. Entries are the git
-  arguments themselves (e.g. `commit = ["--all", "--signoff"]`, `log = ["-n50", "--grep=fix"]`),
-  so a keybinding remap never disturbs a saved default.
-- **This repo** → `.git/magritte/transient-arguments.toml` in the repo (shared
-  across its worktrees, never committed).
+- Press `g` for all repositories. Magritte writes
+  `transient-arguments.toml` beside your global configuration.
+- Press `l` for the current repository. Magritte writes
+  `.git/magritte/transient-arguments.toml`.
+- Press `Esc` to cancel.
 
-When a transient opens, the repo scope wins over the global one **per transient
-id**: a repo's `commit = [...]` entry fully defines commit's defaults, while the
-global file still supplies the transients the repo doesn't mention. Delete an
-entry (or its file) to fall back to the lower scope, then the built-in defaults.
+The file stores Git arguments rather than menu keys, so key remapping does not
+affect saved defaults:
 
-A config-derived switch (above) is only recorded when it differs from the
-configured default — as its flag (forced on) or its negation (forced off, e.g.
-`commit = ["--no-gpg-sign"]`); leaving it untouched keeps following the config,
-so an old or empty saved set never silently disables it.
+```toml
+commit = ["--all", "--signoff"]
+log = ["-n50", "--grep=fix"]
+```
 
-Both files are re-read live, like the config: editing one by hand takes effect
-on the next transient you open, no restart needed.
+A repository entry replaces the global entry for the same transient. Other
+global entries still apply. Delete an entry to fall back to the global or
+built-in defaults.
+
+A config-derived switch is saved only when you change it from the Git-config
+value. Leaving it untouched continues to follow Git configuration. Both files
+reload automatically, and edits apply the next time you open the menu.
 
 ## Commands
 
-A `[[command]]` table defines your own command — a shell command the `:` palette
-and `[keymap]` can run by `id`.
+Use `[[command]]` to make a shell command available in the `:` palette and the
+keymap.
 
 ```toml
 [[command]]
-id = "user.sync"                # bind in [keymap] / shown in the palette by title
+id = "user.sync"
 title = "Sync"
 run = "git pull --rebase && git push"
-refresh = true                  # re-read status afterward (default true)
+refresh = true                  # refresh afterward. This is the default
 
 [[command]]
 id = "user.wip"
 title = "WIP commit"
 run = "git commit -a -m WIP"
-section = "My commands"         # which ? group to list it under when bound
+section = "My commands"         # group in the ? menu when bound
 ```
 
-- **`run` is a shell command**, executed with `sh -c` in the repo root — so
-  `&&`, pipes, and redirection all work, and it can run any program, not just
-  git (`run = "make test"`).
-- **Placeholders** are resolved at run time against the current selection and
-  repo, and shell-quoted: `{file}` (the file at point), `{commit}` (the commit
-  at point — status, log, or an open commit view), `{branch}` (the current
-  branch), `{upstream}` (the branch's upstream, e.g. `origin/main`),
-  `{push-remote}` (the resolved push
-  remote, e.g. `origin`), `{default-branch}` (what `origin/HEAD` points at,
-  e.g. `main`), `{default-remote}` (the remote that named `{default-branch}`,
-  falling back to the push remote — so
-  `git pull {default-remote} {default-branch}` never mixes remotes). If one
-  can't be resolved — e.g. `{file}` with no file selected — the command
-  reports that and doesn't run.
-- **Titles expand placeholders too**, wherever the title shows (palette, `?`
-  menu, transient injections) — `title = "Rebase onto origin/{default-branch}"`
-  reads as "Rebase onto origin/main". Display-only: an unresolvable placeholder
-  stays literal rather than blocking the label.
-- **Bind it** like any built-in: `[keymap]` entry `"X" = "user.wip"`, or run it
-  from the `:` palette by its `title`. Its output shows as a toast (a failure
-  stays until dismissed); long output is cut off with a pointer to the `$` log,
-  which records the command and its full output.
-- **Shows in the `?` menu** when bound to a key — under the `section` group
-  (default "Commands"); a section title that doesn't exist is created. Unbound
-  commands stay palette-only.
-- **Destructive commands confirm first** — one whose words include `clean`,
-  `--hard`, `--force`, or `--force-with-lease` prompts before running, like
-  the built-in destructive operations.
-- An empty `run`, an `id` that shadows a built-in, or a duplicate `id` warns at
-  startup. For a *one-off* command, use the `!` prompt instead.
+`run` executes through `sh -c` in the repository root. Shell operators, pipes,
+and redirection work, and the command can run any program. For example,
+`run = "make test"` is valid.
+
+### Command placeholders
+
+Magritte shell-quotes each placeholder before inserting it into `run`:
+
+| Placeholder | Value |
+| --- | --- |
+| `{file}` | File at the cursor |
+| `{commit}` | Commit at the cursor in status, log, or a commit view |
+| `{branch}` | Current branch |
+| `{upstream}` | Current branch's upstream, such as `origin/main` |
+| `{push-remote}` | Resolved push remote, such as `origin` |
+| `{default-branch}` | Branch selected by the remote's HEAD, such as `main` |
+| `{default-remote}` | Remote that owns the default branch, or the push remote as a fallback |
+
+If a required value is unavailable, the command does not run. For example, a
+command containing `{file}` reports an error when no file is selected.
+
+Titles can also contain placeholders. A title such as
+`"Rebase onto origin/{default-branch}"` displays as **Rebase onto origin/main**.
+If a title placeholder cannot be resolved, it remains visible as written.
+
+Bind a custom command by id, for example `"X" = "user.wip"`, or run it by title
+from the command palette. Bound commands also appear in the `?` menu under
+their `section`, which defaults to **Commands**.
+
+Command output appears in a notification. Failures remain until dismissed, and
+long output points to the `$` command log for the full text. Commands containing
+`clean`, `--hard`, `--force`, or `--force-with-lease` ask for confirmation.
+
+An empty `run`, duplicate id, or id that matches a built-in produces a warning.
+Use the `!` menu for a command you do not need to save.

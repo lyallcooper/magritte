@@ -1,0 +1,102 @@
+# Complete Magritte configuration example
+#
+# Copy this file to ~/.config/magritte/config.toml and remove anything you do
+# not want to customize. Magritte uses its default for every omitted setting.
+# Repository overrides use the same format at .git/magritte/config.toml.
+# This example enables auto-fetch and the Ignored section to demonstrate them.
+# Most values differ from their defaults so the schema coverage test exercises them.
+
+# Appearance
+appearance = "auto" # auto, light, or dark
+light_theme = "Selenized Light"
+dark_theme = "Selenized Dark"
+font = "" # System UI Monospace by default
+ui_font = "" # Same as `font` by default
+font_size = 13
+app_icon = "son-of-man" # son-of-man, pipe, golconda, or magic
+
+# Files and commit messages
+editor = "zed"
+commit_in_editor = false
+commit_editor = "nvim"
+commit_title_ruler = true
+commit_body_wrap = true
+commit_vim_mode = false
+
+# General behavior
+keymap_preset = "evil" # evil or vanilla
+which_key_delay_ms = 1000
+refresh_on_focus = true
+show_tags_in_title_bar = false
+check_for_updates = true
+published_branches = ["origin/main", "upstream/main"] # Warns when rewriting on these
+
+# Status sections appear in this order. Remove an id to hide that section.
+[status]
+sections = [
+  "untracked",
+  "unstaged",
+  "staged",
+  "stashes",
+  "unpulled",
+  "unpulled-pushremote",
+  "unpushed",
+  "unpushed-pushremote",
+  "recent",
+  # "ignored", # Off by default
+]
+recent_count = 20
+
+# Periodically fetch the current branch's configured remote.
+[fetch]
+auto = false
+interval_minutes = 30
+
+# Keys map to command ids. Sequences use spaces between keys.
+[keymap]
+# "K" = "branch-delete"
+# ". R" = "refresh"
+# "cmd-r" = "refresh"
+# ". S" = "user.sync"
+# "x" = "unbound"
+
+# Extra commit-editor Vim bindings use literal key sequences without spaces.
+[vim.keymap]
+# "Q" = "cancel"
+# ";w" = "commit"
+# "gz" = "help"
+
+# Custom commands run through sh -c in the repository root.
+# [[command]]
+# id = "user.sync"
+# title = "Sync {branch}"
+# run = "git pull --rebase && git push"
+# refresh = true
+# section = "My commands"
+
+# [[command]]
+# id = "user.test"
+# title = "Run tests"
+# run = "cargo test"
+# refresh = false
+# section = "My commands"
+
+# Available command placeholders:
+# {file}, {commit}, {branch}, {upstream}, {push-remote}, {default-branch},
+# and {default-remote}. Magritte shell-quotes values before substitution.
+
+# Transient entries can add actions, add switches, move built-ins, or remove
+# built-ins. Entries apply in the order written.
+[transient.branch]
+# "X" = "branch-delete" # Bare action
+
+[transient.fetch]
+# "-d" = "--depth=1" # Bare switch
+# "-j" = { flag = "--jobs=4", description = "Use four parallel jobs", after = "-p" }
+
+[transient.commit]
+# "Q" = { command = "user.test", before = "c" } # Placed action
+# "W" = { command = "user.sync", group = "Create" } # Grouped action
+# "f" = { after = "c" } # Move Fixup after Commit
+# "F" = { group = "Edit" } # Move Instant fixup into Edit
+# "-n" = "unbound" # Remove the built-in --no-verify switch

@@ -2,117 +2,153 @@
 
 > *Ceci n'est pas Magit.*
 
-Magritte is a standalone macOS git client in the spirit of
-[magit](https://magit.vc/) — fast, keyboard-driven, mouse-friendly — without
-Emacs. The status buffer is home base, you act on the thing at point, and
-commands open transient popups. It's built on [GPUI](https://www.gpui.rs/) and
-designed from the start to stay responsive in very large repositories: git work
-runs off the UI thread, diffs are computed lazily, and rendering is virtualized.
+Magritte is a fast, keyboard-first Git client inspired by
+[Magit](https://magit.vc/). It runs as a standalone app, so you get Magit's
+status-centered workflow without Emacs.
 
-This is a work in progress. It installs via Homebrew
-(`brew install lyallcooper/magritte/magritte`) or builds from source; see
-[PLAN.md](PLAN.md) for the goals, architecture, and milestones.
+Use the status view to see the whole repository, move to the file, hunk, or
+commit you care about, then act on it. Commands such as commit, branch, push,
+and rebase open focused menus that show their available options.
 
-## Requirements
+Magritte is under active development. macOS on Apple silicon is the primary
+platform. A best-effort Linux x86_64 build is also available.
 
-- macOS (the only target for v1)
-- [Rust](https://www.rust-lang.org/) 1.96 — pinned in [`.mise.toml`](.mise.toml);
-  `mise install` sets it up, or use any equivalent toolchain
-- `git` on `PATH` (Magritte shells out to it rather than linking libgit2)
+## Install
 
-## Build & run
+Install the latest release with Homebrew:
 
 ```sh
-cargo run --release -- [path-to-repo]    # defaults to the current directory
+brew install lyallcooper/magritte/magritte
 ```
 
-Omit `--release` for a faster, unoptimized dev build. The first build compiles
-GPUI and pulls pinned git dependencies, so it takes a while; later builds are
-incremental.
+Magritte requires `git` on your `PATH`.
 
-Launched from a shell, Magritte detaches into the background and returns your
-prompt immediately, the way a GUI app should. Pass `--foreground` (or set
-`MAGRITTE_FOREGROUND`) to keep it attached to the terminal — useful for logs and
-debugging.
-
-## Keybindings
-
-The default keymap mirrors **evil-collection's magit**, so existing muscle
-memory transfers (`j`/`k` to move, `TAB` to fold, `s`/`u` to stage/unstage, `c`
-to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on); set
-`keymap_preset = "vanilla"` for stock magit/Emacs keys instead. Press
-`?` in the app for the dispatch/help popup. The complete key list — and how to
-remap or unbind keys with a `[keymap]` table — is in
-[`docs/config.md`](docs/config.md#keymap); every keyboard action has a mouse
-equivalent.
-
-## Configuration
-
-Settings live in `~/.config/magritte/config.toml` (or `$XDG_CONFIG_HOME/…`),
-loaded at startup and re-read live on change; a sparse per-repo overlay in
-`.git/magritte/config.toml` overrides any of them for one repository. The
-Settings screen (`,`) edits appearance, fonts, and editor options; a `[keymap]`
-table remaps keys. [`docs/config.md`](docs/config.md) documents every key,
-valid values, and the command ids you can bind.
-
-Magritte also works as a **`git mergetool`**: `magritte --mergetool` opens the
-conflict-resolution view on each conflicted file, and the exit code tells git
-whether it was resolved — setup in
-[`docs/config.md`](docs/config.md#as-a-git-mergetool).
-
-## Architecture
-
-Two crates, split at a synchronous/async seam:
-
-- **`magritte-core`** — UI-free and synchronous. Drives the `git` CLI and
-  returns plain data, so it's unit-testable against throwaway repos with no
-  graphics stack.
-- **`magritte`** — the GPUI app. Owns all asynchrony and cancellation. Anything
-  that can be slow — status, diffs, ref/branch/stash listings, transfers — is
-  dispatched to a background executor, so the UI thread never blocks on it. (A
-  few bounded config/ref probes, e.g. resolving `@{upstream}`, still run inline;
-  they don't scan the worktree.)
-
-Keymap remapping, transient extension, user-defined `[[command]]` commands, and
-the `:` command palette are built and documented in
-[`docs/config.md`](docs/config.md), which opens with a tour of the
-customization surface.
-
-## Development
+To build an existing checkout from source, install Rust 1.96 and run:
 
 ```sh
-cargo test                  # core integration tests + app unit tests
-cargo clippy --all-targets
-cargo fmt
+mise install                 # optional, uses the pinned toolchain
+cargo run --release -- .
 ```
 
-A dev-only **debug control channel** can drive a running instance (inject keys,
-click elements, screenshot) for scripted testing:
+The first build takes longer because it compiles GPUI and the pinned
+dependencies. Later builds are incremental.
+
+## Open a repository
+
+Pass Magritte a repository or any path inside one:
 
 ```sh
-scripts/dbg.sh up           # build with --features debug-capture and launch
-scripts/dbg.sh key j        # inject a keystroke
-scripts/dbg.sh shot out.png # screenshot the window
-scripts/dbg.sh down
+magritte ~/code/my-project
 ```
 
-It is compiled out of normal release builds entirely.
+With no path, Magritte opens the repository that contains your current
+directory:
+
+```sh
+cd ~/code/my-project
+magritte
+```
+
+Magritte normally starts in the background and returns control to your shell.
+Use `magritte --foreground` when you want logs to remain attached to the
+terminal. `MAGRITTE_FOREGROUND=1` does the same.
+
+## Learn the workflow
+
+The default keymap follows evil-collection-magit. These keys cover the usual
+workflow:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k` | Move down or up |
+| `Tab` | Expand or collapse the item at the cursor |
+| `s` / `u` | Stage or unstage the selection |
+| `x` | Discard the selection after confirmation |
+| `c` | Open the commit menu |
+| `b` | Open the branch menu |
+| `p` / `F` | Open the push or pull menu |
+| `l` | Open the log menu |
+| `g r` | Refresh the repository |
+| `:` | Search all available commands |
+| `?` | Show commands and their keys |
+| `Esc` / `Ctrl-g` | Cancel the current action |
+
+Commands act on the item at the cursor. For example, `s` stages the current
+hunk when the cursor is on a hunk, the current file when it is on a file, and
+the full section when it is on a section heading. Visual selection lets you
+apply an action to several rows at once.
+
+If you prefer standard Magit and Emacs bindings, open Settings with `,` and set
+the keymap to Vanilla. You can also set `keymap_preset = "vanilla"` in the
+configuration file.
+
+## Configure Magritte
+
+Press `,` or choose **Magritte > Settings** to change themes, fonts, editor
+behavior, and the keymap preset.
+
+For key remapping, custom commands, status sections, background fetches, and
+transient menu changes, edit:
+
+```text
+~/.config/magritte/config.toml
+```
+
+Magritte reloads the file when you save it. You can also place a sparse
+override at `.git/magritte/config.toml` for one repository.
+
+See the [configuration guide](docs/config.md) for every setting and practical
+examples.
+
+## Use Magritte as a mergetool
+
+Magritte can resolve conflicted files opened by `git mergetool`. Add this to
+your Git config:
+
+```ini
+[merge]
+    tool = magritte
+[mergetool "magritte"]
+    cmd = magritte --mergetool "$MERGED"
+    trustExitCode = true
+```
+
+Then run `git mergetool` during a merge or rebase. Magritte returns success
+only after the selected file no longer contains unresolved conflict markers.
 
 ## Current limitations
 
-- Ad-hoc signed only — not notarized or developer-ID signed.
-- macOS is the supported platform; releases also ship a best-effort Linux
-  tarball.
-- Non-UTF-8 paths are handled lossily.
-- Refresh is on-demand (`g r`), after our own commands, on window focus
-  (opt-out via `refresh_on_focus`), and via the opt-in `[fetch]` background
-  auto-fetch; there is no filesystem watcher (intentionally — it's a
-  large-repo hazard magit also avoids).
+- Release builds are ad hoc signed. They are not notarized or signed with a
+  Developer ID.
+- macOS on Apple silicon is the supported release target. Linux x86_64 builds
+  are best effort.
+- Paths that are not valid UTF-8 may be displayed with replacement characters.
+- Magritte does not watch the working tree. It refreshes after its own
+  commands, when the window regains focus, during auto-fetch, or when you run
+  `g r`. This avoids expensive filesystem watching in large repositories.
+
+See [Magit parity](docs/magit-parity.md) for a detailed list of supported and
+missing Magit features.
+
+## Develop
+
+The workspace uses Rust 1.96, pinned in [`.mise.toml`](.mise.toml). Magritte
+invokes the `git` executable rather than linking to libgit2.
+
+```sh
+cargo test
+cargo clippy --all-targets
+cargo fmt --check
+```
+
+The workspace has two crates:
+
+- `magritte-core` contains synchronous, UI-independent Git operations.
+- `magritte` contains the GPUI app, background work, and cancellation.
+
+Read [AGENTS.md](AGENTS.md) for repository conventions and [PLAN.md](PLAN.md)
+for the longer-term architecture and roadmap.
 
 ## License
 
-Declared MIT in the workspace manifest. Licensing is not yet finalized for
-public release — the local `.reference/` directory (git ignored) contains
-upstream magit/evil-collection sources used only as a behavior reference; it is
-not part of Magritte and is not distributed. See the licensing note in
-[PLAN.md](PLAN.md#7-risks--open-questions) before going public.
+Magritte is licensed under MIT, as declared in the workspace manifest.

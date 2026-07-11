@@ -1,26 +1,23 @@
 # Vim mode for the commit editor
 
-Status: implemented — shipped as `crates/magritte/src/vim/` behind the
-`commit_vim_mode` setting. Written as the implementation plan; kept as the
-as-built design reference.
+This document is the as-built design reference for contributors. The feature
+lives in `crates/magritte/src/vim/` and is enabled with `commit_vim_mode`.
 
 ## Goal
 
-Give the in-app commit-message editor a high-quality, opt-in Vim mode: modal
-editing (Normal/Insert/Visual), the common motions and text objects, the core
-operators (`d`/`c`/`y`), and a surround MVP. Scoped to the commit editor
-(`Screen::Editor`, `crates/magritte/src/commit_editor.rs`); it does not touch the
-status/diff views, which have their own vi-style keymap.
+Provide an optional Vim editing layer for commit messages without replacing the
+underlying text component. It supports Normal, Insert, and Visual modes, common
+motions and text objects, core operators, surround commands, search, Ex
+commands, and Visual Block mode.
 
-The external-editor path stays the recommended route for full fidelity
-(`commit_editor = "nvim"` launches the user's real Vim). This is for people who
-want modal editing without shelling out.
+The feature applies only to the commit editor in
+`crates/magritte/src/commit_editor.rs`. Status and diff views continue to use
+the application keymap. Users who need complete Vim fidelity can set
+`commit_in_editor = true` and `commit_editor = "nvim"`.
 
-Non-goals for the first cut (left room for, in "Later"): macros, marks,
-multiple registers. (Search, `:` ex commands, and Visual Block have since
-landed — see below.)
+Macros, marks, and multiple registers remain outside the current scope.
 
-## Architecture: a modal command layer over `InputState`
+## Architecture
 
 We keep gpui-component's `InputState` as the text widget (it owns storage, text
 layout, IME, scrolling, undo, and rendering) and add a **modal command layer** on
@@ -53,17 +50,15 @@ every read we need is already in bytes. So the engine works in byte offsets and
 one helper converts a byte range to UTF-16 at the single write boundary. Keep
 that conversion in one place so it's the only code that has to be right.
 
-Two genuine gaps, both solvable without upstreaming or a new editor:
+Two missing `InputState` APIs shape the implementation:
 
-1. **Setting a normal selection** (for Visual-mode highlighting) isn't exposed —
-   `selected_range()` reads, nothing public sets it. We track the Visual anchor
-   in our own state and **render the highlight ourselves** via
-   `range_to_bounds`. A multi-line selection is *not* one rectangle: decompose
-   it into per-line byte ranges and draw one translucent rect per line. This is
-   an overlay, not an editor.
-2. **Block cursor shape** in Normal mode isn't exposed. Ship a header mode
-   indicator first; optionally draw a block cursor via
-   `range_to_bounds(cursor..next char)` later.
+1. `selected_range()` can read a normal selection, but no public method can set
+   one. Visual mode therefore keeps its own anchor and renders one translucent
+   rectangle per selected line through `range_to_bounds`.
+2. Normal mode needs a block cursor, but `InputState` does not expose cursor
+   shape. Magritte draws its own block over
+   `range_to_bounds(cursor..next_char)` and uses a narrow stub at an empty line
+   or the end of the file.
 
 ## Build our own engine — but cross-check against proven emulations
 
@@ -94,11 +89,10 @@ License discipline: IdeaVim and the Vim docs we can read freely; evil and Zed-vi
 are GPL, so we treat them as behavior references (what a keystroke *does*), never
 paste their code. Encode the agreed behavior as our own tests.
 
-## The command engine (pure, backend-independent, unit-tested)
+## Command engine
 
-A new module (`crates/magritte/src/vim/`, or a small `magritte-vim` crate) that
-knows nothing about `InputState` or gpui. It maps a keystroke, given the current
-buffer and mode, to an `Action`:
+`crates/magritte/src/vim/` does not depend on `InputState` or GPUI. Given a
+buffer, cursor, mode, and key, it returns an `Action`:
 
 ```
 input:  text: &Rope (or &str), cursor: usize (byte), mode, pending state
@@ -132,7 +126,7 @@ enum Mode { Normal, Insert, Visual { anchor: usize, kind: Char|Line|Block },
 - **OperatorPending** — after `d`/`c`/`y`, awaiting a motion or text object.
 - **SurroundPending** — after `ys`/`cs`/`ds`, awaiting the text object / pair char.
 
-### Motions, text objects, operators, surround (MVP)
+### Motions, text objects, operators, and surround
 
 - **Motions:** `h j k l`, `0 ^ $ _`, `w W b B e E`, `gg G`, `f/t/F/T` (+ `;`,
   and `,` under an operator — a bare `,` is the leader, below), `{`/`}`, `%`.
@@ -178,8 +172,7 @@ enum Mode { Normal, Insert, Visual { anchor: usize, kind: Char|Line|Block },
 - **Surround:** `ysiw"`, `yss"`, motion-based `ys`, visual `S`, `cs"'`, `ds"`,
   for the bracket/quote pairs.
 
-Thread an optional `count` (`3w`, `2dd`) from day one so it isn't a later rewrite,
-even if the first cut ignores it.
+The engine carries an optional count for commands such as `3w` and `2dd`.
 
 ## Wiring to the editor
 
@@ -214,16 +207,16 @@ even if the first cut ignores it.
 - **User keymap (`[vim.keymap]`):** extra literal key sequences for the
   editor-level commands (`commit`/`cancel`/`discard`/`reflow`/`help`),
   parsed from the config (`config::VimConfig`, per-entry repo merge like
-  `[keymap]`) into the engine at construction (`VimState::with_user_map`,
-  so remaps apply when an editor opens — a live config reload doesn't
-  rebind an already-open one). Resolution order: in Normal mode, before
+  `[keymap]`) into the engine at construction (`VimState::with_user_map`).
+  Live reload updates the map in an open editor. Resolution order: in Normal mode, before
   the built-in dispatch, a key that starts any user sequence enters a
   `Pending::User` prefix state (shown in the indicator like other pending
   keys); an exact match fires (so it wins any collision with a built-in
   key or prefix), a live prefix waits, and a dead end beeps *without*
-  replaying the swallowed keys — a mapping's first key therefore shadows
-  that built-in entirely (docs recommend distinct leaders). The defaults
-  always stay bound; user entries only add (or shadow on collision).
+  replaying the swallowed keys. A mapping's first key therefore shadows
+  that built-in entirely. The defaults stay bound unless a custom entry
+  shadows them. Live configuration reloads replace the user map without
+  resetting the current mode, pending state, or undo history.
 - **`gq` is the reflow operator:** `gqq` reflows the current line(s),
   `gq{motion}`/`gq{object}` the covered lines, Visual `gq` the selection —
   each emits `Action::ReflowRange`, which the app expands to whole lines,
@@ -319,29 +312,30 @@ even if the first cut ignores it.
 - **Live smoke** via `scripts/dbg.sh`: enable the flag on a scratch repo and
   exercise `ciw`/`dd`/`ysiw"`/`cs"'`, checking the mode indicator and result.
 
-## Phasing
+## Implementation history
 
-1. Engine skeleton + Normal-mode motions; routing + header indicator + config
-   flag (`MoveCursor` only, no edits).
-2. Operators + text objects (`d`/`c`/`y`, `iw`/`aw`, quote/bracket objects,
-   linewise `dd`/`cc`/`yy`) via `replace_text_in_range` (real undo from day one).
-3. Visual mode + the `range_to_bounds` per-line selection overlay.
-4. Surround MVP.
-5. Block cursor; polish.
-6. Later: named registers, marks, macros, `C-d`/`C-u` paging, Visual paste
-   of a blockwise register, blockwise `~`/`u`/`U`/`>`/`<`.
+1. Built the engine skeleton, Normal-mode motions, routing, mode indicator, and
+   configuration flag.
+2. Added operators and text objects through `replace_text_in_range` so edits
+   participated in undo from the start.
+3. Added Visual mode and the per-line selection overlay.
+4. Added surround commands.
+5. Added the block cursor and interaction polish.
+6. Remaining extensions include named registers, marks, macros, `C-d`/`C-u`
+   paging, Visual paste of a blockwise register, and blockwise
+   `~`/`u`/`U`/`>`/`<`.
 
-## Risks / open questions
+## Constraints
 
 - **UTF-16 boundary.** Only the write path (`replace_text_in_range`) is UTF-16;
   the single byte→UTF-16 conversion helper must be correct.
 - **Visual/block rendering.** `range_to_bounds` is only valid after layout and
   for on-screen ranges; the overlay must degrade gracefully while scrolling.
-- **Auto-wrap.** *Decided:* suspend body auto-wrap while in Normal/Visual mode
-  (only wrap on `Change` events that arrive in Insert mode). The wrap itself is
+- **Auto-wrap.** Body wrapping pauses in Normal and Visual modes. It runs only
+  for `Change` events in Insert mode. The wrap itself is
   applied as a minimal `replace_text_in_range` splice (`splice_value`), so it
   lands in the undo history grouped with the typing that caused it — a later
   `u`/⌘Z can't restore mismatched offsets. Reflow (`⌥q`) stays available in
   both modes as an explicit command.
-- **Scope.** Vim is bottomless — the phased MVP is the line. Keep the `Action`
-  vocabulary small and let unhandled keys `Beep` rather than half-implementing.
+- **Scope.** The `Action` vocabulary stays small. Unsupported keys return
+  `Beep` instead of applying partial behavior.

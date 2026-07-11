@@ -1,45 +1,41 @@
-# Mouse text selection: char-wise within a line, line-wise across lines
+# Mouse text selection
 
-Status: implemented across the status view, the flattened-diff views (commit
-detail and the `d` diff buffer), and the log view; the design below is the
-original plan. Done: every git-output text row renders as a `StyledText` and is
-char-selectable — status file paths, commit subjects, stash messages, hunk
-headers, diff lines, the flat-diff `File`/`StatLine`/`Stats` rows, the commit
-detail's message (including its summary line), and log subjects. `CharSelection`
-state; the one-drag/two-granularity gesture (char-wise on the anchor row,
-line-wise across rows — sharing the status view's staging region, and collapsing
-back to the anchor line on a drag-back); copy via `y`/Cmd-C (a char range wins
-over the line-wise / row value), with no copy-on-drag. Cleared on Esc, a plain
-click (which, on a row with a selection, clears rather than acting — the next
-click acts), or keyboard motion. A lone click positions the cursor / folds; a
-real double-click opens (enter).
+This document records the implemented selection model for contributors working
+on read-only Git output.
 
-Still open — each is either a decoration handle or a separate render surface:
+Character selection works in the status view, log, commit details, and the `d`
+diff view. Selectable content includes file paths, commit subjects, stash
+messages, hunk headings, diff lines, commit messages, and diff statistics.
 
-- The short commit SHA (status/log rows) and the log date: these rows hold
-  several texts (hash · refs · subject · date), but only the primary content
-  (the subject / path) is char-selectable; the short SHA is an abbreviated
-  handle (`y` copies the full hash). Selecting *every* sub-element of a row
-  would need a per-segment selection model (a row carrying multiple
-  `CharSelection` targets) — deferred.
+One drag supports two levels of precision. A drag within the starting row
+selects characters. A drag across rows selects whole rows and reuses the status
+view's action range. Dragging back to the starting row returns to character
+selection. `y` and `Cmd-C` copy a character selection before considering a row
+selection or the value at the cursor.
+
+`Esc`, keyboard movement, or a plain click clears the selection. When a row is
+selected, the first click clears it and the next click performs the row action.
+A single click otherwise places the cursor or toggles a fold. A double-click
+opens the row.
+
+The remaining gaps need either a selection model with several targets per row
+or support in another rendering surface:
+
+- Short commit hashes and log dates. These rows contain several separate text
+  segments, but only the primary subject or path supports character selection.
+  `y` copies the full hash from a short-hash row.
 - Section headers (navigation chrome) and ref chips (styled pills).
 - The `$` command-log and blame pagers (their own render paths).
 
 ## Goal
 
-Make plain left-drag selection do the intuitive thing in the read-only views:
+Plain left-drag selection should behave naturally in read-only views:
 
-- **Within a single line** — select a character range (drag to grab part of a
-  diff line, a commit subject, a message line), then copy it.
-- **Across lines** — once the drag leaves the starting row, fall back to the
-  existing **line-wise** selection (whole rows), which already powers stage/
-  unstage/copy over a range.
+- Within one line, select characters from a diff, subject, or message.
+- Across lines, select whole rows so stage, unstage, and copy can act on the
+  existing row range.
 
-No modifier key: the *same* plain drag is char-wise while it stays on the anchor
-row and line-wise the moment it spans rows (and reverts to char-wise if it comes
-back to a single row). This is the resolution to the earlier "drag is already
-line-select" gesture conflict — we don't add an Alt gesture, we let the span of
-the drag pick the granularity.
+The drag span chooses the precision, so no modifier is needed.
 
 Out of scope:
 
@@ -117,7 +113,7 @@ Extend the existing row mouse handlers (which today set `drag_anchor`/`visual`):
 
 `shift-click` keeps its current line-wise extend behavior.
 
-## Rendering & wiring
+## Rendering and wiring
 
 - **A `selectable_text` helper** that, given a row's `(text, color-runs, row_ix)`,
   returns a `StyledText` with the color runs plus the char-selection background
@@ -130,49 +126,41 @@ Extend the existing row mouse handlers (which today set `drag_anchor`/`visual`):
 - **Handlers** stay on the row container `div` that already has
   `on_mouse_down`/`on_mouse_move`/`on_mouse_up`; the char/line branch is decided
   by comparing the current row to the anchor row (no modifier check).
-- **Selectable rows:** the text-bearing kinds — diff `Line`, `Hunk`, `Message`,
-  `Detail`, `StatLine`, `Note`, commit/log subjects. Structural rows (section
-  headers, chip'd file rows) can opt in later; start with the diff/message text.
+- **Selectable rows:** the text-bearing kinds include diff `Line`, `Hunk`,
+  `Message`, `Detail`, `StatLine`, and `Note` rows plus commit and log subjects.
+  Structural rows such as section headers and file chips can opt in later.
 
 ## Copy
 
-- **Char range:** on mouse-up (or Cmd-C while a `CharSelection` is active), copy
-  the row's text sliced by the range via the existing `copy_to_clipboard` (with
-  its "Copied …" flash). A char selection takes precedence over line/unit copy.
+- **Char range:** `y` or Cmd-C copies the selected slice through
+  `copy_to_clipboard`. Mouse-up completes the selection but does not copy it. A
+  character selection takes precedence over line and row copy.
 - **Line-wise region:** unchanged — the existing yank of the visual selection.
 
 ## Testing
 
-- **Unit tests** (headless) for the pure parts: char-range normalization,
-  clamping to a row's text bounds, single-row text extraction, and the
-  char-vs-line decision given `(anchor_row, current_row)`.
-- The pixel→offset path needs a painted layout, so exercise it **live** via
-  `scripts/dbg.sh`: drag within a diff line (char highlight + copy), then drag
-  across lines (line-wise region), then back (char again); screenshot each.
+- Headless unit tests cover range normalization, row-bound clamping, text
+  extraction, and character-versus-line selection.
+- The pixel-to-offset path needs a painted layout. Use `scripts/dbg.sh` to drag
+  within one diff line, across several lines, and back to the anchor row. Check
+  the selection and copy result at each stage.
 
-## Phasing
+## Implementation history
 
-1. **Rendering migration:** render diff `Line` (then `Hunk`/`Message`) as
-   `StyledText` with color runs; verify no visual regression and comparable perf.
-2. **Char selection + gesture:** `CharSelection`, the same-row/other-row branch in
-   the drag handlers, and the background highlight run. Clear on plain click / Esc.
-3. **Copy:** mouse-up + Cmd-C copy the char range; "Copied" flash; precedence over
-   line copy.
-4. **Widen** the selectable row set.
-5. **Later:** the pager views.
+1. Migrated diff and message rows to `StyledText` with color runs.
+2. Added `CharSelection`, drag precision switching, and selection highlights.
+3. Added explicit copy with character-selection precedence.
+4. Extended selection to the remaining text-bearing rows.
+5. Left the command-log and blame pagers for a separate rendering pass.
 
-## Risks / open questions
+## Constraints
 
-- **Rendering-migration blast radius.** Moving diff lines from span-divs to
-  `StyledText` touches a hot path; expected perf-neutral-or-better (one element vs
-  many). `uniform_list` still realizes only visible rows.
-- **Layout timing.** `index_for_position` requires a measured layout; guard the
-  handlers so an event on an unpainted row is a no-op.
-- **Same-row threshold.** Decide the exact rule for "still on the anchor row"
-  (strict row equality is simplest); vertical drift within a single-line row's
-  band stays char-wise, crossing into the next row's band flips to line-wise.
-- **Drag start precision.** `index_for_position` returns `Err(nearest)` past a
-  line's end — treat that as the end offset so dragging off the right edge selects
-  to end-of-line rather than doing nothing.
-- **Hover vs selection paint.** The char-selection background should win over the
-  row hover wash.
+- `StyledText` runs on a hot rendering path, but `uniform_list` creates only
+  visible rows.
+- `index_for_position` requires a measured layout. Events on an unpainted row
+  must remain no-ops.
+- Strict row equality determines the selection precision. Movement within the
+  anchor row stays character-wise; entering another row becomes line-wise.
+- `index_for_position` returns the nearest position beyond a line's end. Treat
+  that value as the end offset so dragging right selects to the end of the line.
+- The character-selection background must take precedence over row hover.

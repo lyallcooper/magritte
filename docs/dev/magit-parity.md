@@ -1,70 +1,65 @@
 # Magit parity
 
-A feature-by-feature comparison of Magritte against Magit, covering every
-transient (every flag and action), the status buffer, section motions,
-act-at-point behavior, and both keymaps. It exists so feature work can be
-chosen deliberately: what to build, what to deliberately diverge on, and what
-doesn't apply outside Emacs.
+This reference is for contributors deciding what Magritte should implement and
+where it should differ from Magit. It compares transient menus, status
+sections, navigation, actions at the cursor, and the Evil and Vanilla keymaps.
 
-Audited against the Magit 4.x sources in the local `.reference/magit/lisp/`
-checkout (plus `evil-collection-magit.el`); Magritte as of this document's
-last update (2026-07-07). Behavioral claims were verified against both
-sources, not just listed from memory.
+The comparison was last audited on 2026-07-07 against Magit 4.x in the local
+`.reference/magit/lisp/` checkout and `evil-collection-magit.el`. Entries
+describe observable behavior from those sources.
 
-**Status legend**
+## How to read this document
 
 | Mark | Meaning |
-|---|---|
-| ✓ | parity — same capability (same key unless noted) |
-| ≈ | differs — present, but the key or behavior deviates (noted inline) |
-| ∂ | partial — a subset exists; the missing part is noted |
-| ✗ | missing |
-| N/A | Emacs-specific or out of scope by design (ediff, dired, imenu, …) |
+| --- | --- |
+| ✓ | Same capability and key unless noted |
+| ≈ | Available with different behavior or keys |
+| ∂ | Partially available. The missing behavior is noted |
+| ✗ | Missing |
+| N/A | Specific to Emacs or outside Magritte's scope |
 
-Magit hides transient suffixes above level 4 by default; rows marked
-`(level N)` are those hidden-by-default suffixes, so a ✗ there is a smaller
-gap than an unmarked one. `(level 0)` suffixes are also hidden by default.
+Magit hides transient entries above level 4 by default. Rows marked `(level N)`
+refer to those hidden entries, so a missing one is less visible than an
+unmarked gap. Level 0 entries are also hidden by default.
 
-Keys are written as magit's vanilla defaults; where Magritte's evil and
-vanilla presets differ, both are given.
+Keys use Magit's Vanilla defaults. When Magritte's Evil and Vanilla presets
+differ, the entry lists both.
 
 ## Executive summary
 
-**Whole areas missing:** submodules, clone/init, notes, subtree,
-sparse-checkout, bundle, cherry, wip. (Bisect, blame, patch
-create/apply/`git am`, push-other/tags, merge editmsg/preview/`--strategy=`,
-branch-reset/file-checkout, and stash's index/keep-index/branch variants have
-since shipped.) Within existing transients, the largest gaps are log's
-limiting/formatting flags and stash's worktree/snapshot variants.
+Magritte does not yet cover submodules, clone and init, notes, subtree,
+sparse-checkout, bundle, cherry, or WIP modes. The largest gaps in existing
+menus are log filtering and formatting options plus stash worktree and snapshot
+variants.
 
-**Notable behavior differences in shared features:**
+Bisect, blame, patch creation and application, `git am`, additional push
+targets, tag pushes, merge message editing and preview, merge strategies,
+branch reset, file checkout, and the main stash variants are available.
 
-- Revert always uses git's default message (`--no-edit`); magit defaults to
-  `--edit`. Deliberate: an interactive `--edit` can't work in our background-git
-  model, so we drop the `--edit` switch rather than hang on a missing editor.
-- `SPC` on a commit/stash row now *previews* it (opening the commit view,
-  which `Esc` closes back to the same row) — our single-buffer take on magit's
-  show-or-scroll; `SPC` elsewhere still pages. Remaining nuance: it's a
-  full-screen overlay rather than a side pane, and `DEL` only pages back (no
-  reverse-preview).
-- `1`–`4` fold levels are buffer-wide; magit's digits are section-local
-  (ours match magit's `M-1`..`M-4` instead). We also have no cycle commands
-  (`S-TAB`, `C-TAB`).
-- Magit shows *either* "Unmerged into upstream" *or* "Recent commits"; we
-  always show both Unpushed and Recent.
+Important differences in shared features:
+
+- Revert uses Git's default message with `--no-edit`. Magit defaults to
+  `--edit`, which requires an interactive editor that does not fit Magritte's
+  background Git process.
+- `Space` on a commit or stash opens a full-screen preview. `Esc` returns to the
+  same row. Elsewhere, `Space` moves down a page. Magit previews in place and
+  supports reverse preview with `DEL`.
+- `1`–`4` fold levels are buffer-wide. Magit's digits are section-local, while
+  Magritte's behavior matches `M-1` through `M-4`. Global cycling with `S-TAB`
+  is available, but local cycle commands are not.
+- Magit shows either Unmerged into upstream or Recent commits. Magritte always
+  shows both Unpushed and Recent.
 - Evil preset adopts evil-collection's non-default `use-z-for-folds` layout:
   `Z` for stash and `z` as a vim-style fold prefix (`za`/`zo`/`zc`/`zO`/`zC`/
   `z1`-`z4`/`zr`).
-- One suspected difference was disproven: on stash rows both magit and
-  Magritte bind `a` = apply, `A` = pop (magit via section-map remaps).
+- Both apps use `a` to apply a stash and `A` to pop one from a stash row.
 
-**Magritte-only surface** (no magit equivalent): the `:` command palette with
-frecency ranking, which-key, `[[command]]` user commands with placeholders,
-per-repo config overlay with live reload, opt-in auto-fetch and
-refresh-on-focus, update checks, per-command timings in the `$` log,
-clickable title-bar chrome (branch chip, ahead/behind), a native structured
-rebase-todo editor, config-seeded negatable switches (e.g. `--gpg-sign` from
-`commit.gpgSign`), and `Ctrl-s` transient-save with a per-repo scope.
+Magritte also adds features with no direct Magit equivalent: a ranked `:`
+command palette, which-key hints, custom commands with placeholders,
+live-reloaded repository settings, optional auto-fetch, refresh on focus,
+update checks, command timings, clickable title-bar controls, a structured
+rebase editor, switches seeded from Git configuration, and repository-scoped
+transient defaults.
 
 ---
 
@@ -523,8 +518,9 @@ upstream); a variant of our log screen.
 tinted; `o`/`t`/`b`/`B` keep ours/theirs/both/base per conflict (smerge's
 semantics, not ediff's three-window session), `n`/`p` move between conflicts,
 `u` undoes, and resolving the last conflict offers to stage the file.
-**Mergetool** ✗ — launching `git mergetool --gui` per conflicted file is
-meaningful standalone.
+**Mergetool** ∂ — Magritte can serve as `git mergetool` through
+`magritte --mergetool "$MERGED"`. It does not provide Magit's `! m` action for
+launching `git mergetool --gui` from inside the app.
 
 **File-dispatch** mostly N/A (buffer-centric entry point, blob navigation);
 `K` untrack is done (act-at-point on a file row); the rest (rename, file log,
@@ -536,7 +532,7 @@ commit-editor helper; changelog insertion N/A.
 
 Two build-once dependencies recur across these: a **git-variable infix
 widget** (now built — `Suffix::Variable`, used by branch-configure and
-remote-configure; notes/mergetool can reuse it) and a **no-repo app state**
+remote-configure; notes can reuse it) and a **no-repo app state**
 (clone, init).
 
 ### Non-transient magit commands
@@ -637,15 +633,15 @@ green, tags yellow, the current branch bold. Like magit we drop remote
 | `TAB` | toggle | ✓ (hunk-aware; expanding a file lazy-loads) | ✓ |
 | `C-c TAB`/`C-<tab>` | 4-state section cycle | — | ✗ |
 | `M-<tab>` | cycle diff sections | — | ✗ |
-| `S-TAB` | global cycle | — | ✗ |
+| `S-TAB` | global cycle | `shift-tab` | ✓ |
 | `1`–`4` | show-level of the **surrounding** section (point-local, region-aware) | buffer-wide | ∂ ours implement magit's `M-1..4`; no local variant, and they clear the visual selection instead of honoring it |
 | `M-1`–`M-4` | show-level **all** | `alt-1..4` = same buffer-wide command | ✓ |
 | `SPC`/`DEL` | peek/scroll the commit at point in the other window | Space previews the commit/stash at point (overlay, Esc returns); DEL pages up | ∂ overlay preview; DEL page-only |
 | point restoration | goto-successor | AnchorIdent rebuild anchoring | ✓ |
 | visibility indicators | fringe/`…` | chevrons | ✓ |
 
-The biggest functional hole here is cycling (`S-TAB`/`C-TAB`/`M-TAB`): none
-of it exists. `SPC` preview is now covered (as a returning overlay).
+The remaining folding gap is local cycling with `C-TAB` and `M-TAB`. `S-TAB`
+global cycling and `Space` preview are available.
 
 ## Act-at-point
 
@@ -789,72 +785,43 @@ Covered above per area; the residual key-level notes:
 
 ## Recommendations
 
-Grouped by kind, roughly ordered within each group.
+The highest-value parity work is in features users encounter during existing
+workflows:
 
-**Behavior fixes in shared features (small, high value)**
+- Add reverse preview with `DEL` and consider an in-place preview instead of a
+  full-screen overlay.
+- Make apply and reverse behavior depend on the diff type, as Magit does for
+  staged and unstaged changes.
+- Support `+`, `-`, and `0` context changes in commit and standalone diff views.
+- Add Magit's remaining log filters and direct limit entry.
+- Add stash worktree and snapshot variants.
+- Add section-local fold levels and local cycle commands.
+- Reserve rebase-todo `x` for `exec`, or remove the conflicting alias before
+  adding `exec` support.
+- Decide whether Evil should keep Magritte's `z` fold prefix or return to
+  evil-collection's default `z` stash binding.
 
-2. ~~Match magit's revert default.~~ Done: documented deviation — revert
-   always uses `--no-edit` (interactive edit can't work in background-git), and
-   the `--edit`/`--no-edit` switches were dropped.
-6. ~~Honor `status.showUntrackedFiles`.~~ Done: dropped the hardcoded
-   `--untracked-files=normal`.
-7. ~~Cap unpushed/unpulled listings.~~ Done: capped at 256/side (no `(N+)`
-   marker; the title bar carries the true ahead/behind).
-8. Reconsider evil `z` = stash (evil-collection's default) with `Z` for
-   "include untracked", or document the deviation.
-9. Rebase-todo `x`: reserve for exec (or drop the alias) before it
-   entrenches.
+Larger missing areas should start with clone and init because they establish the
+no-repository application state needed by both. Submodules are the next broad
+Git workflow. Notes, cherry, subtree, sparse checkout, bundle, and WIP modes are
+more specialized.
 
-**High-value additions to existing surfaces**
+The conflict view would also benefit from word-level conflict highlighting and
+an in-app `! m` action, even though Magritte already works as an external Git
+mergetool.
 
-- ~~`SPC` show-or-scroll preview of the commit/stash at point.~~ Done: `SPC`
-  on a commit/stash row previews it (returning overlay). Remaining: reverse-
-  preview on `DEL`, and scroll-in-place rather than a full-screen swap.
-- ~~`u` reverse-in-index, `v` reverse, `a` apply on committed changes.~~ Done
-  in both the commit view and the standalone `d` diff view, at file / hunk /
-  region (sub-hunk, from a visual selection) granularity (`a` apply-to-worktree,
-  `v`/`-` reverse-in-worktree per preset, `u` reverse-in-index). Remaining only:
-  per-diff-type DWIM (we use uniform apply/reverse semantics rather than magit's
-  unstaged→stage / staged→unstage branching).
-- ~~Diff context keys `+`/`-`/`0`.~~ Done for the status view (diff/commit
-  views still fixed at 3).
-- Merge: in-progress `m` commit-merge; `e` editmsg; `p` preview; strategies.
-- Push `o`/`T`/`t` (other branch, tags).
-- ~~Log `--since`/`--until`/`--no-merges`/`--first-parent` args; limit keys.~~
-  Done: those four args added (`-s`/`-u`/`-m`/`-p`); `+`/`-` double/halve the
-  log limit (magit's `=` set-value still ✗).
-- Stash variants (`i`/`w`/`x`), file-limited stash push, `b` branch-from-
-  stash.
-- Section-local `1`–`4` and `S-TAB` global cycling.
-- (Done: `K` untrack, `R` rename-at-point in the refs browser, and `x`
-  reset-quickly in the log.)
-- Reset `b` (branch) and `f` (file checkout).
-- (Done: the git-variable widget → branch-configure + remote-configure;
-  remaining variable gaps are noted per transient. Tag `-u` still open.)
+The following differences fit the standalone app and should remain intentional:
 
-**Whole missing features, ranked for a standalone client**
-
-1. (Done: blame view, bisect, patch create/apply + `git am` — see their
-   entries for remaining depth.)
-2. Clone/init (needs the no-repo app state).
-3. (Done: the smerge-style resolve view — `e` on a conflicted file.
-   Remaining depth: intra-conflict word diffs, `git mergetool` launching.)
-4. Submodules; then notes, cherry, subtree, sparse-checkout, bundle, wip.
-
-**Deliberate deviations to keep (document, don't "fix")**
-
-- Title-bar headers instead of buffer header lines; clickable chrome.
-- `RET` opens the worktree file in the external editor (no blob buffers).
-- `G` as a refresh alias; single-buffer model.
-- The `$` log as a flat pager with timings and the queries toggle.
-- Expanded-by-default sections with on-disk fold persistence.
-- Always showing both Unpushed and Recent (vs magit's either/or) — arguably
-  clearer; keep unless it proves noisy.
-- Collapsing push/pull/fetch `p` and `u` into one entry when the push-remote
-  and upstream resolve to the same ref (magit always lists both) — removes a
-  redundant duplicate line in the common non-triangular case.
-- Revert always takes git's default message (`--no-edit`); no `--edit` switch,
-  since an interactive editor can't be serviced in the background-git model.
-- The permissive visual-selection batching (with its stricter
-  conflicted-file refusal).
-- Stricter reset confirms and the wider `published_branches` default.
+- Use title-bar controls instead of buffer header lines.
+- Open worktree files in the configured editor instead of creating blob
+  buffers.
+- Keep `G` as a refresh alias and retain the single-buffer navigation model.
+- Keep the `$` log as a flat pager with timings and a query toggle.
+- Persist expanded section state on disk.
+- Show both Unpushed and Recent sections.
+- Collapse duplicate push, pull, and fetch targets when the push remote and
+  upstream resolve to the same ref.
+- Use Git's default revert message because an interactive `--edit` cannot run
+  in the background Git process.
+- Keep range batching, strict conflicted-file checks, additional reset
+  confirmations, and the broader `published_branches` default.

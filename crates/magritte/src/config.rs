@@ -1019,6 +1019,230 @@ mod tests {
     }
 
     #[test]
+    fn example_config_covers_every_value_type() {
+        let source = include_str!("../../../docs/config.example.toml");
+        let raw: toml::Table = toml::from_str(source).expect("example should be valid TOML");
+        let config: Config = toml::from_str(source)
+            .expect("docs/config.example.toml should match the config schema");
+        let (_, warnings) = crate::commands::build_keymap(&config);
+        assert!(
+            warnings.is_empty(),
+            "example config should not produce warnings: {warnings:?}"
+        );
+
+        // These exhaustive patterns are a compile-time schema guard. Adding a
+        // field to any config value below requires updating this test and its
+        // corresponding key check, so the example cannot silently miss it.
+        let Config {
+            appearance: _,
+            light_theme: _,
+            dark_theme: _,
+            font: _,
+            font_size: _,
+            ui_font: _,
+            app_icon: _,
+            commit_title_ruler: _,
+            commit_body_wrap: _,
+            commit_vim_mode: _,
+            editor: _,
+            commit_in_editor: _,
+            commit_editor: _,
+            keymap: _,
+            keymap_preset: _,
+            transient: _,
+            vim,
+            which_key_delay_ms: _,
+            refresh_on_focus: _,
+            show_tags_in_title_bar: _,
+            check_for_updates: _,
+            published_branches: _,
+            commands,
+            status,
+            fetch,
+        } = &config;
+        assert_eq!(
+            raw.keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "appearance",
+                "app_icon",
+                "check_for_updates",
+                "command",
+                "commit_body_wrap",
+                "commit_editor",
+                "commit_in_editor",
+                "commit_title_ruler",
+                "commit_vim_mode",
+                "dark_theme",
+                "editor",
+                "fetch",
+                "font",
+                "font_size",
+                "keymap",
+                "keymap_preset",
+                "light_theme",
+                "published_branches",
+                "refresh_on_focus",
+                "show_tags_in_title_bar",
+                "status",
+                "transient",
+                "ui_font",
+                "vim",
+                "which_key_delay_ms",
+            ]
+            .into_iter()
+            .collect(),
+            "example should contain every Config field"
+        );
+
+        let StatusConfig {
+            sections,
+            recent_count: _,
+        } = status;
+        assert_eq!(
+            sections
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            crate::SectionId::ALL
+                .into_iter()
+                .map(crate::SectionId::config_id)
+                .collect(),
+            "example should list every status section"
+        );
+        assert_table_keys(&raw, "status", &["recent_count", "sections"]);
+
+        let FetchConfig {
+            auto: _,
+            interval_minutes: _,
+        } = fetch;
+        assert_table_keys(&raw, "fetch", &["auto", "interval_minutes"]);
+
+        let VimConfig { keymap: _ } = vim;
+        assert_table_keys(
+            raw.get("vim").and_then(toml::Value::as_table).unwrap(),
+            "keymap",
+            &[";w", "Q", "gz"],
+        );
+
+        assert_eq!(commands.len(), 2);
+        for command in commands {
+            let CustomCommand {
+                id: _,
+                title: _,
+                run: _,
+                refresh: _,
+                section: _,
+            } = command;
+        }
+        for command in raw["command"].as_array().unwrap() {
+            assert_eq!(
+                command
+                    .as_table()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                ["id", "refresh", "run", "section", "title"]
+                    .into_iter()
+                    .collect(),
+                "every command example should contain every CustomCommand field"
+            );
+        }
+
+        let mut shapes = std::collections::BTreeSet::new();
+        let mut placements = std::collections::BTreeSet::new();
+        for suffixes in config.transient.values() {
+            for suffix in suffixes.values() {
+                match suffix {
+                    TransientSuffix::Bare(value) if value == "unbound" => {
+                        shapes.insert("unbound");
+                    }
+                    TransientSuffix::Bare(value) if value.starts_with('-') => {
+                        shapes.insert("bare-switch");
+                    }
+                    TransientSuffix::Bare(_) => {
+                        shapes.insert("bare-action");
+                    }
+                    TransientSuffix::Action {
+                        command: _,
+                        placement,
+                    } => {
+                        shapes.insert("action-table");
+                        record_placement(placement, &mut placements);
+                    }
+                    TransientSuffix::Switch {
+                        flag: _,
+                        description,
+                        placement,
+                    } => {
+                        assert!(!description.is_empty());
+                        shapes.insert("switch-table");
+                        record_placement(placement, &mut placements);
+                    }
+                    TransientSuffix::Move(placement) => {
+                        shapes.insert("move-table");
+                        record_placement(placement, &mut placements);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            shapes,
+            [
+                "action-table",
+                "bare-action",
+                "bare-switch",
+                "move-table",
+                "switch-table",
+                "unbound",
+            ]
+            .into_iter()
+            .collect(),
+            "example should contain every TransientSuffix shape"
+        );
+        assert_eq!(
+            placements,
+            ["after", "before", "group"].into_iter().collect(),
+            "example should contain every placement type"
+        );
+    }
+
+    fn assert_table_keys(table: &toml::Table, key: &str, expected: &[&str]) {
+        assert_eq!(
+            table[key]
+                .as_table()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected.iter().copied().collect(),
+            "example table {key} should contain every field"
+        );
+    }
+
+    fn record_placement<'a>(
+        placement: &'a Placement,
+        found: &mut std::collections::BTreeSet<&'a str>,
+    ) {
+        let Placement {
+            group,
+            before,
+            after,
+        } = placement;
+        if group.is_some() {
+            found.insert("group");
+        }
+        if before.is_some() {
+            found.insert("before");
+        }
+        if after.is_some() {
+            found.insert("after");
+        }
+    }
+
+    #[test]
     fn keymap_preset_parses_current_and_legacy_names() {
         let parse = |s: &str| -> Config { toml::from_str(s).unwrap() };
         assert_eq!(
