@@ -1,6 +1,6 @@
 //! Driving `git bisect` — the binary search for a commit that introduced a
-//! change. Mirrors magit's bisect surfacing (`.reference/magit/lisp/
-//! magit-bisect.el`): an in-progress bisect is detected from `BISECT_LOG` under
+//! change. Mirrors magit's bisect surfacing (`magit-bisect.el`): an
+//! in-progress bisect is detected from `BISECT_LOG` under
 //! the git dir, and each step marks the checked-out commit good/bad/skip until
 //! the culprit is found; `reset` ends the session and restores the branch.
 

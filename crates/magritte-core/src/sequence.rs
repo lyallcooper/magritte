@@ -1,7 +1,7 @@
 //! Detecting and driving an in-progress sequencing operation — merge, rebase,
 //! cherry-pick, revert, or `am`. Mirrors magit's status surfacing and its
-//! continue/skip/abort controls (see `.reference/magit/lisp/magit-sequence.el`
-//! and `magit-merge.el`): the in-progress state is read from files under the
+//! continue/skip/abort controls (see `magit-sequence.el` and
+//! `magit-merge.el`): the in-progress state is read from files under the
 //! git dir, and each operation has a fixed set of continue/skip/abort commands.
 
 use std::path::{Path, PathBuf};

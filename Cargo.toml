@@ -4,7 +4,7 @@ members = ["crates/magritte-core", "crates/magritte"]
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/lyallcooper/magritte"
 
 [profile.release]

@@ -146,9 +146,14 @@ The workspace has two crates:
 - `magritte-core` contains synchronous, UI-independent Git operations.
 - `magritte` contains the GPUI app, background work, and cancellation.
 
-Read [AGENTS.md](AGENTS.md) for repository conventions and [PLAN.md](PLAN.md)
-for the longer-term architecture and roadmap.
+Read [AGENTS.md](AGENTS.md) for repository conventions.
 
 ## License
 
-Magritte is licensed under MIT, as declared in the workspace manifest.
+Magritte is dual-licensed under [MIT](LICENSE-MIT) or
+[Apache 2.0](LICENSE-APACHE), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Magritte by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.

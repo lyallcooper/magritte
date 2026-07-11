@@ -13,3 +13,7 @@
 # Cargo.lock is intentionally committed: Magritte ships as an application.
 
 /.reference
+
+# Local working notes (see AGENTS.md)
+/FEEDBACK.md
+/PLAN.md

@@ -4,9 +4,9 @@ This reference is for contributors deciding what Magritte should implement and
 where it should differ from Magit. It compares transient menus, status
 sections, navigation, actions at the cursor, and the Evil and Vanilla keymaps.
 
-The comparison was last audited on 2026-07-07 against Magit 4.x in the local
-`.reference/magit/lisp/` checkout and `evil-collection-magit.el`. Entries
-describe observable behavior from those sources.
+The comparison was last audited on 2026-07-07 against the Magit 4.x and
+`evil-collection-magit.el` sources. Entries describe observable behavior
+from those sources.
 
 ## How to read this document
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to coding agents when working with code in this repository.
 
-Magritte is a standalone macOS git client in the spirit of magit (fast, keyboard-driven, mouse-friendly) built on GPUI, without Emacs. See `README.md` for the user-facing overview and `docs/config.md` for configuration; `PLAN.md` has the long-form goals/architecture.
+Magritte is a standalone macOS git client in the spirit of magit (fast, keyboard-driven, mouse-friendly) built on GPUI, without Emacs. See `README.md` for the user-facing overview and `docs/config.md` for configuration; `PLAN.md`, when present locally, has the long-form goals/architecture.
 
 ## Commands
 
@@ -48,7 +48,7 @@ Drives the `git` CLI and returns plain data, so it's unit-testable against throw
 - Every invocation is recorded into a shared ring buffer (the `$` command log). `is_query()` classifies read-only commands so they can be hidden from that log by default.
 - `transient/` defines the `Command`/`Transient` model (the popup command menus, `mod.rs`) and the built-in menu definitions (`menus.rs`), shared with the UI layer.
 
-When implementing or fixing git behavior, **match magit's source** in `.reference/magit/lisp/` (a gitignored, GPL behavior reference — not vendored, not distributed, and must be removed before any public release) rather than reaching for a simpler git command.
+When implementing or fixing git behavior, **match magit's behavior** precisely rather than reaching for a simpler git command.
 
 ### `magritte` — the GPUI app
 A **single `Entity<StatusView>` god-object** owns all UI state for every screen. This is deliberate (a GPUI view owns its state + behavior together; multi-entity message-passing buys nothing for a single-pane modal app — see the FB5 disposition in `FEEDBACK.md`). The lesson for working here: **split the file, not the entity.** `main.rs` (~2k lines) holds the `StatusView` struct, the `Screen` enum, `main()`, and the registry/keymap invariant tests; cohesive slices live in sibling modules but stay `impl StatusView` blocks with `pub(crate)` methods over the same private fields:
@@ -74,7 +74,7 @@ Key cross-cutting models:
 
 - **Defer to Magit** when there is any implementation ambiguity. Keybindings and features should work the same way they do as in Magit, unless we have specifically decided otherwise. The "evil" keymap preset keys should match evil-collection-magit, while the "vanilla" keymap preset keys should match vanilla emacs/magit.
 - **Comments** carry only what a future reader needs—don't narrate alternatives considered or justify a choice against one. Match the surrounding comment density.
-- **Commits:** Do not include AI/tool attribution or thread-reference trailers in commit messages (no Claude/Codex/Amp co-author lines, generated-by lines, or Amp thread IDs). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md` and `PLAN.md` stay out of commits unless asked.
+- **Commits:** Do not include AI/tool attribution or thread-reference trailers in commit messages (no Claude/Codex/Amp co-author lines, generated-by lines, or Amp thread IDs). Keep `clippy --all-targets` warning-clean. Commit `TODO.md` updates alongside the work; `FEEDBACK.md` and `PLAN.md` are local working files and stay untracked.
 - **Verify UI changes live** with `scripts/dbg.sh` + a screenshot before considering them done; verify core changes with `cargo test`.
 - **Refactors:** don't be afraid of big refactors. Instead of always working incrementally, constantly asking yourself if the code is in the best possible state. If there is a better architecture, tech debt you can pay down, abstractions you could improve, then you should do the work now to leave the code better than you found it. Of course you still need to do so carefully to ensure you don't break anything along the way.
 - **Writing style:** When writing anything user facing (e.g. docs), we must follow some simple rules:

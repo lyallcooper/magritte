@@ -1,5 +1,5 @@
 //! `git blame` — per-line authorship for a file, mirroring magit's blame
-//! annotations (`.reference/magit/lisp/magit-blame.el`). We read the porcelain
+//! annotations (`magit-blame.el`). We read the porcelain
 //! format once and return one [`BlameLine`] per line: the commit, author, date,
 //! and content, ready to render as an annotated, scrollable view.
 
