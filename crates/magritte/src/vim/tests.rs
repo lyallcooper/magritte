@@ -118,6 +118,7 @@ impl Buf {
             Action::Commit
             | Action::Quit { .. }
             | Action::ReflowRange(_)
+            | Action::ReflowRangeKeep(_)
             | Action::Help
             | Action::Scroll(_)
             | Action::Error(_)
@@ -1782,6 +1783,81 @@ fn gq_reflow_targets() {
         buf.log
     );
     check_beep("|ab", "gqx", "|ab"); // not a motion
+}
+
+#[test]
+fn gw_reflow_targets() {
+    // gw is gq with the cursor kept on its text (the app side maps it); the
+    // engine emits the keep variant over the same targets.
+    let buf = run(
+        "l1
+lo|ng", "gww",
+    );
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRangeKeep(r) if *r == (3..7))),
+        "gww reflows the current line: {:?}",
+        buf.log
+    );
+    // The doubled `w` is the linewise form, not the word motion (Vim: gww).
+    let buf = run(
+        "s
+|b1 b2 b3",
+        "gww",
+    );
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRangeKeep(r) if *r == (2..10))),
+        "gww is linewise, not to-next-word: {:?}",
+        buf.log
+    );
+    // gw{motion} and visual gw, like gq's.
+    let buf = run(
+        "s
+|b1
+b2
+b3",
+        "gwj",
+    );
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRangeKeep(r) if *r == (2..8))),
+        "gwj covers two lines: {:?}",
+        buf.log
+    );
+    let buf = run(
+        "s
+|b1
+b2
+b3",
+        "Vjgw",
+    );
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRangeKeep(r) if *r == (2..8))),
+        "visual gw covers the selected lines: {:?}",
+        buf.log
+    );
+    // gwip: objects work through the keep operator too.
+    let buf = run(
+        "s
+
+|a b
+c d",
+        "gwip",
+    );
+    assert!(
+        buf.log
+            .iter()
+            .any(|a| matches!(a, Action::ReflowRangeKeep(r) if *r == (3..10))),
+        "gwip covers the paragraph: {:?}",
+        buf.log
+    );
+    check_beep("|ab", "gwq", "|ab"); // q doubles gq, not gw
 }
 
 #[test]

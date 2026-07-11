@@ -1,27 +1,26 @@
 # Configuration
 
-Use this guide when the Settings screen does not expose the change you need.
-The configuration file supports key remapping, status layout, background
-fetching, custom commands, and changes to Magritte's command menus.
-
-## Edit the configuration
-
-Press <kbd>,</kbd> or choose **Magritte > Settings** to change common options such as
-themes, fonts, editors, and the keymap preset. The Settings screen writes the
-global configuration file:
+Magritte's global configuration file lives at:
 
 ```text
 $XDG_CONFIG_HOME/magritte/config.toml
 ```
 
-If `XDG_CONFIG_HOME` is not set, Magritte uses:
+Or when `XDG_CONFIG_HOME` is not set:
 
 ```text
 ~/.config/magritte/config.toml
 ```
 
-Create the file if it does not exist. Magritte uses its defaults for every
-setting you omit, so a useful configuration can stay small:
+Config values are automatically loaded by Magritte when the config file changes.
+
+See [`config.example.toml`](config.example.toml) for a full example.
+
+## Settings screen
+
+Press <kbd>,</kbd> or choose **Magritte > Settings** to access the settings
+screen. Here change common options such as themes, fonts, editors, and the keymap
+preset. The Settings screen writes to the global configuration file.
 
 ```toml
 appearance = "dark"
@@ -324,7 +323,8 @@ operators, surround commands, indentation, repeat, regex search, substitutions,
 prompt history, and undo.
 
 Use <kbd>ZZ</kbd> or <kbd>,,</kbd> to commit. Use <kbd>ZQ</kbd> or <kbd>,k</kbd> to cancel. <kbd>gq</kbd> reformats a line,
-motion, or visual selection, while <kbd>,q</kbd> reformats the whole message. For full
+motion, or visual selection (<kbd>gw</kbd> does the same and keeps the cursor in
+place), while <kbd>,q</kbd> reformats the whole message. For full
 Vim behavior, use an external editor instead:
 
 ```toml

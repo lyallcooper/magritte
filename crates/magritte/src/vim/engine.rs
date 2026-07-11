@@ -57,8 +57,9 @@ enum Consumer {
     Op { op: Op, count: usize },
     /// `ys` awaiting its target.
     SurroundAdd,
-    /// `gq` awaiting its target: the covered lines get reflowed.
-    Reflow,
+    /// `gq`/`gw` awaiting its target: the covered lines get reflowed
+    /// (`keep` is `gw`: the cursor stays on the text it was on).
+    Reflow { keep: bool },
     /// `>`/`<` awaiting its target: the covered lines shift by one indent
     /// step (with the count typed before the operator).
     Shift { dedent: bool, count: usize },
@@ -407,9 +408,12 @@ impl VimState {
                     self.recording.push((key, false));
                 }
                 let actions = self.key_modal(text, cursor, key);
-                let edited = actions
-                    .iter()
-                    .any(|a| matches!(a, Action::Edit(_) | Action::ReflowRange(_)));
+                let edited = actions.iter().any(|a| {
+                    matches!(
+                        a,
+                        Action::Edit(_) | Action::ReflowRange(_) | Action::ReflowRangeKeep(_)
+                    )
+                });
                 // Any edit resets the sticky column, like Vim's curswant
                 // (`$x` then `j` aims at the deletion column, not line end).
                 if edited {
@@ -679,24 +683,33 @@ impl VimState {
             }
             Pending::G(consumer) => {
                 self.pending = Pending::None;
-                // `gq`: the reflow operator. In Visual it acts on the
-                // selection at once; in Normal it awaits a motion/object
-                // (`gqq` for lines, like `dd`).
-                if key == Key::Char('q') && consumer == Consumer::Move {
+                // `gq`/`gw`: the reflow operators (`gw` keeps the cursor on
+                // its text, like Vim). In Visual they act on the selection at
+                // once; in Normal they await a motion/object (`gqq`/`gww` for
+                // lines, like `dd`).
+                if matches!(key, Key::Char('q' | 'w')) && consumer == Consumer::Move {
+                    let keep = key == Key::Char('w');
+                    let reflow = |range| {
+                        if keep {
+                            Action::ReflowRangeKeep(range)
+                        } else {
+                            Action::ReflowRange(range)
+                        }
+                    };
                     if let Some(range) = self.visual_range(text, cursor) {
                         self.mode = Mode::Normal;
                         self.take_count();
-                        return vec![Action::ReflowRange(range)];
+                        return vec![reflow(range)];
                     }
                     if matches!(self.mode, Mode::Visual { .. }) {
-                        // Blockwise gq: the covered lines (reflow is linewise
+                        // Blockwise: the covered lines (reflow is linewise
                         // whatever the visual kind).
                         let a = clamp_normal(text, self.anchor);
                         self.mode = Mode::Normal;
                         self.take_count();
-                        return vec![Action::ReflowRange(a.min(cursor)..a.max(cursor))];
+                        return vec![reflow(a.min(cursor)..a.max(cursor))];
                     }
-                    self.pending = Pending::AwaitMotion(Consumer::Reflow);
+                    self.pending = Pending::AwaitMotion(Consumer::Reflow { keep });
                     return Vec::new();
                 }
                 let Key::Char('g') = key else {
@@ -902,6 +915,17 @@ impl VimState {
             return self.resolve_motion(text, cursor, Motion::GotoLine(line), consumer);
         }
 
+        // `gww`: gw's doubled linewise form — its key is also the word
+        // motion, so it must be claimed before the motion table (`gqq`'s `q`
+        // is no motion and resolves in char_command with the other doubles).
+        if key == Key::Char('w') && consumer == (Consumer::Reflow { keep: true }) {
+            self.pending = Pending::None;
+            let count = self.take_count().max(1);
+            let start = line_start(text, cursor);
+            let end = line_end_n(text, cursor, count);
+            return vec![Action::ReflowRangeKeep(start..end)];
+        }
+
         // Keys that are motions regardless of spelling.
         let motion = match key {
             Key::Enter => Some(Motion::NextLineStart),
@@ -1077,11 +1101,12 @@ impl VimState {
             }
             return self.beep();
         }
-        if consumer == Consumer::Reflow {
+        if let Consumer::Reflow { keep } = consumer {
             // `gqq`: the current `count` lines, like Vim — an overlong
             // line breaks onto new lines (nothing joins upward; the
-            // paragraph form is `gqip`).
-            if c == 'q' {
+            // paragraph form is `gqip`). `gww` resolves before the motion
+            // table, so only `gq` reaches here un-doubled.
+            if c == 'q' && !keep {
                 self.pending = Pending::None;
                 let count = self.take_count().max(1);
                 let start = line_start(text, cursor);
@@ -1579,11 +1604,15 @@ impl VimState {
                 };
                 Vec::new()
             }
-            Consumer::Reflow => {
+            Consumer::Reflow { keep } => {
                 let Some((range, _)) = operator_range(text, cursor, m, target) else {
                     return self.beep();
                 };
-                vec![Action::ReflowRange(range)]
+                vec![if keep {
+                    Action::ReflowRangeKeep(range)
+                } else {
+                    Action::ReflowRange(range)
+                }]
             }
             Consumer::Shift { dedent, .. } => {
                 let Some((range, _)) = operator_range(text, cursor, m, target) else {
@@ -1657,11 +1686,15 @@ impl VimState {
                 };
                 Vec::new()
             }
-            Consumer::Reflow => {
+            Consumer::Reflow { keep } => {
                 if range.start >= range.end {
                     return self.beep();
                 }
-                vec![Action::ReflowRange(range)]
+                vec![if keep {
+                    Action::ReflowRangeKeep(range)
+                } else {
+                    Action::ReflowRange(range)
+                }]
             }
             Consumer::Shift { dedent, .. } => {
                 if range.start >= range.end {
@@ -2016,7 +2049,8 @@ fn consumer_keys(c: &Consumer) -> String {
             s
         }
         Consumer::SurroundAdd => "ys".into(),
-        Consumer::Reflow => "gq".into(),
+        Consumer::Reflow { keep: false } => "gq".into(),
+        Consumer::Reflow { keep: true } => "gw".into(),
         Consumer::Shift { dedent: false, .. } => ">".into(),
         Consumer::Shift { dedent: true, .. } => "<".into(),
     }

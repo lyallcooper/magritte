@@ -20,7 +20,8 @@ impl VimState {
                 let line_key = match consumer {
                     Consumer::Op { op, .. } => Some(op.key().to_string()),
                     Consumer::SurroundAdd => Some("s".to_string()),
-                    Consumer::Reflow => Some("q".to_string()),
+                    Consumer::Reflow { keep: false } => Some("q".to_string()),
+                    Consumer::Reflow { keep: true } => Some("w".to_string()),
                     Consumer::Shift { dedent, .. } => {
                         Some(if *dedent { "<" } else { ">" }.to_string())
                     }

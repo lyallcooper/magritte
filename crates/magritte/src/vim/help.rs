@@ -27,6 +27,7 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
                     info("Z Q · :q · , k", "Cancel"),
                     info(":q!", "Discard without asking"),
                     info("g q", "Reflow over a motion"),
+                    info("g w", "Reflow, cursor stays put"),
                 ],
             ),
             group(

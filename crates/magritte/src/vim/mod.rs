@@ -82,6 +82,9 @@ pub(crate) enum Action {
     /// body at 72 columns (the app expands to line boundaries and skips the
     /// summary line).
     ReflowRange(Range<usize>),
+    /// `gw{motion}` / `gww` / visual `gw`: like [`ReflowRange`], but the
+    /// cursor stays on the text it was on (Vim's `gw`).
+    ReflowRangeKeep(Range<usize>),
     /// `:help`: show the Vim-mode cheat sheet.
     Help,
     /// `zz`/`zt`/`zb` (and `z.`/`z<CR>`/`z-`): scroll the view so the cursor

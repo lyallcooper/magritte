@@ -103,6 +103,7 @@ impl StatusView {
     fn reflow_vim_range(
         &mut self,
         range: std::ops::Range<usize>,
+        keep_cursor: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -115,6 +116,13 @@ impl StatusView {
             else {
                 return;
             };
+            // `gw` keeps the cursor on the text it was on. Reflowing only
+            // moves whitespace, so the count of non-whitespace chars before
+            // the cursor identifies the same spot afterwards.
+            let ink_before = keep_cursor.then(|| {
+                let at = s.cursor().min(text.len());
+                text[..at].chars().filter(|c| !c.is_whitespace()).count()
+            });
             s.replace_text_in_range(
                 Some(commit_text::byte_range_to_utf16(&text, &span)),
                 &reflowed,
@@ -122,6 +130,20 @@ impl StatusView {
                 cx,
             );
             let post = s.text().to_string();
+            let cursor = match ink_before {
+                // Land on the next ink char (skipping the whitespace the
+                // reflow may have put there) — probed against Vim 9.2, which
+                // restores the cursor onto the same text character.
+                Some(ink) => {
+                    let base = byte_at_ink(&post, ink);
+                    base + post[base..]
+                        .chars()
+                        .take_while(|c| c.is_whitespace())
+                        .map(char::len_utf8)
+                        .sum::<usize>()
+                }
+                None => cursor,
+            };
             s.set_cursor_position(
                 commit_text::byte_offset_to_position(&post, cursor.min(post.len())),
                 window,
@@ -321,7 +343,8 @@ impl StatusView {
                 // `:q!` bypasses the discard confirmation.
                 Action::Quit { force: true } => self.discard_editor(window, cx),
                 Action::Quit { force: false } => self.cancel_editor(window, cx),
-                Action::ReflowRange(range) => self.reflow_vim_range(range, window, cx),
+                Action::ReflowRange(range) => self.reflow_vim_range(range, false, window, cx),
+                Action::ReflowRangeKeep(range) => self.reflow_vim_range(range, true, window, cx),
                 Action::Help => self.open_vim_help(cx),
                 Action::Error(msg) => {
                     if let Some(ed) = self.editor_mut() {
@@ -501,6 +524,24 @@ fn reflow_edit(
     Some((start..end, reflowed, cursor))
 }
 
+/// The byte offset just past the `ink`-th non-whitespace char — the inverse
+/// of counting ink before a cursor, for `gw`'s keep-the-spot mapping.
+fn byte_at_ink(text: &str, ink: usize) -> usize {
+    if ink == 0 {
+        return 0;
+    }
+    let mut seen = 0;
+    for (i, c) in text.char_indices() {
+        if !c.is_whitespace() {
+            seen += 1;
+            if seen == ink {
+                return i + c.len_utf8();
+            }
+        }
+    }
+    text.len()
+}
+
 /// Zero-width rects (empty lines, EOF) get a half-cell stub so they stay
 /// visible.
 fn widen(b: Bounds<Pixels>) -> Bounds<Pixels> {
@@ -550,6 +591,25 @@ fn single_char(s: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::reflow_edit;
+
+    #[test]
+    fn byte_at_ink_round_trips_through_a_reflow() {
+        // gw's cursor mapping: ink count before the cursor in the old text
+        // finds the same spot after whitespace-only changes.
+        let before = "one two three";
+        let after = "one two
+three";
+        // Cursor on the 't' of "three" (byte 8): 6 ink chars before it.
+        let ink = before[..8].chars().filter(|c| !c.is_whitespace()).count();
+        assert_eq!(ink, 6);
+        // Just past "two"; the apply side then advances over whitespace so
+        // the cursor lands back on the 't' (Vim 9.2's gw does the same).
+        assert_eq!(super::byte_at_ink(after, ink), 7);
+        assert_eq!(super::byte_at_ink(after, 0), 0);
+        assert_eq!(super::byte_at_ink(after, 100), after.len());
+        // Multibyte: counting is char-based, offsets byte-based.
+        assert_eq!(super::byte_at_ink("𝄞 x", 1), 4);
+    }
 
     #[test]
     fn utf16_ranges() {
