@@ -1021,13 +1021,29 @@ mod tests {
     #[test]
     fn example_config_covers_every_value_type() {
         let source = include_str!("../../../docs/config.example.toml");
-        let raw: toml::Table = toml::from_str(source).expect("example should be valid TOML");
+
+        // Adopting the example wholesale must not change behavior: every
+        // entry is a commented-out demonstration, so the file as written
+        // parses to the default configuration.
+        let adopted: Config = toml::from_str(source).expect("example should be valid TOML");
+        assert_eq!(
+            adopted,
+            Config::default(),
+            "an adopted example must not deviate from the defaults \
+             (demonstrations belong in comments)"
+        );
+
+        // The coverage checks below run against the uncommented rendering,
+        // so the demonstrations are still schema-checked.
+        let source = &uncomment_example(source);
+        let raw: toml::Table =
+            toml::from_str(source).expect("uncommented example should be valid TOML");
         let config: Config = toml::from_str(source)
-            .expect("docs/config.example.toml should match the config schema");
+            .expect("uncommented docs/config.example.toml should match the config schema");
         let (_, warnings) = crate::commands::build_keymap(&config);
         assert!(
             warnings.is_empty(),
-            "example config should not produce warnings: {warnings:?}"
+            "uncommented example config should not produce warnings: {warnings:?}"
         );
 
         // These exhaustive patterns are a compile-time schema guard. Adding a
@@ -1207,6 +1223,43 @@ mod tests {
             ["after", "before", "group"].into_iter().collect(),
             "example should contain every placement type"
         );
+    }
+
+    /// The example with its commented-out demonstrations made live: strips
+    /// the `#` off lines that read as TOML (a key = value, a quoted key, a
+    /// table header, or an array element/terminator), leaving prose comments
+    /// alone. A mis-stripped line fails the caller's parse loudly.
+    fn uncomment_example(source: &str) -> String {
+        let looks_like_toml = |rest: &str| {
+            rest.starts_with('"')
+                || rest.starts_with('[')
+                || rest.starts_with(']')
+                || rest.split_once('=').is_some_and(|(key, _)| {
+                    let key = key.trim();
+                    !key.is_empty()
+                        && key
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                })
+        };
+        source
+            .lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                match trimmed.strip_prefix('#') {
+                    Some(rest) => {
+                        let rest = rest.trim_start();
+                        if looks_like_toml(rest) {
+                            rest
+                        } else {
+                            line
+                        }
+                    }
+                    None => line,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn assert_table_keys(table: &toml::Table, key: &str, expected: &[&str]) {

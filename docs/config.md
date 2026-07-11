@@ -34,8 +34,8 @@ keymap_preset = "evil"
 ```
 
 For a fully annotated file with every supported section and setting type, see
-[`config.example.toml`](config.example.toml). Copy it into place, then remove
-the settings you do not need.
+[`config.example.toml`](config.example.toml). Every entry in it is commented
+out, so you can copy it into place and uncomment what you want to change.
 
 Magritte reloads the file after every save. A valid reload shows a short
 confirmation in the status bar. If the file is invalid, the status bar shows
