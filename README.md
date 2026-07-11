@@ -39,7 +39,8 @@ debugging.
 
 The default keymap mirrors **evil-collection's magit**, so existing muscle
 memory transfers (`j`/`k` to move, `TAB` to fold, `s`/`u` to stage/unstage, `c`
-to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on). Press
+to commit, `p`/`F` to push/pull, `l` for log, `Z` for stash, and so on); set
+`keymap_preset = "vanilla"` for stock magit/Emacs keys instead. Press
 `?` in the app for the dispatch/help popup. The complete key list — and how to
 remap or unbind keys with a `[keymap]` table — is in
 [`docs/config.md`](docs/config.md#keymap); every keyboard action has a mouse
@@ -48,10 +49,16 @@ equivalent.
 ## Configuration
 
 Settings live in `~/.config/magritte/config.toml` (or `$XDG_CONFIG_HOME/…`),
-loaded at startup and re-read live on change. The Settings screen (`,`) edits
-appearance, fonts, and editor options; a `[keymap]` table remaps keys.
-[`docs/config.md`](docs/config.md) documents every key, valid values, and the
-command ids you can bind.
+loaded at startup and re-read live on change; a sparse per-repo overlay in
+`.git/magritte/config.toml` overrides any of them for one repository. The
+Settings screen (`,`) edits appearance, fonts, and editor options; a `[keymap]`
+table remaps keys. [`docs/config.md`](docs/config.md) documents every key,
+valid values, and the command ids you can bind.
+
+Magritte also works as a **`git mergetool`**: `magritte --mergetool` opens the
+conflict-resolution view on each conflicted file, and the exit code tells git
+whether it was resolved — setup in
+[`docs/config.md`](docs/config.md#as-a-git-mergetool).
 
 ## Architecture
 
@@ -68,8 +75,8 @@ Two crates, split at a synchronous/async seam:
 
 Keymap remapping, transient extension, user-defined `[[command]]` commands, and
 the `:` command palette are built and documented in
-[`docs/config.md`](docs/config.md); [`docs/extensibility.md`](docs/extensibility.md)
-tours them.
+[`docs/config.md`](docs/config.md), which opens with a tour of the
+customization surface.
 
 ## Development
 
@@ -94,7 +101,9 @@ It is compiled out of normal release builds entirely.
 ## Current limitations
 
 - Ad-hoc signed only — not notarized or developer-ID signed.
-- macOS only; non-UTF-8 paths are handled lossily.
+- macOS is the supported platform; releases also ship a best-effort Linux
+  tarball.
+- Non-UTF-8 paths are handled lossily.
 - Refresh is on-demand (`g r`), after our own commands, on window focus
   (opt-out via `refresh_on_focus`), and via the opt-in `[fetch]` background
   auto-fetch; there is no filesystem watcher (intentionally — it's a

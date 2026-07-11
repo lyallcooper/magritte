@@ -22,6 +22,36 @@ flagged value and saving again clears its warning.
 
 A repository can override these settings for itself — see *Per-repo settings*.
 
+## What you can customize
+
+The quick tour; each item links to its reference section below.
+
+- **Any key.** A [`[keymap]`](#keymap) entry maps a keystroke — or a sequence
+  like `g r` — to a command id, or to `"unbound"` to drop a default. Nearly
+  every command has a stable, bindable id, not just the top-level ones.
+- **The transient menus.** A [`[transient.<id>]`](#transients) table adds,
+  moves, or removes suffixes — magit's `transient-append-suffix` family. One
+  line gives the branch transient a `b X` delete action.
+- **Your own commands.** A [`[[command]]`](#commands) table turns a shell
+  command into a first-class command — in the `:` palette, the `?` menu once
+  bound, and bindable in `[keymap]` like any built-in:
+
+  ```toml
+  [[command]]
+  id = "user.sync"
+  title = "Sync"
+  run = "git pull --rebase && git push"
+  ```
+
+- **Prefix sequences.** Any key that begins a bound sequence becomes a prefix,
+  with an on-screen which-key hint after a configurable delay.
+- **The `:` palette** opens a fuzzy picker over every command, bound or not —
+  the way to reach rarely-used commands and discover their keys.
+
+Not supported: an embedded scripting language, or live transient rewriting
+beyond the `[transient.<id>]` additions. Magritte drives the `git` CLI rather
+than hosting a Lisp environment.
+
 ## Per-repo settings
 
 Drop a `config.toml` (and/or `transient-arguments.toml`) in **`.git/magritte/`** to
@@ -29,6 +59,9 @@ override settings for one repository. It's a *sparse overlay* on your global
 config — set only the keys you want to change; everything else falls through.
 The file lives in the repo's git dir, so it's private (never committed) and
 shared across the repo's worktrees, and it's re-read live like the global one.
+The easiest way to start one is the Settings screen's *Open repo config*
+button, which creates the file and watches it immediately; a `.git/magritte/`
+directory created outside the app mid-session is picked up at the next launch.
 
 Merge rules — global first, repo on top:
 
@@ -52,7 +85,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `light_theme` | theme name | `Selenized Light` | Theme used in light mode. |
 | `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Monospace font for code, diffs, and tabular rows. |
-| `ui_font` | font family | *(uses `font`)* | Proportional font for chrome (menus, headers, labels). Empty = monospace everywhere. |
+| `ui_font` | font family / `"system-ui"` | *(uses `font`)* | Proportional font for chrome (menus, headers, labels); `"system-ui"` is the platform's standard UI font. Empty = monospace everywhere. |
 | `font_size` | px | *(system)* | Base font size; row heights and the commit editor's line height scale with it. Clamped to 9--24. Unset = the platform's standard UI text size (13 on macOS). |
 | `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | macOS only. The Dock (and Cmd-Tab) icon. Sets the running app's icon, not the Finder icon, which macOS keeps fixed to the bundle default. |
 | `editor` | command or app name | OS default opener | External editor for "open file" (`Return`) — see below. |
@@ -60,10 +93,7 @@ All scalar keys are top-level. Every key is optional; omit one for its default.
 | `commit_editor` | command | *(none)* | Blocking editor command used as `GIT_EDITOR`, e.g. `zed --wait`, `code --wait`, `nvim`. Only used when `commit_in_editor = true`. |
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight commit-summary characters past column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Auto-hard-wrap the commit body at column 72; bullets and indented lines keep a hanging indent (paused while in Vim Normal/Visual mode). |
-
-Commit messages are never lost: a message discarded with edits, or rejected by a failing commit (e.g. a pre-commit hook), is saved to a per-worktree ring of the last 10. Press `alt-p` in the commit editor (or run *Restore commit message* from the `:` palette) to fill in the newest saved message; repeat to cycle older ones.
-
-| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor: Normal/Insert/Visual modes, motions, counts, text objects (words, sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators, surround (`ys`/`cs`/`ds`), `.` repeat, `/` regex search (smartcase, with live match highlighting), `:` commands (`:s` with live match preview, `:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), `>`/`<` indent operators, mouse-drag Visual selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ` or `,k`; `gq` is the reflow operator (`gqq` line, Visual `gq` selection, `gq{motion}`, `,q` whole message); `[vim.keymap]` adds your own keys for these — see *Keymap*. For full Vim fidelity use `commit_in_editor` with `commit_editor = "nvim"` instead. |
+| `commit_vim_mode` | `true` / `false` | `false` | Modal Vim editing in the in-app commit editor — see *Vim mode keys* under *Keymap*. |
 | `refresh_on_focus` | `true` / `false` | `true` | Re-run `git status` when the window regains focus, picking up out-of-app changes. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest tag(s) in the title bar — see *Status sections*. |
 | `check_for_updates` | `true` / `false` | `true` | Periodically check GitHub releases and quietly notify when a newer Magritte is available. |
@@ -72,6 +102,12 @@ Commit messages are never lost: a message discarded with edits, or rejected by a
 | `published_branches` | list of refs | `["origin/main", "origin/master"]` | Branches treated as published: amend/reword/rebase of a commit already on one warns before rewriting shared history (magit's `magit-published-branches`). Branches absent from the repo are ignored; `[]` disables the warning. |
 
 \* `appearance` defaults to auto whether you write `"auto"` or leave it empty.
+
+Commit messages are never lost: a message discarded with edits, or rejected by
+a failing commit (e.g. a pre-commit hook), is saved to a per-worktree ring of
+the last 10. Press `alt-p` in the commit editor (or run *Restore commit
+message* from the `:` palette) to fill in the newest saved message; repeat to
+cycle older ones.
 
 **Theme names** are the entries in the Settings → *Light theme* / *Dark theme*
 dropdowns. Bundled families: GitHub, Solarized, Selenized, Gruvbox, Catppuccin,
@@ -162,7 +198,7 @@ interval_minutes = 30  # default 30; minimum 1
 When reading the repository's status is slow (over ~half a second) and git's
 filesystem monitor isn't configured, Magritte suggests it once with a status
 notice. Run "Enable filesystem monitor" from the `:` palette (anytime, hint or
-not) to set `core.fsmonitor` and `core.untrackedCache` for the repo -- git
+not) to set `core.fsmonitor` and `core.untrackedCache` for the repo — git
 then watches the worktree instead of rescanning it, which makes `git status`
 near-instant on large trees. The hint never repeats for a repo, and it stays
 quiet if `core.fsmonitor` is already set to anything (including `false`).
@@ -182,7 +218,7 @@ UI. Configure it in your git config:
 ```
 
 `git mergetool` then opens Magritte directly on each conflicted file. Resolve
-the conflicts and confirm the finish prompt (or quit) -- the exit code tells
+the conflicts and confirm the finish prompt (or quit) — the exit code tells
 git whether the file was fully resolved, and git stages it on success.
 Closing the window with conflicts remaining counts as giving up on that file.
 
@@ -229,7 +265,7 @@ keymap_preset = "evil"
   | keys | does |
   |------|------|
   | arrows, `ctrl-n` / `ctrl-p` | move the cursor (alongside `j`/`k`) |
-  | `space` | page down |
+  | `space` | page down; on a status commit/stash row, show it first (magit's show-or-scroll) |
   | `ctrl-d` / `ctrl-u` | half-page down / up |
   | `ctrl-j` / `ctrl-k` | next / previous section (evil; magit's `n`/`p` — visits files, commits, and hunks) |
   | `alt-j` / `alt-k` / `]` / `[` | next / previous *sibling* section (evil; magit's `M-n`/`M-p`) |
@@ -264,9 +300,20 @@ keymap_preset = "evil"
 
 ### Vim mode keys (`[vim.keymap]`)
 
-With `commit_vim_mode = true`, a `[vim.keymap]` table adds key sequences for
-the commit editor's editor-level Vim commands: `commit`, `cancel`, `discard`
-(cancel without the confirmation), `reflow` (the whole message), and `help`.
+`commit_vim_mode = true` gives the in-app commit editor modal Vim editing:
+Normal/Insert/Visual modes, motions and counts, text objects (words,
+sentences, paragraphs, quotes, brackets, tags), `d`/`c`/`y` operators,
+surround (`ys`/`cs`/`ds`), `>`/`<` indent, `.` repeat, `/` regex search
+(smartcase, live match highlighting), `:` commands (`:s` with live preview,
+`:q`, `:wq`, `:help`, prompt history on `Up`/`Down`), mouse-drag Visual
+selection, and `u`/`Ctrl-r` undo. Commit with `ZZ` or `,,`, cancel with `ZQ`
+or `,k`; `gq` is the reflow operator (`gqq` line, `gq{motion}`, Visual `gq`,
+`,q` whole message). For full Vim fidelity, use `commit_in_editor` with
+`commit_editor = "nvim"` instead.
+
+A `[vim.keymap]` table adds your own key sequences for the editor-level
+commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
+`reflow` (the whole message), and `help`.
 
 ```toml
 [vim.keymap]
@@ -288,8 +335,8 @@ the commit editor's editor-level Vim commands: `commit`, `cancel`, `discard`
 - While a sequence is pending, the typed prefix shows by the mode indicator,
   and after a beat a which-key panel lists the continuations.
 - Merged per entry with a repo's `.git/magritte/config.toml`, like `[keymap]`;
-  unknown command names are ignored. Changes apply the next time the editor
-  opens.
+  unknown command names are ignored. Changes apply live, even to an editor
+  that's already open.
 
 ### Command ids
 
@@ -298,8 +345,9 @@ are reachable today only through their prefix's transient or the `:` palette.
 The palette hides commands that don't apply right now — e.g. `jump-to-ignored`
 appears only while the (opt-in) Ignored section is shown, and the other
 `jump-to-*` commands only while their section has content. The *at point* ids
-act only on a commit or stash row and win over a general command sharing their
-key — so `a` is "apply commit" on a commit row but Stage on a file row.
+act only on the row they target (a commit, stash, or conflicted file) and win
+over a general command sharing their key — so `a` is "apply commit" on a
+commit row but Stage on a file row.
 
 The palette also matches common synonyms and git verbs, not just the label, so
 you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
@@ -326,7 +374,7 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `bisect` | `B` | Bisect (transient; marks good/bad/skip/reset while a bisect runs) |
 | `blame` | — | Blame the file at point |
 | `run` | `!` | Run… (transient: git or shell command, in the root — or the file at point's directory, offered when there is one) |
-| `git-command` | `\|` (evil) / `:` (vanilla) | Run a command directly (git by default) |
+| `git-command` | `\|` (evil) / `:`, `Q` (vanilla) | Run a command directly (git by default) |
 | `stage` | `s` | Stage the selection |
 | `unstage` | `u` | Unstage the selection |
 | `stage-all` | `S` | Stage all tracked changes (confirms if something is already staged) |
@@ -344,17 +392,24 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `stash-row-drop` | `x` (evil) / `k` (vanilla) | Drop the stash at point (confirmed) |
 | `commit-details` | `=` | Toggle the details panel in a commit view |
 | `fold` | `Tab` | Fold / unfold |
+| `cycle-folds` | `shift-tab` | Cycle every fold: sections → everything → folded (magit's `S-TAB`) |
+| `fold-show` / `fold-hide` / `fold-show-children` / `fold-hide-children` | evil `z o` / `z c` / `z O` / `z C` | Explicit fold verbs (vim's `zo`/`zc`/`zO`/`zC`) |
+| `resolve-conflicts` | `e` | Resolve the conflicted file at point in the smerge-style view |
 | `diff-more-context` | `+` | More diff context lines |
 | `diff-less-context` | `-` | Fewer diff context lines |
 | `diff-default-context` | `0` | Default diff context (3 lines) |
-| `refresh` | `g r` | Refresh status |
+| `refresh` | `g r` (evil) / `g` (vanilla) | Refresh status |
 | `visual` | `v` | Toggle visual selection |
 | `yank` | `y y` (evil) / `Ctrl-w`, `Cmd+C` | Copy the value at point |
 | `copy-buffer-revision` | `y b` (evil) | Copy the current view's revision |
 | `show-refs` | `y` (vanilla) / `y r` (evil) | Browse branches, remotes, tags (Return visits the tip commit; `b` checkout, `x`/`k` delete, `R` rename) |
 | `settings` | `,` | Open Settings |
 | `command-log` | `$` | Open the command log |
+| `close` | `q` (and `Esc`) | Close the current secondary screen (log, commit, refs, …) |
+| `commit-restore-message` | — | Refill the commit editor from the saved-message ring (`alt-p` inside the editor) |
+| `fsmonitor-enable` | — | Enable git's filesystem monitor for the repo — see *Large repositories* |
 | `check-updates` | — | Check for updates |
+| `about` | — | Show the version / about panel |
 | `move-down` | `j` | Move cursor down |
 | `move-up` | `k` | Move cursor up |
 | `goto-top` | `g g` | Jump to top |
@@ -391,10 +446,19 @@ you needn't know Magritte's wording: "add" finds `Stage`, "restore" finds
 | `reset-branch` / `file-checkout` | — | Reset a branch / checkout a file from a revision |
 | `tag-create` / `tag-delete` | — | Tag variants |
 | `remote-add` / `remote-rename` / `remote-remove` | — | Remote variants |
-| `log-current` / `log-all` / `log-other` / `log-reflog` | — | Log variants |
+| `log-current` / `log-all` / `log-other` / `log-file` / `log-reflog` | — | Log variants |
 | `diff-dwim` / `diff-range` / `diff-unstaged` / `diff-staged` / `diff-worktree` / `diff-commit` | — | Diff variants |
 | `cherry-pick` / `cherry-pick-range` / `cherry-apply` | — | Cherry-pick a commit / a range / apply without committing |
 | `revert` / `revert-range` / `revert-no-commit` | — | Revert a commit / a range / just its changes |
+
+Secondary screens add their own scoped ids, remappable the same way:
+`refs-visit` / `refs-checkout` / `refs-delete` / `refs-rename` (the refs
+browser), `worktree-*` (`worktree-visit`, `worktree-add`, …), `flat-*` (the
+commit/diff views: `flat-apply`, `flat-fold`, …), `rebase-todo-*` (one per
+todo verb: `rebase-todo-reword`, `rebase-todo-squash`, …), `resolve-*`
+(`resolve-ours`, `resolve-next`, …), `log-open`, and `git-log-toggle-queries`
+(the `$` log). The `:` palette lists every command that applies to the
+current screen.
 
 ## Transients
 
@@ -417,8 +481,8 @@ built-in suffix at that key.
 "A" = "commit-amend"           # action, default placement (a "Custom" section)
 "-v" = { flag = "--verbose", description = "Show diff in message", after = "-s" }
 "W" = { command = "user.wip", group = "Create" }
-"F" = { after = "c" }          # move: put built-in Fixup right after Commit
-"x" = { group = "Arguments" }  # move: into another section
+"f" = { after = "c" }          # move: put built-in Fixup right after Commit
+"F" = { group = "Edit" }       # move: Instant fixup into another section
 ```
 
 - **Actions** — the value is a **command id** (no leading `-`); runs with
@@ -507,8 +571,9 @@ section = "My commands"         # which ? group to list it under when bound
   git (`run = "make test"`).
 - **Placeholders** are resolved at run time against the current selection and
   repo, and shell-quoted: `{file}` (the file at point), `{commit}` (the commit
-  at point in the log), `{branch}` (the current branch), `{upstream}` (the
-  branch's upstream, e.g. `origin/main`), `{push-remote}` (the resolved push
+  at point — status, log, or an open commit view), `{branch}` (the current
+  branch), `{upstream}` (the branch's upstream, e.g. `origin/main`),
+  `{push-remote}` (the resolved push
   remote, e.g. `origin`), `{default-branch}` (what `origin/HEAD` points at,
   e.g. `main`), `{default-remote}` (the remote that named `{default-branch}`,
   falling back to the push remote — so
@@ -527,7 +592,7 @@ section = "My commands"         # which ? group to list it under when bound
   (default "Commands"); a section title that doesn't exist is created. Unbound
   commands stay palette-only.
 - **Destructive commands confirm first** — one whose words include `clean`,
-  `--hard`, or `--force` prompts before running, like the built-in destructive
-  operations.
+  `--hard`, `--force`, or `--force-with-lease` prompts before running, like
+  the built-in destructive operations.
 - An empty `run`, an `id` that shadows a built-in, or a duplicate `id` warns at
   startup. For a *one-off* command, use the `!` prompt instead.
