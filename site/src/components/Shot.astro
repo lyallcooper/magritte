@@ -1,0 +1,101 @@
+---
+// A framed app screenshot: the window chrome (CSS traffic lights over the
+// capture's title-bar inset) plus the four capture variants -- desktop/mobile
+// x light/dark -- each offered as lossy AVIF with the PNG original as
+// fallback. `name` selects /screenshots/{name}-{light,dark}[-mobile].{avif,png};
+// width/height are the desktop capture's logical size.
+interface Props {
+    name: string;
+    width: number;
+    height: number;
+    alt: string;
+}
+
+const { name, width, height, alt } = Astro.props;
+const src = (variant: string, ext: string) =>
+    `/screenshots/${name}-${variant}.${ext}`;
+const MOBILE = "(max-width: 40rem)";
+const DARK = "(prefers-color-scheme: dark)";
+---
+
+<div class="window">
+    <span class="dot red"></span><span class="dot yellow"></span><span
+        class="dot green"></span>
+    <picture>
+        <source
+            srcset={src("dark-mobile", "avif")}
+            media={`${MOBILE} and ${DARK}`}
+            type="image/avif"
+        />
+        <source srcset={src("dark-mobile", "png")} media={`${MOBILE} and ${DARK}`} />
+        <source srcset={src("light-mobile", "avif")} media={MOBILE} type="image/avif" />
+        <source srcset={src("light-mobile", "png")} media={MOBILE} />
+        <source srcset={src("dark", "avif")} media={DARK} type="image/avif" />
+        <source srcset={src("dark", "png")} media={DARK} />
+        <source srcset={src("light", "avif")} type="image/avif" />
+        <img src={src("light", "png")} width={width} height={height} alt={alt} />
+    </picture>
+</div>
+
+<style>
+    /* The offscreen capture omits the native traffic lights; the title bar
+       leaves their standard inset, so CSS dots restore them. */
+    .window {
+        position: relative;
+        container-type: inline-size;
+        margin: 2rem 0 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        overflow: hidden;
+        box-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.25);
+        line-height: 0;
+    }
+
+    .window img {
+        width: 100%;
+        height: auto;
+    }
+
+    /* Sized in cqw so the dots track the capture's title bar (33 logical px
+       tall at a natural width of 730) as the image scales. */
+    .dot {
+        position: absolute;
+        top: 1.39cqw;
+        width: 1.74cqw;
+        height: 1.74cqw;
+        border-radius: 50%;
+    }
+
+    .dot.red {
+        left: 1.92cqw;
+        background: #ec6a5e;
+    }
+    .dot.yellow {
+        left: 4.66cqw;
+        background: #f4bf4f;
+    }
+    .dot.green {
+        left: 7.4cqw;
+        background: #61c554;
+    }
+
+    /* The mobile capture is 640 logical px wide (vs 730), so the title bar is
+       proportionally taller; rescale the dots to it. */
+    @media (max-width: 40rem) {
+        .dot {
+            top: 1.64cqw;
+            width: 1.88cqw;
+            height: 1.88cqw;
+        }
+
+        .dot.red {
+            left: 2.19cqw;
+        }
+        .dot.yellow {
+            left: 5.31cqw;
+        }
+        .dot.green {
+            left: 8.44cqw;
+        }
+    }
+</style>

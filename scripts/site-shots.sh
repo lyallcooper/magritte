@@ -20,7 +20,8 @@
 # window (~66 columns at font 14), and whose surrounding context lines are
 # short too.
 #
-# Requires: git, python3 with Pillow, and a display (the app opens a window).
+# Requires: git, python3 with Pillow, node with site/node_modules installed
+# (sharp encodes the AVIF variants), and a display (the app opens a window).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,9 +57,9 @@ git add crates/magritte/src/theme.rs
 printf '# Notes\n\n- try the mergetool flow on the conflict from #142\n' > docs/notes.md
 
 mkdir -p .git/magritte
-place_window() { # width
-  printf 'mode = "windowed"\nx = 149.0\ny = 130.0\nwidth = %s.0\nheight = 770.0\n' \
-    "$1" > .git/magritte/window.toml
+place_window() { # width [height]
+  printf 'mode = "windowed"\nx = 149.0\ny = 130.0\nwidth = %s.0\nheight = %s.0\n' \
+    "$1" "${2:-770}" > .git/magritte/window.toml
 }
 # The themes are pinned: the site's CSS palette is Selenized, and the page
 # blends into the screenshot's background. The font is NOT pinned -- captures
@@ -113,6 +114,43 @@ for _ in 1 2 3; do "$DBG" key j >/dev/null; done
 "$DBG" move 320 700 >/dev/null
 shoot_pair mobile
 
+# The tag transient, in a short window so the bottom-anchored menu sits close
+# to the status content. The pointer parks on the blank row between the
+# Untracked and Unstaged sections (blank rows take no hover wash).
+open_tag_transient() {
+  rm -f .git/magritte/folds.toml
+  (cd "$ROOT" && "$DBG" up "$DEMO") >/dev/null
+  "$DBG" sleep 1200 >/dev/null
+  "$DBG" move 600 105 >/dev/null
+  "$DBG" key t >/dev/null
+  "$DBG" sleep 500 >/dev/null
+}
+
+echo "Capturing tag transient, desktop pair (730pt)"
+place_window 730 500
+set_config light
+FONT_ARGS=()
+open_tag_transient
+shoot_pair tag-desk
+
+echo "Capturing tag transient, mobile pair (640pt, font 14)"
+place_window 640 500
+set_config light 14
+FONT_ARGS=(14)
+rm -f .git/magritte/folds.toml
+(cd "$ROOT" && "$DBG" up "$DEMO") >/dev/null
+"$DBG" sleep 1200 >/dev/null
+# The narrow window can't fit any commit rows above the menu without slicing
+# one at the panel edge; fold Recent commits instead.
+"$DBG" key shift-g >/dev/null
+"$DBG" key ^ >/dev/null
+"$DBG" key tab >/dev/null
+"$DBG" key g >/dev/null && "$DBG" key g >/dev/null
+"$DBG" move 600 105 >/dev/null
+"$DBG" key t >/dev/null
+"$DBG" sleep 500 >/dev/null
+shoot_pair tag-mobile
+
 echo "Cropping into $OUT"
 python3 - "$WORK" "$OUT" <<'EOF'
 import sys
@@ -123,11 +161,31 @@ for src, dst, height in (
     ('desk-dark', 'status-dark', 1404),
     ('mobile-light', 'status-light-mobile', 1120),
     ('mobile-dark', 'status-dark-mobile', 1120),
+    ('tag-desk-light', 'tag-light', 1000),
+    ('tag-desk-dark', 'tag-dark', 1000),
+    ('tag-mobile-light', 'tag-light-mobile', 1000),
+    ('tag-mobile-dark', 'tag-dark-mobile', 1000),
 ):
     img = Image.open(f'{work}/{src}.png').convert('RGB')
     img.crop((0, 0, img.width, height)).save(f'{out}/{dst}.png', optimize=True)
     print(f'  {dst}.png {img.width}x{height}')
 EOF
 
-echo "Done. Eyeball all four (composition, no hover wash, nothing clipped),"
+# Lossy AVIF variants (~3x smaller); the PNGs stay as the <picture> fallback.
+echo "Encoding AVIF variants"
+(cd "$ROOT/site" && node - <<'EOF'
+const sharp = require('sharp');
+const fs = require('fs');
+const dir = 'public/screenshots';
+(async () => {
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.png'))) {
+    const out = `${dir}/${f.replace('.png', '.avif')}`;
+    await sharp(`${dir}/${f}`).avif({ quality: 60 }).toFile(out);
+    console.log(`  ${out} ${(fs.statSync(out).size / 1024).toFixed(0)}KB`);
+  }
+})();
+EOF
+)
+
+echo "Done. Eyeball the captures (composition, no hover wash, nothing clipped),"
 echo "then rebuild the site: cd site && npm run build"

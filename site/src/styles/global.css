@@ -17,7 +17,11 @@
   --add-bg: #4891001f;
   --del-bg: #d2212d1f;
   --mono: ui-monospace, 'SF Mono', 'Menlo', 'Cascadia Mono', monospace;
-  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  /* Old-style serifs throughout the fallbacks, so the voice survives when the
+     webfont hasn't loaded (or is blocked). */
+  --serif: 'EB Garamond Variable', Garamond, 'Iowan Old Style', 'Hoefler Text',
+    'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, 'Times New Roman',
+    serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -51,9 +55,10 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--sans);
-  font-size: 16px;
-  line-height: 1.55;
+  font-family: var(--serif);
+  /* Garamond's small x-height: 19px matches the apparent size of 16px sans. */
+  font-size: 19px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -87,9 +92,9 @@ a:hover {
 }
 
 .wordmark {
-  font-family: var(--mono);
+  /*font-family: var(--mono);*/
   font-weight: 600;
-  font-size: 1rem;
+  font-size: 2rem;
   color: var(--fg);
 }
 
@@ -101,8 +106,8 @@ a:hover {
 .site-header nav {
   margin-left: auto;
   display: flex;
-  gap: 1.25rem;
-  font-size: 0.9rem;
+  gap: 1.25em;
+  font-size: 1.05em;
 }
 
 .site-header nav a {
@@ -115,14 +120,14 @@ a:hover {
 }
 
 main {
-  padding: 2.5rem 0 4rem;
+  padding: 1.5rem 0 4rem;
 }
 
 /* Footer */
 .site-footer {
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 1rem;
 }
 
 .site-footer .container {
@@ -145,17 +150,17 @@ h3 {
 }
 
 h1 {
-  font-size: 1.7rem;
+  font-size: 2rem;
   margin: 0 0 0.5rem;
 }
 
 h2 {
-  font-size: 1.2rem;
+  font-size: 1.4rem;
   margin: 2.6rem 0 0.75rem;
 }
 
 h3 {
-  font-size: 1rem;
+  font-size: 1.15rem;
   margin: 1.8rem 0 0.5rem;
 }
 
@@ -172,19 +177,20 @@ pre {
 }
 
 code {
-  font-size: 0.875em;
+  font-size: 0.74em;
   background: var(--surface);
   border-radius: 4px;
-  padding: 0.1em 0.35em;
+  padding: 0.1em 0.2em;
 }
 
 kbd {
-  font-size: 0.85em;
+  font-size: 0.8rem;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--muted);
   border-bottom-width: 2px;
   border-radius: 4px;
   padding: 0.05em 0.4em;
+  white-space: nowrap;
 }
 
 pre {
@@ -226,7 +232,7 @@ table {
   border-collapse: collapse;
   width: 100%;
   margin: 1rem 0;
-  font-size: 0.9rem;
+  font-size: 1rem;
 }
 
 th,

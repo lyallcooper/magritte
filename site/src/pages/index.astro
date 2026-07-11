@@ -1,175 +1,271 @@
 ---
-import Base from '../layouts/Base.astro';
+import Base from "../layouts/Base.astro";
+import Shot from "../components/Shot.astro";
 ---
 
 <Base
-  title="Magritte — a keyboard-first Git client for macOS"
-  description="Magritte is a fast, keyboard-first Git client inspired by Magit: the status-centered workflow as a standalone macOS app, no Emacs required."
+    title="Magritte — Ceci n'est pas Magit."
+    description="Magritte is a fast, keyboard-first Git client inspired by Magit: the status-centered workflow as a standalone macOS app, no Emacs required."
 >
-  <h1>Magritte</h1>
-  <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
+    <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
 
-  <p class="lede">
-    A fast, keyboard-first Git client for macOS, inspired by
-    <a href="https://magit.vc/">Magit</a>. The status view shows the whole
-    repository; move to a file, hunk, or commit and act on it. Commands such as
-    commit, branch, push, and rebase open focused menus that show their
-    options. No Emacs required.
-  </p>
+    <p class="lede">
+        A fast, keyboard-first git client in the spirit of
+        <a href="https://magit.vc/">Magit</a>—no Emacs required.
+    </p>
 
-  <pre class="install"><code>brew install lyallcooper/magritte/magritte</code></pre>
+    <p>
+        Magritte is written in Rust using <a href="https://gpui.rs/">gpui</a>,
+        the framework that powers <a href="https://zed.dev/">Zed</a>. Magritte's
+        asynchronous core ensures that it gracefully handles large repos and
+        stays responsive even during slow git operations.
+    </p>
 
-  <div class="window">
-    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-    <picture>
-      <source
-        srcset="/screenshots/status-dark-mobile.png"
-        media="(max-width: 40rem) and (prefers-color-scheme: dark)"
-      />
-      <source srcset="/screenshots/status-light-mobile.png" media="(max-width: 40rem)" />
-      <source srcset="/screenshots/status-dark.png" media="(prefers-color-scheme: dark)" />
-      <img
-        src="/screenshots/status-light.png"
-        width="730"
-        height="702"
+    <Shot
+        name="status"
+        width={730}
+        height={702}
         alt="Magritte's status view on its own repository: untracked, unstaged, and staged sections, an expanded file diff with a syntax-highlighted hunk, and recent commits"
-      />
-    </picture>
-  </div>
+    />
 
-  <h2>One view, acted on at point</h2>
-  <p>
-    Everything starts from the status view. <kbd>Tab</kbd> unfolds the item at
-    the cursor — a file into its diff, a section into its contents. Commands
-    apply to the item at point: <kbd>s</kbd> stages the current hunk when the
-    cursor is on a hunk, the file when it is on a file, the whole section when
-    it is on a heading. Visual selection applies an action to several rows at
-    once.
-  </p>
+    <h2>Installation</h2>
+    <p>Via homebrew:</p>
+    <pre
+        class="install"><code>brew install lyallcooper/magritte/magritte</code></pre>
+    <p>
+        Or download a binary from <a
+            href="https://github.com/lyallcooper/magritte/releases/">GitHub</a
+        >.
+    </p>
 
-  <div class="keys">
-    <div><span class="k"><kbd>j</kbd> / <kbd>k</kbd></span> Move down or up</div>
-    <div><span class="k"><kbd>c</kbd></span> Commit menu</div>
-    <div><span class="k"><kbd>Tab</kbd></span> Expand or collapse</div>
-    <div><span class="k"><kbd>b</kbd></span> Branch menu</div>
-    <div><span class="k"><kbd>s</kbd> / <kbd>u</kbd></span> Stage or unstage</div>
-    <div><span class="k"><kbd>p</kbd> / <kbd>F</kbd></span> Push or pull menu</div>
-    <div><span class="k"><kbd>x</kbd></span> Discard (confirmed)</div>
-    <div><span class="k"><kbd>l</kbd></span> Log menu</div>
-    <div><span class="k"><kbd>:</kbd></span> Search all commands</div>
-    <div><span class="k"><kbd>?</kbd></span> Commands and their keys</div>
-  </div>
+    <h2>Basic Usage</h2>
+    <p>After installation, launch Magritte from your terminal:</p>
 
-  <h2>If you know Magit</h2>
-  <p>
-    You already know Magritte. The default keymap follows
-    evil-collection-magit; a vanilla Emacs/Magit preset is one setting away.
-    Transient menus, act-at-point, section folding, and the safety
-    confirmations work the way Magit's do — where behavior differs, it is
-    documented. <a href="https://github.com/lyallcooper/magritte/blob/main/docs/dev/magit-parity.md">Magit parity</a>
-    lists what is supported and what is missing, feature by feature.
-  </p>
+    <pre
+        class="shell"><code><span class="dim"># Open the repo you're in</span>
+<span class="prompt">$ </span>magritte
 
-  <h2>Configuration</h2>
-  <p>
-    Themes, fonts, and the keymap preset live in the Settings screen
-    (<kbd>,</kbd>). Everything else — key remapping, custom commands, status
-    sections, background fetching, transient menu changes — is a TOML file that
-    reloads on save, with an optional per-repository overlay. See the
-    <a href="/docs/config/">configuration guide</a>.
-  </p>
+<span class="dim"># Or pass a repo to open</span>
+<span class="prompt">$ </span>magritte /dev/my-project</code></pre>
+    <p>
+        The main screen is the <em>status view</em>. It shows you the
+        information you'd see from running <code>git status</code>, such as
+        untracked, unstaged, and staged files. It also shows your stashes,
+        unpushed/unpulled changes, recent commits and <a
+            href="/docs/config/#status-sections">more</a
+        >.
+    </p>
+    <p>
+        Use <kbd>j</kbd> / <kbd>k</kbd> to move. Press <kbd>Tab</kbd> on a file name
+        in the status view to expand its diff. Stage and unstage changes using <kbd
+            >s</kbd
+        > and <kbd>u</kbd>. Open the commit menu with <kbd>c</kbd>.
+    </p>
+    <p class="callout">
+        <strong>Try it!</strong> Press <kbd>?</kbd> or click the <code>?</code> icon
+        in the bottom right to bring up the interactive, context-aware help menu.
+    </p>
+    <p>
+        Use <kbd>v</kbd> to enter the ever-useful multi-line visual selection mode.
+        Use it to act on multiple files at once. You can even use it to surgically
+        target specific lines within a diff hunk to act on.
+    </p>
+    <p>
+        The default keymap uses vim-like (emacs-evil) keybindings. If you prefer
+        traditional emacs-style, change the Keybindings to "Vanilla" from the
+        settings screen (accessible via <kbd>,</kbd>). You can also set the <code
+            >keymap_preset</code
+        > to <code>"vanilla"</code> in the <a href="/docs/config">config file</a
+        >.
+    </p>
 
-  <h2>Status</h2>
-  <p>Magritte is under active development. Current limitations:</p>
-  <ul>
-    <li>macOS on Apple silicon is the supported release target; Linux x86_64 builds are best effort.</li>
-    <li>Release builds are ad hoc signed, not notarized.</li>
-    <li>Requires <code>git</code> on your <code>PATH</code>; it refreshes on focus and after its own commands rather than watching the filesystem.</li>
-  </ul>
+    <h3>Basic keybindings, vim-style (default)</h3>
+    <div class="keys">
+        <div>
+            <span class="k"><kbd>j</kbd> / <kbd>k</kbd></span> Move down / up
+        </div>
+        <div><span class="k"><kbd>c</kbd></span> Commit menu</div>
+        <div><span class="k"><kbd>Tab</kbd></span> Expand / collapse</div>
+        <div><span class="k"><kbd>b</kbd></span> Branch menu</div>
+        <div>
+            <span class="k"><kbd>s</kbd> / <kbd>u</kbd></span> Stage / unstage
+        </div>
+        <div>
+            <span class="k"><kbd>p</kbd> / <kbd>F</kbd></span> Push / pull menu
+        </div>
+        <div>
+            <span class="k"><kbd>x</kbd></span> Discard (prompts for confirmation)
+        </div>
+        <div><span class="k"><kbd>l</kbd></span> Log menu</div>
+        <div><span class="k"><kbd>:</kbd></span> Search all commands</div>
+        <div><span class="k"><kbd>?</kbd></span> Help menu</div>
+    </div>
+
+    <h3>Basic keybindings, vanilla emacs-style</h3>
+    <div class="keys vanilla">
+        <div>
+            <span class="k"><kbd>ctrl-n</kbd> / <kbd>ctrl-p</kbd></span> Move down
+            / up
+        </div>
+        <div><span class="k"><kbd>c</kbd></span> Commit menu</div>
+        <div><span class="k"><kbd>Tab</kbd></span> Expand / collapse</div>
+        <div><span class="k"><kbd>b</kbd></span> Branch menu</div>
+        <div>
+            <span class="k"><kbd>s</kbd> / <kbd>u</kbd></span> Stage / unstage
+        </div>
+        <div>
+            <span class="k"><kbd>P</kbd> / <kbd>F</kbd></span> Push / pull menu
+        </div>
+        <div>
+            <span class="k"><kbd>k</kbd></span> Discard (prompts for confirmation)
+        </div>
+        <div><span class="k"><kbd>l</kbd></span> Log menu</div>
+        <div><span class="k"><kbd>alt-x</kbd></span> Search all commands</div>
+        <div><span class="k"><kbd>?</kbd> / <kbd>h</kbd></span> Help menu</div>
+    </div>
+
+    <h2>Transient menus</h2>
+    <p>
+        Magit and Magritte are both built upon keyboard-driven <i
+            >transient command menus</i
+        >, or transients for short. Transients guide you towards your goal by
+        showing you the available options and actions you can take.
+    </p>
+
+    <figure class="shot">
+        <Shot
+            name="tag"
+            width={730}
+            height={500}
+            alt="The tag transient menu open at the bottom of the status view, showing its argument switches (force, annotate) and actions (tag, release, delete) beside their keys"
+        />
+        <figcaption>
+            The tag transient <kbd>t</kbd>
+        </figcaption>
+    </figure>
+
+    <p>
+        Transients are customizable. See the relevant <a
+            href="/docs/config/#transients">docs section</a
+        >.
+    </p>
+
+    <h2>Configuration</h2>
+    <p>
+        You can configure essentials from the settings screen (accessible via <kbd
+            >,</kbd
+        >). More advanced settings and custom commands are configurable via the
+        <code>config.toml</code> config file. See the <a href="/docs/config/"
+            >configuration docs</a
+        > for more details.
+    </p>
+
+    <h2>Status</h2>
+    <p>Magritte is under active development. Current limitations:</p>
+    <ul>
+        <li>
+            macOS on Apple silicon is the supported release target; Linux x86_64
+            builds are best effort.
+        </li>
+        <li>Release builds are ad hoc signed, not notarized.</li>
+        <li>
+            Requires <code>git</code> on your <code>PATH</code>; it refreshes on
+            focus and after its own commands rather than watching the
+            filesystem.
+        </li>
+    </ul>
 </Base>
 
 <style>
-  .tagline {
-    margin: 0 0 1.25rem;
-    color: var(--muted);
-  }
-
-  .lede {
-    font-size: 1.05rem;
-    max-width: 40rem;
-  }
-
-  .install {
-    margin: 1.5rem 0;
-  }
-
-  /* The status-view screenshot, framed as the window it was captured from.
-     The offscreen capture omits the native traffic lights; the title bar
-     leaves their standard inset, so CSS dots restore them. */
-  .window {
-    position: relative;
-    container-type: inline-size;
-    margin: 2rem 0 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    overflow: hidden;
-    box-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.25);
-    line-height: 0;
-  }
-
-  .window img {
-    width: 100%;
-    height: auto;
-  }
-
-  /* Sized in cqw so the dots track the screenshot's title bar (33 logical px
-     tall at a natural width of 730) as the image scales. */
-  .dot {
-    position: absolute;
-    top: 1.44cqw;
-    width: 1.64cqw;
-    height: 1.64cqw;
-    border-radius: 50%;
-  }
-
-  .dot.red { left: 1.92cqw; background: #ec6a5e; }
-  .dot.yellow { left: 4.66cqw; background: #f4bf4f; }
-  .dot.green { left: 7.4cqw; background: #61c554; }
-
-  /* The mobile capture is 640 logical px wide (vs 730), so the title bar is
-     proportionally taller; rescale the dots to it. */
-  @media (max-width: 40rem) {
-    .dot {
-      top: 1.64cqw;
-      width: 1.88cqw;
-      height: 1.88cqw;
+    .tagline {
+        margin: 0 0 1.25rem;
+        color: var(--muted);
+        font-size: 1.25em;
     }
 
-    .dot.red { left: 2.19cqw; }
-    .dot.yellow { left: 5.31cqw; }
-    .dot.green { left: 8.44cqw; }
-  }
+    .lede {
+        font-size: 1.05em;
+        max-width: 40rem;
+    }
 
-  /* Key reference: two columns where they fit, one on narrow screens */
-  .keys {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-    column-gap: 3rem;
-    max-width: 42rem;
-    margin: 1rem 0;
-    font-size: 0.9rem;
-  }
+    .install {
+        margin: 1.5rem 0;
+    }
 
-  .keys > div {
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-    padding: 0.35rem 0;
-    border-bottom: 1px solid var(--border);
-  }
+    /* Key reference: two columns where they fit, one on narrow screens */
+    .keys {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+        column-gap: 3rem;
+        max-width: 42rem;
+        margin: 1rem 0;
+        font-size: 1rem;
+    }
 
-  .keys .k {
-    flex: 0 0 4.5rem;
-    white-space: nowrap;
-  }
+    .keys > div {
+        display: flex;
+        gap: 0.6rem;
+        align-items: baseline;
+        padding: 0.35rem 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .keys .k {
+        flex: 0 0 4.5rem;
+        white-space: nowrap;
+    }
+
+    /* Vanilla's chords (ctrl-n / ctrl-p) need a wider key column. */
+    .keys.vanilla .k {
+        flex-basis: 8.5rem;
+    }
+
+    .shot {
+        margin: 2rem 0;
+    }
+
+    /* The frame is a component (its styles are scoped there); reach in to
+       drop its margin inside a captioned figure. */
+    .shot :global(.window) {
+        margin: 0;
+    }
+
+    .shot figcaption {
+        margin-top: 0.6rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.95rem;
+        font-style: italic;
+
+        kbd,
+        code {
+            font-style: normal;
+        }
+    }
+
+    /* Hand-written shell blocks: prompts and comments recede, commands read.
+       The prompt is unselectable so copied commands don't drag a `$` along. */
+    .shell .dim {
+        color: var(--muted);
+    }
+
+    .shell .prompt {
+        color: var(--muted);
+        user-select: none;
+    }
+
+    .callout {
+        background: var(--surface);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 6px 6px 0;
+        padding: 0.6rem 1rem;
+        margin: 1.25rem 0;
+    }
+
+    /* code/kbd chips share the callout's surface color; sit them on the page
+       background instead so they stay visible. */
+    .callout code,
+    .callout kbd {
+        background: var(--border);
+    }
 </style>
