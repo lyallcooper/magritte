@@ -258,6 +258,27 @@ async fn run_command(
                 Ok(Some(format!("shot {rest}")))
             }
         }
+        // Like `shot`, but keeps the frame at device pixels (2x on Retina)
+        // instead of downscaling to points — for high-resolution captures such
+        // as website screenshots. Image pixels do NOT match click coordinates.
+        "shot-raw" => {
+            if rest.is_empty() {
+                return Err("shot-raw needs a path".into());
+            }
+            #[cfg(feature = "debug-capture")]
+            {
+                force_draw(handle, cx);
+                let img = cx
+                    .update_window(handle, |_, window, _| window.render_to_image())
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                let (dw, dh) = (img.width(), img.height());
+                encode_png_downscaled(img.into_raw(), dw, dh, dw, dh, rest)?;
+                Ok(Some(format!("shot-raw {rest}")))
+            }
+            #[cfg(not(feature = "debug-capture"))]
+            Err("shot-raw needs the debug-capture feature (scripts/dbg.sh up)".into())
+        }
         other => Err(format!("unknown command: {other}")),
     }
 }

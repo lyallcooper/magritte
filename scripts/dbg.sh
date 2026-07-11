@@ -8,6 +8,7 @@
 #   scripts/dbg.sh key <keystroke>    e.g. key j, key shift-g, key tab, key escape, key ,
 #   scripts/dbg.sh type <text>        type literal text into the focused input
 #   scripts/dbg.sh shot <path>        screenshot the window (logical-sized: image px == click coords)
+#   scripts/dbg.sh shot-raw <path>    screenshot at device pixels (Retina 2x; px != click coords)
 #   scripts/dbg.sh targets            list clickable element ids and their center points
 #   scripts/dbg.sh click-id <id>      click a clickable element by id (no coordinate guessing)
 #   scripts/dbg.sh click <x> <y>      click at window-relative point (points, matches shot pixels)
@@ -96,7 +97,7 @@ case "$cmd" in
     if [ -f "$DIR/done" ]; then cat "$DIR/done"; rm -f "$DIR/done"; else echo "(timed out waiting for response)"; fi
     ;;
 
-  key|type|shot|sleep|click|dblclick|rclick|click-id|shift-click|shift-click-id|move|drag|targets)
+  key|type|shot|shot-raw|sleep|click|dblclick|rclick|click-id|shift-click|shift-click-id|move|drag|targets)
     exec "$0" send "$cmd $*"
     ;;
 
