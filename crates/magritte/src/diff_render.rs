@@ -153,16 +153,19 @@ impl StatusView {
         let message = move |input: gpui::Div| {
             let wrapped = input
                 .relative()
-                // Trim the Input's default padding: a hair of top inset (so
-                // the summary doesn't touch the box edge), none below the last
-                // line, and no left padding at all — the code-editor Input
-                // reserves a 10px line-number right margin even with numbers
-                // off, and that alone reads as the app's 8px inset (any
-                // padding stacks on top of it as a gutter).
+                // Trim the Input's default padding: a hair of top inset
+                // only while the box sits at its scroll top (the Input's
+                // padding is a viewport inset — a dead band scrolled text
+                // clips under — so it drops to zero once scrolled and content
+                // clips at the border instead), none below the last line, and
+                // no left padding at all — the code-editor Input reserves a
+                // 10px line-number right margin even with numbers off, and
+                // that alone reads as the app's 8px inset (any padding stacks
+                // on top of it as a gutter).
                 .child(
                     Input::new(&ed.state)
                         .h_full()
-                        .pt(px(3.0))
+                        .pt(px(if ed.scroll_at_top { 3.0 } else { 0.0 }))
                         .pb_0()
                         .pl(px(0.0))
                         .pr(px(8.0))

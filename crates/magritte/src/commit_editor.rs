@@ -65,8 +65,14 @@ pub(crate) struct CommitEditor {
     /// [`StatusView::commit_restore_message`]) — repeated restores cycle from
     /// here. `None` until the first restore in this editor.
     pub(crate) restore_ring_index: Option<usize>,
-    /// Kept alive so the PressEnter subscription stays active.
-    pub(crate) _sub: Subscription,
+    /// The message box's viewport is at its scroll top (offset 0). The box
+    /// gets a small top inset only in this state: the gap reads as breathing
+    /// room before the first line, but scrolled content clips at the border
+    /// instead of under a dead band. Cached so the scroll observer can notify
+    /// only when top-ness flips.
+    pub(crate) scroll_at_top: bool,
+    /// Kept alive so the PressEnter and scroll subscriptions stay active.
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,6 +592,18 @@ impl StatusView {
                 // and a long summary reads as the single line it will be.
                 .soft_wrap(false)
         });
+        // Track the box's scroll top-ness (the top inset applies only there).
+        // InputState notifies itself on every scroll, wheel included; only a
+        // flip re-renders us.
+        let observe = cx.observe(&state, |this, state, cx| {
+            let at_top = state.read(cx).scroll_offset().y >= gpui::px(-1.0);
+            if this.editor().is_some_and(|e| e.scroll_at_top != at_top) {
+                if let Some(ed) = this.editor_mut() {
+                    ed.scroll_at_top = at_top;
+                }
+                cx.notify();
+            }
+        });
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -654,6 +672,7 @@ impl StatusView {
             diff_expected,
             diff_loading: diff_expected,
             mouse_selecting: false,
+            scroll_at_top: true,
             restore_ring_index: None,
             initial: String::new(),
             confirming_cancel: false,
@@ -672,7 +691,7 @@ impl StatusView {
             vim_error: None,
             vim_bell: false,
             vim_hints: false,
-            _sub: sub,
+            _subs: vec![sub, observe],
         });
         // Stamp this editor instance so async loads started for it can't write
         // into a different editor opened after it was cancelled.
