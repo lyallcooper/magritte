@@ -2214,6 +2214,7 @@ pub(crate) const TRANSIENT_IDS: &[&str] = &[
     "revert",
     "bisect",
     "patch",
+    "run",
 ];
 
 /// The command id for a palette title — built-in or user `[[command]]`. Shown in
@@ -2378,6 +2379,9 @@ pub(crate) fn transient_for(id: &str, style: transient::KeymapStyle) -> Option<T
         // menu carries the same injected suffixes either way.
         "bisect" => transient::bisect_transient(false),
         "patch" => transient::patch_transient(),
+        // Key hints resolve against the no-file-at-point form; the at-point
+        // rows carry the same injected suffixes either way.
+        "run" => transient::run_transient(None),
         _ => return None,
     })
 }

@@ -224,6 +224,7 @@ option, move an existing entry, or remove one. The customizable menu ids:
 | `log` | `diff` | `push` |
 | `pull` | `fetch` | `cherry-pick` |
 | `revert` | `bisect` | `patch` |
+| `run` | | |
 
 Key mappings take the form of `"key" = "command-id"`. An extended form with
 options is also available:
