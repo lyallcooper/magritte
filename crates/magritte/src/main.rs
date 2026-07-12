@@ -138,7 +138,7 @@ type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_LATEST_RELEASE_API: &str =
-    "https://api.github.com/repos/lyallcooper/homebrew-magritte/releases/latest";
+    "https://api.github.com/repos/lyallcooper/magritte/releases/latest";
 
 /// Whether the rebase-todo editor is composing a *new* interactive rebase or
 /// editing the remaining plan of one already in progress.
