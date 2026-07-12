@@ -8,8 +8,12 @@ between the markdown files are rewritten to site routes at build time
 ```sh
 npm install
 npm run dev        # local dev server with live reload (also on docs/ edits)
-npm run build      # static output in dist/
+npm run build      # static output in dist/ + internal link check
 ```
+
+`npm run build` finishes by validating every internal link and anchor in the
+built output (`scripts/check-links.mjs`), so a renamed heading or moved asset
+fails the build -- and the Cloudflare deploy -- instead of shipping.
 
 ## Deploying (Cloudflare Pages)
 
