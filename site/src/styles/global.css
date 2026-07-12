@@ -278,3 +278,16 @@ hr {
     gap: 0.9rem;
   }
 }
+
+.callout {
+    background: var(--surface);
+    border-left: 3px solid var(--muted);
+    border-radius: 0 6px 6px 0;
+    padding: 0.6rem 1rem;
+    margin: 1.25rem 0;
+}
+
+.callout code,
+.callout kbd {
+    background: var(--border);
+}

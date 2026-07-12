@@ -6,6 +6,7 @@ import Shot from "../components/Shot.astro";
 <Base
     title="Magritte — Ceci n'est pas Magit."
     description="Magritte is a fast, keyboard-first Git client inspired by Magit: the status-centered workflow as a standalone macOS app, no Emacs required."
+    tocDepth={2}
 >
     <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
 
@@ -47,6 +48,11 @@ import Shot from "../components/Shot.astro";
 
 <span class="dim"># Or pass a repo to open</span>
 <span class="prompt">$ </span>magritte /dev/my-project</code></pre>
+    <p>
+        Magritte starts in the background and returns your shell. Use
+        <code>magritte --foreground</code> to keep logs attached to the
+        terminal.
+    </p>
     <p>
         The main screen is the <em>status view</em>. It shows you the
         information you'd see from running <code>git status</code>, such as
@@ -146,7 +152,7 @@ import Shot from "../components/Shot.astro";
 
     <p>
         Transients are customizable. See the relevant <a
-            href="/docs/config/#transients">docs section</a
+            href="/docs/config/#transients-menu-keys">docs section</a
         >.
     </p>
 
@@ -168,6 +174,10 @@ import Shot from "../components/Shot.astro";
             builds are best effort.
         </li>
         <li>Release builds are ad hoc signed, not notarized.</li>
+        <li>
+            Paths that are not valid UTF-8 may display with replacement
+            characters.
+        </li>
         <li>
             Requires <code>git</code> on your <code>PATH</code>; it refreshes on
             focus and after its own commands rather than watching the
@@ -252,20 +262,5 @@ import Shot from "../components/Shot.astro";
     .shell .prompt {
         color: var(--muted);
         user-select: none;
-    }
-
-    .callout {
-        background: var(--surface);
-        border-left: 3px solid var(--muted);
-        border-radius: 0 6px 6px 0;
-        padding: 0.6rem 1rem;
-        margin: 1.25rem 0;
-    }
-
-    /* code/kbd chips share the callout's surface color; sit them on the page
-       background instead so they stay visible. */
-    .callout code,
-    .callout kbd {
-        background: var(--border);
     }
 </style>
