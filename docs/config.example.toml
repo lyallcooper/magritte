@@ -72,6 +72,7 @@
 # title = "Sync {branch}"
 # run = "git pull --rebase && git push"
 # refresh = true
+# confirm = false # Never ask; unset asks when the command looks destructive
 # section = "My commands"
 
 # [[command]]
@@ -79,6 +80,7 @@
 # title = "Run tests"
 # run = "cargo test"
 # refresh = false
+# confirm = true # Always ask before running
 # section = "My commands"
 
 # Available command placeholders:

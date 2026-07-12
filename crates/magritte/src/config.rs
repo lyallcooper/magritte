@@ -281,6 +281,12 @@ pub struct CustomCommand {
     /// Re-read status after running (default true).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub refresh: bool,
+    /// Whether to ask before running. Unset uses the destructive-word scan
+    /// (`clean`, `--hard`, `--force`, `--force-with-lease`); `false` runs a
+    /// trusted command without asking, `true` forces the prompt on commands
+    /// the scan can't see (e.g. a script that deletes things).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<bool>,
     /// Which `?`-help group to list this command under when it's bound to a key
     /// (the section title; created if it doesn't exist). Defaults to "Commands".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1149,6 +1155,7 @@ mod tests {
                 title: _,
                 run: _,
                 refresh: _,
+                confirm: _,
                 section: _,
             } = command;
         }
@@ -1160,7 +1167,7 @@ mod tests {
                     .keys()
                     .map(String::as_str)
                     .collect::<std::collections::BTreeSet<_>>(),
-                ["id", "refresh", "run", "section", "title"]
+                ["confirm", "id", "refresh", "run", "section", "title"]
                     .into_iter()
                     .collect(),
                 "every command example should contain every CustomCommand field"
@@ -1646,6 +1653,7 @@ run = "git fetch && git push"
         // But a config that *has* commands still serializes (and round-trips).
         let mut cfg = Config::default();
         cfg.commands.push(CustomCommand {
+            confirm: None,
             id: "amend".into(),
             title: "Amend".into(),
             run: "commit --amend".into(),

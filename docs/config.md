@@ -604,6 +604,9 @@ their `section`, which defaults to **Commands**.
 Command output appears in a notification. Failures remain until dismissed, and
 long output points to the <kbd>$</kbd> command log for the full text. Commands containing
 `clean`, `--hard`, `--force`, or `--force-with-lease` ask for confirmation.
+Set `confirm = false` on a command you trust to skip that prompt, or
+`confirm = true` to always ask — for a destructive command those words can't
+reveal, such as a script.
 
 An empty `run`, duplicate id, or id that matches a built-in produces a warning.
 Use the <kbd>!</kbd> menu for a command you do not need to save.

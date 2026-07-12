@@ -486,8 +486,8 @@ impl StatusView {
     }
 
     /// Run a user `[[command]]`: substitute its placeholders against the current
-    /// selection, confirm if it looks destructive, then run it as a shell command
-    /// on the background path.
+    /// selection, confirm if it looks destructive (or the command's `confirm`
+    /// setting says so), then run it as a shell command on the background path.
     pub(crate) fn run_custom_command(
         &mut self,
         cmd: config::CustomCommand,
@@ -501,7 +501,10 @@ impl StatusView {
         if command.trim().is_empty() {
             return;
         }
-        if command_is_destructive(&command) {
+        if cmd
+            .confirm
+            .unwrap_or_else(|| command_is_destructive(&command))
+        {
             self.confirm = Some((
                 format!("Run `{command}`?"),
                 Confirm::CustomShell {

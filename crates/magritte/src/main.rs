@@ -1808,6 +1808,7 @@ mod tests {
     fn custom_command_is_a_valid_bind_target() {
         let mut config = config::Config::default();
         config.commands.push(config::CustomCommand {
+            confirm: None,
             id: "user.wip".into(),
             title: "WIP".into(),
             run: "git commit -a -m WIP".into(),
@@ -1867,6 +1868,7 @@ mod tests {
     fn command_keys_for_user_command() {
         let mut config = config::Config::default();
         config.commands.push(config::CustomCommand {
+            confirm: None,
             id: "user.wip".into(),
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
@@ -1900,6 +1902,7 @@ mod tests {
     fn command_keys_skips_shadowed_injection() {
         let mut config = config::Config::default();
         config.commands.push(config::CustomCommand {
+            confirm: None,
             id: "user.wip".into(),
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
