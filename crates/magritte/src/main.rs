@@ -1813,7 +1813,6 @@ mod tests {
             title: "WIP".into(),
             run: "git commit -a -m WIP".into(),
             refresh: true,
-            section: None,
         });
         config.keymap.insert("X".into(), "user.wip".into());
         config.keymap.insert("Y".into(), "user.nope".into()); // unknown id
@@ -1873,7 +1872,6 @@ mod tests {
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
             refresh: true,
-            section: None,
         });
         // Injected into the commit transient at a free key → reached via `c W`.
         config
@@ -1907,7 +1905,6 @@ mod tests {
             title: "WIP commit".into(),
             run: "git commit -m WIP".into(),
             refresh: true,
-            section: None,
         });
         config
             .transient

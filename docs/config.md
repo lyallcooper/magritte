@@ -569,7 +569,6 @@ refresh = true                  # refresh afterward. This is the default
 id = "user.wip"
 title = "WIP commit"
 run = "git commit -a -m WIP"
-section = "My commands"         # group in the ? menu when bound
 confirm = false                 # never ask (unset: ask when it looks destructive)
 ```
 
@@ -599,8 +598,8 @@ Titles can also contain placeholders. A title such as
 If a title placeholder cannot be resolved, it remains visible as written.
 
 Bind a custom command by id, for example `"X" = "user.wip"`, or run it by title
-from the command palette. Bound commands also appear in the <kbd>?</kbd> menu under
-their `section`, which defaults to **Commands**.
+from the command palette. Bound commands also appear in the <kbd>?</kbd> menu's
+Commands group.
 
 Command output appears in a notification. Failures remain until dismissed, and
 long output points to the <kbd>$</kbd> command log for the full text. Commands containing

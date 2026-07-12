@@ -71,9 +71,8 @@
 # id = "user.sync"
 # title = "Sync {branch}"
 # run = "git pull --rebase && git push"
-# refresh = true
+# refresh = true  # Refresh screen after running; defaults to true
 # confirm = false # Never ask; unset asks when the command looks destructive
-# section = "My commands"
 
 # [[command]]
 # id = "user.test"
@@ -81,7 +80,6 @@
 # run = "cargo test"
 # refresh = false
 # confirm = true # Always ask before running
-# section = "My commands"
 
 # Available command placeholders:
 # {file}, {commit}, {branch}, {upstream}, {push-remote}, {default-branch},

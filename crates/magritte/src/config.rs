@@ -287,10 +287,6 @@ pub struct CustomCommand {
     /// the scan can't see (e.g. a script that deletes things).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm: Option<bool>,
-    /// Which `?`-help group to list this command under when it's bound to a key
-    /// (the section title; created if it doesn't exist). Defaults to "Commands".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
 }
 
 /// Where a `[transient.<id>]` entry lands in the menu. `before`/`after` place
@@ -1156,7 +1152,6 @@ mod tests {
                 run: _,
                 refresh: _,
                 confirm: _,
-                section: _,
             } = command;
         }
         for command in raw["command"].as_array().unwrap() {
@@ -1167,7 +1162,7 @@ mod tests {
                     .keys()
                     .map(String::as_str)
                     .collect::<std::collections::BTreeSet<_>>(),
-                ["confirm", "id", "refresh", "run", "section", "title"]
+                ["confirm", "id", "refresh", "run", "title"]
                     .into_iter()
                     .collect(),
                 "every command example should contain every CustomCommand field"
@@ -1658,7 +1653,6 @@ run = "git fetch && git push"
             title: "Amend".into(),
             run: "commit --amend".into(),
             refresh: true,
-            section: None,
         });
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert!(text.contains("[[command]]"), "non-empty commands serialize");

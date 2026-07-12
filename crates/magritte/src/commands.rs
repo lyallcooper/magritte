@@ -2442,7 +2442,7 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
         ],
     };
     // User `[[command]]`s that are bound to a key show too, in their configured
-    // `section` (default "Commands"), creating that group if it doesn't exist.
+    // the "Commands" group, created when the first bound command needs it.
     for c in &config.commands {
         let Some(keys) = current_key(keymap, &c.id, None) else {
             continue; // unbound → palette-only, like keyless built-ins
@@ -2452,11 +2452,10 @@ pub(crate) fn dispatch_menu(keymap: &KeyBindings, config: &config::Config) -> Tr
             keys,
             description: c.title.clone(),
         });
-        let section = c.section.as_deref().unwrap_or("Commands");
-        match menu.groups.iter_mut().find(|g| group_text(g) == section) {
+        match menu.groups.iter_mut().find(|g| group_text(g) == "Commands") {
             Some(g) => g.suffixes.push(info),
             None => menu.groups.push(Group {
-                title: transient::plain_title(section),
+                title: transient::plain_title("Commands"),
                 suffixes: vec![info],
             }),
         }
