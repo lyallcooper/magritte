@@ -9,8 +9,7 @@ Emacs required.
 
 ## Develop
 
-The workspace uses Rust 1.96, pinned in [`.mise.toml`](.mise.toml). Magritte
-invokes the `git` executable rather than linking to libgit2.
+The workspace uses Rust 1.96, pinned in [`.mise.toml`](.mise.toml).
 
 ```sh
 mise install                 # optional, uses the pinned toolchain
