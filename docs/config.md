@@ -570,6 +570,7 @@ id = "user.wip"
 title = "WIP commit"
 run = "git commit -a -m WIP"
 section = "My commands"         # group in the ? menu when bound
+confirm = false                 # never ask (unset: ask when it looks destructive)
 ```
 
 `run` executes through `sh -c` in the repository root. Shell operators, pipes,
