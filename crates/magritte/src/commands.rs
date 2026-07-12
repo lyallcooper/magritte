@@ -2196,8 +2196,24 @@ pub(crate) fn command_is_destructive(command: &str) -> bool {
 /// The command ids whose `?`/key opens a transient — the valid `[transient.<id>]`
 /// sections for suffix injection.
 pub(crate) const TRANSIENT_IDS: &[&str] = &[
-    "commit", "branch", "tag", "remote", "stash", "reset", "rebase", "merge", "ignore", "log",
-    "diff", "push", "pull", "fetch",
+    "commit",
+    "branch",
+    "tag",
+    "remote",
+    "stash",
+    "reset",
+    "rebase",
+    "merge",
+    "ignore",
+    "log",
+    "diff",
+    "push",
+    "pull",
+    "fetch",
+    "cherry-pick",
+    "revert",
+    "bisect",
+    "patch",
 ];
 
 /// The command id for a palette title — built-in or user `[[command]]`. Shown in
@@ -2356,6 +2372,12 @@ pub(crate) fn transient_for(id: &str, style: transient::KeymapStyle) -> Option<T
         "push" => transient::push_transient(&rt),
         "pull" => transient::pull_transient(&rt),
         "fetch" => transient::fetch_transient(&rt),
+        "cherry-pick" => transient::cherry_pick_transient(),
+        "revert" => transient::revert_transient(style),
+        // Key hints resolve against the not-in-progress form; a mid-bisect
+        // menu carries the same injected suffixes either way.
+        "bisect" => transient::bisect_transient(false),
+        "patch" => transient::patch_transient(),
         _ => return None,
     })
 }

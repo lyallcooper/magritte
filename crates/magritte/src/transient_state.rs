@@ -894,7 +894,16 @@ impl StatusView {
         targets: RemoteTargets,
         cx: &mut Context<Self>,
     ) {
-        if let Some(entries) = self.config.transient.get(id) {
+        // Gate injection on the documented id list, so config validation and
+        // behavior agree: an id the loader warned about ("not a transient" —
+        // the run prompt, the jump menu, the configure sub-menus) is also not
+        // silently customized here.
+        if let Some(entries) = self
+            .config
+            .transient
+            .get(id)
+            .filter(|_| crate::commands::TRANSIENT_IDS.contains(&id))
+        {
             // An action is labeled with its command's title (built-in or user,
             // placeholders expanded), falling back to the raw id if it names
             // nothing.
