@@ -34,7 +34,7 @@ downloads from them.
 4. Create and push the tag:
 
    ```sh
-   git tag v0.8.0
+   git tag -a v0.8.0 -m "Magritte v0.8.0"
    git push origin v0.8.0
    ```
 
