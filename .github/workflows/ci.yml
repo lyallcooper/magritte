@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release -p magritte
+
+  linux:
+    name: Linux (best effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install GPUI Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake curl gcc g++ git jq lld llvm make \
+            libasound2-dev libfontconfig-dev libglib2.0-dev libssl-dev \
+            libva-dev libvulkan1 libwayland-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev pipewire xdg-desktop-portal
+      - uses: jdx/mise-action@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo build --release -p magritte
