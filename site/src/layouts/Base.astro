@@ -6,10 +6,51 @@ import "../styles/global.css";
 interface Props {
     title: string;
     description: string;
-    wide?: boolean;
+    /// How deep the "On this page" sidebar goes: 2 lists h2s only, 3 nests
+    /// each h2's h3s beneath it (the default).
+    tocDepth?: 2 | 3;
 }
 
-const { title, description, wide = false } = Astro.props;
+const { title, description, tocDepth = 3 } = Astro.props;
+
+// The "On this page" sidebar is derived from the rendered content, so it
+// works for markdown pages (whose headings already carry ids) and
+// hand-written pages alike (ids are injected, GitHub-slug style). h2s with
+// their h3s, shown when there's enough structure to navigate.
+const html = await Astro.slots.render("default");
+type Heading = { depth: number; id: string; html: string };
+const headings: Heading[] = [];
+const slugify = (text: string) =>
+    text
+        .toLowerCase()
+        .replace(/&[a-z]+;|&#\d+;/g, "")
+        .replace(/[^a-z0-9 -]/g, "")
+        .trim()
+        .replace(/\s+/g, "-");
+const content = html.replace(
+    /<h([23])([^>]*)>([\s\S]*?)<\/h\1>/g,
+    (_m, depth, attrs, inner) => {
+        const text = inner.replace(/<[^>]*>/g, "").trim();
+        let id = (attrs.match(/id="([^"]+)"/) ?? [])[1];
+        if (!id) {
+            id = slugify(text);
+            attrs += ` id="${id}"`;
+        }
+        headings.push({ depth: Number(depth), id, html: text });
+        return `<h${depth}${attrs}>${inner}</h${depth}>`;
+    },
+);
+// Group each h2 with the h3s that follow it (a leading orphan h3 is skipped).
+type TocEntry = { id: string; html: string; children: Heading[] };
+const toc: TocEntry[] = [];
+for (const h of headings) {
+    if (h.depth === 2) {
+        toc.push({ id: h.id, html: h.html, children: [] });
+    } else if (toc.length > 0 && h.depth <= tocDepth) {
+        toc[toc.length - 1].children.push(h);
+    }
+}
+const showToc = toc.length > 1;
 ---
 
 <!doctype html>
@@ -24,7 +65,7 @@ const { title, description, wide = false } = Astro.props;
     </head>
     <body>
         <header class="site-header">
-            <div class:list={["container", { wide }]}>
+            <div class:list={["container", { "with-toc": showToc }]}>
                 <a class="wordmark" href="/">Magritte</a>
                 <nav>
                     <a href="/docs/config/">Configuration</a>
@@ -49,16 +90,104 @@ const { title, description, wide = false } = Astro.props;
             </div>
         </header>
         <main>
-            <div class:list={["container", { wide }]}>
-                <slot />
+            <div class:list={["container", "page", { "with-toc": showToc }]}>
+                {
+                    showToc && (
+                        <aside>
+                            <nav aria-label="On this page">
+                                <p class="toc-title">On this page</p>
+                                <ul>
+                                    {toc.map((entry) => (
+                                        <li>
+                                            <a
+                                                href={`#${entry.id}`}
+                                                set:html={entry.html}
+                                            />
+                                            {entry.children.length > 0 && (
+                                                <ul>
+                                                    {entry.children.map((c) => (
+                                                        <li>
+                                                            <a
+                                                                href={`#${c.id}`}
+                                                                set:html={
+                                                                    c.html
+                                                                }
+                                                            />
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </nav>
+                        </aside>
+                    )
+                }
+                <article set:html={content} />
             </div>
         </main>
     </body>
 </html>
 
 <style>
-    .container.wide {
+    /* With a sidebar, the container widens to hold it on the left; the
+       content column keeps the plain container's measure. */
+    .container.with-toc {
         max-width: 62rem;
+    }
+
+    .page.with-toc {
+        display: grid;
+        grid-template-columns: 12.5rem minmax(0, 46rem);
+        gap: 3rem;
+        justify-content: space-between;
+    }
+
+    aside nav {
+        position: sticky;
+        top: 1.5rem;
+        font-size: 0.95rem;
+        line-height: 1.4;
+    }
+
+    .toc-title {
+        margin: 0 0 0.5rem;
+        font-weight: 600;
+        color: var(--muted);
+    }
+
+    aside ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    aside ul ul {
+        padding-left: 0.9rem;
+    }
+
+    aside li {
+        margin: 0.35rem 0;
+    }
+
+    aside a {
+        color: var(--fg);
+    }
+
+    aside a:hover {
+        color: var(--accent);
+        text-decoration: none;
+    }
+
+    @media (max-width: 62rem) {
+        .page.with-toc {
+            display: block;
+        }
+
+        aside {
+            display: none;
+        }
     }
 
     /* Sit the icon on the nav text's baseline. */
