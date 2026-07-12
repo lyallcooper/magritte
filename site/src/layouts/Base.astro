@@ -181,6 +181,12 @@ const showToc = toc.length > 1;
     }
 
     @media (max-width: 62rem) {
+        /* No sidebar: back to the plain container's measure, so text lines
+           stay readable instead of stretching toward the old grid width. */
+        .container.with-toc {
+            max-width: 46rem;
+        }
+
         .page.with-toc {
             display: block;
         }
