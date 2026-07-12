@@ -5,11 +5,7 @@
 A fast, keyboard-first git client in the spirit of [Magit](https://magit.vc/)—no
 Emacs required.
 
-<p align="center">
-  <a href="https://magritte.lyall.co"><b>magritte.lyall.co</b></a>
-  <br/>
-  Installation &middot; Usage &middot; Configuration
-</p>
+### See [magritte.lyall.co](https://magritte.lyall.co) for installation, usage, and configuration
 
 ## Develop
 
