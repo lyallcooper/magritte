@@ -186,6 +186,26 @@ const showToc = toc.length > 1;
                 <article set:html={content} />
             </div>
         </main>
+        <script>
+            // Progressive enhancement: re-set prose with justif's
+            // Knuth-Plass justification (TeX hyphenation, optical margins,
+            // microtypography). It re-lays out on resize and font loads and
+            // keeps copied text clean; without JS the CSS fallback
+            // (justify + hyphens + text-wrap) applies.
+            import { justify } from "justif";
+            import { hyphenateEnUS } from "justif/hyphenate/en-us";
+
+            justify(document.querySelectorAll("article p, article li"), {
+                hyphenate: hyphenateEnUS,
+                // Skips are silent by design; surface them while developing
+                // (a style tweak can otherwise quietly demote paragraphs to
+                // native justification).
+                ...(import.meta.env.DEV && {
+                    onSkip: (el: Element, reason: string) =>
+                        console.warn("justif skipped:", reason, el),
+                }),
+            });
+        </script>
     </body>
 </html>
 
