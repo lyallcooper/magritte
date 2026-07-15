@@ -1,0 +1,5 @@
+# Cloudflare Pages custom headers. The example config is prerendered as a
+# static .toml file, which Pages would otherwise serve as application/toml
+# (a download); text/plain makes browsers display it.
+/docs/config.example.toml
+  Content-Type: text/plain; charset=utf-8
