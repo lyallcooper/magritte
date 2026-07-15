@@ -31,8 +31,37 @@ import Shot from "../components/Shot.astro";
 
     <h2>Installation</h2>
     <p>Via homebrew:</p>
-    <pre
-        class="install"><code>brew install lyallcooper/magritte/magritte</code></pre>
+    <div class="copyable">
+        <pre
+            class="shell"><code><span class="prompt">$ </span>brew install lyallcooper/magritte/magritte</code></pre>
+        <button class="copy" type="button" aria-label="Copy command">
+            <svg
+                class="icon-copy"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                ><rect x="9" y="9" width="13" height="13" rx="2" ry="2"
+                ></rect><path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                ></path></svg
+            >
+            <svg
+                class="icon-check"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline
+                ></svg
+            >
+        </button>
+    </div>
     <p>
         Or download a binary from <a
             href="https://github.com/lyallcooper/magritte/releases/">GitHub</a
@@ -193,10 +222,6 @@ import Shot from "../components/Shot.astro";
         max-width: 40rem;
     }
 
-    .install {
-        margin: 1.5rem 0;
-    }
-
     /* Key reference: two columns where they fit, one on narrow screens */
     .keys {
         display: grid;
@@ -259,4 +284,64 @@ import Shot from "../components/Shot.astro";
         user-select: none;
     }
 
+    .copyable {
+        position: relative;
+    }
+
+    .copyable .copy {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        right: 0.75rem;
+        display: flex;
+        align-items: center;
+        color: var(--muted);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.3rem;
+        cursor: pointer;
+    }
+
+    .copyable .copy svg {
+        width: 0.9rem;
+        height: 0.9rem;
+    }
+
+    .copyable .copy:hover {
+        color: var(--fg);
+        border-color: var(--muted);
+    }
+
+    .copyable .copy .icon-check,
+    .copyable .copy.copied .icon-copy {
+        display: none;
+    }
+
+    .copyable .copy.copied .icon-check {
+        display: block;
+        color: var(--green);
+    }
+
+    @media (max-width: 40rem) {
+        .copyable .copy {
+            display: none;
+        }
+    }
 </style>
+
+<script>
+    for (const button of document.querySelectorAll(".copyable .copy")) {
+        button.addEventListener("click", async () => {
+            const code = button
+                .closest(".copyable")
+                ?.querySelector("code")
+                ?.cloneNode(true) as HTMLElement | undefined;
+            if (!code) return;
+            code.querySelectorAll(".prompt, .dim").forEach((el) => el.remove());
+            await navigator.clipboard.writeText(code.textContent?.trim() ?? "");
+            button.classList.add("copied");
+            setTimeout(() => button.classList.remove("copied"), 1500);
+        });
+    }
+</script>
