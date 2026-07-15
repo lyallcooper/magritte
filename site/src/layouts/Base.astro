@@ -63,9 +63,9 @@ const showToc = toc.length > 1;
         <link rel="icon" href="/favicon.png" type="image/png" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     </head>
-    <body>
+    <body id="top">
         <header class="site-header">
-            <div class:list={["container", { "with-toc": showToc }]}>
+            <div class="container">
                 <a class="wordmark" href="/">Magritte</a>
                 <nav>
                     <a href="/docs/config/">Configuration</a>
@@ -94,8 +94,67 @@ const showToc = toc.length > 1;
                 {
                     showToc && (
                         <aside>
+                            <script is:inline>
+                                // Runs before the sidebar's content parses, so
+                                // it can never flash before the checks below.
+                                // The sidebar is exactly as wide as its text:
+                                // hide it until the webfont settles (the swap
+                                // would shift it), then show it iff it fits
+                                // the margin beside the centered column.
+                                (() => {
+                                    const aside =
+                                        document.currentScript.parentElement;
+                                    const fit = () =>
+                                        aside.classList.toggle(
+                                            "clipped",
+                                            aside.getBoundingClientRect().left <
+                                                12,
+                                        );
+                                    if (
+                                        document.fonts &&
+                                        document.fonts.status !== "loaded"
+                                    ) {
+                                        aside.style.visibility = "hidden";
+                                        Promise.race([
+                                            document.fonts.ready,
+                                            new Promise((r) =>
+                                                setTimeout(r, 2000),
+                                            ),
+                                        ]).then(() => {
+                                            fit();
+                                            aside.style.visibility = "";
+                                        });
+                                    } else {
+                                        addEventListener(
+                                            "DOMContentLoaded",
+                                            fit,
+                                        );
+                                    }
+                                    addEventListener("resize", fit);
+                                })();
+                            </script>
                             <nav aria-label="On this page">
-                                <p class="toc-title">On this page</p>
+                                <p class="toc-title">
+                                    {/* No title="Back to top" here: Fanboy's
+                                        Annoyance List hides any anchor with
+                                        that exact attribute. */}
+                                    <a href="#top" aria-label="On this page — return to top">
+                                        On this page
+                                        <span class="top-arrow" aria-hidden="true">
+                                            <svg
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                stroke-width="2.5"
+                                                stroke-linecap="round"
+                                                stroke-linejoin="round"
+                                                ><path d="M12 22V4"></path><polyline
+                                                    points="5 11 12 4 19 11"
+                                                ></polyline></svg
+                                            >
+                                        </span>
+                                    </a>
+                                </p>
                                 <ul>
                                     {toc.map((entry) => (
                                         <li>
@@ -131,17 +190,27 @@ const showToc = toc.length > 1;
 </html>
 
 <style>
-    /* With a sidebar, the container widens to hold it on the left; the
-       content column keeps the plain container's measure. */
-    .container.with-toc {
-        max-width: 62rem;
+    /* The content column keeps the plain container's centered measure; the
+       sidebar hangs in the margin beside it, so pages with and without a
+       TOC line up. */
+    .page.with-toc {
+        position: relative;
     }
 
-    .page.with-toc {
-        display: grid;
-        grid-template-columns: 12.5rem minmax(0, 46rem);
-        gap: 3rem;
-        justify-content: space-between;
+    .page.with-toc aside {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        right: 100%;
+        width: max-content;
+        max-width: 14rem;
+        margin-right: 1.5rem;
+    }
+
+    /* Set by the fit-check script when the sidebar would run off the left
+       edge of the window. visibility (not display) so it stays measurable. */
+    .page.with-toc aside.clipped {
+        visibility: hidden;
     }
 
     aside nav {
@@ -154,7 +223,37 @@ const showToc = toc.length > 1;
     .toc-title {
         margin: 0 0 0.5rem;
         font-weight: 600;
+    }
+
+    /* The title doubles as a back-to-top link. inline-block so the anchor
+       is a reliable containing block for the arrow, sized to its text. */
+    .toc-title a {
+        display: inline-block;
+        position: relative;
         color: var(--muted);
+    }
+
+    .toc-title a:hover {
+        color: var(--accent);
+        text-decoration: none;
+    }
+
+    /* Hangs in the gap beside the column so it never widens the sidebar
+       (whose width — and fit check — track the widest text line). */
+    .toc-title .top-arrow {
+        position: absolute;
+        left: 100%;
+        /* Half-line centering sits slightly high against the lowercase-heavy
+           title; bias a touch below the mathematical center. */
+        top: 50%;
+        transform: translateY(calc(-50% + 0.07em));
+        margin-left: 0.35em;
+    }
+
+    .toc-title .top-arrow svg {
+        display: block;
+        width: 0.8em;
+        height: 0.8em;
     }
 
     aside ul {
@@ -180,21 +279,6 @@ const showToc = toc.length > 1;
         text-decoration: none;
     }
 
-    @media (max-width: 62rem) {
-        /* No sidebar: back to the plain container's measure, so text lines
-           stay readable instead of stretching toward the old grid width. */
-        .container.with-toc {
-            max-width: 46rem;
-        }
-
-        .page.with-toc {
-            display: block;
-        }
-
-        aside {
-            display: none;
-        }
-    }
 
     /* Sit the icon on the nav text's baseline. */
     .gh svg {

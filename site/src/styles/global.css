@@ -51,6 +51,14 @@ html {
   color-scheme: light dark;
 }
 
+/* Native smooth scrolling for in-page links (the TOC and its back-to-top),
+   honoring the OS-level reduced-motion preference. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 
 body {
   margin: 0;
