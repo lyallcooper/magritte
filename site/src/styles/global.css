@@ -59,7 +59,6 @@ html {
   }
 }
 
-
 body {
   margin: 0;
   background: var(--bg);
@@ -69,6 +68,11 @@ body {
   font-size: 19px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Old-style figures sit inside running prose instead of jutting out like
+     lining figures; tables opt back out below. (Requires justif >= 0.2.0,
+     which justifies font-variant text instead of skipping it.) */
+  font-kerning: normal;
+  font-variant-numeric: oldstyle-nums;
 }
 
 .container {
@@ -156,6 +160,8 @@ h2,
 h3 {
   line-height: 1.25;
   font-weight: 600;
+  /* Wrapped headings (mostly mobile) get evened-out lines, not a straggler. */
+  text-wrap: balance;
 }
 
 h1 {
@@ -242,6 +248,8 @@ table {
   width: 100%;
   margin: 1rem 0;
   font-size: 1rem;
+  /* Tables read as data: lining figures, not the body's old-style ones. */
+  font-variant-numeric: lining-nums;
 }
 
 th,

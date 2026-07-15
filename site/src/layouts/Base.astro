@@ -213,6 +213,19 @@ const showToc = toc.length > 1;
         visibility: hidden;
     }
 
+    article {
+        text-align: justify;
+        text-wrap: pretty;
+        /* Hyphenate, but not short words, tiny fragments, or more than two
+           lines in a row (the -webkit- forms are Safari's equivalents). */
+        hyphens: auto;
+        hyphenate-limit-chars: 7 4 3;
+        -webkit-hyphenate-limit-before: 4;
+        -webkit-hyphenate-limit-after: 3;
+        -webkit-hyphenate-limit-lines: 2;
+        hanging-punctuation: first last;
+    }
+
     aside nav {
         position: sticky;
         top: 1.5rem;
