@@ -51,6 +51,7 @@ html {
   color-scheme: light dark;
 }
 
+
 body {
   margin: 0;
   background: var(--bg);
@@ -281,13 +282,20 @@ hr {
 
 .callout {
     background: var(--surface);
-    border-left: 3px solid var(--muted);
+    border-left: 3px solid var(--accent);
     border-radius: 0 6px 6px 0;
     padding: 0.6rem 1rem;
     margin: 1.25rem 0;
+}
+
+.callout .callout-title {
+    /*font-weight: bold;*/
+    font-style: italic;
+    font-size: 1.1em;
 }
 
 .callout code,
 .callout kbd {
     background: var(--border);
 }
+

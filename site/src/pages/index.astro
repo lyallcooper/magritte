@@ -49,17 +49,10 @@ import Shot from "../components/Shot.astro";
 <span class="dim"># Or pass a repo to open</span>
 <span class="prompt">$ </span>magritte /dev/my-project</code></pre>
     <p>
-        Magritte starts in the background and returns your shell. Use
-        <code>magritte --foreground</code> to keep logs attached to the
-        terminal.
-    </p>
-    <p>
-        The main screen is the <em>status view</em>. It shows you the
-        information you'd see from running <code>git status</code>, such as
-        untracked, unstaged, and staged files. It also shows your stashes,
-        unpushed/unpulled changes, recent commits and <a
-            href="/docs/config/#status-sections">more</a
-        >.
+        The main screen is the <em>status view</em>. It presents <code>git
+        status</code> information, such as untracked, unstaged, and staged
+        files. It also shows your stashes, unpushed/unpulled changes, recent
+        commits and <a href="/docs/config/#status-sections">more</a>.
     </p>
     <p>
         Use <kbd>j</kbd> / <kbd>k</kbd> to move. Press <kbd>Tab</kbd> on a file name
@@ -67,10 +60,12 @@ import Shot from "../components/Shot.astro";
             >s</kbd
         > and <kbd>u</kbd>. Open the commit menu with <kbd>c</kbd>.
     </p>
-    <p class="callout">
-        <strong>Try it!</strong> Press <kbd>?</kbd> or click the <code>?</code> icon
-        in the bottom right to bring up the interactive, context-aware help menu.
-    </p>
+    <div class="callout">
+        <div class="callout-title">Wondering what's possible?</div>
+        Press <kbd>?</kbd> or click the <code>?</code> icon in the bottom right
+        to bring up the interactive, context-aware help menu. It shows all the
+        actions you can take. It's helpful!
+    </div>
     <p>
         Use <kbd>v</kbd> to enter the ever-useful multi-line visual selection mode.
         Use it to act on multiple files at once. You can even use it to surgically
@@ -81,7 +76,7 @@ import Shot from "../components/Shot.astro";
         traditional emacs-style, change the Keybindings to "Vanilla" from the
         settings screen (accessible via <kbd>,</kbd>). You can also set the <code
             >keymap_preset</code
-        > to <code>"vanilla"</code> in the <a href="/docs/config">config file</a
+        > to <code>"vanilla"</code> in the <a href="/docs/config#key-mappings">config file</a
         >.
     </p>
 
@@ -263,4 +258,5 @@ import Shot from "../components/Shot.astro";
         color: var(--muted);
         user-select: none;
     }
+
 </style>

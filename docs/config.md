@@ -1,5 +1,7 @@
 # Configuration
 
+## File location
+
 Magritte's global configuration file lives at:
 
 ```text
@@ -24,8 +26,8 @@ valid configuration.
 ## Settings screen
 
 Press <kbd>,</kbd> or choose **Magritte > Settings** to access the settings
-screen. Here change common options such as themes, fonts, editors, and the keymap
-preset. The Settings screen writes to the global configuration file.
+screen. Here you can change common options such as themes, fonts, editors, and
+the keymap preset. The Settings screen writes to the global configuration file.
 
 ## Per-repo configuration
 
@@ -177,13 +179,14 @@ in the first two, and `"unbound"` removes an entry wherever it appears.
 
 ### Global keys
 
-The default `evil` preset follows evil-collection-magit. Use `vanilla` for
-standard Magit and Emacs keys. The Vanilla preset includes <kbd>P</kbd> for
-push, <kbd>X</kbd> for reset, <kbd>z</kbd> for stash, <kbd>k</kbd> for discard,
-and <kbd>n</kbd> or <kbd>p</kbd> for section motion.
+Magritte offers two base keybinding presets: `evil` and `vanilla`. The `evil`
+preset follows
+[evil-collection](https://github.com/emacs-evil/evil-collection)'s magit
+bindings, while `vanilla` follows standard Emacs and Magit bindings.
 
-New key mappings can be added, or existing ones overridden, via the `[keymap]`
-table. Each entry maps a key to a [command ID](#command-id-reference).
+Regardless of the preset chosen, key mappings can be added, changed, or removed
+via the `[keymap]` table. Each entry maps a key to a [command
+ID](#command-id-reference).
 
 ```toml
 keymap_preset = "evil"
@@ -194,12 +197,11 @@ keymap_preset = "evil"
 "E" = "commit-extend"   # E now extends the current commit
 ```
 
-- Keys are case-sensitive. For example, `s` and `S` are different bindings.
-- Write sequences with spaces between their keys, such as `g r` or
-  `ctrl-x ctrl-c`.
-- Write modifiers as `ctrl-`, `alt-`, or `cmd-`.
-- Prefixes do not need separate bindings. If you bind `". c" = "commit"`, `.`
-  automatically becomes a prefix.
+Keys are case-sensitive. For example, `s` and `S` are different bindings.
+Sequences are written with spaces between their keys, such as `g r` or `ctrl-x
+ctrl-c`, and modifiers are written as `ctrl-`, `alt-`, or `cmd-`. Prefixes do
+not need separate bindings. If you bind `". c" = "commit"`, `.` automatically
+becomes a prefix.
 
 Some keys are fixed and cannot be remapped:
 
@@ -287,13 +289,12 @@ Git configuration.
 
 #### Saved argument defaults
 
-Press <kbd>Ctrl-s</kbd> in a transient menu to save its current options as the defaults
-for the next time you open it. Magritte asks where to save them:
+Press <kbd>Ctrl-s</kbd> in a transient menu to save its current options as the
+defaults for the next time you open it. Magritte asks where to save them.
 
-- Press <kbd>g</kbd> for all repositories. Magritte writes
-  `transient-arguments.toml` beside your global configuration.
-- Press <kbd>l</kbd> for the current repository. Magritte writes
-  `.git/magritte/transient-arguments.toml`.
+Globally saved arguments are stored in `transient-arguments.toml` beside your
+global configuration file. Locally saved arguments are stored in
+`.git/magritte/transient-arguments.toml`.
 
 The file stores Git arguments rather than menu keys, so key remapping does not
 affect saved defaults:
@@ -330,13 +331,13 @@ commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
 "gz" = "help"
 ```
 
-- Write Vim sequences as literal characters with no spaces. Modifier chords
-  are not supported. Case matters, so `Q` means Shift-Q.
-- Custom entries add to the defaults. An exact match replaces the default. For
-  example, `"ZZ" = "cancel"` changes the built-in `ZZ` action.
-- The first key of a custom sequence shadows its normal Vim action. Mapping
-  `"dx"` makes <kbd>d</kbd> wait for <kbd>x</kbd>, so it no longer starts the
-  delete operator. Choose prefixes you do not otherwise need.
+Vim sequences are written as literal characters with no spaces. Modifier chords
+are not supported. Mappings are case sensitive, e.g. `Q` means
+<kbd>Shift-Q</kbd>.
+
+The first key of a custom sequence shadows its normal Vim action. For example,
+mapping `"dx"` makes <kbd>d</kbd> wait for <kbd>x</kbd>, so it no longer starts
+the delete operator. Choose prefixes you do not otherwise need.
 
 ## Custom commands
 
