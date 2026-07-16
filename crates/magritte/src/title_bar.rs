@@ -11,6 +11,19 @@ use gpui_component::Sizable;
 use crate::render::with_copy_menu;
 use crate::*;
 
+/// A block container that middle-truncates its text when the title bar runs
+/// out of width (an ellipsis replaces the middle, keeping both ends visible).
+/// `floor` is the width it never shrinks below, so a few characters always
+/// survive. Must wrap the text directly — inside a flex container the text
+/// would keep its intrinsic width and clip instead of truncating.
+fn truncatable(floor: gpui::Pixels) -> gpui::Div {
+    div()
+        .min_w(floor)
+        .overflow_x_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis_middle()
+}
+
 /// A title-bar remote-tracking chunk (the upstream or a distinct push target):
 /// the direction glyph, the ref name, its ahead/behind divergence, and the
 /// transient the name opens on click. See [`StatusView::track_chunk`].
@@ -30,6 +43,14 @@ pub(crate) struct TrackRef<'a> {
 }
 
 impl StatusView {
+    /// Truncation floor for a [`truncatable`] name: its estimated natural
+    /// width — so names shorter than the cap aren't padded wider — capped at
+    /// 6 characters, enough to keep a recognizable stub visible when the bar
+    /// is squeezed hard. `font_px` is the size the name renders at.
+    fn name_floor(&self, name: &str, font_px: f32) -> gpui::Pixels {
+        px((font_px * 0.62 * 6.0_f32.min(name.chars().count() as f32)).round())
+    }
+
     /// Render a dialog heading from styled spans, with branch/ref names set off
     /// from the surrounding words as a subtly tinted, medium-weight chip so
     /// they're easy to pick out — e.g. the `main` in "Push main to". `base` is
@@ -67,13 +88,17 @@ impl StatusView {
     pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> impl IntoElement {
         let branch_click = view.clone();
         let tip_font = self.font.clone();
+        let tip_name = SharedString::from(branch.to_string());
+        let dim = self.palette.dim;
         // The branch name chip: left-click opens the branch transient; right-click
-        // copies the name via the shared Copy menu.
+        // copies the name via the shared Copy menu. The name middle-truncates
+        // when the bar is short on width; the tooltip carries the full name.
         let chip = div()
             .id("titlebar-branch")
             .relative()
             .flex()
             .items_center()
+            .min_w_0()
             .rounded(px(4.0))
             .bg(self.palette.selection)
             .text_color(self.palette.fg)
@@ -82,12 +107,19 @@ impl StatusView {
             .cursor_pointer()
             .px(px(5.0))
             .child(track_target("titlebar-branch"))
-            .child(SharedString::from(branch.to_string()))
+            .child(
+                truncatable(self.name_floor(branch, self.font_px()))
+                    .child(SharedString::from(branch.to_string())),
+            )
             .when(!self.ctx_menu_open, |d| {
                 d.tooltip(move |window, cx| {
-                    let font = tip_font.clone();
+                    let (font, name) = (tip_font.clone(), tip_name.clone());
                     Tooltip::element(move |_, _| {
-                        div().font_family(font.clone()).child("Current branch")
+                        div()
+                            .max_w(px(480.0))
+                            .font_family(font.clone())
+                            .child("Current branch")
+                            .child(div().text_color(dim).child(name.clone()))
                     })
                     .build(window, cx)
                 })
@@ -294,15 +326,19 @@ impl StatusView {
 
     /// Wrap a title-bar item with a hover tooltip spelling out what it is (the
     /// bar's glyphs and counts are terse). Needs a stable `id` for the hitbox.
+    /// `shrink` lets the flex layout squeeze the item below its content width
+    /// when the bar runs out of room — set it only when the child truncates
+    /// gracefully (a [`truncatable`] name); everything else keeps its size.
     pub(crate) fn titlebar_tip(
         &self,
         view: &Entity<Self>,
         id: impl Into<SharedString>,
         tip: impl Into<SharedString>,
         copy: Option<String>,
+        shrink: bool,
         child: impl IntoElement,
     ) -> impl IntoElement {
-        self.titlebar_item(view, id.into(), tip.into(), copy, child, |d| d)
+        self.titlebar_item(view, id.into(), tip.into(), copy, shrink, child, |d| d)
     }
 
     /// Shared core of [`titlebar_tip`]/[`titlebar_action`]: an id'd wrapper
@@ -313,25 +349,43 @@ impl StatusView {
     ///
     /// [`titlebar_tip`]: Self::titlebar_tip
     /// [`titlebar_action`]: Self::titlebar_action
+    #[allow(clippy::too_many_arguments)]
     fn titlebar_item(
         &self,
         view: &Entity<Self>,
         id: SharedString,
         tip: SharedString,
         copy: Option<String>,
+        shrink: bool,
         child: impl IntoElement,
         decorate: impl FnOnce(gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div>,
     ) -> gpui::AnyElement {
         let font = self.font.clone();
-        let base = decorate(div().id(id))
+        // The bar may middle-truncate the item's text, so when the item carries
+        // a value (the same one the Copy menu offers) the tooltip spells out
+        // the full version under the description.
+        // Cap the tooltip's width so a long value hard-wraps (the line wrapper
+        // falls back to char-boundary breaks on solid ref names) instead of
+        // running off the window edge.
+        let value = copy.clone().map(SharedString::from);
+        let dim = self.palette.dim;
+        let base = decorate(div().id(id).when(shrink, |d| d.min_w_0()))
             .child(child)
             // Suppress the tooltip while a Copy menu is open so it can't paint
             // over the menu.
             .when(!self.ctx_menu_open, |d| {
                 d.tooltip(move |window, cx| {
-                    let (font, tip) = (font.clone(), tip.clone());
-                    Tooltip::element(move |_, _| div().font_family(font.clone()).child(tip.clone()))
-                        .build(window, cx)
+                    let (font, tip, value) = (font.clone(), tip.clone(), value.clone());
+                    Tooltip::element(move |_, _| {
+                        div()
+                            .max_w(px(480.0))
+                            .font_family(font.clone())
+                            .child(tip.clone())
+                            .when_some(value.clone(), |d, value| {
+                                d.child(div().text_color(dim).child(value))
+                            })
+                    })
+                    .build(window, cx)
                 })
                 .tooltip_show_delay(Duration::from_millis(400))
             });
@@ -354,6 +408,7 @@ impl StatusView {
             .flex()
             .items_center()
             .gap_1()
+            .min_w_0()
             .font_family(self.font.clone())
             // Glyph (dim) and ref name (magit's green branch-remote face) sit
             // tight together; the ahead/behind chips follow with a gap. Right-
@@ -365,18 +420,21 @@ impl StatusView {
                     command,
                     tip,
                     Some(name.to_string()),
+                    true,
                     div()
                         .flex()
                         .items_center()
+                        .min_w_0()
                         .when(!glyph.is_empty(), |d| {
                             d.child(
                                 div()
+                                    .flex_shrink_0()
                                     .text_color(self.palette.dim)
                                     .child(SharedString::from(glyph.to_string())),
                             )
                         })
                         .child(
-                            div()
+                            truncatable(self.name_floor(name, self.font_px()))
                                 .text_color(self.palette.branch_remote)
                                 .child(SharedString::from(name.to_string())),
                         ),
@@ -389,6 +447,7 @@ impl StatusView {
                 "push",
                 "Unpushed commits",
                 None,
+                false,
                 self.count_pill(format!("↑{ahead}"), self.palette.branch_remote),
             ));
         }
@@ -399,6 +458,7 @@ impl StatusView {
                 "pull",
                 "Unpulled commits",
                 None,
+                false,
                 self.count_pill(format!("↓{behind}"), self.palette.branch_remote),
             ));
         }
@@ -412,6 +472,7 @@ impl StatusView {
     /// (a hover recolor would fire only on items whose text has no explicit
     /// color, so it read inconsistently across the bar). When `copy` is set,
     /// right-clicking offers a `Copy` context menu for that value.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn titlebar_action(
         &self,
         view: &Entity<Self>,
@@ -419,18 +480,27 @@ impl StatusView {
         command: &'static str,
         tip: impl Into<SharedString>,
         copy: Option<String>,
+        shrink: bool,
         child: impl IntoElement,
     ) -> impl IntoElement {
         let click_view = view.clone();
         let id = id.into();
-        self.titlebar_item(view, id.clone(), tip.into(), copy, child, move |d| {
-            d.relative()
-                .cursor_pointer()
-                .child(track_target(id))
-                .on_click(move |_, window, cx: &mut App| {
-                    click_view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
-                })
-        })
+        self.titlebar_item(
+            view,
+            id.clone(),
+            tip.into(),
+            copy,
+            shrink,
+            child,
+            move |d| {
+                d.relative()
+                    .cursor_pointer()
+                    .child(track_target(id))
+                    .on_click(move |_, window, cx: &mut App| {
+                        click_view.update(cx, |v, vcx| v.invoke_command(command, window, vcx));
+                    })
+            },
+        )
     }
 
     /// The custom window title bar: the repo name, the current branch as a chip,
@@ -448,16 +518,33 @@ impl StatusView {
             .map(|n| n.to_string_lossy().into_owned())
     }
 
-    pub(crate) fn render_title_bar(&self, view: &Entity<Self>) -> impl IntoElement {
+    pub(crate) fn render_title_bar(
+        &self,
+        view: &Entity<Self>,
+        window: &Window,
+    ) -> impl IntoElement {
         let repo_name = self.repo_display_name().unwrap_or_else(|| "—".to_string());
 
-        let mut info = div().flex().items_center().gap_2().child(
+        // Cap the info row at the width actually available so long names
+        // middle-truncate instead of pushing the bar past the window edge. A
+        // `min_w_0` chain alone can't do it: intrinsic min-content widths
+        // propagate through the TitleBar's internal flex row, which we can't
+        // style. 80 mirrors the TitleBar's macOS traffic-light padding; the
+        // rest leaves room for the busy-spinner overlay.
+        let avail = window.viewport_size().width - px(80.0 + 40.0);
+        let mut info = div().flex().items_center().gap_2().max_w(avail).child(
             self.titlebar_tip(
                 view,
                 "titlebar-repo",
                 "Repository",
                 Some(repo_name.clone()),
-                div()
+                false,
+                // The repo name is the window's identity and usually short, so
+                // it never gets squeezed by its long neighbors (its wrapper
+                // doesn't shrink, so no floor either) — it only self-caps when
+                // it is itself unreasonably long.
+                truncatable(px(0.0))
+                    .max_w(px(16.0 * self.font_px()))
                     .font_weight(FontWeight::MEDIUM)
                     .child(SharedString::from(repo_name)),
             ),
@@ -476,6 +563,7 @@ impl StatusView {
                         "branch",
                         "Detached HEAD",
                         None,
+                        false,
                         self.branch_chip("detached"),
                     )
                     .into_any_element(),
@@ -544,22 +632,29 @@ impl StatusView {
                     let mut pill = div()
                         .flex()
                         .items_center()
+                        .min_w_0()
                         .rounded(px(6.0))
                         .bg(with_alpha(self.palette.tag, 0.15))
                         .text_size(px(self.font_px() - 2.0))
                         .text_color(self.palette.tag)
-                        .child(self.titlebar_action(
-                            view,
-                            "titlebar-tag".to_string(),
-                            "tag",
-                            "Nearest tag",
-                            Some(name.clone()),
-                            div().px(px(5.0)).child(SharedString::from(name.clone())),
-                        ));
+                        .child(
+                            self.titlebar_action(
+                                view,
+                                "titlebar-tag".to_string(),
+                                "tag",
+                                "Nearest tag",
+                                Some(name.clone()),
+                                true,
+                                truncatable(self.name_floor(name, self.font_px() - 2.0))
+                                    .px(px(5.0))
+                                    .child(SharedString::from(name.clone())),
+                            ),
+                        );
                     if *count > 0 {
                         pill = pill
                             .child(
                                 div()
+                                    .flex_shrink_0()
                                     .w(px(1.0))
                                     .h(px(12.0))
                                     .bg(with_alpha(self.palette.tag, 0.4)),
@@ -570,13 +665,14 @@ impl StatusView {
                                     "titlebar-tag-count".to_string(),
                                     "Commits since tag",
                                     None,
+                                    false,
                                     div()
                                         .px(px(4.0))
                                         .child(SharedString::from(count.to_string())),
                                 ),
                             );
                     }
-                    info = info.child(div().flex().items_center().gap_1().child(pill));
+                    info = info.child(div().flex().items_center().gap_1().min_w_0().child(pill));
                 }
             }
 
@@ -587,6 +683,7 @@ impl StatusView {
                     "titlebar-dirty",
                     "Working tree dirty",
                     None,
+                    false,
                     div().text_color(self.palette.modified).child("○"),
                 ));
             }

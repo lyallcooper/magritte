@@ -1579,7 +1579,7 @@ impl Render for StatusView {
             .flex_col();
 
         // The title bar sits above every view (status, settings, editor, …).
-        root = root.child(self.render_title_bar(&view));
+        root = root.child(self.render_title_bar(&view, window));
 
         // Each non-Status screen takes over the window. One match defines the
         // active screen (no re-derived priority cascade); Status falls through to
