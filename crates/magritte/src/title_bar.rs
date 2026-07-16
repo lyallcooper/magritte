@@ -592,27 +592,39 @@ impl StatusView {
             }
         }
 
-        gpui_component::TitleBar::new()
+        let bar = gpui_component::TitleBar::new()
             .bg(self.palette.bg)
             .border_color(self.palette.border)
-            .child(info)
-            // A spinner for background activity that outlasts the delay
-            // threshold. The title bar lays children out `justify_between`, so a
-            // second child sits at the far (right) end; pad it off the edge so
-            // it isn't clipped. A subtle rounded background chip makes it read
-            // as a deliberate indicator rather than blending into the bar.
-            .when(self.busy, |bar| {
-                bar.child(
-                    div().pr_3().child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .p_1()
-                            .rounded(px(4.0))
-                            .bg(self.palette.selection)
-                            .child(Spinner::new().small().color(self.palette.fg)),
-                    ),
+            .child(info);
+
+        // A spinner for background activity that outlasts the delay threshold.
+        // It lives outside the title bar's flex flow, absolutely anchored to
+        // the window's right edge, so wide bar content can't push it off-screen
+        // — it paints on top instead. A subtle rounded background chip makes it
+        // read as a deliberate indicator rather than blending into the bar.
+        div()
+            .relative()
+            .flex_shrink_0()
+            .child(bar)
+            .when(self.busy, |wrapper| {
+                wrapper.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_3()
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .p_1()
+                                .rounded(px(4.0))
+                                .bg(self.palette.selection)
+                                .child(Spinner::new().small().color(self.palette.fg)),
+                        ),
                 )
             })
     }
