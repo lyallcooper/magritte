@@ -10,7 +10,7 @@
   "dependencies": {
     "@fontsource-variable/eb-garamond": "^5.2.7",
     "astro": "^5.12.0",
-    "justif": "^0.3.0",
+    "justif": "^0.4.0",
     "unist-util-visit": "^5.0.0"
   }
 }
