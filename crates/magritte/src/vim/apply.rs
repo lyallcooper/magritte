@@ -12,7 +12,7 @@
 
 use super::{
     clamp_normal, first_non_blank, line_end, line_start, next_char, prev_char, Action, EditOp, Key,
-    Mode, ScrollAlign, VisualKind,
+    KeyModifiers, Mode, ModifiedKey, ScrollAlign, VisualKind,
 };
 use crate::*;
 use gpui::{Bounds, Context, EntityInputHandler, KeyDownEvent, Pixels, Window};
@@ -35,28 +35,22 @@ impl StatusView {
             return false;
         };
         let mods = &event.keystroke.modifiers;
-        // Cmd/function chords (⌘C copy…) are never Vim's — except ⌘⏎,
-        // which still commits from Normal/Visual (the input is unfocused
-        // there, so its own binding can't fire).
-        if mods.platform || mods.function {
-            if mods.platform && key == "enter" && !vim.in_insert() {
-                self.submit_editor(window, cx);
-                return true;
-            }
+        if mods.function
+            && !key
+                .strip_prefix('f')
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some_and(|n| (1..=12).contains(&n))
+        {
             return false;
         }
         if vim.in_insert() {
             // Insert mode is the input's: only Esc (or C-g mapped to it)
             // drops back to Normal.
-            if key != "escape" {
+            if key != "escape"
+                || (event.keystroke.key == "escape"
+                    && (mods.platform || mods.control || mods.alt || mods.shift || mods.function))
+            {
                 return false;
-            }
-        } else {
-            // ⌥q (reflow) keeps working in Normal/Visual; any other alt
-            // chord that would compose a character is swallowed so it can't
-            // insert (C-g arrives here already normalized to "escape").
-            if mods.alt && key != "escape" {
-                return key != "q" && event.keystroke.key_char.is_some();
             }
         }
         let Some(k) = vim_key(key, event) else {
@@ -70,6 +64,16 @@ impl StatusView {
                     .as_ref()
                     .is_some_and(|ch| ch.chars().all(|c| !c.is_control()));
         };
+        // Modified and otherwise user-only named keys enter the Vim engine only
+        // when a custom mapping wants them. Unbound chords remain available to
+        // macOS and the input. Cmd-Enter keeps its built-in submit behavior.
+        if k.is_user_only() && !vim.handles_user_key(k) {
+            if mods.platform && key == "enter" && !vim.in_insert() {
+                self.submit_editor(window, cx);
+                return true;
+            }
+            return false;
+        }
         self.feed_vim(k, window, cx);
         true
     }
@@ -560,24 +564,93 @@ fn vim_key(key: &str, event: &KeyDownEvent) -> Option<Key> {
     let ks = &event.keystroke;
     // Named keys first: `key` may be C-g already normalized to "escape", and
     // the control modifier must not turn it into a Ctrl chord.
-    match key {
-        "escape" => return Some(Key::Escape),
-        "space" => return Some(Key::Char(' ')),
-        "enter" => return Some(Key::Enter),
-        "backspace" => return Some(Key::Backspace),
-        "up" => return Some(Key::Up),
-        "down" => return Some(Key::Down),
-        "left" => return Some(Key::Left),
-        "right" => return Some(Key::Right),
-        "tab" => return Some(Key::Char('\t')),
-        _ => {}
+    if key == "escape" && ks.key != "escape" {
+        return Some(Key::Escape);
     }
-    if ks.modifiers.control {
-        return single_char(key).map(Key::Ctrl);
+    let plain = match key {
+        "escape" => Key::Escape,
+        "space" => Key::Char(' '),
+        "enter" => Key::Enter,
+        "backspace" => Key::Backspace,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "tab" => Key::Char('\t'),
+        "delete" => user_key(ModifiedKey::Delete),
+        "home" => user_key(ModifiedKey::Home),
+        "end" => user_key(ModifiedKey::End),
+        "pageup" => user_key(ModifiedKey::PageUp),
+        "pagedown" => user_key(ModifiedKey::PageDown),
+        "insert" => user_key(ModifiedKey::Insert),
+        name if name
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=12).contains(&n)) =>
+        {
+            user_key(ModifiedKey::Function(name[1..].parse().ok()?))
+        }
+        _ => {
+            let shifted = kbd::chord(key, ks.modifiers.shift, false, false, false);
+            let character = if ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt {
+                // Configured chords name the physical key (`alt-s`), not the
+                // composed character reported in `key_char` (`ß` on macOS).
+                single_char(&shifted)
+            } else {
+                ks.key_char
+                    .as_deref()
+                    .and_then(single_char)
+                    .or_else(|| single_char(&shifted))
+            };
+            Key::Char(character.filter(|c| !c.is_control())?)
+        }
+    };
+    if ks.modifiers.control
+        && !ks.modifiers.platform
+        && !ks.modifiers.alt
+        && single_char(key).is_some()
+    {
+        if let Key::Char(c) = plain {
+            return Some(Key::Ctrl(c));
+        }
     }
-    Some(Key::Char(
-        single_char(ks.key_char.as_deref()?).filter(|c| !c.is_control())?,
-    ))
+    if !ks.modifiers.platform
+        && !ks.modifiers.control
+        && !ks.modifiers.alt
+        && (!ks.modifiers.shift || matches!(plain, Key::Char(_)))
+    {
+        return Some(plain);
+    }
+    let modified = match plain {
+        Key::Char(c) => ModifiedKey::Char(c),
+        Key::Enter => ModifiedKey::Enter,
+        Key::Escape => ModifiedKey::Escape,
+        Key::Backspace => ModifiedKey::Backspace,
+        Key::Left => ModifiedKey::Left,
+        Key::Right => ModifiedKey::Right,
+        Key::Up => ModifiedKey::Up,
+        Key::Down => ModifiedKey::Down,
+        Key::Modified { key, .. } => key,
+        Key::Ctrl(_) => return None,
+    };
+    Some(Key::Modified {
+        key: modified,
+        modifiers: KeyModifiers {
+            cmd: ks.modifiers.platform,
+            ctrl: ks.modifiers.control,
+            alt: ks.modifiers.alt,
+            // Shift is encoded by the produced printable character, but named
+            // keys retain it as a distinct modifier (`shift-enter`).
+            shift: ks.modifiers.shift && !matches!(modified, ModifiedKey::Char(_)),
+        },
+    })
+}
+
+fn user_key(key: ModifiedKey) -> Key {
+    Key::Modified {
+        key,
+        modifiers: KeyModifiers::default(),
+    }
 }
 
 fn single_char(s: &str) -> Option<char> {
@@ -590,7 +663,80 @@ fn single_char(s: &str) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
-    use super::reflow_edit;
+    use super::{reflow_edit, vim_key};
+    use crate::vim::{Key, KeyModifiers, ModifiedKey};
+    use gpui::{KeyDownEvent, Keystroke, Modifiers};
+
+    fn key_event(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> KeyDownEvent {
+        KeyDownEvent {
+            keystroke: Keystroke {
+                modifiers,
+                key: key.to_string(),
+                key_char: key_char.map(str::to_string),
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+    }
+
+    #[test]
+    fn gpui_modifier_chords_match_vim_config_keys() {
+        let cmd = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            vim_key("enter", &key_event("enter", None, cmd)),
+            Some(Key::Modified {
+                key: ModifiedKey::Enter,
+                modifiers: KeyModifiers {
+                    cmd: true,
+                    ..KeyModifiers::default()
+                }
+            })
+        );
+
+        // Alt composition must still match the physical `alt-s` config key.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            vim_key("s", &key_event("s", Some("ß"), alt)),
+            Some(Key::Modified {
+                key: ModifiedKey::Char('s'),
+                modifiers: KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                }
+            })
+        );
+
+        let cmd_shift = Modifiers {
+            platform: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            vim_key("n", &key_event("n", None, cmd_shift)),
+            Some(Key::Modified {
+                key: ModifiedKey::Char('N'),
+                modifiers: KeyModifiers {
+                    cmd: true,
+                    ..KeyModifiers::default()
+                }
+            })
+        );
+
+        let ctrl = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            vim_key("x", &key_event("x", None, ctrl)),
+            Some(Key::Ctrl('x'))
+        );
+    }
 
     #[test]
     fn byte_at_ink_round_trips_through_a_reflow() {

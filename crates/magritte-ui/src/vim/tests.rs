@@ -2197,7 +2197,11 @@ fn ex_substitute_preview() {
 fn run_mapped(spec: &str, keys: &str, map: &[(&str, UserCmd)]) -> Buf {
     let (text, cursor) = parse_spec(spec);
     let mut buf = Buf::new(&text, cursor);
-    buf.vim = VimState::with_user_map(map.iter().map(|(s, c)| (s.to_string(), *c)).collect());
+    buf.vim = VimState::with_user_map(
+        map.iter()
+            .map(|(s, c)| (s.chars().map(Key::Char).collect(), *c))
+            .collect(),
+    );
     buf.feed(keys);
     buf
 }
@@ -2316,7 +2320,7 @@ fn user_map_parses_config_entries() {
         ("Q", "cancel"),
         (",w", "commit"),
         ("", "commit"),       // empty sequence: skipped
-        ("a b", "commit"),    // whitespace: skipped
+        ("a  b", "commit"),   // malformed spacing: skipped
         ("bad", "not-a-cmd"), // unknown command: skipped
     ]
     .into_iter()
@@ -2325,8 +2329,107 @@ fn user_map_parses_config_entries() {
     assert_eq!(
         parse_user_map(&entries),
         vec![
-            (",w".to_string(), UserCmd::Commit),
-            ("Q".to_string(), UserCmd::Cancel)
+            (vec![Key::Char(','), Key::Char('w')], UserCmd::Commit),
+            (vec![Key::Char('Q')], UserCmd::Cancel)
         ]
     );
+}
+
+#[test]
+fn spaced_and_compact_literal_sequences_are_equivalent() {
+    let parse = |sequence: &str| {
+        let entries = [(sequence.to_string(), "commit".to_string())]
+            .into_iter()
+            .collect();
+        parse_user_map(&entries)
+    };
+    assert_eq!(parse("Q x"), parse("Qx"));
+}
+
+#[test]
+fn user_map_supports_modifier_chords_and_chord_sequences() {
+    let entries: std::collections::BTreeMap<String, String> = [
+        ("cmd-enter", "commit"),
+        ("cmd-x cmd-enter z", "help"),
+        ("ctrl-x ctrl-c", "cancel"),
+        ("g cmd-enter", "help"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let map = parse_user_map(&entries);
+    let cmd_enter = Key::Modified {
+        key: ModifiedKey::Enter,
+        modifiers: KeyModifiers {
+            cmd: true,
+            ..KeyModifiers::default()
+        },
+    };
+
+    let (text, cursor) = parse_spec("a|bc");
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(map.clone());
+    buf.feed_key(cmd_enter);
+    assert!(buf.log.contains(&Action::Commit));
+
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(map.clone());
+    buf.feed_key(Key::Ctrl('x'));
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("ctrl-x"));
+    assert_eq!(
+        buf.vim.which_key_hints(),
+        vec![("ctrl-c".to_string(), "Cancel".to_string())]
+    );
+    buf.feed_key(Key::Ctrl('c'));
+    assert!(buf.log.contains(&Action::Quit { force: false }));
+
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(map);
+    buf.feed_key(Key::Char('g'));
+    assert_eq!(buf.vim.pending_display().as_deref(), Some("g"));
+    buf.feed_key(cmd_enter);
+    assert!(buf.log.contains(&Action::Help));
+
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(parse_user_map(&entries));
+    buf.feed_key(Key::Modified {
+        key: ModifiedKey::Char('x'),
+        modifiers: KeyModifiers {
+            cmd: true,
+            ..KeyModifiers::default()
+        },
+    });
+    buf.feed_key(cmd_enter);
+    assert_eq!(
+        buf.vim.pending_display().as_deref(),
+        Some("cmd-x cmd-enter")
+    );
+    assert_eq!(
+        buf.vim.which_key_hints(),
+        vec![("z".to_string(), "Vim help".to_string())]
+    );
+}
+
+#[test]
+fn modifier_mapping_shadows_only_its_exact_chord() {
+    let entries = [("cmd-x".to_string(), "commit".to_string())]
+        .into_iter()
+        .collect();
+    let map = parse_user_map(&entries);
+    let cmd_x = Key::Modified {
+        key: ModifiedKey::Char('x'),
+        modifiers: KeyModifiers {
+            cmd: true,
+            ..KeyModifiers::default()
+        },
+    };
+    let vim = VimState::with_user_map(map.clone());
+    assert!(vim.handles_user_key(cmd_x));
+    assert!(!vim.handles_user_key(Key::Char('x')));
+
+    let (text, cursor) = parse_spec("a|bc");
+    let mut buf = Buf::new(&text, cursor);
+    buf.vim = VimState::with_user_map(map);
+    buf.feed_key(Key::Char('x'));
+    assert_eq!(buf.text, "ac", "plain x must retain its built-in action");
 }

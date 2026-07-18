@@ -925,21 +925,18 @@ impl StatusView {
             }
             return;
         }
-        // alt-p restores a saved message (magit's `git-commit-prev-message`,
-        // M-p); captured before Vim so it works in Normal mode too, and so the
-        // Input doesn't insert the character.
-        if key == "p" && event.keystroke.modifiers.alt {
-            cx.stop_propagation();
-            self.commit_restore_message(window, cx);
-            return;
-        }
         // Vim mode intercepts everything outside Insert mode — including an
         // idle-Normal Esc, a quiet no-op there (cancel is ZQ / :q).
         if self.handle_vim_key(key, event, window, cx) {
             cx.stop_propagation();
             return;
         }
-        if key == "escape" {
+        // alt-p restores a saved message (magit's `git-commit-prev-message`,
+        // M-p). A custom Normal-mode Vim mapping gets first refusal above.
+        if key == "p" && event.keystroke.modifiers.alt {
+            cx.stop_propagation();
+            self.commit_restore_message(window, cx);
+        } else if key == "escape" {
             cx.stop_propagation();
             self.cancel_editor(window, cx);
         } else if key == "q" && event.keystroke.modifiers.alt {

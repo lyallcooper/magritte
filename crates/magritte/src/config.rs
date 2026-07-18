@@ -181,10 +181,12 @@ pub struct Config {
 pub struct VimConfig {
     /// Extra key sequences for the editor-level Vim commands (`commit`,
     /// `cancel`, `discard`, `reflow`, `help`), added alongside the built-in
-    /// defaults (`ZZ`, `ZQ`, `,q`, `:wq`, …). A sequence is literal successive
-    /// keys (`"Q"`, `",w"` — no modifier notation); one whose first key names
-    /// a built-in command shadows that key. Merged per entry with a repo
-    /// overlay, like `[keymap]`. See docs/config.md.
+    /// defaults (`ZZ`, `ZQ`, `,q`, `:wq`, …). Sequence steps are normally
+    /// space-separated (`"Q enter"`, `"ctrl-x ctrl-c"`); modifier chords use
+    /// the global-keymap notation (`"cmd-enter"`). Compact literal sequences
+    /// such as `",w"` remain accepted. A sequence whose first key names a
+    /// built-in command shadows that key. Merged per entry with a repo overlay,
+    /// like `[keymap]`. See docs/config.md.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keymap: BTreeMap<String, String>,
 }
@@ -1141,7 +1143,7 @@ mod tests {
         assert_table_keys(
             raw.get("vim").and_then(toml::Value::as_table).unwrap(),
             "keymap",
-            &[";w", "Q", "gz"],
+            &["; w", "Q", "cmd-enter", "g z"],
         );
 
         assert_eq!(commands.len(), 2);

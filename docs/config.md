@@ -326,17 +326,23 @@ commands: `commit`, `cancel`, `discard` (cancel without the confirmation),
 
 ```toml
 [vim.keymap]
-"Q" = "cancel"      # a single key
-";w" = "commit"     # press ; and then w
-"gz" = "help"
+"Q" = "cancel"
+"; w" = "commit"
+"cmd-g z" = "help"
+"ctrl-x ctrl-c" = "commit"
 ```
 
-Vim sequences are written as literal characters with no spaces. Modifier chords
-are not supported. Mappings are case sensitive, e.g. `Q` means
-<kbd>Shift-Q</kbd>.
+Write sequences with a space between keystrokes, such as `Q x`, `Q enter`, or
+`ctrl-x ctrl-c`. A modifier chord is one keystroke: use `cmd-`, `ctrl-`, `alt-`,
+or `shift-`, as in `cmd-enter`. Mappings are case sensitive, e.g. `Q` means
+<kbd>Shift-Q</kbd>. Named keys include `enter`, `tab`, and `escape`.
+
+For literal character-only sequences, the compact form is also accepted: `Qx`
+is equivalent to `Q x`. Spaces are recommended because they also work when a
+sequence contains named keys or modifier chords.
 
 The first key of a custom sequence shadows its normal Vim action. For example,
-mapping `"dx"` makes <kbd>d</kbd> wait for <kbd>x</kbd>, so it no longer starts
+mapping `"d x"` makes <kbd>d</kbd> wait for <kbd>x</kbd>, so it no longer starts
 the delete operator. Choose prefixes you do not otherwise need.
 
 ## Custom commands

@@ -112,12 +112,19 @@ fn is_modifier(token: &str) -> bool {
 }
 
 /// The modifier flags a keystroke step carries.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Mods {
     pub cmd: bool,
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+}
+
+impl Mods {
+    /// Whether this key carries at least one modifier.
+    pub fn any(self) -> bool {
+        self.cmd || self.ctrl || self.alt || self.shift
+    }
 }
 
 /// Peel the leading modifier tokens off one keystroke step, returning the flags
@@ -144,6 +151,85 @@ pub fn parse_step(step: &str) -> (Mods, &str) {
         rest = after;
     }
     (mods, rest)
+}
+
+/// Canonical keystroke string for a keypress: word modifier prefixes (`cmd-`,
+/// `ctrl-`, `alt-`, in that order) followed by the key. Shift folds into a
+/// printable character (`k` -> `K`, `1` -> `!`); for named keys it remains an
+/// explicit prefix (`shift-tab`).
+pub fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
+    let (base, shift_prefix) = match (shift, shifted_char(key)) {
+        (true, Some(c)) => (c, false),
+        (true, None) => (key.to_string(), true),
+        (false, _) => (key.to_string(), false),
+    };
+    let mut s = String::new();
+    if cmd {
+        s.push_str("cmd-");
+    }
+    if ctrl {
+        s.push_str("ctrl-");
+    }
+    if alt {
+        s.push_str("alt-");
+    }
+    if shift_prefix {
+        s.push_str("shift-");
+    }
+    s.push_str(&base);
+    s
+}
+
+/// Canonicalize a configured keystroke into the same form [`chord`] emits at
+/// runtime. Modifier names and separators are lenient, and named-key aliases
+/// (`Esc`, `Ret`, `SPC`) normalize to their runtime names.
+pub fn canonical_keystroke(key: &str) -> String {
+    key.split(' ')
+        .map(|step| {
+            let (mods, base) = parse_step(step);
+            let base = normalize_key_name(base);
+            chord(&base, mods.shift, mods.ctrl, mods.alt, mods.cmd)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The character produced by Shift on a US keyboard. `None` means Shift does
+/// not reshape the key, as with Tab, Space, Escape, and arrows.
+fn shifted_char(key: &str) -> Option<String> {
+    let shifted = match key {
+        "1" => "!",
+        "2" => "@",
+        "3" => "#",
+        "4" => "$",
+        "5" => "%",
+        "6" => "^",
+        "7" => "&",
+        "8" => "*",
+        "9" => "(",
+        "0" => ")",
+        "-" => "_",
+        "=" => "+",
+        "[" => "{",
+        "]" => "}",
+        "\\" => "|",
+        ";" => ":",
+        "'" => "\"",
+        "," => "<",
+        "." => ">",
+        "/" => "?",
+        "`" => "~",
+        _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
+            return Some(key.to_uppercase());
+        }
+        // A platform may report an already-shifted symbol rather than the
+        // underlying physical key. Shift was how it was typed, so it folds away.
+        _ if key.len() == 1 && !key.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            return Some(key.to_string());
+        }
+        _ => return None,
+    };
+    Some(shifted.to_string())
 }
 
 /// Validate a user `[keymap]` keystroke spec, returning a human-readable reason
@@ -330,7 +416,7 @@ pub fn switch_chip(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_keys, keystroke_error};
+    use super::{canonical_keystroke, chord, format_keys, keystroke_error};
 
     #[test]
     fn keystroke_validation() {
@@ -381,5 +467,17 @@ mod tests {
         assert_eq!(format_keys("escape"), "Esc");
         assert_eq!(format_keys("ctrl-x ctrl-c"), "⌃x ⌃c");
         assert_eq!(format_keys("tab"), "⇥");
+    }
+
+    #[test]
+    fn chords_and_config_specs_share_a_canonical_form() {
+        assert_eq!(canonical_keystroke("Cmd+N"), "cmd-N");
+        assert_eq!(canonical_keystroke("command-n"), "cmd-n");
+        assert_eq!(canonical_keystroke("Cmd+Shift+n"), "cmd-N");
+        assert_eq!(canonical_keystroke("Control+Option+x"), "ctrl-alt-x");
+        assert_eq!(canonical_keystroke("cmd--"), "cmd--");
+        assert_eq!(canonical_keystroke("g Ret"), "g enter");
+        assert_eq!(chord("n", true, false, false, true), "cmd-N");
+        assert_eq!(chord("tab", true, false, false, false), "shift-tab");
     }
 }

@@ -51,6 +51,96 @@ pub enum Key {
     Up,
     Down,
     Ctrl(char),
+    /// A chord that is meaningful only through `[vim.keymap]`. Built-in Vim
+    /// commands continue to use the plain and `Ctrl` variants above.
+    Modified {
+        key: ModifiedKey,
+        modifiers: KeyModifiers,
+    },
+}
+
+/// The base key in a modifier chord.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModifiedKey {
+    Char(char),
+    Enter,
+    Escape,
+    Backspace,
+    Left,
+    Right,
+    Up,
+    Down,
+    Delete,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
+    Function(u8),
+}
+
+/// Modifier flags on a configured Vim chord.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct KeyModifiers {
+    pub cmd: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+impl Key {
+    /// Whether this key exists only for user mappings rather than Vim's
+    /// built-in command table. The app leaves an unbound one to macOS/input.
+    pub fn is_user_only(self) -> bool {
+        matches!(self, Key::Modified { .. })
+    }
+
+    fn config_name(self) -> String {
+        match self {
+            Key::Char(' ') => "space".to_string(),
+            Key::Char('\t') => "tab".to_string(),
+            Key::Char(c) => c.to_string(),
+            Key::Enter => "enter".to_string(),
+            Key::Escape => "escape".to_string(),
+            Key::Backspace => "backspace".to_string(),
+            Key::Left => "left".to_string(),
+            Key::Right => "right".to_string(),
+            Key::Up => "up".to_string(),
+            Key::Down => "down".to_string(),
+            Key::Ctrl(c) => format!("ctrl-{c}"),
+            Key::Modified { key, modifiers } => crate::kbd::chord(
+                key.config_name().as_str(),
+                modifiers.shift,
+                modifiers.ctrl,
+                modifiers.alt,
+                modifiers.cmd,
+            ),
+        }
+    }
+}
+
+impl ModifiedKey {
+    fn config_name(self) -> String {
+        match self {
+            ModifiedKey::Char(' ') => "space".to_string(),
+            ModifiedKey::Char('\t') => "tab".to_string(),
+            ModifiedKey::Char(c) => c.to_string(),
+            ModifiedKey::Enter => "enter".to_string(),
+            ModifiedKey::Escape => "escape".to_string(),
+            ModifiedKey::Backspace => "backspace".to_string(),
+            ModifiedKey::Left => "left".to_string(),
+            ModifiedKey::Right => "right".to_string(),
+            ModifiedKey::Up => "up".to_string(),
+            ModifiedKey::Down => "down".to_string(),
+            ModifiedKey::Delete => "delete".to_string(),
+            ModifiedKey::Home => "home".to_string(),
+            ModifiedKey::End => "end".to_string(),
+            ModifiedKey::PageUp => "pageup".to_string(),
+            ModifiedKey::PageDown => "pagedown".to_string(),
+            ModifiedKey::Insert => "insert".to_string(),
+            ModifiedKey::Function(n) => format!("f{n}"),
+        }
+    }
 }
 
 /// What a keystroke does to the buffer. The engine may return several (e.g. a
@@ -137,21 +227,135 @@ impl UserCmd {
     }
 }
 
-/// Parse the config's `[vim.keymap]` table into the engine's user map: each
-/// entry a literal key sequence (successive plain chars — no modifier
-/// notation) naming an editor-level command. Invalid entries — an empty
-/// sequence, whitespace/control chars, or an unknown command name — are
-/// skipped.
-pub fn parse_user_map(
-    entries: &std::collections::BTreeMap<String, String>,
-) -> Vec<(String, UserCmd)> {
+/// A parsed `[vim.keymap]`: keystroke sequences mapped to editor commands.
+pub type UserMap = Vec<(Vec<Key>, UserCmd)>;
+
+/// Parse the config's `[vim.keymap]` table into the engine's user map. Spaces
+/// normally separate keystrokes (`"Q enter"`, `"cmd-k cmd-enter"`), while a
+/// modifier chord uses the app's ordinary notation (`"cmd-enter"`). Compact
+/// literal sequences (`"ZZ"`, `",w"`) remain accepted. Invalid entries and
+/// unknown command names are skipped.
+pub fn parse_user_map(entries: &std::collections::BTreeMap<String, String>) -> UserMap {
     entries
         .iter()
-        .filter(|(seq, _)| {
-            !seq.is_empty() && seq.chars().all(|c| !c.is_whitespace() && !c.is_control())
-        })
-        .filter_map(|(seq, cmd)| UserCmd::parse(cmd).map(|c| (seq.clone(), c)))
+        .filter_map(|(seq, cmd)| Some((parse_user_sequence(seq)?, UserCmd::parse(cmd)?)))
         .collect()
+}
+
+fn parse_user_sequence(seq: &str) -> Option<Vec<Key>> {
+    let (mods, _) = crate::kbd::parse_step(seq);
+    if !seq.contains(' ') && !mods.any() {
+        return (!seq.is_empty() && seq.chars().all(|c| !c.is_whitespace() && !c.is_control()))
+            .then(|| seq.chars().map(Key::Char).collect());
+    }
+    crate::kbd::keystroke_error(seq).is_none().then_some(())?;
+    crate::kbd::canonical_keystroke(seq)
+        .split(' ')
+        .map(key_from_step)
+        .collect()
+}
+
+fn key_from_step(step: &str) -> Option<Key> {
+    let (mods, base) = crate::kbd::parse_step(step);
+    if mods.ctrl && !mods.cmd && !mods.alt && !mods.shift {
+        if let Some(c) = one_char(base) {
+            return Some(Key::Ctrl(c));
+        }
+    }
+    let plain = match base {
+        "enter" => Key::Enter,
+        "escape" => Key::Escape,
+        "space" => Key::Char(' '),
+        "tab" => Key::Char('\t'),
+        "backspace" => Key::Backspace,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "delete" => Key::Modified {
+            key: ModifiedKey::Delete,
+            modifiers: KeyModifiers::default(),
+        },
+        "home" => Key::Modified {
+            key: ModifiedKey::Home,
+            modifiers: KeyModifiers::default(),
+        },
+        "end" => Key::Modified {
+            key: ModifiedKey::End,
+            modifiers: KeyModifiers::default(),
+        },
+        "pageup" => Key::Modified {
+            key: ModifiedKey::PageUp,
+            modifiers: KeyModifiers::default(),
+        },
+        "pagedown" => Key::Modified {
+            key: ModifiedKey::PageDown,
+            modifiers: KeyModifiers::default(),
+        },
+        "insert" => Key::Modified {
+            key: ModifiedKey::Insert,
+            modifiers: KeyModifiers::default(),
+        },
+        _ => one_char(base).map(Key::Char).or_else(|| {
+            base.strip_prefix('f')
+                .and_then(|n| n.parse::<u8>().ok())
+                .map(|n| Key::Modified {
+                    key: ModifiedKey::Function(n),
+                    modifiers: KeyModifiers::default(),
+                })
+        })?,
+    };
+    if !mods.any() {
+        return Some(plain);
+    }
+    let key = match plain {
+        Key::Char(c) => ModifiedKey::Char(c),
+        Key::Enter => ModifiedKey::Enter,
+        Key::Escape => ModifiedKey::Escape,
+        Key::Backspace => ModifiedKey::Backspace,
+        Key::Left => ModifiedKey::Left,
+        Key::Right => ModifiedKey::Right,
+        Key::Up => ModifiedKey::Up,
+        Key::Down => ModifiedKey::Down,
+        Key::Modified { key, .. } => key,
+        Key::Ctrl(_) => return None,
+    };
+    Some(Key::Modified {
+        key,
+        modifiers: KeyModifiers {
+            cmd: mods.cmd,
+            ctrl: mods.ctrl,
+            alt: mods.alt,
+            shift: mods.shift,
+        },
+    })
+}
+
+fn one_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+fn format_user_keys(keys: &[Key]) -> String {
+    let mut out = String::new();
+    let mut previous_plain = false;
+    for key in keys {
+        let plain = matches!(key, Key::Char(c) if !c.is_whitespace());
+        if !(out.is_empty() || plain && previous_plain) {
+            out.push(' ');
+        }
+        match key {
+            Key::Char(c) if plain => {
+                out.push(*c);
+            }
+            _ => out.push_str(&key.config_name()),
+        }
+        previous_plain = plain;
+    }
+    out
 }
 
 /// One buffer edit: replace `range` with `text`, then put the cursor at

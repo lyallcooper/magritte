@@ -110,7 +110,7 @@ enum Pending {
     Comma,
     /// Mid-way through a `[vim.keymap]` sequence: the keys typed so far.
     /// A dead end beeps without replaying them as built-ins.
-    User(String),
+    User(Vec<Key>),
     /// `/` or `?`: collecting the search query (shown live in the mode bar);
     /// Enter executes, Esc cancels, Backspace edits.
     Search {
@@ -171,11 +171,11 @@ struct InsertRepeat {
 pub struct VimState {
     mode: Mode,
     pending: Pending,
-    /// The `[vim.keymap]` sequences: literal key strings → editor commands,
+    /// The `[vim.keymap]` sequences: keystrokes → editor commands,
     /// matched in Normal mode before the built-in dispatch (so a mapping's
     /// first key shadows any built-in on that key). Parsed by
     /// [`super::parse_user_map`] when the editor opens.
-    user_map: Vec<(String, UserCmd)>,
+    user_map: UserMap,
     /// Digits typed so far for the count in progress (may sit before an
     /// operator, after it, or both — they multiply, as in Vim).
     count: String,
@@ -239,13 +239,13 @@ impl VimState {
 
     /// Swap the `[vim.keymap]` sequences in place (a live config edit) —
     /// mode, pending state, registers, and Vim-level undo all survive.
-    pub fn set_user_map(&mut self, user_map: Vec<(String, UserCmd)>) {
+    pub fn set_user_map(&mut self, user_map: UserMap) {
         self.user_map = user_map;
     }
 
     /// Fresh state in Normal mode, with the user's `[vim.keymap]` sequences
     /// active.
-    pub fn with_user_map(user_map: Vec<(String, UserCmd)>) -> Self {
+    pub fn with_user_map(user_map: UserMap) -> Self {
         VimState {
             mode: Mode::Normal,
             pending: Pending::None,
@@ -322,7 +322,7 @@ impl VimState {
             Pending::Z => s.push('Z'),
             Pending::Zscroll => s.push('z'),
             Pending::Comma => s.push(','),
-            Pending::User(typed) => s.push_str(typed),
+            Pending::User(typed) => s.push_str(&format_user_keys(typed)),
             Pending::Search { query, back } => {
                 s.push(if *back { '?' } else { '/' });
                 s.push_str(query);
@@ -340,6 +340,20 @@ impl VimState {
     pub fn cancel_pending(&mut self) {
         self.pending = Pending::None;
         self.count.clear();
+    }
+
+    /// Whether a key should be routed to a user mapping. A live user prefix
+    /// consumes its next key even when that key is a dead end (which beeps);
+    /// otherwise mappings start only from idle Normal mode.
+    pub fn handles_user_key(&self, key: Key) -> bool {
+        match &self.pending {
+            Pending::User(_) => true,
+            Pending::None if self.mode == Mode::Normal => self
+                .user_map
+                .iter()
+                .any(|(seq, _)| seq.first().is_some_and(|first| *first == key)),
+            _ => false,
+        }
     }
 
     /// Enter charwise Visual mode with the anchor at `anchor` — the app maps
@@ -819,10 +833,7 @@ impl VimState {
                 }
             }
             Pending::User(mut typed) => {
-                let Key::Char(c) = key else {
-                    return self.beep();
-                };
-                typed.push(c);
+                typed.push(key);
                 return self.user_advance(text, typed);
             }
             Pending::Search { query, back } => {
@@ -871,12 +882,14 @@ impl VimState {
         // before the built-in dispatch in Normal mode, so a mapping's first
         // key shadows any built-in on that key (dead ends beep, without
         // replaying the swallowed keys).
-        if self.mode == Mode::Normal && self.pending == Pending::None {
-            if let Key::Char(c) = key {
-                if self.user_map.iter().any(|(seq, _)| seq.starts_with(c)) {
-                    return self.user_advance(text, c.to_string());
-                }
-            }
+        if self.mode == Mode::Normal
+            && self.pending == Pending::None
+            && self
+                .user_map
+                .iter()
+                .any(|(seq, _)| seq.first().is_some_and(|first| *first == key))
+        {
+            return self.user_advance(text, vec![key]);
         }
 
         // Count digits: 1-9 always; 0 only continues a count. Capped at nine
@@ -995,7 +1008,7 @@ impl VimState {
     /// (a sequence that is also the prefix of a longer one fires immediately,
     /// making the longer one unreachable), keep waiting on a live prefix, and
     /// beep on a dead end.
-    fn user_advance(&mut self, text: &str, typed: String) -> Vec<Action> {
+    fn user_advance(&mut self, text: &str, typed: Vec<Key>) -> Vec<Action> {
         self.pending = Pending::None;
         if let Some(cmd) = self
             .user_map
@@ -1015,7 +1028,7 @@ impl VimState {
         if self
             .user_map
             .iter()
-            .any(|(seq, _)| seq.starts_with(typed.as_str()) && seq.len() > typed.len())
+            .any(|(seq, _)| seq.starts_with(&typed) && seq.len() > typed.len())
         {
             self.pending = Pending::User(typed);
             return Vec::new();

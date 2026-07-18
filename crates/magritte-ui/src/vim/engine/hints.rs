@@ -95,12 +95,10 @@ impl VimState {
                     .user_map
                     .iter()
                     .filter_map(|(seq, cmd)| {
-                        seq.strip_prefix(typed.as_str())
+                        seq.strip_prefix(typed.as_slice())
                             .filter(|rest| !rest.is_empty())
                             .map(|rest| {
-                                // Vim notation: the remaining keystrokes
-                                // read as one unspaced sequence cap.
-                                let keys = rest.to_string();
+                                let keys = format_user_keys(rest);
                                 (keys, cmd.describe().to_string())
                             })
                     })

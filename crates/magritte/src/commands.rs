@@ -1835,68 +1835,7 @@ fn preset_bindings(preset: config::KeymapPreset) -> &'static [(&'static str, &'s
 /// with spaces (`ctrl-x ctrl-c`). The prefixes match `kbd::format_keys`, so the
 /// display (`⌃x`) follows for free.
 pub(crate) fn chord(key: &str, shift: bool, ctrl: bool, alt: bool, cmd: bool) -> String {
-    // Shift folds into a printable key's character (`k`→`K`, `1`→`!`); on a named
-    // key that Shift doesn't reshape (`tab`, `space`, `escape`, arrows…) it stays
-    // an explicit `shift-` prefix, so `⇧⇥` is distinct from `⇥`.
-    let (base, shift_prefix) = match (shift, shifted_char(key)) {
-        (true, Some(c)) => (c, false),
-        (true, None) => (key.to_string(), true),
-        (false, _) => (key.to_string(), false),
-    };
-    let mut s = String::new();
-    if cmd {
-        s.push_str("cmd-");
-    }
-    if ctrl {
-        s.push_str("ctrl-");
-    }
-    if alt {
-        s.push_str("alt-");
-    }
-    if shift_prefix {
-        s.push_str("shift-");
-    }
-    s.push_str(&base);
-    s
-}
-
-/// The character a shifted key produces on a US keyboard, or `None` if Shift
-/// doesn't reshape it (named keys like `tab`/`space`, so Shift is kept as a
-/// modifier prefix instead).
-fn shifted_char(key: &str) -> Option<String> {
-    let shifted = match key {
-        "1" => "!",
-        "2" => "@",
-        "3" => "#",
-        "4" => "$",
-        "5" => "%",
-        "6" => "^",
-        "7" => "&",
-        "8" => "*",
-        "9" => "(",
-        "0" => ")",
-        "-" => "_",
-        "=" => "+",
-        "[" => "{",
-        "]" => "}",
-        "\\" => "|",
-        ";" => ":",
-        "'" => "\"",
-        "," => "<",
-        "." => ">",
-        "/" => "?",
-        "`" => "~",
-        _ if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) => {
-            return Some(key.to_uppercase())
-        }
-        // An already-shifted symbol (a platform that reports `+` rather than
-        // `shift-=`): Shift was how it was typed, so it folds away.
-        _ if key.len() == 1 && !key.chars().all(|c| c.is_ascii_alphanumeric()) => {
-            return Some(key.to_string())
-        }
-        _ => return None,
-    };
-    Some(shifted.to_string())
+    kbd::chord(key, shift, ctrl, alt, cmd)
 }
 
 /// Canonicalize a user `[keymap]` keystroke spec into the same form [`chord`]
@@ -1904,15 +1843,7 @@ fn shifted_char(key: &str) -> Option<String> {
 /// separated step is parsed for its modifiers (any accepted spelling/separator)
 /// and re-encoded: `Cmd+N` and `command-n` both become `cmd-N`.
 pub(crate) fn canonical_keystroke(key: &str) -> String {
-    key.split(' ')
-        .map(|step| {
-            let (mods, base) = kbd::parse_step(step);
-            // Normalize named-key aliases (`Esc`/`Ret`/`SPC`…) to the runtime form.
-            let base = kbd::normalize_key_name(base);
-            chord(&base, mods.shift, mods.ctrl, mods.alt, mods.cmd)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    kbd::canonical_keystroke(key)
 }
 
 /// Lightweight metadata for any command — built-in or user `[[command]]`.

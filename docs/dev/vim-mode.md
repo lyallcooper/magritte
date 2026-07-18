@@ -206,10 +206,13 @@ The engine carries an optional count for commands such as `3w` and `2dd`.
   an operator, `,` is always the reverse-find). `Esc` in idle Normal is a
   quiet no-op. `⌘⏎` still commits from any mode (in Normal it's caught in
   the capture phase, since the unfocused input can't).
-- **User keymap (`[vim.keymap]`):** extra literal key sequences for the
+- **User keymap (`[vim.keymap]`):** extra key sequences for the
   editor-level commands (`commit`/`cancel`/`discard`/`reflow`/`help`),
   parsed from the config (`config::VimConfig`, per-entry repo merge like
-  `[keymap]`) into the engine at construction (`VimState::with_user_map`).
+  `[keymap]`) into the engine at construction (`VimState::with_user_map`). The
+  canonical notation separates sequence steps with spaces (`Z Z`, `Q enter`,
+  `ctrl-x ctrl-c`); modifier chords use the global keymap notation
+  (`cmd-enter`). Compact literal sequences (`ZZ`, `,w`) remain accepted.
   Live reload updates the map in an open editor. Resolution order: in Normal mode, before
   the built-in dispatch, a key that starts any user sequence enters a
   `Pending::User` prefix state (shown in the indicator like other pending

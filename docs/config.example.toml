@@ -60,11 +60,12 @@
 # ". S" = "user.sync"
 # "x" = "unbound"
 
-# Extra commit-editor Vim bindings use literal key sequences without spaces.
+# Separate commit-editor Vim sequence steps with spaces.
 # [vim.keymap]
 # "Q" = "cancel"
-# ";w" = "commit"
-# "gz" = "help"
+# "; w" = "commit"
+# "cmd-enter" = "commit"
+# "g z" = "help"
 
 # Custom commands run through sh -c in the repository root.
 # [[command]]
