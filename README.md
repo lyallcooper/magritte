@@ -22,9 +22,10 @@ cargo fmt --check
 The first build takes longer because it compiles GPUI and the pinned
 dependencies. Later builds are incremental.
 
-The workspace has two crates:
+The workspace has three crates:
 
 - `magritte-core` contains synchronous, UI-independent Git operations.
+- `magritte-ui` contains app-agnostic UI primitives (the popup-menu model, the Vim engine, pickers, dev tooling) with no Git in them.
 - `magritte` contains the GPUI app, background work, and cancellation.
 
 Read [AGENTS.md](AGENTS.md) for repository conventions. The website and

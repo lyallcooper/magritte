@@ -1,7 +1,9 @@
 # Vim mode for the commit editor
 
-This document is the as-built design reference for contributors. The feature
-lives in `crates/magritte/src/vim/` and is enabled with `commit_vim_mode`.
+This document is the as-built design reference for contributors. The pure
+command engine lives in `crates/magritte-ui/src/vim/`; the app-side integration
+(`apply.rs`, the `:help` sheet) lives in `crates/magritte/src/vim/`. The
+feature is enabled with `commit_vim_mode`.
 
 ## Goal
 
@@ -91,7 +93,7 @@ paste their code. Encode the agreed behavior as our own tests.
 
 ## Command engine
 
-`crates/magritte/src/vim/` does not depend on `InputState` or GPUI. Given a
+`crates/magritte-ui/src/vim/` does not depend on `InputState` or GPUI. Given a
 buffer, cursor, mode, and key, it returns an `Action`:
 
 ```

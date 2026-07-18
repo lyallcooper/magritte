@@ -38,7 +38,7 @@ The bare `down` subcommand **quits** the app — to move the cursor down, inject
 
 ## Architecture
 
-Two crates split at a **synchronous/async seam**:
+Three crates: the git engine (`magritte-core`), an app-agnostic UI toolkit (`magritte-ui`), and the app (`magritte`). The core/app split is a **synchronous/async seam**; `magritte-ui` holds the pieces with no git in them, so a sibling app could reuse them. `magritte-core` and `magritte-ui` do not depend on each other. Dependencies shared between crates (gpui and friends, pinned git revs) live in `[workspace.dependencies]`.
 
 ### `magritte-core` — UI-free, synchronous
 Drives the `git` CLI and returns plain data, so it's unit-testable against throwaway repos with no graphics stack. One module per git area (`status`, `diff`, `stage`, `branch`, `commit`, `merge`, `rebase`, `stash`, `remote`, …). Everything centers on `Repo` (`repo.rs`):
@@ -46,9 +46,16 @@ Drives the `git` CLI and returns plain data, so it's unit-testable against throw
 - The `run` / `run_optional` / `run_with_env` / `run_with_input` / `run_with_sequence_editor` family shell out to git through one `collect_output` path that honors an optional cancel flag and timeout.
 - `cancellable()` / `with_cancel(flag)` / `with_timeout(d)` return tagged clones; the UI uses these so a refresh or `Ctrl-g` can kill an in-flight subprocess.
 - Every invocation is recorded into a shared ring buffer (the `$` command log). `is_query()` classifies read-only commands so they can be hidden from that log by default.
-- `transient/` defines the `Command`/`Transient` model (the popup command menus, `mod.rs`) and the built-in menu definitions (`menus.rs`), shared with the UI layer.
 
 When implementing or fixing git behavior, **match magit's behavior** precisely rather than reaching for a simpler git command.
+
+### `magritte-ui` — app-agnostic toolkit
+Reusable primitives with no git types in them; `pub` API, but consumed only by this workspace (`publish = false`):
+
+- `transient.rs` — the generic transient (popup menu) model: `Transient<C>`/`Group<C>`/`Suffix<C>` over an app-defined command payload `C`, plus switches, options, info rows, and config variables. UI-agnostic data; the app renders and dispatches it.
+- `vim/` — the modal Vim engine, a pure keystroke→`Action` layer over a plain string buffer (headlessly tested in `vim/tests.rs` — see `docs/dev/vim-mode.md`).
+- `picker.rs` — the fuzzy picker model; `kbd.rs` — keycap chips and keystroke parsing/formatting; `commit_text.rs` — 50/72 wrap/reflow helpers; `generation.rs` — the async staleness stamp; `persist.rs` — atomic TOML state-file helpers.
+- `debug.rs` (feature `debug`/`debug-capture`) — the `scripts/dbg.sh` control channel; `ipc.rs` — single-instance handoff over a Unix socket. Both are parameterized by app identity (env-var names, socket path).
 
 ### `magritte` — the GPUI app
 A **single `Entity<StatusView>` god-object** owns all UI state for every screen. This is deliberate (a GPUI view owns its state + behavior together; multi-entity message-passing buys nothing for a single-pane modal app — see the FB5 disposition in `FEEDBACK.md`). The lesson for working here: **split the file, not the entity.** `main.rs` (~2k lines) holds the `StatusView` struct, the `Screen` enum, `main()`, and the registry/keymap invariant tests; cohesive slices live in sibling modules but stay `impl StatusView` blocks with `pub(crate)` methods over the same private fields:
@@ -57,11 +64,12 @@ A **single `Entity<StatusView>` god-object** owns all UI state for every screen.
 - `controller.rs` — command dispatch (`fire_action`) and the picker orchestration those prompts share.
 - `jobs.rs` — the `run_job*` / `run_command_job` background-job runners, the status-toast/report plumbing, and the auto-fetch/update-check loops; `transfer.rs` — push/pull/fetch orchestration; `rebase_flow.rs` — the interactive-rebase todo editor and the mid-rebase reword flow.
 - `commands.rs` — the `commands()` **registry** (the single source of truth for what commands exist), default keymap, and `?`-menu / `:`-palette metadata.
+- `git_transient/` — the git `Command` enum the generic transient model is instantiated with (the crate-wide `Transient`/`Group`/`Suffix` aliases), plus the built-in menu definitions (`menus.rs`).
 - `input.rs` — `on_key`, the prefix-sequence state machine, dispatch, and the `:` palette.
 - `navigation.rs` — cursor motion, selection, fold toggling, selection-anchor preservation.
 - `row_build.rs` — the status `Row` list builder; `status_loader.rs` — the async status/diff engine; `staging.rs` — act-at-point actions and the diff cache.
-- `commit_editor.rs` — the in-app commit message editor (50/72 assistance, diff preview); `vim/` — its modal Vim engine, a pure keystroke→`Action` layer (applied by `vim/apply.rs`, tested headlessly in `vim/tests.rs` — see `docs/dev/vim-mode.md`).
-- `settings.rs`, `picker.rs`, `theme.rs`, `kbd.rs`, `config.rs`, `state.rs`, `watchers.rs`, etc.
+- `commit_editor.rs` — the in-app commit message editor (50/72 assistance, diff preview); `vim/` — the app side of Vim mode: `apply.rs` routes gpui keys through the `magritte-ui` engine and applies the returned actions.
+- `settings.rs`, `theme.rs`, `config.rs`, `state.rs` (the persisted-state schemas), `watchers.rs`, etc.
 
 Key cross-cutting models:
 
