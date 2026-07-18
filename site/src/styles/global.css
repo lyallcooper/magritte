@@ -304,10 +304,14 @@ hr {
     margin: 1.25rem 0;
 }
 
-.callout .callout-title {
-    /*font-weight: bold;*/
+.callout-title {
     font-style: italic;
-    font-size: 1.1em;
+    font-weight: 500;
+    margin: 0;
+}
+
+.callout-body {
+    margin-top: 0.25em;
 }
 
 .callout code,
