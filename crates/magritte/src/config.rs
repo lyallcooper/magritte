@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{atomic_write_text, atomic_write_toml, load_toml_or_default, unix_now};
+use magritte_ui::persist::{atomic_write_text, atomic_write_toml, load_toml_or_default, unix_now};
 
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).

@@ -1,11 +1,17 @@
 //! App-owned state persistence: small typed TOML files that are not user
 //! configuration. Global files live next to `config.toml`; repo/worktree-scoped
 //! files live inside the already-discovered `.git/magritte` scope directories.
+//! The load/atomic-write mechanics live in `magritte_ui::persist`, re-exported
+//! here so call sites keep the `state::` paths.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
+
+pub(crate) use magritte_ui::persist::{
+    load_toml_opt, load_toml_or_default, save_toml, scoped_path, unix_now,
+};
 
 use crate::config;
 
@@ -17,47 +23,6 @@ pub const COMMIT_MESSAGES_FILE: &str = "commit-messages.toml";
 
 pub fn global_path(file: &str) -> Option<PathBuf> {
     config::path().map(|p| p.with_file_name(file))
-}
-
-pub fn scoped_path(scope_dir: &Path, file: &str) -> PathBuf {
-    scope_dir.join(file)
-}
-
-pub fn load_toml_opt<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
-}
-
-pub fn load_toml_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
-    load_toml_opt(path).unwrap_or_default()
-}
-
-pub fn save_toml<T: Serialize>(path: &Path, value: &T) {
-    let _ = atomic_write_toml(path, value);
-}
-
-pub(crate) fn atomic_write_toml<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = toml::to_string_pretty(value)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    atomic_write_text(path, &text)
-}
-
-pub(crate) fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("toml.{}.{seq}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// A repository in the recent list and when it was last opened (unix
@@ -130,14 +95,6 @@ impl CommitMessageRing {
         self.messages.insert(0, message);
         self.messages.truncate(COMMIT_MESSAGE_RING_CAP);
     }
-}
-
-/// Current time as unix seconds; 0 if the clock is somehow before the epoch.
-pub(crate) fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Per-worktree persisted status fold state. Sections are expanded by default,

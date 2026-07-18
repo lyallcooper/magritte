@@ -8,6 +8,7 @@ pub mod debug;
 pub mod generation;
 pub mod ipc;
 pub mod kbd;
+pub mod persist;
 pub mod picker;
 pub mod vim;
 
