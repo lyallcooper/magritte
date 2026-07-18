@@ -23,31 +23,23 @@ debug = ["dep:libc"]
 debug-capture = ["debug", "dep:image", "gpui_platform/test-support"]
 
 [dependencies]
-# gpui + gpui-component must share the exact same gpui git rev so their types
-# unify. These revs are pinned to match gpui-component 0.5.2.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c", features = [
-    "tree-sitter-languages",
-] }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
-magritte-core = { path = "../magritte-core" }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+gpui-component = { workspace = true }
+gpui-component-assets = { workspace = true }
+magritte-core = { workspace = true }
 # Native config-file watching (FSEvents on macOS) + the async channel that
 # bridges its callback thread to the GPUI executor — no polling.
 notify = "7"
-async-channel = "2"
+async-channel = { workspace = true }
 regex = "1"
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 serde_json = "1"
 # POSIX-style word splitting for the `!` run-git prompt — honors quoting and
 # escapes without invoking a shell.
 shell-words = "1"
-# Order-preserving maps for `[transient.<id>]` entries: they apply in the order
-# written, so placement (`before`/`after`) can reference an earlier entry.
-indexmap = { version = "2", features = ["serde"] }
-# `preserve_order` keeps `toml::Value` tables in document order through the
-# global+repo deep merge, so `[transient.*]` entry order survives the load.
-toml = { version = "0.8", features = ["preserve_order"] }
+indexmap = { workspace = true }
+toml = { workspace = true }
 toml_edit = "0.22"
 # Extra tree-sitter grammars whose gpui-component registrations have empty
 # highlight queries at the pinned revision. Versions match Cargo.lock.
@@ -57,9 +49,9 @@ tree-sitter-kotlin-sg = "0.4.1"
 tree-sitter-proto = "0.2.0"
 tree-sitter-swift = "0.7.3"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+image = { workspace = true, optional = true }
 # Only used by the `debug` feature (control-dir ownership check).
-libc = { version = "0.2", optional = true }
+libc = { workspace = true, optional = true }
 
 # macOS-only: window-id lookup for screenshots, and CoreText font traits for
 # robust monospace-font detection (vs. glyph-width heuristics).
@@ -67,8 +59,8 @@ libc = { version = "0.2", optional = true }
 # Raw Objective-C messaging for the Dock-icon switcher (NSApplication
 # applicationIconImage); already in the tree via gpui.
 objc = "0.2"
-core-foundation = "0.10"
-core-graphics = { version = "0.24", features = ["link"] }
+core-foundation = { workspace = true }
+core-graphics = { workspace = true }
 core-text = "21"
 
 [lints.rust]

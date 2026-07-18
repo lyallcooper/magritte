@@ -7,5 +7,29 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lyallcooper/magritte"
 
+[workspace.dependencies]
+magritte-core = { path = "crates/magritte-core" }
+# gpui + gpui-component must share the exact same gpui git rev so their types
+# unify. These revs are pinned to match gpui-component 0.5.2.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c", features = [
+    "tree-sitter-languages",
+] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "8e4930fd687da9133bac06fdc0789e6a179f948c" }
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps `toml::Value` tables in document order through the
+# global+repo deep merge, so `[transient.*]` entry order survives the load.
+toml = { version = "0.8", features = ["preserve_order"] }
+# Order-preserving maps for `[transient.<id>]` entries: they apply in the order
+# written, so placement (`before`/`after`) can reference an earlier entry.
+indexmap = { version = "2", features = ["serde"] }
+async-channel = "2"
+# Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
+image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["link"] }
+
 [profile.release]
 lto = "thin"
