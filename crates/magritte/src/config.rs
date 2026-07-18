@@ -43,10 +43,10 @@ impl KeymapPreset {
         }
     }
 
-    pub fn transient_style(self) -> magritte_core::transient::KeymapStyle {
+    pub fn transient_style(self) -> crate::git_transient::KeymapStyle {
         match self {
-            KeymapPreset::EvilCollection => magritte_core::transient::KeymapStyle::EvilCollection,
-            KeymapPreset::Vanilla => magritte_core::transient::KeymapStyle::Vanilla,
+            KeymapPreset::EvilCollection => crate::git_transient::KeymapStyle::EvilCollection,
+            KeymapPreset::Vanilla => crate::git_transient::KeymapStyle::Vanilla,
         }
     }
 }

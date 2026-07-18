@@ -1,12 +1,13 @@
 //! The built-in transient definitions — magit's popups, one builder per
 //! command family (push, pull, fetch, commit, branch, rebase, …).
 
+use magritte_core::remote::Upstream;
+use magritte_core::{RemoteTargets, SequenceKind};
+
 use super::{
     plain_title, Action, Command, Completion, Group, KeymapStyle, Opt, Suffix, Switch, TitleSpan,
-    Transient, Variable,
+    Transient, Variable, AUTHORS, FILES,
 };
-use crate::remote::{RemoteTargets, Upstream};
-use crate::sequence::SequenceKind;
 
 /// The push-remote target label: `branch → remote/branch` when configured, else
 /// magit's descriptive hint that invoking it configures the push-remote (push
@@ -52,7 +53,7 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
     let push_to = match &t.branch {
         Some(b) => vec![
             TitleSpan::text("Push "),
-            TitleSpan::branch(b.clone()),
+            TitleSpan::accent(b.clone()),
             TitleSpan::text(" to"),
         ],
         None => plain_title("Push to"),
@@ -127,7 +128,7 @@ pub fn push_transient(t: &RemoteTargets) -> Transient {
 fn branch_config_groups(branch: &str, remotes: Vec<String>) -> Vec<Group> {
     vec![
         Group {
-            title: vec![TitleSpan::text("Configure "), TitleSpan::branch(branch)],
+            title: vec![TitleSpan::text("Configure "), TitleSpan::accent(branch)],
             suffixes: vec![
                 Variable::value(
                     "d",
@@ -256,7 +257,7 @@ pub fn tag_transient(style: KeymapStyle) -> Transient {
 /// sub-transient.
 fn remote_config_group(remote: &str) -> Group {
     Group {
-        title: vec![TitleSpan::text("Configure "), TitleSpan::branch(remote)],
+        title: vec![TitleSpan::text("Configure "), TitleSpan::accent(remote)],
         suffixes: vec![
             Variable::value("u", format!("remote.{remote}.url"), "url", Completion::None),
             Variable::value(
@@ -360,7 +361,7 @@ pub fn stash_transient() -> Transient {
                         key: "--",
                         arg: "",
                         description: "Limit to files",
-                        completion: Completion::Files,
+                        completion: Completion::Source(FILES),
                         pathspec: true,
                     }),
                 ],
@@ -452,7 +453,7 @@ pub fn log_transient() -> Transient {
                         key: "-A",
                         arg: "--author=",
                         description: "Limit to author",
-                        completion: Completion::Authors,
+                        completion: Completion::Source(AUTHORS),
                         pathspec: false,
                     }),
                     Suffix::Option(Opt {
@@ -482,7 +483,7 @@ pub fn log_transient() -> Transient {
                         key: "--",
                         arg: "",
                         description: "Limit to files",
-                        completion: Completion::Files,
+                        completion: Completion::Source(FILES),
                         pathspec: true,
                     }),
                 ],
@@ -512,7 +513,7 @@ pub fn diff_transient() -> Transient {
                         key: "--",
                         arg: "",
                         description: "Limit to files",
-                        completion: Completion::Files,
+                        completion: Completion::Source(FILES),
                         pathspec: true,
                     }),
                     Suffix::Option(Opt {
@@ -622,7 +623,7 @@ pub fn commit_transient() -> Transient {
                         key: "-A",
                         arg: "--author=",
                         description: "Override the author",
-                        completion: Completion::Authors,
+                        completion: Completion::Source(AUTHORS),
                         pathspec: false,
                     }),
                     Suffix::Switch(Switch::new("-s", "--signoff", "Add Signed-off-by line")),
@@ -1131,5 +1132,54 @@ pub fn reset_transient() -> Transient {
                 ],
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn targets(branch: &str, push_remote: &str, up_remote: &str, up_branch: &str) -> RemoteTargets {
+        RemoteTargets {
+            branch: Some(branch.to_string()),
+            push_remote: Some(push_remote.to_string()),
+            upstream: Some(Upstream {
+                remote: up_remote.to_string(),
+                branch: up_branch.to_string(),
+            }),
+            sole_remote: None,
+        }
+    }
+
+    #[test]
+    fn push_transient_defines_force_and_actions() {
+        let tr = push_transient(&RemoteTargets::default());
+        assert!(tr.switches().any(|s| s.arg == "--force-with-lease"));
+        // push-remote / upstream / elsewhere.
+        assert!(tr.action_for("p").is_some());
+        assert!(tr.action_for("u").is_some());
+        assert!(tr.action_for("e").is_some());
+    }
+
+    #[test]
+    fn push_transient_labels_resolved_targets() {
+        // A configured upstream names the resolved ref on its action row.
+        let tr = push_transient(&targets("main", "origin", "origin", "main"));
+        match tr.action_for("u") {
+            Some(a) => assert_eq!(a.description, "origin/main"),
+            None => panic!("missing upstream action"),
+        }
+    }
+
+    #[test]
+    fn action_dispatches_on_either_collapsed_key() {
+        // The collapsed push entry is invokable by both `p` and `u`.
+        let push = push_transient(&targets("main", "origin", "origin", "main"));
+        assert!(push.action_for("p").is_some());
+        assert!(push.action_for("u").is_some());
+        assert_eq!(
+            push.action_for("p").map(|a| &a.command),
+            push.action_for("u").map(|a| &a.command),
+        );
     }
 }

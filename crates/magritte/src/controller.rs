@@ -244,8 +244,13 @@ impl StatusView {
         // Load git-backed candidates (authors, tracked files) asynchronously and
         // drop them into the open picker — `git ls-files` can be large/slow.
         let loader: Option<fn(&Repo) -> Vec<String>> = match completion {
-            transient::Completion::Authors => Some(|r| r.authors().unwrap_or_default()),
-            transient::Completion::Files => Some(|r| r.tracked_files().unwrap_or_default()),
+            transient::Completion::Source(transient::AUTHORS) => {
+                Some(|r| r.authors().unwrap_or_default())
+            }
+            transient::Completion::Source(transient::FILES) => {
+                Some(|r| r.tracked_files().unwrap_or_default())
+            }
+            // Unknown tags (none exist today) fall through to free text.
             _ => None,
         };
         if let (Some(load), Some(repo)) = (loader, self.repo.clone()) {

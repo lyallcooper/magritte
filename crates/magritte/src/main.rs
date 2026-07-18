@@ -37,6 +37,7 @@ mod diff_render;
 mod editor_launch;
 mod editors;
 mod git_action;
+mod git_transient;
 mod highlight;
 mod input;
 mod jobs;
@@ -128,11 +129,11 @@ actions!(
 // config with a specific editor (carries the editor's app path). `no_json`
 // avoids the serde/schemars requirement of keymap-loadable actions.
 actions!(magritte, [CopyConfigPath, CopyRepoConfigPath]);
+use git_transient::{self as transient, Group, Suffix, TitleSpan, Transient};
 use gpui::Subscription;
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::{ActiveTheme, IndexPath};
-use magritte_core::transient::{self, Group, Suffix, TitleSpan, Transient};
 use magritte_core::{
     bisect::Bisect, BisectMark, CommitMode, ConflictSide, DiffSource, FileEntry, IgnoreDest,
     LineChange, LineKind, RebaseAction, RefreshNeeds, RemoteTargets, Repo, ResetMode, Sequence,

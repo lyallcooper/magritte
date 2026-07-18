@@ -344,17 +344,4 @@ mod tests {
         assert!(!t.push_matches_upstream());
         assert!(t.push_remote_is_upstream_remote());
     }
-
-    #[test]
-    fn action_dispatches_on_either_collapsed_key() {
-        // The collapsed push entry is invokable by both `p` and `u`.
-        let t = targets("main", "origin", "origin", "main");
-        let push = crate::transient::push_transient(&t);
-        assert!(push.action_for("p").is_some());
-        assert!(push.action_for("u").is_some());
-        assert_eq!(
-            push.action_for("p").map(|a| &a.command),
-            push.action_for("u").map(|a| &a.command),
-        );
-    }
 }

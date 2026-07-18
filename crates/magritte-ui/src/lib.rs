@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod kbd;
 pub mod persist;
 pub mod picker;
+pub mod transient;
 pub mod vim;
 
 use gpui::Hsla;

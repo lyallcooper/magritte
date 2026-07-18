@@ -62,7 +62,7 @@ impl StatusView {
                 TitleSpan::Text(t) => {
                     row.child(div().text_color(base).child(SharedString::from(t.clone())))
                 }
-                TitleSpan::Branch(b) => row.child(self.branch_chip(b)),
+                TitleSpan::Accent(b) => row.child(self.branch_chip(b)),
             };
         }
         row

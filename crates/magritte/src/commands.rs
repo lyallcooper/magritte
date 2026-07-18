@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use gpui::{Context, Window};
-use magritte_core::transient::{self, Suffix, TitleSpan, Transient};
 use magritte_core::RemoteTargets;
 
 use crate::*;
@@ -2347,7 +2346,7 @@ pub(crate) fn group_text(g: &Group) -> String {
         .iter()
         .filter_map(|s| match s {
             TitleSpan::Text(t) => Some(t.as_str()),
-            TitleSpan::Branch(_) => None,
+            TitleSpan::Accent(_) => None,
         })
         .collect()
 }

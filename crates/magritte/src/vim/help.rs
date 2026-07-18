@@ -6,7 +6,7 @@ use crate::*;
 /// dispatch-style transient over the editor (Esc dismisses). Static — the
 /// engine's editing keys are fixed; the editor-level commands (commit,
 /// cancel, …) take extra `[vim.keymap]` sequences, which aren't listed here.
-pub(crate) fn vim_help_menu() -> transient::Transient {
+pub(crate) fn vim_help_menu() -> Transient {
     let info = |keys: &str, description: &str| {
         transient::Suffix::Info(transient::Info {
             keys: keys.to_string(),
@@ -15,11 +15,11 @@ pub(crate) fn vim_help_menu() -> transient::Transient {
             clickable: false,
         })
     };
-    let group = |title: &str, suffixes| transient::Group {
+    let group = |title: &str, suffixes| Group {
         title: transient::plain_title(title),
         suffixes,
     };
-    transient::Transient {
+    Transient {
         title: transient::plain_title("Vim mode"),
         groups: vec![
             group(

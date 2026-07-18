@@ -4,10 +4,7 @@
 //! Split out of `main.rs` as a `pub(crate)` `impl StatusView` block.
 
 use gpui::{Context, KeyDownEvent, SharedString, Window};
-use magritte_core::{
-    transient::{self, Suffix, Transient},
-    HeadInfo, RemoteTargets, SequenceKind,
-};
+use magritte_core::{HeadInfo, RemoteTargets, SequenceKind};
 
 use crate::*;
 

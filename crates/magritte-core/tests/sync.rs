@@ -4,8 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use common::TestRepo;
-use magritte_core::transient::push_transient;
-use magritte_core::{RemoteTargets, Repo};
+use magritte_core::Repo;
 
 /// Run git in an arbitrary dir with isolated config (for the bare remote).
 fn git_in(dir: &Path, args: &[&str]) -> String {
@@ -38,17 +37,7 @@ fn repo_with_remote() -> (TestRepo, tempfile::TempDir) {
 }
 
 #[test]
-fn push_transient_defines_force_and_actions() {
-    let tr = push_transient(&RemoteTargets::default());
-    assert!(tr.switches().any(|s| s.arg == "--force-with-lease"));
-    // push-remote / upstream / elsewhere.
-    assert!(tr.action_for("p").is_some());
-    assert!(tr.action_for("u").is_some());
-    assert!(tr.action_for("e").is_some());
-}
-
-#[test]
-fn push_transient_labels_resolved_targets() {
+fn remote_targets_resolve_after_push_set_upstream() {
     let (t, _remote) = repo_with_remote();
     let repo = Repo::discover(t.path()).unwrap();
     repo.push_to("origin", "main", true, &[]).unwrap();
@@ -59,13 +48,6 @@ fn push_transient_labels_resolved_targets() {
         targets.upstream.as_ref().map(|u| u.display()),
         Some("origin/main".to_string())
     );
-
-    let tr = push_transient(&targets);
-    // The upstream action names the resolved branch.
-    match tr.action_for("u") {
-        Some(a) => assert_eq!(a.description, "origin/main"),
-        None => panic!("missing upstream action"),
-    }
 }
 
 #[test]

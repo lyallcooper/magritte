@@ -4,7 +4,7 @@
 //! cursor. `impl StatusView` like the other view slices.
 
 use gpui::{Context, UniformListScrollHandle, Window};
-use magritte_core::{transient, LogEntry, Repo};
+use magritte_core::{LogEntry, Repo};
 
 use crate::*;
 

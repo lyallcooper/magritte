@@ -4,7 +4,7 @@
 //! actions the controller resolves. `impl StatusView` like the other slices.
 
 use gpui::{Context, Window};
-use magritte_core::{transient, RemoteTargets, Repo};
+use magritte_core::{RemoteTargets, Repo};
 
 use crate::*;
 
@@ -278,14 +278,14 @@ impl Transfer {
                 } else {
                     vec![
                         TitleSpan::text("Push "),
-                        TitleSpan::branch(branch.clone()),
+                        TitleSpan::accent(branch.clone()),
                         TitleSpan::text(" to"),
                     ]
                 }
             }
             Transfer::PushTag { tag } => vec![
                 TitleSpan::text("Push "),
-                TitleSpan::branch(tag.clone()),
+                TitleSpan::accent(tag.clone()),
                 TitleSpan::text(" to remote"),
             ],
             Transfer::PushTags => transient::plain_title("Push tags to remote"),
@@ -503,7 +503,7 @@ impl PickerAction {
                 BranchAction::RenameFrom => transient::plain_title("Rename branch"),
                 BranchAction::RenameTo { old } => vec![
                     TitleSpan::text("Rename "),
-                    TitleSpan::branch(old.clone()),
+                    TitleSpan::accent(old.clone()),
                     TitleSpan::text(" to"),
                 ],
                 BranchAction::Delete => transient::plain_title("Delete branch"),
@@ -521,13 +521,13 @@ impl PickerAction {
                 RemoteAction::AddName => transient::plain_title("Add remote"),
                 RemoteAction::AddUrl { name, .. } => vec![
                     TitleSpan::text("Add "),
-                    TitleSpan::branch(name.clone()),
+                    TitleSpan::accent(name.clone()),
                     TitleSpan::text(" url"),
                 ],
                 RemoteAction::RenameFrom => transient::plain_title("Rename remote"),
                 RemoteAction::RenameTo { old } => vec![
                     TitleSpan::text("Rename "),
-                    TitleSpan::branch(old.clone()),
+                    TitleSpan::accent(old.clone()),
                     TitleSpan::text(" to"),
                 ],
                 RemoteAction::Remove => transient::plain_title("Remove remote"),
@@ -551,13 +551,13 @@ impl PickerAction {
             PickerAction::ResetBranch => transient::plain_title("Reset branch"),
             PickerAction::ResetBranchTo { branch } => vec![
                 TitleSpan::text("Reset "),
-                TitleSpan::branch(branch.clone()),
+                TitleSpan::accent(branch.clone()),
                 TitleSpan::text(" to"),
             ],
             PickerAction::FileCheckoutRev => transient::plain_title("Checkout from revision"),
             PickerAction::FileCheckoutFile { rev } => vec![
                 TitleSpan::text("Checkout file from "),
-                TitleSpan::branch(rev.clone()),
+                TitleSpan::accent(rev.clone()),
             ],
             PickerAction::Merge { .. } => transient::plain_title("Merge"),
             PickerAction::MergePreview => transient::plain_title("Preview merge"),
@@ -808,7 +808,7 @@ pub(crate) fn apply_user_suffixes(
 /// default section — where switches or actions respectively live).
 fn insert_suffix(
     def: &mut Transient,
-    suffix: transient::Suffix,
+    suffix: Suffix,
     key: &str,
     placement: &config::Placement,
     default_group: &str,
@@ -873,7 +873,7 @@ fn find_suffix(def: &Transient, key: &str) -> Option<(usize, usize)> {
 }
 
 /// Append into the section with this title if it exists, else create it.
-fn append_to_group(def: &mut Transient, title: &str, suffix: transient::Suffix) {
+fn append_to_group(def: &mut Transient, title: &str, suffix: Suffix) {
     match def.groups.iter_mut().find(|g| group_text(g) == title) {
         Some(g) => g.suffixes.push(suffix),
         None => def.groups.push(transient::Group {
@@ -1432,8 +1432,8 @@ pub(crate) fn conflicting_switch_keys(def: &Transient, key: &str) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_transient::{Command, Switch};
     use indexmap::IndexMap;
-    use magritte_core::transient::{Command, Group, Suffix, Switch};
 
     /// A miniature commit-like transient: Arguments (`-a`, `-s`), Create (`c`),
     /// Edit HEAD (`e`).
