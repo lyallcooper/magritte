@@ -31,7 +31,6 @@ mod blame_view;
 mod commands;
 mod commit_diff_view;
 mod commit_editor;
-mod commit_text;
 mod config;
 mod controller;
 #[cfg(feature = "debug")]
@@ -39,19 +38,16 @@ mod debug;
 mod diff_render;
 mod editor_launch;
 mod editors;
-mod generation;
 mod git_action;
 mod highlight;
 mod input;
 mod ipc;
 mod jobs;
-mod kbd;
 mod list_render;
 mod log_view;
 mod menus;
 mod navigation;
 mod palette;
-mod picker;
 mod picker_render;
 mod rebase_flow;
 mod refs_view;
@@ -90,6 +86,7 @@ pub(crate) use worktree_view::*;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{file_head_tail, FileHighlights, Span};
+use magritte_ui::{commit_text, generation, kbd, picker, with_alpha};
 use picker::{CreateMode, PickerList};
 use settings::SettingsCaches;
 
@@ -202,11 +199,6 @@ impl PagerSelection {
             selected: &mut self.selected,
         }
     }
-}
-
-fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
-    color.a = alpha;
-    color
 }
 
 /// A resolved default branch: the remote whose HEAD named it (None when it

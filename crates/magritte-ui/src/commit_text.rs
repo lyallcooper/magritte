@@ -66,10 +66,10 @@ fn wrap_prefixes(line: &str) -> (&str, String) {
 /// over-long line* — i.e. while typing at the end of a line — so that editing
 /// in the middle of the message never reflows text under the user. The summary
 /// (line 0) is never wrapped, and bullets/indented lines wrap with their
-/// hanging indent preserved (see [`wrap_prefixes`]). Returns the rewrapped
+/// hanging indent preserved (see `wrap_prefixes`). Returns the rewrapped
 /// text when a wrap happened; the cursor (at the line's end) lands at
 /// `offset + (new.len() - old.len())` — every inserted byte precedes it.
-pub(crate) fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<String> {
+pub fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<String> {
     let mut line_start = 0; // byte offset of the current line's first char
     for (i, line) in text.split('\n').enumerate() {
         let line_end = line_start + line.len(); // byte offset before the '\n'
@@ -98,7 +98,7 @@ pub(crate) fn wrap_at_cursor(text: &str, cursor: usize, width: usize) -> Option<
 /// summary (line 0) and blank separator lines are left untouched. Unlike
 /// [`wrap_at_cursor`], this *re-joins* manually-broken lines, so it's an
 /// explicit action rather than something to run while typing.
-pub(crate) fn reflow_body(text: &str, width: usize) -> String {
+pub fn reflow_body(text: &str, width: usize) -> String {
     match text.split_once('\n') {
         None => text.to_string(),
         Some((summary, rest)) => format!("{summary}\n{}", reflow_lines(rest, width)),
@@ -111,7 +111,7 @@ pub(crate) fn reflow_body(text: &str, width: usize) -> String {
 /// the git convention for code blocks and quoted output), and a bullet
 /// (`- * + •` or `1.`/`1)`) starts its own paragraph that re-wraps with a
 /// hanging indent, its continuation lines joined bullet-style.
-pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
+pub fn reflow_lines(block: &str, width: usize) -> String {
     reflow_block(block, width, true)
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn reflow_lines(block: &str, width: usize) -> String {
 /// user pointed at these lines, so indented ones aren't preformatted — they
 /// rejoin their paragraph and re-wrap at the first line's indentation, like
 /// Vim's `gq`. The conservative verbatim rule stays for whole-body reflows.
-pub(crate) fn reflow_lines_joining(block: &str, width: usize) -> String {
+pub fn reflow_lines_joining(block: &str, width: usize) -> String {
     reflow_block(block, width, false)
 }
 
@@ -208,7 +208,7 @@ fn bullet_marker(line: &str) -> Option<&str> {
 /// `limit` columns, as `(start, end)` for a diagnostic `Position` (whose
 /// `character` field is a 0-based character count). `None` when the summary
 /// fits.
-pub(crate) fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
+pub fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
     let title = text.split('\n').next().unwrap_or("");
     let chars = title.chars().count();
     if chars <= limit {
@@ -221,10 +221,7 @@ pub(crate) fn title_overflow(text: &str, limit: usize) -> Option<(u32, u32)> {
 /// range in `old` to replace and the byte range in `new` holding the
 /// replacement (longest common prefix and suffix trimmed, on char
 /// boundaries). Equal strings yield two empty ranges.
-pub(crate) fn diff_splice(
-    old: &str,
-    new: &str,
-) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+pub fn diff_splice(old: &str, new: &str) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
     let mut p = old
         .bytes()
         .zip(new.bytes())
@@ -247,10 +244,7 @@ pub(crate) fn diff_splice(
 
 /// UTF-8 byte range → UTF-16 code-unit range: `replace_text_in_range` is the
 /// one input API that speaks UTF-16.
-pub(crate) fn byte_range_to_utf16(
-    text: &str,
-    range: &std::ops::Range<usize>,
-) -> std::ops::Range<usize> {
+pub fn byte_range_to_utf16(text: &str, range: &std::ops::Range<usize>) -> std::ops::Range<usize> {
     let start: usize = text[..range.start].chars().map(char::len_utf16).sum();
     let len: usize = text[range.start..range.end]
         .chars()
@@ -262,7 +256,7 @@ pub(crate) fn byte_range_to_utf16(
 /// Convert a byte offset into `text` (as the input reports the cursor) to a
 /// 0-based line / character-column [`Position`], for restoring the cursor after
 /// a programmatic edit.
-pub(crate) fn byte_offset_to_position(text: &str, offset: usize) -> Position {
+pub fn byte_offset_to_position(text: &str, offset: usize) -> Position {
     let (mut line, mut col, mut bytes) = (0u32, 0u32, 0usize);
     for ch in text.chars() {
         if bytes >= offset {

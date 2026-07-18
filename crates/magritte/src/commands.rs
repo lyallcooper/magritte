@@ -2736,7 +2736,24 @@ pub(crate) fn build_log_args(
 
 #[cfg(test)]
 mod tests {
-    use super::commands;
+    use super::{canonical_keystroke, commands};
+
+    #[test]
+    fn canonicalizes_loose_specs() {
+        assert_eq!(canonical_keystroke("Cmd+N"), "cmd-N");
+        assert_eq!(canonical_keystroke("command-n"), "cmd-n");
+        assert_eq!(canonical_keystroke("Cmd+Shift+n"), "cmd-N");
+        assert_eq!(canonical_keystroke("Control+Option+x"), "ctrl-alt-x");
+        assert_eq!(canonical_keystroke("cmd--"), "cmd--");
+        assert_eq!(canonical_keystroke("g r"), "g r");
+        // Named-key aliases normalize to the runtime form.
+        assert_eq!(canonical_keystroke("Esc"), "escape");
+        assert_eq!(canonical_keystroke("Ret"), "enter");
+        assert_eq!(canonical_keystroke("SPC"), "space");
+        // Shift on a named key stays an explicit prefix (distinct from the key).
+        assert_eq!(canonical_keystroke("shift-tab"), "shift-tab");
+        assert_eq!(canonical_keystroke("Shift+Space"), "shift-space");
+    }
 
     #[test]
     fn aliased_commands_are_in_the_palette() {

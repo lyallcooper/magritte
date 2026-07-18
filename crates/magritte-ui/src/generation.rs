@@ -1,6 +1,6 @@
 //! A monotonic stamp for discarding stale async work.
 //!
-//! Several bits of [`StatusView`](crate::StatusView) spawn background work
+//! Several bits of the app's view spawn background work
 //! (status/diff reads, screen loads, picker candidate fetches) or schedule a
 //! delayed action (a prefix-sequence timeout, a status-message auto-dismiss)
 //! whose result must be ignored if something newer superseded it in the
@@ -15,22 +15,22 @@
 /// [`is_current`]: Generation::is_current
 /// [`current`]: Generation::current
 #[derive(Default)]
-pub(crate) struct Generation(u64);
+pub struct Generation(u64);
 
 impl Generation {
     /// Advance the counter and return the new current stamp.
-    pub(crate) fn bump(&mut self) -> u64 {
+    pub fn bump(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(1);
         self.0
     }
 
     /// The current stamp, for capturing or comparing against.
-    pub(crate) fn current(&self) -> u64 {
+    pub fn current(&self) -> u64 {
         self.0
     }
 
     /// Whether `stamp` is still the current one (nothing has bumped since).
-    pub(crate) fn is_current(&self, stamp: u64) -> bool {
+    pub fn is_current(&self, stamp: u64) -> bool {
         self.0 == stamp
     }
 }

@@ -3676,6 +3676,7 @@ dependencies = [
  "indexmap",
  "libc",
  "magritte-core",
+ "magritte-ui",
  "notify",
  "objc",
  "regex",
@@ -3698,6 +3699,14 @@ dependencies = [
  "libc",
  "tempfile",
  "trash",
+]
+
+[[package]]
+name = "magritte-ui"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-component",
 ]
 
 [[package]]

@@ -11,15 +11,15 @@ use crate::with_alpha;
 /// words but many monospace fonts render them thin/tofu, so keycaps draw them in
 /// the system UI font (passed as `ui_font`) — not the user's configured UI font,
 /// which a custom display face could also lack.
-pub(crate) const RETURN_GLYPH: &str = "⏎";
-pub(crate) const TAB_GLYPH: &str = "⇥";
-pub(crate) const BACKSPACE_GLYPH: &str = "⌫";
+pub const RETURN_GLYPH: &str = "⏎";
+pub const TAB_GLYPH: &str = "⇥";
+pub const BACKSPACE_GLYPH: &str = "⌫";
 /// Modifier glyphs (`⌘` Cmd, `⌥` Opt, `⌃` Ctrl, `⇧` Shift) — the standard macOS
 /// key symbols, shown prefixed to the key (`⌘x`) rather than as `Cmd+x`.
-pub(crate) const CMD_GLYPH: &str = "⌘";
-pub(crate) const OPT_GLYPH: &str = "⌥";
-pub(crate) const CTRL_GLYPH: &str = "⌃";
-pub(crate) const SHIFT_GLYPH: &str = "⇧";
+pub const CMD_GLYPH: &str = "⌘";
+pub const OPT_GLYPH: &str = "⌥";
+pub const CTRL_GLYPH: &str = "⌃";
+pub const SHIFT_GLYPH: &str = "⇧";
 
 /// Whether a rendered label is one of the symbol glyphs drawn in the UI font
 /// rather than the monospace keycap font (they're thin/tofu in many mono fonts).
@@ -70,7 +70,7 @@ fn named_key(base: &str) -> Option<&'static str> {
 /// (`escape`/`enter`/`space`/…), accepting the common aliases (`Esc`, `Ret`,
 /// `SPC`, …). Single-character keys are returned verbatim, case preserved, so
 /// `K` stays distinct from `k`.
-pub(crate) fn normalize_key_name(base: &str) -> String {
+pub fn normalize_key_name(base: &str) -> String {
     named_key(base).unwrap_or(base).to_string()
 }
 
@@ -113,18 +113,18 @@ fn is_modifier(token: &str) -> bool {
 
 /// The modifier flags a keystroke step carries.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct Mods {
-    pub(crate) cmd: bool,
-    pub(crate) ctrl: bool,
-    pub(crate) alt: bool,
-    pub(crate) shift: bool,
+pub struct Mods {
+    pub cmd: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
 }
 
 /// Peel the leading modifier tokens off one keystroke step, returning the flags
 /// and the remaining base key. Modifiers may be joined with `-` or `+` and named
 /// in any accepted spelling (`cmd-`, `Command+`, `⌥`); a trailing separator is
 /// treated as the literal key (so `cmd--` is ⌘ plus minus).
-pub(crate) fn parse_step(step: &str) -> (Mods, &str) {
+pub fn parse_step(step: &str) -> (Mods, &str) {
     let mut rest = step;
     let mut mods = Mods::default();
     while let Some(idx) = rest.find(['-', '+']) {
@@ -151,7 +151,7 @@ pub(crate) fn parse_step(step: &str) -> (Mods, &str) {
 /// names no key (so `abc` is rejected, `esc`/`ctrl-tab`/`cmd-N` are not).
 /// Modifiers may be joined with `-` or `+` and spelled loosely (`Cmd`, `⌘`).
 /// Lenient about a literal `-`/`+` key. `None` = valid.
-pub(crate) fn keystroke_error(key: &str) -> Option<String> {
+pub fn keystroke_error(key: &str) -> Option<String> {
     if key.is_empty() {
         return Some("empty keystroke".to_string());
     }
@@ -228,7 +228,7 @@ fn step_parts(step: &str) -> StepParts {
 /// label (or, for switches, a multi-span label). The border makes adjacent
 /// chips read as distinct keys rather than blending together. `font` is the
 /// monospace family — keys read as keys, never the proportional UI font.
-pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
+pub fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
     div()
         .px(px(5.0))
         .min_w(px(18.0))
@@ -247,7 +247,7 @@ pub(crate) fn chip_box(color: Hsla, font: &SharedString) -> gpui::Div {
 /// space-separated (e.g. `g r`, `⌃x ⌃c`) with each step formatted in turn. A
 /// *chord* prefixes its modifier glyphs to the key in macOS order (`cmd-enter` →
 /// `⌘⏎`, `cmd-N` → `⇧⌘N`). A lone token is word-ified (`tab` → `⇥`).
-pub(crate) fn format_keys(key: &str) -> String {
+pub fn format_keys(key: &str) -> String {
     key.split(' ')
         .map(|step| {
             let p = step_parts(step);
@@ -265,12 +265,7 @@ pub(crate) fn format_keys(key: &str) -> String {
 /// Vim-mode sequences arrive unspaced (`ZZ`, `gq`) and render as one cap, in
 /// vim notation; app keymap sequences stay one cap per keystroke (`g r`).
 /// `font` is the monospace family; `ui_font` draws the glyphs.
-pub(crate) fn key_chip(
-    key: &str,
-    color: Hsla,
-    font: &SharedString,
-    ui_font: &SharedString,
-) -> AnyElement {
+pub fn key_chip(key: &str, color: Hsla, font: &SharedString, ui_font: &SharedString) -> AnyElement {
     let mut row = div().flex().items_center().gap(px(4.0));
     for step in key.split(' ') {
         if step == "·" {
@@ -314,7 +309,7 @@ fn chord_caps(step: &str, color: Hsla, font: &SharedString, ui_font: &SharedStri
 /// A switch keycap (`-a`). When a `-` prefix is pending (we're awaiting the
 /// switch letter), only the dash *inside* the keycap changes color to the
 /// accent, while the keycap itself stays neutral (magit's prefix feedback).
-pub(crate) fn switch_chip(
+pub fn switch_chip(
     key: &str,
     color: Hsla,
     accent: Hsla,
@@ -386,23 +381,5 @@ mod tests {
         assert_eq!(format_keys("escape"), "Esc");
         assert_eq!(format_keys("ctrl-x ctrl-c"), "⌃x ⌃c");
         assert_eq!(format_keys("tab"), "⇥");
-    }
-
-    #[test]
-    fn canonicalizes_loose_specs() {
-        use crate::commands::canonical_keystroke;
-        assert_eq!(canonical_keystroke("Cmd+N"), "cmd-N");
-        assert_eq!(canonical_keystroke("command-n"), "cmd-n");
-        assert_eq!(canonical_keystroke("Cmd+Shift+n"), "cmd-N");
-        assert_eq!(canonical_keystroke("Control+Option+x"), "ctrl-alt-x");
-        assert_eq!(canonical_keystroke("cmd--"), "cmd--");
-        assert_eq!(canonical_keystroke("g r"), "g r");
-        // Named-key aliases normalize to the runtime form.
-        assert_eq!(canonical_keystroke("Esc"), "escape");
-        assert_eq!(canonical_keystroke("Ret"), "enter");
-        assert_eq!(canonical_keystroke("SPC"), "space");
-        // Shift on a named key stays an explicit prefix (distinct from the key).
-        assert_eq!(canonical_keystroke("shift-tab"), "shift-tab");
-        assert_eq!(canonical_keystroke("Shift+Space"), "shift-space");
     }
 }
