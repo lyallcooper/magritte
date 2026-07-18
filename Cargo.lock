@@ -3666,15 +3666,12 @@ version = "0.8.1"
 dependencies = [
  "async-channel 2.5.0",
  "core-foundation 0.10.0",
- "core-graphics 0.24.0",
  "core-text",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
- "image",
  "indexmap",
- "libc",
  "magritte-core",
  "magritte-ui",
  "notify",
@@ -3705,8 +3702,14 @@ dependencies = [
 name = "magritte-ui"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
+ "core-foundation 0.10.0",
+ "core-graphics 0.24.0",
  "gpui",
  "gpui-component",
+ "gpui_platform",
+ "image",
+ "libc",
 ]
 
 [[package]]

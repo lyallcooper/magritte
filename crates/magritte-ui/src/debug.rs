@@ -1,10 +1,11 @@
 //! Debug-mode control channel for fast, headless iteration during development.
 //!
-//! Enabled by setting `MAGRITTE_DEBUG_DIR=<dir>`. The app then polls that
-//! directory for a `cmd` file, runs the commands it contains, and writes a
-//! `done` file when finished. This lets a driver inject keystrokes and capture
-//! screenshots without AppleScript, screen coordinates, or foregrounding the
-//! window.
+//! The app names its control-dir env var via [`configure`] (Magritte uses
+//! `MAGRITTE_DEBUG_DIR`); setting that var to a directory enables the channel.
+//! The app then polls that directory for a `cmd` file, runs the commands it
+//! contains, and writes a `done` file when finished. This lets a driver inject
+//! keystrokes and capture screenshots without AppleScript, screen coordinates,
+//! or foregrounding the window.
 //!
 //! Protocol (driver side):
 //!   1. wait for any previous `done` to be removed
@@ -26,7 +27,7 @@ use std::fs;
 use std::path::PathBuf;
 #[cfg(all(target_os = "macos", not(feature = "debug-capture")))]
 use std::process::Command;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Duration;
 
 use gpui::{
@@ -34,9 +35,19 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, Window,
 };
 
+/// The env var the control directory is read from, named by the app via
+/// [`configure`].
+static DEBUG_DIR_ENV: OnceLock<&'static str> = OnceLock::new();
+
+/// Name the env var the control channel reads its directory from. Call once at
+/// startup, before any [`control_dir`] / [`record_target`] / [`init`] call.
+pub fn configure(env_var: &'static str) {
+    let _ = DEBUG_DIR_ENV.set(env_var);
+}
+
 /// The control directory, if debug mode is enabled.
 pub fn control_dir() -> Option<PathBuf> {
-    std::env::var_os("MAGRITTE_DEBUG_DIR").map(PathBuf::from)
+    std::env::var_os(DEBUG_DIR_ENV.get()?).map(PathBuf::from)
 }
 
 /// Registry of clickable element ids → their on-screen center (logical points),
@@ -74,7 +85,7 @@ pub fn init(handle: AnyWindowHandle, cx: &mut gpui::App) {
             .unwrap_or(false);
         if !private {
             eprintln!(
-                "magritte debug: refusing control dir {} (not private; chown/chmod 700 it)",
+                "debug channel: refusing control dir {} (not private; chown/chmod 700 it)",
                 dir.display()
             );
             return;
@@ -83,7 +94,7 @@ pub fn init(handle: AnyWindowHandle, cx: &mut gpui::App) {
     // Clear any stale files from a previous run.
     let _ = fs::remove_file(dir.join("cmd"));
     let _ = fs::remove_file(dir.join("done"));
-    eprintln!("magritte debug: watching {}", dir.display());
+    eprintln!("debug channel: watching {}", dir.display());
 
     cx.spawn(async move |cx: &mut AsyncApp| loop {
         cx.background_executor()

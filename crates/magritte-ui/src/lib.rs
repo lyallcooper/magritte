@@ -3,7 +3,10 @@
 //! app supplies its own domain types and semantics.
 
 pub mod commit_text;
+#[cfg(feature = "debug")]
+pub mod debug;
 pub mod generation;
+pub mod ipc;
 pub mod kbd;
 pub mod picker;
 

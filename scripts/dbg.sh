@@ -74,7 +74,7 @@ case "$cmd" in
     pid=$!
     echo "$pid" > "$DIR/pid"
     for _ in $(seq 1 60); do
-      grep -q "debug: watching" "$LOG" 2>/dev/null && break
+      grep -q "debug channel: watching" "$LOG" 2>/dev/null && break
       sleep 0.1
     done
     echo "magritte up (pid $pid), control dir $DIR"

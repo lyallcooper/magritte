@@ -5,8 +5,34 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "App-agnostic UI toolkit shared by Magritte-family apps: picker, keystroke, and commit-text primitives."
+description = "App-agnostic UI toolkit shared by Magritte-family apps: picker, keystroke, and commit-text primitives, single-instance handoff, and the dev debug channel."
+
+[features]
+# The debug control channel (key/click injection, screenshots, etc.). Dev-only
+# — it lets any process that can write the control dir drive the app, so it is
+# compiled out of release builds entirely.
+debug = ["dep:libc"]
+# Adds offscreen window capture (`Window::render_to_image`) to the debug
+# channel so `shot` can grab the window while the app is backgrounded. Implies
+# `debug`; additionally pulls in gpui's `test-support` machinery (proptest,
+# backtrace, leak-detection) plus the `image` crate, all excluded from a normal
+# `cargo build --release`.
+debug-capture = ["debug", "dep:image", "gpui_platform/test-support"]
 
 [dependencies]
 gpui = { workspace = true }
+# A dependency only so the `debug-capture` feature forwarding compiles
+# standalone; the rev is pinned in [workspace.dependencies] so it can't drift
+# from the app's.
+gpui_platform = { workspace = true }
 gpui-component = { workspace = true }
+async-channel = { workspace = true }
+# Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
+image = { workspace = true, optional = true }
+# Only used by the `debug` feature (control-dir ownership check).
+libc = { workspace = true, optional = true }
+
+# macOS-only: window-id lookup for the non-capture screenshot path.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { workspace = true }
+core-graphics = { workspace = true }

@@ -11,16 +11,10 @@ name = "magritte"
 path = "src/main.rs"
 
 [features]
-# The debug control channel (key/click injection, screenshots, etc.). Dev-only
-# — it lets any process that can write the control dir drive the app, so it is
-# compiled out of release builds entirely.
-debug = ["dep:libc"]
-# Adds offscreen window capture (`Window::render_to_image`) to the debug
-# channel so `shot` can grab the window while the app is backgrounded. Implies
-# `debug`; additionally pulls in gpui's `test-support` machinery (proptest,
-# backtrace, leak-detection) plus the `image` crate, all excluded from a normal
-# `cargo build --release`.
-debug-capture = ["debug", "dep:image", "gpui_platform/test-support"]
+# The debug control channel and its offscreen-capture variant live in
+# magritte-ui; these forward so `--features debug[-capture]` keeps working.
+debug = ["magritte-ui/debug"]
+debug-capture = ["debug", "magritte-ui/debug-capture"]
 
 [dependencies]
 gpui = { workspace = true }
@@ -49,19 +43,14 @@ tree-sitter-cmake = "0.7.1"
 tree-sitter-kotlin-sg = "0.4.1"
 tree-sitter-proto = "0.2.0"
 tree-sitter-swift = "0.7.3"
-# Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
-image = { workspace = true, optional = true }
-# Only used by the `debug` feature (control-dir ownership check).
-libc = { workspace = true, optional = true }
 
-# macOS-only: window-id lookup for screenshots, and CoreText font traits for
-# robust monospace-font detection (vs. glyph-width heuristics).
+# macOS-only: default-editor lookup, and CoreText font traits for robust
+# monospace-font detection (vs. glyph-width heuristics).
 [target.'cfg(target_os = "macos")'.dependencies]
 # Raw Objective-C messaging for the Dock-icon switcher (NSApplication
 # applicationIconImage); already in the tree via gpui.
 objc = "0.2"
 core-foundation = { workspace = true }
-core-graphics = { workspace = true }
 core-text = "21"
 
 [lints.rust]

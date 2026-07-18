@@ -33,15 +33,12 @@ mod commit_diff_view;
 mod commit_editor;
 mod config;
 mod controller;
-#[cfg(feature = "debug")]
-mod debug;
 mod diff_render;
 mod editor_launch;
 mod editors;
 mod git_action;
 mod highlight;
 mod input;
-mod ipc;
 mod jobs;
 mod list_render;
 mod log_view;
@@ -86,7 +83,19 @@ pub(crate) use worktree_view::*;
 use generation::Generation;
 use git_action::{describe_discard, Action, HunkSelections, Op, RegionKind};
 use highlight::{file_head_tail, FileHighlights, Span};
-use magritte_ui::{commit_text, generation, kbd, picker, with_alpha};
+#[cfg(feature = "debug")]
+use magritte_ui::debug;
+use magritte_ui::{commit_text, generation, ipc, kbd, picker, with_alpha};
+
+/// This app's single-instance handoff identity. `debug_dir_env` must match the
+/// var named in the `debug::configure` call in `main`.
+const IPC_INSTANCE: ipc::Instance = ipc::Instance {
+    app_support_dir: "Magritte",
+    runtime_dir: "magritte",
+    socket_name: "magritte.sock",
+    disable_env: "MAGRITTE_DISABLE_SINGLE_INSTANCE",
+    debug_dir_env: "MAGRITTE_DEBUG_DIR",
+};
 use picker::{CreateMode, PickerList};
 use settings::SettingsCaches;
 
@@ -1212,6 +1221,10 @@ pub(crate) fn mergetool_exit_if_active(cx: &App) {
 }
 
 fn main() {
+    // Name the control-dir env var before anything can consult the channel
+    // (record_target runs during the first render).
+    #[cfg(feature = "debug")]
+    debug::configure("MAGRITTE_DEBUG_DIR");
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("magritte {CURRENT_VERSION}");
@@ -1272,8 +1285,8 @@ fn main() {
         .or_else(|| args.iter().find(|a| !a.starts_with('-')).map(PathBuf::from));
     // A mergetool run is its own short-lived process: no handoff to a running
     // instance (git waits on *this* one) and no background detach.
-    let single_instance = mergetool.is_none() && ipc::enabled();
-    if single_instance && ipc::try_handoff(start_dir.as_deref()) {
+    let single_instance = mergetool.is_none() && IPC_INSTANCE.enabled();
+    if single_instance && IPC_INSTANCE.try_handoff(start_dir.as_deref()) {
         return;
     }
 
@@ -1355,7 +1368,7 @@ fn main() {
         menus::install(cx);
         if single_instance {
             let (tx, rx) = async_channel::unbounded();
-            if ipc::start_server(tx) {
+            if IPC_INSTANCE.start_server(tx) {
                 let windows_for_ipc = windows.clone();
                 cx.spawn(async move |cx| {
                     while let Ok(path) = rx.recv().await {
@@ -1366,7 +1379,7 @@ fn main() {
                     }
                 })
                 .detach();
-            } else if ipc::try_handoff(start_dir.as_deref()) {
+            } else if IPC_INSTANCE.try_handoff(start_dir.as_deref()) {
                 cx.quit();
                 return;
             }
