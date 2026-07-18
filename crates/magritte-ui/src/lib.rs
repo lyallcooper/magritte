@@ -9,6 +9,7 @@ pub mod generation;
 pub mod ipc;
 pub mod kbd;
 pub mod picker;
+pub mod vim;
 
 use gpui::Hsla;
 

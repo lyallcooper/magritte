@@ -36,7 +36,7 @@ fn floor_boundary(text: &str, pos: usize) -> usize {
 /// spaces (`(` → `( x )`); closing chars and quotes don't (`)` → `(x)`).
 /// Aliases: `b` = `)`, `B` = `}`, `r` = `]`, `a` = `>`. Returns `None` for a
 /// char that names no pair. The cursor lands on the opening delimiter.
-pub(super) fn add(text: &str, range: std::ops::Range<usize>, c: char) -> Option<EditOp> {
+pub fn add(text: &str, range: std::ops::Range<usize>, c: char) -> Option<EditOp> {
     let (open, close, padded) = pair(c)?;
     let start = floor_boundary(text, range.start);
     let end = floor_boundary(text, range.end).max(start);
@@ -53,7 +53,7 @@ pub(super) fn add(text: &str, range: std::ops::Range<usize>, c: char) -> Option<
 /// `ds(`). Opening-char targets also eat the inner padding spaces, closing
 /// chars don't, matching vim-surround. Returns `None` when no enclosing pair
 /// is found. The cursor lands where the opening delimiter was.
-pub(super) fn delete(text: &str, cursor: usize, c: char) -> Option<EditOp> {
+pub fn delete(text: &str, cursor: usize, c: char) -> Option<EditOp> {
     let (range, kept) = unwrap_pair(text, cursor, c)?;
     let post = format!("{}{}{}", &text[..range.start], kept, &text[range.end..]);
     let cursor = clamp_normal(&post, range.start);
@@ -67,7 +67,7 @@ pub(super) fn delete(text: &str, cursor: usize, c: char) -> Option<EditOp> {
 /// Replace the nearest enclosing pair `from` around `cursor` with the pair
 /// `to` (`cs"'`, `cs(]`). Combines [`delete`]'s targeting with [`add`]'s
 /// insertion rules. The cursor lands on the new opening delimiter.
-pub(super) fn change(text: &str, cursor: usize, from: char, to: char) -> Option<EditOp> {
+pub fn change(text: &str, cursor: usize, from: char, to: char) -> Option<EditOp> {
     let (open, close, padded) = pair(to)?;
     let (range, kept) = unwrap_pair(text, cursor, from)?;
     let pad = if padded { " " } else { "" };

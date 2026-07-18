@@ -9,7 +9,7 @@ impl VimState {
     /// byte ranges `[range]s/pat…` would touch (first per line, every one
     /// once a `g` flag is typed), for the incremental highlight. Empty while
     /// the line isn't an `s` command or its pattern is empty/invalid.
-    pub(crate) fn ex_matches(&self, text: &str, cursor: usize) -> Vec<Range<usize>> {
+    pub fn ex_matches(&self, text: &str, cursor: usize) -> Vec<Range<usize>> {
         const CAP: usize = 200;
         let Pending::Ex { input, visual } = &self.pending else {
             return Vec::new();

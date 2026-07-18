@@ -3710,6 +3710,7 @@ dependencies = [
  "gpui_platform",
  "image",
  "libc",
+ "regex",
 ]
 
 [[package]]

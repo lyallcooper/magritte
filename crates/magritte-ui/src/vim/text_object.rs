@@ -14,7 +14,7 @@ use std::ops::Range;
 /// Returns `None` when there is no such object at the cursor (Vim beeps):
 /// no quote pair on the line, cursor not inside (or on) a matching bracket
 /// pair, `iw` on an empty buffer...
-pub(super) fn text_object(
+pub fn text_object(
     text: &str,
     cursor: usize,
     around: bool,

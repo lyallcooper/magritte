@@ -27,6 +27,8 @@ gpui = { workspace = true }
 gpui_platform = { workspace = true }
 gpui-component = { workspace = true }
 async-channel = { workspace = true }
+# Vim-mode search and `:s` substitution patterns.
+regex = { workspace = true }
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { workspace = true, optional = true }
 # Only used by the `debug` feature (control-dir ownership check).

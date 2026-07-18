@@ -20,7 +20,7 @@ use super::*;
 /// like `w` this may be a line's first column or `text.len()`; the engine
 /// clamps for plain cursor motion and applies `:help exclusive-linewise`
 /// adjustments for operators. It must always sit on a char boundary.
-pub(super) fn eval(
+pub fn eval(
     text: &str,
     cursor: usize,
     count: usize,

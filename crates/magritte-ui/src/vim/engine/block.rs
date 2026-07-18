@@ -58,7 +58,7 @@ impl VimState {
     /// the anchor and the cursor, clamped per line. A line shorter than the
     /// left column yields an empty range at its end. `None` outside Visual
     /// Block.
-    pub(crate) fn block_ranges(&self, text: &str, cursor: usize) -> Option<Vec<Range<usize>>> {
+    pub fn block_ranges(&self, text: &str, cursor: usize) -> Option<Vec<Range<usize>>> {
         self.block_geom(text, cursor).map(|g| g.ranges)
     }
 

@@ -8,7 +8,7 @@ impl VimState {
     /// state stays at ~10 rows. Empty when nothing multi-key is pending,
     /// including the `/`/`?`/`:` prompts and a bare count. A pending
     /// `[vim.keymap]` prefix lists its own continuations.
-    pub(crate) fn which_key_hints(&self) -> Vec<(String, String)> {
+    pub fn which_key_hints(&self) -> Vec<(String, String)> {
         let own = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
             rows.iter()
                 .map(|(k, d)| (k.to_string(), d.to_string()))

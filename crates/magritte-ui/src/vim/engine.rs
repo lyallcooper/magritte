@@ -163,11 +163,12 @@ struct InsertRepeat {
     line: bool,
 }
 
-/// All cross-keystroke Vim state for one editor. Create with [`VimState::new`]
-/// (starts in Normal); feed keys through [`VimState::handle_key`]. `Clone` is
-/// for the render overlay, which snapshots the state into a paint closure.
+/// All cross-keystroke Vim state for one editor. Create with
+/// [`VimState::with_user_map`] (starts in Normal); feed keys through
+/// [`VimState::handle_key`]. `Clone` is for the render overlay, which
+/// snapshots the state into a paint closure.
 #[derive(Clone)]
-pub(crate) struct VimState {
+pub struct VimState {
     mode: Mode,
     pending: Pending,
     /// The `[vim.keymap]` sequences: literal key strings → editor commands,
@@ -238,13 +239,13 @@ impl VimState {
 
     /// Swap the `[vim.keymap]` sequences in place (a live config edit) —
     /// mode, pending state, registers, and Vim-level undo all survive.
-    pub(crate) fn set_user_map(&mut self, user_map: Vec<(String, UserCmd)>) {
+    pub fn set_user_map(&mut self, user_map: Vec<(String, UserCmd)>) {
         self.user_map = user_map;
     }
 
     /// Fresh state in Normal mode, with the user's `[vim.keymap]` sequences
     /// active.
-    pub(crate) fn with_user_map(user_map: Vec<(String, UserCmd)>) -> Self {
+    pub fn with_user_map(user_map: Vec<(String, UserCmd)>) -> Self {
         VimState {
             mode: Mode::Normal,
             pending: Pending::None,
@@ -275,20 +276,20 @@ impl VimState {
     /// Open directly in Insert mode — for an editor starting on an empty
     /// message, where the first thing anyone does is type. Esc still lands in
     /// Normal with the usual entry bookkeeping defaults.
-    pub(crate) fn start_in_insert(&mut self) {
+    pub fn start_in_insert(&mut self) {
         self.mode = Mode::Insert;
     }
 
-    pub(crate) fn mode(&self) -> Mode {
+    pub fn mode(&self) -> Mode {
         self.mode
     }
 
-    pub(crate) fn in_insert(&self) -> bool {
+    pub fn in_insert(&self) -> bool {
         self.mode == Mode::Insert
     }
 
     /// The in-progress key sequence for the mode bar (e.g. `2d`, `ys`, `f`).
-    pub(crate) fn pending_display(&self) -> Option<String> {
+    pub fn pending_display(&self) -> Option<String> {
         let mut s = self.count.clone();
         match &self.pending {
             Pending::None => {}
@@ -336,7 +337,7 @@ impl VimState {
 
     /// Abort any half-typed command (a mouse click is Vim's `Esc` for
     /// pending state: `d` then a click shouldn't leave the delete armed).
-    pub(crate) fn cancel_pending(&mut self) {
+    pub fn cancel_pending(&mut self) {
         self.pending = Pending::None;
         self.count.clear();
     }
@@ -344,7 +345,7 @@ impl VimState {
     /// Enter charwise Visual mode with the anchor at `anchor` — the app maps
     /// a completed mouse drag-selection onto Visual so the two selection
     /// models don't coexist.
-    pub(crate) fn begin_visual(&mut self, text: &str, anchor: usize) {
+    pub fn begin_visual(&mut self, text: &str, anchor: usize) {
         self.cancel_pending();
         self.desired_col = None;
         self.anchor = clamp_normal(text, anchor);
@@ -355,7 +356,7 @@ impl VimState {
 
     /// The query being typed at a `/`/`?` prompt, for the live match
     /// highlight (None outside the prompt or while it's still empty).
-    pub(crate) fn search_query(&self) -> Option<&str> {
+    pub fn search_query(&self) -> Option<&str> {
         match &self.pending {
             Pending::Search { query, .. } if !query.is_empty() => Some(query),
             _ => None,
@@ -364,7 +365,7 @@ impl VimState {
 
     /// Whether a `/`//`?`/`:` prompt is collecting input — the indicator
     /// styles the pending text as a live command line then.
-    pub(crate) fn in_prompt(&self) -> bool {
+    pub fn in_prompt(&self) -> bool {
         matches!(self.pending, Pending::Search { .. } | Pending::Ex { .. })
     }
 
@@ -372,7 +373,7 @@ impl VimState {
     /// charwise includes both endpoint chars; linewise covers whole lines
     /// including the trailing newline. `None` outside Visual and for a
     /// blockwise selection (see [`VimState::block_ranges`]).
-    pub(crate) fn visual_range(&self, text: &str, cursor: usize) -> Option<Range<usize>> {
+    pub fn visual_range(&self, text: &str, cursor: usize) -> Option<Range<usize>> {
         let Mode::Visual { kind } = self.mode else {
             return None;
         };
@@ -399,7 +400,7 @@ impl VimState {
     /// Feed one keystroke. `text`/`cursor` are the buffer's current contents
     /// and cursor byte offset; the returned actions describe what to do to the
     /// buffer. Read [`VimState::mode`] afterwards for the indicator/routing.
-    pub(crate) fn handle_key(&mut self, text: &str, cursor: usize, key: Key) -> Vec<Action> {
+    pub fn handle_key(&mut self, text: &str, cursor: usize, key: Key) -> Vec<Action> {
         match self.mode {
             Mode::Insert => self.key_insert(text, cursor, key),
             Mode::Normal | Mode::Visual { .. } => {
@@ -578,7 +579,7 @@ impl VimState {
     /// A `count` from `{count}.` replaces the change's own counts, like Vim's
     /// redo buffer. [`Self::end_repeat`] must be called after feeding them
     /// back.
-    pub(crate) fn begin_repeat(&mut self, count: Option<usize>) -> Option<(Vec<Key>, String)> {
+    pub fn begin_repeat(&mut self, count: Option<usize>) -> Option<(Vec<Key>, String)> {
         let (keys, typed) = self.last_change.clone()?;
         self.replaying = true;
         let keys = match count {
@@ -592,18 +593,18 @@ impl VimState {
         Some((keys, typed))
     }
 
-    pub(crate) fn end_repeat(&mut self) {
+    pub fn end_repeat(&mut self) {
         self.replaying = false;
     }
 
     #[cfg(test)]
-    pub(crate) fn undo_stack(&self) -> &[(String, usize)] {
+    pub fn undo_stack(&self) -> &[(String, usize)] {
         &self.undos
     }
 
     /// An edit made outside the engine (the ⌥q reflow) still gets a Vim undo
     /// level. In Insert mode the open session's snapshot already covers it.
-    pub(crate) fn note_external_change(&mut self, text: &str, cursor: usize) {
+    pub fn note_external_change(&mut self, text: &str, cursor: usize) {
         if self.mode == Mode::Insert {
             return;
         }

@@ -26,6 +26,7 @@ toml = { version = "0.8", features = ["preserve_order"] }
 # written, so placement (`before`/`after`) can reference an earlier entry.
 indexmap = { version = "2", features = ["serde"] }
 async-channel = "2"
+regex = "1"
 # Only used by the `debug-capture` feature, to encode offscreen-rendered frames.
 image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
