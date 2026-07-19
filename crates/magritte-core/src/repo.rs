@@ -111,7 +111,8 @@ impl GitCommand {
         match self.args.first().map(String::as_str) {
             Some(
                 "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref"
-                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base" | "blame",
+                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base" | "blame"
+                | "check-ignore",
             ) => true,
             // Config *reads* (e.g. resolving the push-remote) are queries; a
             // config write (setting one) is a user action, so keep it visible.
@@ -723,6 +724,24 @@ impl Repo {
     {
         let (args, out, status) = self.execute(args, None, Some(input))?;
         Self::checked(args, out, status)
+    }
+
+    /// Run a git query with stdin whose exit status is part of its protocol.
+    ///
+    /// This keeps protocol-style commands on the shared execution path (so
+    /// cancellation, timeouts, `GIT_OPTIONAL_LOCKS=0`, and command logging all
+    /// still apply) while letting the caller distinguish expected non-zero
+    /// statuses from real failures.
+    pub(crate) fn run_with_input_status<I, S>(
+        &self,
+        args: I,
+        input: &[u8],
+    ) -> Result<(Vec<String>, GitOutput, ExitStatus)>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.execute(args, None, Some(input))
     }
 
     /// Run `git <args>` where git would normally open the **sequence editor**

@@ -137,6 +137,10 @@ pub struct Config {
         skip_serializing_if = "is_default_which_key_delay_ms"
     )]
     pub which_key_delay_ms: u64,
+    /// Automatically refresh when changes are detected in the repo.
+    /// On by default; set false to retain manual/focus refresh only.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub auto_refresh: bool,
     /// Re-run `git status` when the window regains focus, so out-of-app changes
     /// show up without a manual refresh. On by default; set false to opt out.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -567,6 +571,7 @@ impl Default for Config {
             transient: BTreeMap::new(),
             vim: VimConfig::default(),
             which_key_delay_ms: default_which_key_delay_ms(),
+            auto_refresh: true,
             refresh_on_focus: true,
             show_tags_in_title_bar: false,
             check_for_updates: true,
@@ -656,7 +661,10 @@ fn empty_table() -> toml::Value {
 fn read_config_value(path: &Path, warnings: &mut Vec<String>) -> toml::Value {
     match std::fs::read_to_string(path) {
         Ok(text) => match toml::from_str::<toml::Value>(&text) {
-            Ok(v) => v,
+            Ok(mut value) => {
+                normalize_legacy_aliases(&mut value);
+                value
+            }
             Err(e) => {
                 warnings.push(format!(
                     "Ignoring invalid config at {}: {e}",
@@ -673,6 +681,17 @@ fn read_config_value(path: &Path, warnings: &mut Vec<String>) -> toml::Value {
             }
             empty_table()
         }
+    }
+}
+
+fn normalize_legacy_aliases(value: &mut toml::Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+    if let Some(legacy) = table.remove("show_tags") {
+        table
+            .entry("show_tags_in_title_bar".to_string())
+            .or_insert(legacy);
     }
 }
 
@@ -871,6 +890,66 @@ pub fn save_settings(config: &Config) -> Result<(), String> {
         .map_err(|e| format!("Could not save config ({}): {e}", path.display()))
 }
 
+/// Read an optional top-level boolean from one config file without applying
+/// defaults or another scope. This is used by Settings to distinguish a repo's
+/// explicit value from inheritance; an invalid file is already reported by the
+/// normal merged-config loader and is treated as having no editable override.
+pub fn load_bool_override_at(path: &Path, key: &str, alias: Option<&str>) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+    doc.get(key)
+        .or_else(|| alias.and_then(|alias| doc.get(alias)))
+        .and_then(toml_edit::Item::as_bool)
+}
+
+/// Set or remove one top-level repo override while preserving every unrelated
+/// key, table, comment, and decoration in the file. `None` means inherit the
+/// global value. A legacy alias is migrated when setting and removed when
+/// inheriting.
+pub fn save_bool_override_at(
+    path: &Path,
+    key: &str,
+    alias: Option<&str>,
+    value: Option<bool>,
+) -> Result<(), String> {
+    save_bool_override_at_io(path, key, alias, value)
+        .map_err(|e| format!("Could not save repo config ({}): {e}", path.display()))
+}
+
+fn save_bool_override_at_io(
+    path: &Path,
+    key: &str,
+    alias: Option<&str>,
+    value: Option<bool>,
+) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc = if text.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        text.parse::<toml_edit::DocumentMut>()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+    };
+    if let Some(alias) = alias {
+        if !doc.as_table().contains_key(key) {
+            if let Some(item) = doc.as_table_mut().remove(alias) {
+                doc[key] = item;
+            }
+        } else {
+            doc.as_table_mut().remove(alias);
+        }
+    }
+    match value {
+        Some(value) => set_setting(&mut doc, key, false, value.into()),
+        None => {
+            doc.as_table_mut().remove(key);
+            if let Some(alias) = alias {
+                doc.as_table_mut().remove(alias);
+            }
+        }
+    }
+    atomic_write_text(path, &doc.to_string())
+}
+
 fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut doc = if text.trim().is_empty() {
@@ -891,7 +970,7 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
     // key outright: set_setting's omit only skips writing when the key is
     // absent, and there is no "unset" number to write (font_size).
     type Value = toml_edit::Value;
-    let owned: [(&str, Option<&str>, Option<Value>); 17] = [
+    let owned: [(&str, Option<&str>, Option<Value>); 18] = [
         ("appearance", None, Some(config.appearance.as_str().into())),
         (
             "light_theme",
@@ -934,6 +1013,7 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
             None,
             Some(config.keymap_preset.as_str().into()),
         ),
+        ("auto_refresh", None, Some(config.auto_refresh.into())),
         (
             "refresh_on_focus",
             None,
@@ -994,6 +1074,43 @@ fn set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bool_override_round_trips_without_touching_unrelated_repo_config() {
+        let path = std::env::temp_dir().join("magritte-bool-override-save-test.toml");
+        std::fs::write(
+            &path,
+            "# keep this comment\ndark_theme = \"Nord Dark\"\nshow_tags = true\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_bool_override_at(&path, "show_tags_in_title_bar", Some("show_tags")),
+            Some(true)
+        );
+
+        save_bool_override_at_io(
+            &path,
+            "show_tags_in_title_bar",
+            Some("show_tags"),
+            Some(false),
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# keep this comment"));
+        assert!(saved.contains("dark_theme = \"Nord Dark\""));
+        assert!(saved.contains("show_tags_in_title_bar = false"));
+        assert!(!saved.contains("show_tags ="));
+        assert_eq!(
+            load_bool_override_at(&path, "show_tags_in_title_bar", Some("show_tags")),
+            Some(false)
+        );
+
+        save_bool_override_at_io(&path, "show_tags_in_title_bar", Some("show_tags"), None).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("show_tags"));
+        assert!(saved.contains("dark_theme = \"Nord Dark\""));
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn font_size_unset_removes_the_key() {
         let path = std::env::temp_dir().join("magritte-font-size-save-test.toml");
@@ -1072,6 +1189,7 @@ mod tests {
             transient: _,
             vim,
             which_key_delay_ms: _,
+            auto_refresh: _,
             refresh_on_focus: _,
             show_tags_in_title_bar: _,
             check_for_updates: _,
@@ -1087,6 +1205,7 @@ mod tests {
             [
                 "appearance",
                 "app_icon",
+                "auto_refresh",
                 "check_for_updates",
                 "command",
                 "commit_body_wrap",
@@ -1333,6 +1452,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_global_alias_and_repo_canonical_setting_merge_without_duplicates() {
+        let mut global = val("show_tags = true\n");
+        let mut overlay = val("show_tags_in_title_bar = false\n");
+        normalize_legacy_aliases(&mut global);
+        normalize_legacy_aliases(&mut overlay);
+        deep_merge(&mut global, overlay);
+
+        let config: Config = global.try_into().unwrap();
+        assert!(!config.show_tags_in_title_bar);
+    }
+
+    #[test]
+    fn canonical_key_wins_when_one_file_contains_both_spellings() {
+        let mut value = val("show_tags = true\nshow_tags_in_title_bar = false\n");
+        normalize_legacy_aliases(&mut value);
+
+        let config: Config = value.try_into().unwrap();
+        assert!(!config.show_tags_in_title_bar);
+    }
+
+    #[test]
     fn vim_keymap_parses_and_merges_per_entry() {
         let cfg: Config =
             toml::from_str("[vim.keymap]\n\"Q\" = \"cancel\"\n\",w\" = \"commit\"\n").unwrap();
@@ -1538,6 +1678,7 @@ run = "git fetch && git push"
             commit_in_editor: true,
             commit_editor: "zed --wait".into(),
             keymap_preset: KeymapPreset::Vanilla,
+            auto_refresh: false,
             refresh_on_focus: false,
             show_tags_in_title_bar: true,
             check_for_updates: false,

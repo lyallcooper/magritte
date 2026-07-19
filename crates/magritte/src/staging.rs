@@ -167,6 +167,20 @@ impl DiffCache {
         self.states.entry(key).or_insert(DiffState::Loading);
     }
 
+    /// Remove loads cancelled before they produced a body. Retaining a bare
+    /// `Loading` marker would make prefetch/expand believe work was still in
+    /// flight forever after its generation was superseded.
+    pub(crate) fn drop_loading(&mut self) {
+        let loading: std::collections::HashSet<DiffKey> = self
+            .states
+            .iter()
+            .filter_map(|(key, state)| matches!(state, DiffState::Loading).then_some(key.clone()))
+            .collect();
+        self.states.retain(|key, _| !loading.contains(key));
+        self.langs.retain(|key, _| !loading.contains(key));
+        self.highlights.retain(|key, _| !loading.contains(key));
+    }
+
     pub(crate) fn set_lang(&mut self, key: DiffKey, lang: &'static str) {
         self.langs.insert(key, lang);
     }
@@ -181,6 +195,28 @@ impl DiffCache {
         self.states.retain(|key, _| keep.contains(key));
         self.langs.retain(|key, _| keep.contains(key));
         self.highlights.retain(|key, _| keep.contains(key));
+    }
+
+    /// Invalidate cached diffs for changed worktree paths while retaining the
+    /// old body of an expanded file until its forced replacement lands.
+    pub(crate) fn invalidate_paths(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        expanded: &std::collections::HashSet<DiffKey>,
+    ) {
+        let paths: std::collections::HashSet<String> = paths
+            .iter()
+            .map(|path| crate::path_identity::key(path))
+            .collect();
+        self.states.retain(|key, _| {
+            !paths.contains(&crate::path_identity::text_key(&key.1)) || expanded.contains(key)
+        });
+        self.langs.retain(|key, _| {
+            !paths.contains(&crate::path_identity::text_key(&key.1)) || expanded.contains(key)
+        });
+        self.highlights.retain(|key, _| {
+            !paths.contains(&crate::path_identity::text_key(&key.1)) || expanded.contains(key)
+        });
     }
 
     /// Rebuild the highlight spans for every loaded, non-binary diff from its
@@ -976,6 +1012,7 @@ impl StatusView {
     /// with `C-g`/Esc like any other job), then refresh.
     pub(crate) fn run_action(&mut self, action: Action, cx: &mut Context<Self>) {
         self.confirm = None;
+        self.refresh_blocker_closed(cx);
         self.selection.visual = None;
         self.run_job_with(
             "Applying…".to_string(),
@@ -1000,7 +1037,9 @@ impl StatusView {
     /// Confirm a pending action (the `y` key or the confirm bar's "yes"
     /// button): run the destructive action, or proceed with a commit-all.
     pub(crate) fn confirm_yes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.confirm.take() {
+        let confirm = self.confirm.take();
+        self.refresh_blocker_closed(cx);
+        match confirm {
             Some((_, Confirm::Action(action))) => self.run_action(action, cx),
             Some((_, Confirm::CommitAll(mut switches))) => {
                 if !switches.iter().any(|s| s == "--all") {
@@ -1054,6 +1093,7 @@ impl StatusView {
     /// Cancel a pending destructive action (any other key, or the "no" button).
     pub(crate) fn confirm_no(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.confirm = None;
+        self.refresh_blocker_closed(cx);
         cx.notify();
     }
 
@@ -1478,5 +1518,42 @@ mod tests {
         );
         cache.begin_load(key.clone());
         assert!(matches!(cache.state(&key), Some(DiffState::Loaded(_))));
+    }
+
+    #[test]
+    fn drop_loading_releases_cancelled_loads_without_dropping_loaded_diffs() {
+        let mut cache = DiffCache::default();
+        let loading = (DiffSource::Unstaged, "loading.txt".to_string());
+        let loaded = (DiffSource::Unstaged, "loaded.txt".to_string());
+        cache.begin_load(loading.clone());
+        cache.set_lang(loading.clone(), "rust");
+        cache.set_state(
+            loaded.clone(),
+            DiffState::Loaded(Arc::new(diff("loaded.txt", 1, 1))),
+        );
+
+        cache.drop_loading();
+
+        assert!(!cache.contains(&loading));
+        assert!(matches!(cache.state(&loaded), Some(DiffState::Loaded(_))));
+        cache.begin_load(loading.clone());
+        assert!(matches!(cache.state(&loading), Some(DiffState::Loading)));
+    }
+
+    #[test]
+    fn path_invalidation_matches_decomposed_filesystem_names() {
+        let mut cache = DiffCache::default();
+        let key = (DiffSource::Unstaged, "caf\u{e9}.txt".to_string());
+        cache.set_state(
+            key.clone(),
+            DiffState::Loaded(Arc::new(diff("caf\u{e9}.txt", 1, 1))),
+        );
+
+        cache.invalidate_paths(
+            &[std::path::PathBuf::from("cafe\u{301}.txt")],
+            &std::collections::HashSet::new(),
+        );
+
+        assert!(!cache.contains(&key));
     }
 }

@@ -22,6 +22,40 @@ pub enum IgnoreDest {
 }
 
 impl Repo {
+    /// Return the input paths ignored by Git.
+    ///
+    /// `check-ignore` uses exit 1 for a successful query with no matches, so
+    /// that case is deliberately distinct from other failures. Input and
+    /// output are NUL-delimited to preserve whitespace, newlines, and other
+    /// unusual path bytes representable by Rust strings. Git's default index
+    /// consultation is intentional: a tracked file matching an ignore pattern
+    /// must not be reported as ignored.
+    pub fn check_ignored(&self, paths: &[String]) -> Result<Vec<String>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let (args, out, status) =
+            self.run_with_input_status(["check-ignore", "--stdin", "-z"], &input)?;
+        match status.code() {
+            Some(0) => Ok(String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect()),
+            Some(1) => Ok(Vec::new()),
+            _ => Err(Error::Git {
+                args,
+                status: status.code(),
+                stderr: out.stderr,
+            }),
+        }
+    }
+
     /// The path `core.excludesFile` points at (a leading `~` expanded), or
     /// `None` if it isn't set — global ignore is unavailable without it.
     pub fn global_excludes_file(&self) -> Result<Option<PathBuf>> {

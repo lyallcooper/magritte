@@ -61,6 +61,10 @@ impl FlatDiff {
         }
     }
 
+    fn is_loading(&self) -> bool {
+        matches!(self.rows.as_slice(), [CommitDiffRow::Loading(_)])
+    }
+
     /// The full-row indices currently visible: everything except lines under a
     /// collapsed hunk and hunks/lines under a collapsed file. Memoized until
     /// the next fold/rows change (shared `Rc`, no per-call walk or copy).
@@ -246,6 +250,7 @@ pub(crate) struct CommitView {
     /// The commit's full hash — passed to `diff_commit` and shown in the
     /// view header's "Commit <sha>" line (drag-selectable; right-click copies).
     pub(crate) rev: String,
+    pub(crate) key: CommitCacheKey,
     /// The active char selection within the header's "Commit <sha>" line, and
     /// the byte the drag anchored at while the button is held. Its own tiny
     /// state (not the body's [`CharSelection`] machinery) since the header is
@@ -309,13 +314,14 @@ impl CommitCache {
 /// flattened, read-only list of file/hunk/line rows.
 pub(crate) struct DiffView {
     pub(crate) title: SharedString,
+    pub(crate) request: DiffRequest,
     pub(crate) body: FlatDiff,
     /// Structured per-file diffs (rendered order), for the apply engine
     /// (`a`/`v`/`u`) — same role as [`CommitView::files`].
     pub(crate) files: Vec<Arc<FileDiff>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum DiffRequest {
     Unstaged {
         args: Vec<String>,
@@ -348,6 +354,145 @@ impl DiffRequest {
             DiffRequest::Range { range, paths, .. } => diff_title(range, paths),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FlatAnchor {
+    Row(usize),
+    File(String),
+    Hunk {
+        file: String,
+        key: String,
+    },
+    Line {
+        file: String,
+        hunk: String,
+        text: String,
+        occurrence: usize,
+    },
+}
+
+fn stable_hunk_key(header: &str, ordinal: usize) -> String {
+    let context = header.splitn(3, "@@").nth(2).unwrap_or("").trim();
+    if context.is_empty() {
+        format!("#{ordinal}")
+    } else {
+        context.to_string()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum DiffFoldAnchor {
+    File(String),
+    Hunk { file: String, key: String },
+}
+
+fn fold_anchors_by_row(rows: &[CommitDiffRow]) -> Vec<Option<DiffFoldAnchor>> {
+    let mut file = String::new();
+    let mut hunk_ordinal = 0usize;
+    rows.iter()
+        .map(|row| match row {
+            CommitDiffRow::File { path, .. } => {
+                file = path.clone();
+                hunk_ordinal = 0;
+                Some(DiffFoldAnchor::File(path.clone()))
+            }
+            CommitDiffRow::Hunk(header) => {
+                let key = stable_hunk_key(header, hunk_ordinal);
+                hunk_ordinal += 1;
+                Some(DiffFoldAnchor::Hunk {
+                    file: file.clone(),
+                    key,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn capture_diff_folds(
+    rows: &[CommitDiffRow],
+    collapsed: &std::collections::HashSet<usize>,
+) -> Vec<DiffFoldAnchor> {
+    let anchors = fold_anchors_by_row(rows);
+    collapsed
+        .iter()
+        .filter_map(|ix| anchors.get(*ix).and_then(Clone::clone))
+        .collect()
+}
+
+pub(crate) fn restore_diff_folds(
+    rows: &[CommitDiffRow],
+    anchors: &[DiffFoldAnchor],
+) -> std::collections::HashSet<usize> {
+    fold_anchors_by_row(rows)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(ix, anchor)| {
+            anchor
+                .as_ref()
+                .is_some_and(|anchor| anchors.contains(anchor))
+                .then_some(ix)
+        })
+        .collect()
+}
+
+fn flat_anchors(rows: &[CommitDiffRow]) -> Vec<FlatAnchor> {
+    let mut file = String::new();
+    let mut hunk = String::new();
+    let mut hunk_ordinal = 0usize;
+    let mut line_occurrences: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    rows.iter()
+        .enumerate()
+        .map(|(ix, row)| match row {
+            CommitDiffRow::File { path, .. } => {
+                file = path.clone();
+                hunk.clear();
+                hunk_ordinal = 0;
+                line_occurrences.clear();
+                FlatAnchor::File(file.clone())
+            }
+            CommitDiffRow::Hunk(header) => {
+                hunk = stable_hunk_key(header, hunk_ordinal);
+                hunk_ordinal += 1;
+                line_occurrences.clear();
+                FlatAnchor::Hunk {
+                    file: file.clone(),
+                    key: hunk.clone(),
+                }
+            }
+            CommitDiffRow::Line { spans, .. } => {
+                let text: String = spans.iter().map(|(text, _)| text.as_str()).collect();
+                let occurrence = line_occurrences.entry(text.clone()).or_default();
+                let anchor = FlatAnchor::Line {
+                    file: file.clone(),
+                    hunk: hunk.clone(),
+                    text,
+                    occurrence: *occurrence,
+                };
+                *occurrence += 1;
+                anchor
+            }
+            _ => FlatAnchor::Row(ix),
+        })
+        .collect()
+}
+
+fn replace_flat_diff_preserving(body: &mut FlatDiff, rows: Vec<CommitDiffRow>) {
+    let old_anchors = flat_anchors(&body.rows);
+    let selected = old_anchors.get(body.selected).cloned();
+    let collapsed = capture_diff_folds(&body.rows, &body.collapsed);
+    let new_anchors = flat_anchors(&rows);
+    body.set_rows(rows);
+    body.selected = selected
+        .as_ref()
+        .and_then(|anchor| new_anchors.iter().position(|candidate| candidate == anchor))
+        .unwrap_or_else(|| body.selected.min(body.rows.len().saturating_sub(1)));
+    body.collapsed = restore_diff_folds(&body.rows, &collapsed);
+    body.visual = None;
+    body.char_sel = None;
+    body.invalidate_visible();
 }
 
 impl StatusView {
@@ -414,6 +559,7 @@ impl StatusView {
         self.screen = Screen::Commit {
             view: CommitView {
                 rev: rev.clone(),
+                key: key.clone(),
                 header_sel: None,
                 header_drag: None,
                 body,
@@ -629,10 +775,12 @@ impl StatusView {
         };
         let gen = self.next_screen_gen();
         let title = request.title();
+        let stored_request = request.clone();
         let back = Box::new(std::mem::take(&mut self.screen));
         self.screen = Screen::Diff {
             view: DiffView {
                 title: SharedString::from(title.clone()),
+                request: stored_request,
                 body: FlatDiff::loading(),
                 files: Vec::new(),
             },
@@ -697,6 +845,138 @@ impl StatusView {
                     dv.body.set_rows(rows);
                     dv.body.collapsed.clear();
                     dv.files = files;
+                }
+                cx.notify();
+                if this.pending_visible_refresh {
+                    this.reconcile_visible_screen(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn reload_diff_silent(&mut self, cx: &mut Context<Self>) {
+        if self.diff_view().is_some_and(|view| view.body.is_loading()) {
+            self.pending_visible_refresh = true;
+            return;
+        }
+        let Some(request) = self.diff_view().map(|view| view.request.clone()) else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        let style = self.diff_style(cx);
+        let load_request = request.clone();
+        cx.spawn(async move |this, cx| {
+            let built = cx
+                .background_executor()
+                .spawn(async move {
+                    let diffs = match load_request {
+                        DiffRequest::Unstaged { args, paths } => repo.diff_unstaged(&args, &paths),
+                        DiffRequest::Staged { args, paths } => repo.diff_staged(&args, &paths),
+                        DiffRequest::Worktree { rev, args, paths } => {
+                            repo.diff_worktree(&rev, &args, &paths)
+                        }
+                        DiffRequest::Range { range, args, paths } => {
+                            repo.diff_range(&range, &args, &paths)
+                        }
+                    }?;
+                    let files = diffs
+                        .into_iter()
+                        .map(|diff| {
+                            let (head, tail) =
+                                file_head_tail(&repo.workdir().join(diff.display_path()));
+                            let lang =
+                                highlight::detect_language(diff.display_path(), &head, &tail);
+                            (Arc::new(diff), lang)
+                        })
+                        .collect::<Vec<_>>();
+                    let rows = if files.is_empty() {
+                        vec![CommitDiffRow::Note("No changes".to_string())]
+                    } else {
+                        let mut rows = Vec::new();
+                        let stat = diffstat_block(&files);
+                        if !stat.is_empty() {
+                            rows.extend(stat);
+                            rows.push(CommitDiffRow::Note(String::new()));
+                        }
+                        rows.extend(diff_rows(&files, &style));
+                        rows
+                    };
+                    Ok::<_, magritte_core::Error>((files, rows))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen)
+                    || this.diff_view().is_none_or(|view| view.request != request)
+                {
+                    return;
+                }
+                let Ok((files, rows)) = built else { return };
+                if let Some(view) = this.diff_view_mut() {
+                    replace_flat_diff_preserving(&mut view.body, rows);
+                    view.files = files.into_iter().map(|(file, _)| file).collect();
+                }
+                cx.notify();
+                if this.pending_visible_refresh {
+                    this.reconcile_visible_screen(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn refresh_open_commit_metadata_silent(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.commit_view().map(|view| view.key.clone()) else {
+            return;
+        };
+        let Some(cached) = self.commit_cache.get(&key).cloned() else {
+            return;
+        };
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        let rev = key.rev.clone();
+        let style = self.diff_style(cx);
+        let cached_for_load = cached.clone();
+        cx.spawn(async move |this, cx| {
+            let built = cx
+                .background_executor()
+                .spawn(async move {
+                    let metadata = repo.commit_metadata(&rev).ok()?;
+                    if metadata.refs == cached_for_load.metadata.refs {
+                        return None;
+                    }
+                    let details = commit_metadata_lines(&metadata);
+                    let rows = commit_detail_rows(
+                        &details,
+                        &cached_for_load.message,
+                        &cached_for_load.files,
+                        &style,
+                    );
+                    Some((metadata, rows))
+                })
+                .await;
+            let Some((metadata, rows)) = built else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen)
+                    || this.commit_view().is_none_or(|view| view.key != key)
+                {
+                    return;
+                }
+                let files = cached.files.iter().map(|(file, _)| file.clone()).collect();
+                this.commit_cache
+                    .insert(key, CommitCacheEntry { metadata, ..cached });
+                if let Some(view) = this.commit_view_mut() {
+                    replace_flat_diff_preserving(&mut view.body, rows);
+                    view.files = files;
                 }
                 cx.notify();
             })
@@ -827,6 +1107,7 @@ impl StatusView {
         if let Screen::Commit { back, .. } = std::mem::take(&mut self.screen) {
             self.screen = *back;
         }
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -835,6 +1116,7 @@ impl StatusView {
         if let Screen::Diff { back, .. } = std::mem::take(&mut self.screen) {
             self.screen = *back;
         }
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -1216,7 +1498,10 @@ pub(crate) fn diff_title(base: &str, paths: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{flat_diff_target_at, fold_header_for, visible_diff_rows, FlatDiff};
+    use super::{
+        flat_diff_target_at, fold_header_for, replace_flat_diff_preserving, stable_hunk_key,
+        visible_diff_rows, FlatDiff,
+    };
     use crate::commit_editor::CommitDiffRow;
     use magritte_core::{Change, LineKind};
     use std::collections::HashSet;
@@ -1297,6 +1582,31 @@ mod tests {
         assert_eq!(
             visible_diff_rows(&rows, &collapsed(&[0, 8])),
             vec![0, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn replacement_restores_cursor_and_folds_by_flat_anchor() {
+        let mut body = FlatDiff::loading();
+        body.set_rows(sample());
+        body.selected = 10; // first line of file b's hunk
+        body.collapsed.insert(8); // file b
+
+        let mut shifted = sample();
+        shifted.insert(3, CommitDiffRow::Note("new overview row".into()));
+        replace_flat_diff_preserving(&mut body, shifted);
+
+        assert_eq!(body.selected, 11);
+        assert_eq!(body.collapsed, collapsed(&[9]));
+        assert!(body.visual.is_none());
+        assert!(body.char_sel.is_none());
+    }
+
+    #[test]
+    fn hunk_anchor_keeps_at_signs_in_function_context() {
+        assert_eq!(
+            stable_hunk_key("@@ -1 +1 @@ fn render_@@_marker()", 0),
+            "fn render_@@_marker()"
         );
     }
 

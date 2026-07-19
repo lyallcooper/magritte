@@ -33,6 +33,20 @@ impl WorktreeView {
     }
 }
 
+fn canonical_anchor(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn restore_worktree_selection(worktrees: &[Worktree], anchor: Option<&PathBuf>) -> usize {
+    anchor
+        .and_then(|anchor| {
+            worktrees
+                .iter()
+                .position(|worktree| canonical_anchor(&worktree.path) == *anchor)
+        })
+        .unwrap_or(0)
+}
+
 impl StatusView {
     pub(crate) fn worktree_view(&self) -> Option<&WorktreeView> {
         match &self.screen {
@@ -59,15 +73,19 @@ impl StatusView {
             load: WorktreeLoad::Loading,
         });
         cx.notify();
-        self.load_worktrees(cx);
+        self.load_worktrees(false, cx);
     }
 
     /// (Re)fetch the worktree list into the open browser. The screen-load
     /// generation guards a superseded load from populating a newer screen.
-    fn load_worktrees(&mut self, cx: &mut Context<Self>) {
+    fn load_worktrees(&mut self, silent: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let anchor = self
+            .worktree_view()
+            .and_then(WorktreeView::selected)
+            .map(|worktree| canonical_anchor(&worktree.path));
         let gen = self.next_screen_gen();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -81,16 +99,18 @@ impl StatusView {
                 if let Some(view) = this.worktree_view_mut() {
                     match result {
                         Ok(mut worktrees) => {
-                            // Keep the cursor in range across a reload (after a
-                            // removal the list shrinks).
                             view.worktrees = std::mem::take(&mut worktrees);
                             view.selected =
-                                view.selected.min(view.worktrees.len().saturating_sub(1));
+                                restore_worktree_selection(&view.worktrees, anchor.as_ref());
                             view.load = WorktreeLoad::Loaded;
                         }
-                        Err(e) => view.load = WorktreeLoad::Failed(e.to_string()),
+                        Err(e) if !silent => view.load = WorktreeLoad::Failed(e.to_string()),
+                        Err(_) => {}
                     }
                     cx.notify();
+                    if this.pending_visible_refresh {
+                        this.reconcile_visible_screen(cx);
+                    }
                 }
             })
             .ok();
@@ -98,8 +118,20 @@ impl StatusView {
         .detach();
     }
 
+    pub(crate) fn reload_worktrees_silent(&mut self, cx: &mut Context<Self>) {
+        if self
+            .worktree_view()
+            .is_some_and(|view| matches!(view.load, WorktreeLoad::Loading))
+        {
+            self.pending_visible_refresh = true;
+            return;
+        }
+        self.load_worktrees(true, cx);
+    }
+
     pub(crate) fn close_worktrees(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -331,12 +363,45 @@ impl StatusView {
             this.update(cx, |this, cx| match result {
                 Ok(msg) => {
                     this.set_status(msg, true, cx);
-                    this.load_worktrees(cx);
+                    this.load_worktrees(false, cx);
                 }
                 Err(e) => this.report_error(e, cx),
             })
             .ok();
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_anchor, restore_worktree_selection};
+    use magritte_core::Worktree;
+
+    fn worktree(path: &str) -> Worktree {
+        Worktree {
+            path: path.into(),
+            head: None,
+            branch: None,
+            bare: false,
+            detached: false,
+            locked: false,
+            prunable: false,
+            is_main: false,
+            is_current: false,
+        }
+    }
+
+    #[test]
+    fn selection_restores_by_canonical_path() {
+        let entries = vec![worktree("/tmp/one"), worktree("/tmp/two")];
+        assert_eq!(
+            restore_worktree_selection(&entries, Some(&canonical_anchor("/tmp/two"))),
+            1
+        );
+        assert_eq!(
+            restore_worktree_selection(&entries, Some(&canonical_anchor("/tmp/gone"))),
+            0
+        );
     }
 }

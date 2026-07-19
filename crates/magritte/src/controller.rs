@@ -32,6 +32,7 @@ impl StatusView {
             limit,
         } = fired;
         self.popup = None;
+        self.refresh_blocker_closed(cx);
         // Repaint now: a dispatcher that early-returns (no repo, nothing at
         // point) must still visibly close the popup.
         cx.notify();
@@ -1529,6 +1530,7 @@ impl StatusView {
                 match result {
                     Ok(choices) if choices.is_empty() && selection_only => {
                         this.popup = None;
+                        this.refresh_blocker_closed(cx);
                         this.set_status(empty_message.to_string(), true, cx);
                     }
                     Ok(choices) => {
@@ -1542,6 +1544,7 @@ impl StatusView {
                     Err(e) => {
                         if selection_only {
                             this.popup = None;
+                            this.refresh_blocker_closed(cx);
                         } else if let Some(Popup::Picker(p)) = this.popup.as_mut() {
                             p.loading = false; // keep open for free-text entry
                         }
@@ -1563,6 +1566,7 @@ impl StatusView {
         };
         let Some(chosen) = chosen else { return };
         if let Some(Popup::Picker(p)) = self.popup.take() {
+            self.refresh_blocker_closed(cx);
             match p.action {
                 PickerAction::Transfer(t) => {
                     self.run_transfer(t, chosen.to_string(), p.switches, cx)

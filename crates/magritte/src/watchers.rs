@@ -1,7 +1,6 @@
-//! Live-reload plumbing: the config-file watcher, appearance/activation/bounds
-//! subscriptions, applying an externally-changed config to the running view,
-//! and the delayed busy-spinner activity counter. `impl StatusView` like the
-//! other view slices.
+//! Live-reload plumbing: configuration, appearance, activation, and bounds.
+//! Repository changes use `repo_monitor`: its native callback is bounded and
+//! filtered, with adaptive polling when native registration is unavailable.
 
 use gpui::{Context, Window};
 
@@ -29,18 +28,11 @@ impl StatusView {
             view.reapply_theme(cx);
         }));
 
-        // Refresh when the window regains focus, so changes made outside the app
-        // show up without a manual `g r` — the same cost as the `g r` you'd press
-        // anyway, and opt-out via `refresh_on_focus`. We deliberately don't watch
-        // the worktree (a large-repo event/refresh-storm hazard magit also
-        // avoids); this is the bounded, on-demand alternative. Skipped until the
-        // first status load lands so it doesn't double the startup refresh, and
-        // only on the status screen (other screens have their own state).
+        // Focus refresh remains independent from the repository monitor. It is
+        // a correctness fallback for watcher loss and changes made while the OS
+        // coalesces delivery, and can be disabled separately.
         self._activation_sub = Some(cx.observe_window_activation(window, |view, window, cx| {
-            if !(window.is_window_active()
-                && view.config.refresh_on_focus
-                && view.status.is_some()
-                && matches!(view.screen, Screen::Status))
+            if !(window.is_window_active() && view.config.refresh_on_focus && view.status.is_some())
             {
                 return;
             }
@@ -53,7 +45,12 @@ impl StatusView {
                 .last_refresh
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(FOCUS_REFRESH_COOLDOWN_MS));
             if !recent {
-                view.refresh(cx);
+                view.request_automatic_refresh(
+                    RefreshOrigin::Focus,
+                    repo_monitor::ChangeScope::RepositoryWide,
+                    None,
+                    cx,
+                );
             }
         }));
 
@@ -176,9 +173,15 @@ impl StatusView {
                                 // ignored.
                                 view.set_status(warning, false, cx);
                             } else if cfg != view.config {
-                                // Skip an unchanged config (our own in-app save,
-                                // or a no-op external edit).
+                                // An effective change needs the full live-config
+                                // application path and its runtime side effects.
                                 view.apply_config(cfg, window, cx);
+                            } else {
+                                // The effective value can stay equal while a
+                                // raw scope changes (repo On → Inherit when
+                                // Global is On). Settings exposes both layers,
+                                // so keep them synchronized independently.
+                                view.sync_unchanged_config_scopes(cx);
                             }
                         })
                     }
@@ -232,6 +235,7 @@ impl StatusView {
         cx: &mut Context<Self>,
     ) {
         let fetch_changed = self.config.fetch != cfg.fetch;
+        let auto_refresh_changed = self.config.auto_refresh != cfg.auto_refresh;
         let update_check_changed = self.config.check_for_updates != cfg.check_for_updates;
         let app_icon_changed = self.config.app_icon != cfg.app_icon;
         let vim_keymap_changed = self.config.vim.keymap != cfg.vim.keymap;
@@ -248,6 +252,9 @@ impl StatusView {
         self.config_global = config::load_reporting().0;
         if fetch_changed {
             self.start_auto_fetch(cx);
+        }
+        if auto_refresh_changed {
+            self.configure_repository_monitor(cx);
         }
         if update_check_changed {
             self.start_update_checks(cx);
@@ -288,7 +295,12 @@ impl StatusView {
             }
         }
         if data_changed {
-            self.refresh(cx);
+            self.refresh_with_origin(
+                RefreshOrigin::Config,
+                repo_monitor::ChangeScope::RepositoryWide,
+                None,
+                cx,
+            );
         }
         // The open settings form's dropdowns/inputs were built from the old
         // config, so rebuild it in place against the reloaded values rather than

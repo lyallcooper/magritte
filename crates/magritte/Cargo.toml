@@ -36,6 +36,7 @@ shell-words = "1"
 indexmap = { workspace = true }
 toml = { workspace = true }
 toml_edit = "0.22"
+unicode-normalization = "0.1"
 # Extra tree-sitter grammars whose gpui-component registrations have empty
 # highlight queries at the pinned revision. Versions match Cargo.lock.
 tree-sitter-c-sharp = "0.23.5"

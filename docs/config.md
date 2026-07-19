@@ -27,7 +27,12 @@ valid configuration.
 
 Press <kbd>,</kbd> or choose **Magritte > Settings** to access the settings
 screen. Here you can change common options such as themes, fonts, editors, and
-the keymap preset. The Settings screen writes to the global configuration file.
+the keymap preset. Auto refresh, refresh on focus, and title-bar tags show a
+global switch and, when a repository is open, a repository override with
+**Inherit**, **On**, and **Off** choices. **Inherit** follows the global switch
+and removes that key from the repo config; the other choices write only that one
+repo override. Update checks and other Settings controls edit the global
+configuration.
 
 ## Per-repo configuration
 
@@ -65,6 +70,7 @@ All scalar settings are top-level TOML keys. Every setting is optional.
 | `commit_title_ruler` | `true` / `false` | `true` | Highlight summary text after column 50. |
 | `commit_body_wrap` | `true` / `false` | `true` | Wrap commit bodies at column 72. |
 | `commit_vim_mode` | `true` / `false` | `false` | Enable vim emulation in the in-app commit editor. See [Vim mode keys](#vim-mode-keys). |
+| `auto_refresh` | `true` / `false` | `true` | Watch the repository and refresh settled external changes automatically. |
 | `refresh_on_focus` | `true` / `false` | `true` | Refresh the repository when the window regains focus. |
 | `show_tags_in_title_bar` | `true` / `false` | `false` | Show the nearest reachable tag in the title bar. |
 | `check_for_updates` | `true` / `false` | `true` | Check for new releases and show a quiet notification. |

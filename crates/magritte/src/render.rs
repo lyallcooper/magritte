@@ -1455,6 +1455,7 @@ impl Render for StatusView {
                 // here in the capture phase (root-first), so the opening
                 // right-click's bubble-phase handler can re-set it afterward.
                 this.ctx_menu_open = false;
+                this.refresh_blocker_closed(cx);
                 // Reset per-press: a selectable row's own mouse-down sets this,
                 // so the root's bubble handler can tell a click landed on text.
                 this.click_hit_selectable = false;
@@ -1585,7 +1586,7 @@ impl Render for StatusView {
         // active screen (no re-derived priority cascade); Status falls through to
         // the status list below.
         let screen_el: Option<AnyElement> = match &self.screen {
-            Screen::Settings(s) => Some(self.render_settings(s, &view).into_any_element()),
+            Screen::Settings(s) => Some(self.render_settings(s, &view, window).into_any_element()),
             Screen::Editor(ed) => Some(self.render_editor(ed, &view).into_any_element()),
             Screen::GitLog { view: scroll, .. } => {
                 Some(self.render_git_log(scroll, &view).into_any_element())
@@ -1640,6 +1641,7 @@ impl Render for StatusView {
                     el.on_click(cx.listener(|this, _, _window, cx| {
                         if this.popup.is_some() {
                             this.popup = None;
+                            this.refresh_blocker_closed(cx);
                         } else {
                             this.selection.visual = None;
                         }

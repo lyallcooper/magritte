@@ -7,11 +7,11 @@
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, ScrollHandle, SharedString, Subscription, Window};
-use gpui_component::button::{Button, DropdownButton};
+use gpui_component::button::{Button, ButtonGroup, DropdownButton};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::switch::Switch;
-use gpui_component::{IconName, Sizable};
+use gpui_component::{IconName, Selectable, Sizable};
 
 use crate::*;
 
@@ -44,6 +44,132 @@ const KEYMAP_OPTIONS: [(&str, config::KeymapPreset); 2] = [
     ("Vanilla Emacs", config::KeymapPreset::Vanilla),
 ];
 
+const BEHAVIOR_GLOBAL_COLUMN_WIDTH: f32 = 44.0;
+const BEHAVIOR_SCOPE_COLUMNS_WIDTH: f32 = 180.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum BehaviorSetting {
+    AutoRefresh,
+    RefreshOnFocus,
+    ShowTags,
+    CheckForUpdates,
+}
+
+impl BehaviorSetting {
+    const ALL: [Self; 4] = [
+        Self::AutoRefresh,
+        Self::RefreshOnFocus,
+        Self::ShowTags,
+        Self::CheckForUpdates,
+    ];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::AutoRefresh => "auto-refresh",
+            Self::RefreshOnFocus => "refresh-on-focus",
+            Self::ShowTags => "show-tags",
+            Self::CheckForUpdates => "check-for-updates",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::AutoRefresh => "auto_refresh",
+            Self::RefreshOnFocus => "refresh_on_focus",
+            Self::ShowTags => "show_tags_in_title_bar",
+            Self::CheckForUpdates => "check_for_updates",
+        }
+    }
+
+    fn alias(self) -> Option<&'static str> {
+        matches!(self, Self::ShowTags).then_some("show_tags")
+    }
+
+    fn supports_repo_override(self) -> bool {
+        self != Self::CheckForUpdates
+    }
+
+    fn get(self, config: &config::Config) -> bool {
+        match self {
+            Self::AutoRefresh => config.auto_refresh,
+            Self::RefreshOnFocus => config.refresh_on_focus,
+            Self::ShowTags => config.show_tags_in_title_bar,
+            Self::CheckForUpdates => config.check_for_updates,
+        }
+    }
+
+    fn set(self, config: &mut config::Config, value: bool) {
+        match self {
+            Self::AutoRefresh => config.auto_refresh = value,
+            Self::RefreshOnFocus => config.refresh_on_focus = value,
+            Self::ShowTags => config.show_tags_in_title_bar = value,
+            Self::CheckForUpdates => config.check_for_updates = value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BehaviorOverrides {
+    values: [Option<bool>; BehaviorSetting::ALL.len()],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SettingsLayout {
+    stack_columns: bool,
+    stack_fields: bool,
+    stack_behavior_rows: bool,
+}
+
+impl SettingsLayout {
+    fn for_width(window_width: f32) -> Self {
+        let stack_columns = window_width < 700.0;
+        // Mirror the rendered max width, page padding, column gap/split, and
+        // card padding so Behavior changes layout as one section.
+        let page_width = window_width.min(880.0);
+        let columns_width = (page_width - 32.0).max(0.0);
+        let behavior_card_width = if stack_columns {
+            columns_width
+        } else {
+            ((columns_width - 16.0).max(0.0)) * 0.45
+        };
+        let behavior_inner_width = (behavior_card_width - 26.0).max(0.0);
+        Self {
+            stack_columns,
+            stack_fields: window_width < 520.0,
+            stack_behavior_rows: behavior_inner_width < 340.0,
+        }
+    }
+}
+
+impl BehaviorOverrides {
+    fn load(path: Option<&std::path::Path>) -> Self {
+        let Some(path) = path else {
+            return Self::default();
+        };
+        let mut overrides = Self::default();
+        for setting in BehaviorSetting::ALL {
+            overrides.set(
+                setting,
+                config::load_bool_override_at(path, setting.key(), setting.alias()),
+            );
+        }
+        overrides
+    }
+
+    fn get(self, setting: BehaviorSetting) -> Option<bool> {
+        self.values[setting.index()]
+    }
+
+    fn set(&mut self, setting: BehaviorSetting, value: Option<bool>) {
+        self.values[setting.index()] = value;
+    }
+}
+
 /// The live settings screen, built from gpui-component `Select` dropdowns (each
 /// with built-in mouse + keyboard handling). Tab cycles focus between them;
 /// confirming a selection applies it live.
@@ -64,6 +190,8 @@ pub(crate) struct SettingsState {
     commit_editor: Entity<InputState>,
     /// Keymap preset (Evil/Vim vs Vanilla Emacs).
     keymap_preset: Entity<SelectState<Vec<SharedString>>>,
+    /// Explicit repo values for the Behavior card. `None` inherits Global.
+    behavior_overrides: BehaviorOverrides,
     /// Which control Tab focuses next (0=appearance, 1=light, 2=dark, 3=font,
     /// 4=ui_font, 5=font_size, 6=editor, 7=keymap_preset, 8=commit_editor).
     focus_ix: usize,
@@ -133,6 +261,12 @@ impl StatusView {
     /// editor commands, and behavior toggles — every control applying its
     /// change immediately (no save button).
     pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let behavior_overrides = BehaviorOverrides::load(
+            self.repo_scope_dir
+                .as_ref()
+                .map(|dir| dir.join("config.toml"))
+                .as_deref(),
+        );
         let mut theme_names: Vec<SharedString> = gpui_component::ThemeRegistry::global(cx)
             .sorted_themes()
             .iter()
@@ -456,6 +590,7 @@ impl StatusView {
             editor,
             commit_editor,
             keymap_preset,
+            behavior_overrides,
             focus_ix: 0,
             scroll: ScrollHandle::new(),
             _subs: subs,
@@ -546,17 +681,13 @@ impl StatusView {
         self.launch_editor(&path, None);
     }
 
-    /// A settings toggle (a `Switch` bound to a `bool` config field) paired with
-    /// an info icon whose tooltip explains the setting. The tooltip shows
-    /// immediately on hover (zero show-delay, unlike the library's 500ms managed
-    /// tooltip) and wraps to a readable width rather than one long line. The
-    /// switch flips the field and persists on click; all of it is mouse-driven,
-    /// like the rest of the settings screen (not part of the Tab focus ring).
+    /// A settings toggle (a `Switch` bound to a `bool` config field). The switch
+    /// flips the field and persists on click; like the rest of the settings
+    /// screen, it is mouse-driven rather than part of the Tab focus ring.
     pub(crate) fn toggle_control(
         &self,
         id: &'static str,
         checked: bool,
-        explanation: &'static str,
         view: &Entity<Self>,
         // Whether flipping this toggle changes fetched data (e.g. the title-bar
         // tag segment) rather than just how the current data is painted. When
@@ -587,42 +718,204 @@ impl StatusView {
                 });
             }
         });
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(switch)
-            .child(self.info_icon(format!("{id}-info"), explanation))
-            .into_any_element()
+        switch.into_any_element()
     }
 
-    /// The update-check toggle restarts/stops its background loop immediately,
-    /// so it is separate from the generic config-only switch helper.
-    pub(crate) fn update_check_toggle_control(&self, view: &Entity<Self>) -> AnyElement {
-        let switch = Switch::new("check-for-updates")
-            .checked(self.config.check_for_updates)
+    /// A Behavior row exposes its global switch and, for repo-scoped behavior,
+    /// an explicit Inherit/On/Off override. The latter is intentionally
+    /// tri-state so following Global never writes a redundant value that would
+    /// mask later global edits.
+    fn behavior_toggle_control(
+        &self,
+        setting: BehaviorSetting,
+        repo_override: Option<bool>,
+        show_scope_labels: bool,
+        view: &Entity<Self>,
+    ) -> AnyElement {
+        let id = setting.id();
+        let global = Switch::new(SharedString::from(format!("{id}-global")))
+            .checked(setting.get(&self.config_global))
             .on_click({
                 let view = view.clone();
                 move |on, _window, cx| {
                     let on = *on;
-                    view.update(cx, |this, cx| {
-                        this.edit_global(|c| c.check_for_updates = on);
-                        this.save_global_config(cx);
-                        this.start_update_checks(cx);
-                        cx.notify();
-                    });
+                    view.update(cx, |this, cx| this.set_global_behavior(setting, on, cx));
                 }
             });
+        let repo = (self.repo_scope_dir.is_some() && setting.supports_repo_override()).then(|| {
+            ButtonGroup::new(SharedString::from(format!("{id}-repo")))
+                .outline()
+                .compact()
+                .xsmall()
+                .child(
+                    Button::new(SharedString::from(format!("{id}-inherit")))
+                        .label("Inherit")
+                        .selected(repo_override.is_none()),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-repo-on")))
+                        .label("On")
+                        .selected(repo_override == Some(true)),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-repo-off")))
+                        .label("Off")
+                        .selected(repo_override == Some(false)),
+                )
+                .on_click({
+                    let view = view.clone();
+                    move |selected, window, cx| {
+                        let value = if selected.contains(&1) {
+                            Some(true)
+                        } else if selected.contains(&2) {
+                            Some(false)
+                        } else {
+                            None
+                        };
+                        view.update(cx, |this, cx| {
+                            this.set_repo_behavior_override(setting, value, window, cx);
+                        });
+                    }
+                })
+                .into_any_element()
+        });
+
         div()
             .flex()
-            .items_center()
-            .gap_2()
-            .child(switch)
-            .child(self.info_icon(
-                "check-for-updates-info".to_string(),
-                "Periodically check for published Magritte releases.",
-            ))
+            .items_end()
+            .gap_3()
+            .when(self.repo_scope_dir.is_some(), |el| {
+                el.min_w(px(BEHAVIOR_SCOPE_COLUMNS_WIDTH))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(BEHAVIOR_GLOBAL_COLUMN_WIDTH))
+                    .gap_1()
+                    .when(show_scope_labels, |el| {
+                        el.child(div().text_xs().text_color(self.palette.dim).child("Global"))
+                    })
+                    .child(global),
+            )
+            .when_some(repo, |el, repo| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .when(show_scope_labels, |el| {
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.palette.dim)
+                                    .child("Repository"),
+                            )
+                        })
+                        .child(repo),
+                )
+            })
             .into_any_element()
+    }
+
+    fn set_global_behavior(
+        &mut self,
+        setting: BehaviorSetting,
+        value: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let old_effective = setting.get(&self.config);
+        setting.set(&mut self.config_global, value);
+        let repo_override = self
+            .settings()
+            .and_then(|settings| settings.behavior_overrides.get(setting));
+        let effective = repo_override.unwrap_or(value);
+        setting.set(&mut self.config, effective);
+        self.save_global_config(cx);
+        self.apply_behavior_change(setting, old_effective, effective, cx);
+    }
+
+    fn set_repo_behavior_override(
+        &mut self,
+        setting: BehaviorSetting,
+        value: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self
+            .repo_scope_dir
+            .as_ref()
+            .map(|dir| dir.join("config.toml"))
+        else {
+            return;
+        };
+        if let Err(error) =
+            config::save_bool_override_at(&path, setting.key(), setting.alias(), value)
+        {
+            self.set_status(error, false, cx);
+            return;
+        }
+        if let Some(settings) = self.settings_mut() {
+            settings.behavior_overrides.set(setting, value);
+        }
+        let old_effective = setting.get(&self.config);
+        let effective = value.unwrap_or_else(|| setting.get(&self.config_global));
+        setting.set(&mut self.config, effective);
+        // The repo settings directory may have been created by this first
+        // override, so make it part of the live config watcher immediately.
+        self.install_config_watcher(window, cx);
+        self.apply_behavior_change(setting, old_effective, effective, cx);
+    }
+
+    fn apply_behavior_change(
+        &mut self,
+        setting: BehaviorSetting,
+        old_effective: bool,
+        effective: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if old_effective == effective {
+            cx.notify();
+            return;
+        }
+        match setting {
+            BehaviorSetting::AutoRefresh => self.configure_repository_monitor(cx),
+            BehaviorSetting::RefreshOnFocus => cx.notify(),
+            BehaviorSetting::ShowTags => self.refresh_with_origin(
+                RefreshOrigin::Config,
+                repo_monitor::ChangeScope::RepositoryWide,
+                None,
+                cx,
+            ),
+            BehaviorSetting::CheckForUpdates => self.start_update_checks(cx),
+        }
+        cx.notify();
+    }
+
+    /// A config-file edit can change which scope supplies a Behavior value
+    /// without changing the effective merged value (for example, On → Inherit
+    /// while Global is already on). Keep the two visible layers current even
+    /// when the normal effective-config comparison is therefore unchanged.
+    pub(crate) fn sync_unchanged_config_scopes(&mut self, cx: &mut Context<Self>) {
+        let global = config::load_reporting().0;
+        let global_changed = global != self.config_global;
+        self.config_global = global;
+
+        let overrides = BehaviorOverrides::load(
+            self.repo_scope_dir
+                .as_ref()
+                .map(|dir| dir.join("config.toml"))
+                .as_deref(),
+        );
+        let overrides_changed = self.settings_mut().is_some_and(|settings| {
+            let changed = settings.behavior_overrides != overrides;
+            settings.behavior_overrides = overrides;
+            changed
+        });
+        if global_changed || overrides_changed {
+            self.set_status("Settings reloaded from disk".to_string(), true, cx);
+            cx.notify();
+        }
     }
 
     /// Apply a global-settings change to both the live merged config (for the
@@ -769,6 +1062,7 @@ impl StatusView {
         // free-text edit.
         self.flush_settings_save(cx);
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -813,51 +1107,96 @@ impl StatusView {
         &self,
         s: &SettingsState,
         view: &Entity<Self>,
+        window: &Window,
     ) -> impl IntoElement {
-        // A labelled control row: a fixed-width label with the control filling
-        // the rest of the row. One control per row so everything left-aligns.
-        let field = |id: &'static str, label: &str, control: AnyElement| {
+        let layout = SettingsLayout::for_width(f32::from(window.bounds().size.width));
+        let stack_columns = layout.stack_columns;
+        let stack_fields = layout.stack_fields;
+
+        let setting_label = |id: &'static str, label: &str, explanation: Option<&'static str>| {
             div()
                 .flex()
+                .flex_shrink_0()
                 .items_center()
+                .gap_2()
+                .text_color(self.palette.dim)
+                .child(SharedString::from(label.to_string()))
+                .when_some(explanation, |el, explanation| {
+                    el.child(self.info_icon(format!("{id}-info"), explanation))
+                })
+        };
+        // A labelled control row: a fixed-width label with the control filling
+        // the rest of the row. One control per row so everything left-aligns.
+        let field = |id: &'static str,
+                     label: &str,
+                     explanation: Option<&'static str>,
+                     control: AnyElement| {
+            div()
+                .flex()
                 .gap_3()
+                .when(stack_fields, |el| el.flex_col().gap_2())
+                .when(!stack_fields, |el| el.items_center())
                 .child(
                     div()
-                        .w(px(120.0))
                         .flex_shrink_0()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(label.to_string())),
+                        .when(!stack_fields, |el| el.w(px(152.0)))
+                        .child(setting_label(id, label, explanation)),
                 )
                 .child(
                     div()
                         .relative()
                         .flex_1()
+                        .w_full()
                         .min_w(px(0.0))
                         .child(track_target(id))
                         .child(control),
                 )
         };
-        // A labelled toggle row: label on the left, switch (+ info) pinned to the
-        // right of the card. One per row, so every switch aligns down the column.
-        let toggle_field = |id: &'static str, label: &str, control: AnyElement| {
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    div()
-                        .text_color(self.palette.dim)
-                        .child(SharedString::from(label.to_string())),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .flex_shrink_0()
-                        .child(track_target(id))
-                        .child(control),
-                )
-        };
+        // A labelled toggle row: label on the left, its global/repo control (or
+        // a plain commit-editor switch) pinned to the right of the card.
+        let toggle_field =
+            |id: &'static str, label: &str, explanation: &'static str, control: AnyElement| {
+                div()
+                    .flex()
+                    .w_full()
+                    .gap_3()
+                    .when(stack_fields, |el| el.flex_col().items_start().gap_2())
+                    .when(!stack_fields, |el| {
+                        el.flex_wrap().items_center().justify_between()
+                    })
+                    .child(setting_label(id, label, Some(explanation)))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_shrink_0()
+                            .child(track_target(id))
+                            .child(control),
+                    )
+            };
+        // Behavior rows share one layout decision so a longer label cannot
+        // wrap by itself while its neighbors remain on one line. Their control
+        // block reserves the same Global/Repository columns for every row.
+        let behavior_field =
+            |id: &'static str, label: &str, explanation: &'static str, control: AnyElement| {
+                div()
+                    .flex()
+                    .w_full()
+                    .gap_3()
+                    .when(layout.stack_behavior_rows, |el| {
+                        el.flex_col().items_start().gap_2()
+                    })
+                    .when(!layout.stack_behavior_rows, |el| {
+                        el.items_center().justify_between()
+                    })
+                    .child(setting_label(id, label, Some(explanation)))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_shrink_0()
+                            .child(track_target(id))
+                            .child(control),
+                    )
+            };
         // A titled group: an uppercase heading over a bordered card of rows.
         // Fills its masonry column.
         let section = |title: &str, rows: Vec<gpui::Div>| {
@@ -891,8 +1230,10 @@ impl StatusView {
         // Header: title on the left; actions on the right.
         let header = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_between()
+            .gap_3()
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
@@ -930,11 +1271,13 @@ impl StatusView {
                 field(
                     "appearance",
                     "Mode",
+                    None,
                     Select::new(&s.appearance).into_any_element(),
                 ),
                 field(
                     "light-theme",
                     "Light theme",
+                    None,
                     Select::new(&s.light_theme)
                         .search_placeholder("Search themes")
                         .into_any_element(),
@@ -942,6 +1285,7 @@ impl StatusView {
                 field(
                     "dark-theme",
                     "Dark theme",
+                    None,
                     Select::new(&s.dark_theme)
                         .search_placeholder("Search themes")
                         .into_any_element(),
@@ -949,6 +1293,7 @@ impl StatusView {
                 field(
                     "font",
                     "Monospace font",
+                    None,
                     Select::new(&s.font)
                         .search_placeholder("Search fonts")
                         .into_any_element(),
@@ -956,6 +1301,7 @@ impl StatusView {
                 field(
                     "ui-font",
                     "UI font",
+                    None,
                     Select::new(&s.ui_font)
                         .search_placeholder("Search fonts")
                         .into_any_element(),
@@ -963,6 +1309,7 @@ impl StatusView {
                 field(
                     "font-size",
                     "Font size",
+                    None,
                     Select::new(&s.font_size).into_any_element(),
                 ),
             ];
@@ -1020,7 +1367,7 @@ impl StatusView {
                             .map(|icon| cell(icon.id, icon.thumb, icon.id == current)),
                     )
                     .into_any_element();
-                rows.push(field("app-icon", "App icon", radio));
+                rows.push(field("app-icon", "App icon", None, radio));
             }
             rows
         });
@@ -1032,64 +1379,106 @@ impl StatusView {
                 .into_any_element();
             #[cfg(not(target_os = "macos"))]
             let control = Input::new(&s.editor).into_any_element();
-            vec![
-                field("editor", "External editor", control).child(self.info_icon(
-                    "editor-info".to_string(),
-                    "The editor used when opening a file",
-                )),
-            ]
+            vec![field(
+                "editor",
+                "External editor",
+                Some("The editor used when opening a file"),
+                control,
+            )]
         });
 
-        let behavior = section(
-            "Behavior",
-            vec![
-                field(
-                    "keymap-preset",
-                    "Keybindings",
-                    Select::new(&s.keymap_preset).into_any_element(),
+        let behavior = section("Behavior", {
+            let mut rows = vec![field(
+                "keymap-preset",
+                "Keybindings",
+                None,
+                Select::new(&s.keymap_preset).into_any_element(),
+            )];
+            if !layout.stack_behavior_rows {
+                rows.push(
+                    div().flex().w_full().justify_end().child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .when(self.repo_scope_dir.is_some(), |el| {
+                                el.min_w(px(BEHAVIOR_SCOPE_COLUMNS_WIDTH))
+                            })
+                            .child(
+                                div()
+                                    .w(px(BEHAVIOR_GLOBAL_COLUMN_WIDTH))
+                                    .text_xs()
+                                    .text_color(self.palette.dim)
+                                    .child("Global"),
+                            )
+                            .when(self.repo_scope_dir.is_some(), |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(self.palette.dim)
+                                        .child("Repository"),
+                                )
+                            }),
+                    ),
+                );
+            }
+            rows.extend([
+                behavior_field(
+                    "auto-refresh",
+                    "Auto refresh",
+                    "Automatically refresh when changes are detected in the repo.",
+                    self.behavior_toggle_control(
+                        BehaviorSetting::AutoRefresh,
+                        s.behavior_overrides.get(BehaviorSetting::AutoRefresh),
+                        layout.stack_behavior_rows,
+                        view,
+                    ),
                 ),
-                toggle_field(
+                behavior_field(
                     "refresh-on-focus",
                     "Refresh on focus",
-                    self.toggle_control(
-                        "refresh-on-focus",
-                        self.config.refresh_on_focus,
-                        "Refresh the status view automatically when window regains focus.",
+                    "Refresh the status view automatically when window regains focus.",
+                    self.behavior_toggle_control(
+                        BehaviorSetting::RefreshOnFocus,
+                        s.behavior_overrides.get(BehaviorSetting::RefreshOnFocus),
+                        layout.stack_behavior_rows,
                         view,
-                        false,
-                        |cfg, on| cfg.refresh_on_focus = on,
                     ),
                 ),
-                toggle_field(
+                behavior_field(
                     "show-tags",
                     "Tags in title bar",
-                    self.toggle_control(
-                        "show-tags",
-                        self.config.show_tags_in_title_bar,
-                        "Show the nearest reachable tag (e.g. `v1.0 (5)`) in the title bar.",
+                    "Show the nearest reachable tag (e.g. `v1.0 (5)`) in the title bar.",
+                    self.behavior_toggle_control(
+                        BehaviorSetting::ShowTags,
+                        s.behavior_overrides.get(BehaviorSetting::ShowTags),
+                        layout.stack_behavior_rows,
                         view,
-                        // Needs the tag data fetched, so refresh on toggle.
-                        true,
-                        |cfg, on| cfg.show_tags_in_title_bar = on,
                     ),
                 ),
-                toggle_field(
+                behavior_field(
                     "check-for-updates",
                     "Check for updates",
-                    self.update_check_toggle_control(view),
+                    "Periodically check for published Magritte releases.",
+                    self.behavior_toggle_control(
+                        BehaviorSetting::CheckForUpdates,
+                        None,
+                        layout.stack_behavior_rows,
+                        view,
+                    ),
                 ),
-            ],
-        );
+            ]);
+            rows
+        });
 
         let commit = section("Commit editor", {
             let mut rows = vec![toggle_field(
                 "commit-in-editor",
                 "Use external editor",
+                "Write commit messages with the editor command below (an interactive `git \
+                 commit`) instead of the built-in editor.",
                 self.toggle_control(
                     "commit-in-editor",
                     self.config.commit_in_editor,
-                    "Write commit messages with the editor command below (an interactive \
-                     `git commit`) instead of the built-in editor.",
                     view,
                     false,
                     |cfg, on| cfg.commit_in_editor = on,
@@ -1101,16 +1490,17 @@ impl StatusView {
                 rows.push(field(
                     "commit-editor",
                     "Editor command",
+                    None,
                     Input::new(&s.commit_editor).into_any_element(),
                 ));
             } else {
                 rows.push(toggle_field(
                     "commit-title-ruler",
                     "Summary ruler",
+                    "Underlines characters past column 50 on the commit summary (first) line.",
                     self.toggle_control(
                         "commit-title-ruler",
                         self.config.commit_title_ruler,
-                        "Underlines characters past column 50 on the commit summary (first) line.",
                         view,
                         false,
                         |cfg, on| cfg.commit_title_ruler = on,
@@ -1119,11 +1509,11 @@ impl StatusView {
                 rows.push(toggle_field(
                     "commit-body-wrap",
                     "Body auto-wrap",
+                    "Hard-wraps the commit body at 72 columns as you type at the end of a line \
+                     (the summary line is never wrapped).",
                     self.toggle_control(
                         "commit-body-wrap",
                         self.config.commit_body_wrap,
-                        "Hard-wraps the commit body at 72 columns as you type at the end of a \
-                         line (the summary line is never wrapped).",
                         view,
                         false,
                         |cfg, on| cfg.commit_body_wrap = on,
@@ -1132,10 +1522,10 @@ impl StatusView {
                 rows.push(toggle_field(
                     "commit-vim-mode",
                     "Vim mode",
+                    "Vim emulation in the commit editor. Commit with ZZ, cancel with ZQ.",
                     self.toggle_control(
                         "commit-vim-mode",
                         self.config.commit_vim_mode,
-                        "Vim emulation in the commit editor. Commit with ZZ, cancel with ZQ.",
                         view,
                         false,
                         |cfg, on| cfg.commit_vim_mode = on,
@@ -1145,37 +1535,38 @@ impl StatusView {
             rows
         });
 
-        // Two masonry columns of section cards: Appearance (the tallest, with
-        // the widest controls) leads a wider left column; the rest stack on the
-        // narrower right. The 55/45 split is set via flex-basis so the overall
-        // width is unchanged.
+        // The cards use two masonry columns when there is enough room, then
+        // become one ordered column before either side gets cramped.
+        let left_column = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .gap_4()
+            .when(stack_columns, |el| el.w_full())
+            .when(!stack_columns, |el| {
+                el.flex_1().flex_basis(gpui::relative(0.55))
+            })
+            .child(appearance)
+            .child(editor);
+        let right_column = div()
+            .flex()
+            .flex_col()
+            .min_w(px(0.0))
+            .gap_4()
+            .when(stack_columns, |el| el.w_full())
+            .when(!stack_columns, |el| {
+                el.flex_1().flex_basis(gpui::relative(0.45))
+            })
+            .child(behavior)
+            .child(commit);
         let columns = div()
             .flex()
             .items_start()
             .gap_4()
             .w_full()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .flex_basis(gpui::relative(0.55))
-                    .min_w(px(0.0))
-                    .gap_4()
-                    .child(appearance)
-                    .child(editor),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .flex_basis(gpui::relative(0.45))
-                    .min_w(px(0.0))
-                    .gap_4()
-                    .child(behavior)
-                    .child(commit),
-            );
+            .when(stack_columns, |el| el.flex_col())
+            .child(left_column)
+            .child(right_column);
 
         // The content column: width-capped and left-aligned. Wrapped below in a
         // full-width scroll container so the scrollbar sits at the window edge.
@@ -1226,5 +1617,31 @@ impl StatusView {
         if let Some(path) = config::path() {
             self.copy_to_clipboard(path.to_string_lossy().into_owned(), cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SettingsLayout;
+
+    #[test]
+    fn responsive_settings_layout_uses_section_wide_breaks() {
+        let wide = SettingsLayout::for_width(880.0);
+        assert!(!wide.stack_columns);
+        assert!(!wide.stack_behavior_rows);
+
+        let narrower_columns = SettingsLayout::for_width(824.0);
+        assert!(!narrower_columns.stack_columns);
+        assert!(narrower_columns.stack_behavior_rows);
+
+        let full_width_card = SettingsLayout::for_width(650.0);
+        assert!(full_width_card.stack_columns);
+        assert!(!full_width_card.stack_behavior_rows);
+        assert!(!full_width_card.stack_fields);
+
+        let cramped = SettingsLayout::for_width(380.0);
+        assert!(cramped.stack_columns);
+        assert!(cramped.stack_behavior_rows);
+        assert!(cramped.stack_fields);
     }
 }

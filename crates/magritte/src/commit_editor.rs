@@ -767,18 +767,30 @@ impl StatusView {
     /// HEAD that the commit will include); reword shows the diff of the commit
     /// it's renaming (HEAD's own changes), since it makes no tree change.
     pub(crate) fn load_commit_diff(&mut self, cx: &mut Context<Self>) {
+        self.load_commit_diff_with(false, cx);
+    }
+
+    pub(crate) fn reload_commit_diff_silent(&mut self, cx: &mut Context<Self>) {
+        if self.editor().is_some_and(|editor| editor.diff_loading) {
+            self.pending_visible_refresh = true;
+            return;
+        }
+        self.load_commit_diff_with(true, cx);
+    }
+
+    fn load_commit_diff_with(&mut self, silent: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
         let Some(ed) = self.editor() else {
             return;
         };
-        // The caller (open_editor_after) bumped screen_gen for this editor;
-        // capture it so a load outlived by its editor can't populate a newer
-        // one (whose mode/args — create vs reword vs --all — may differ).
-        let gen = self.screen_gen.current();
         let reword = ed.mode == CommitMode::Reword;
         let also_unstaged = ed.args.iter().any(|a| a == "--all");
+        let fold_anchors = capture_diff_folds(&ed.diff, &ed.diff_collapsed);
+        // Preview loads have their own generation: automatic refresh may start
+        // another while this editor stays open, and only the newest may land.
+        let gen = self.editor_diff_gen.bump();
         let style = self.diff_style(cx);
         cx.spawn(async move |this, cx| {
             let rows = cx
@@ -794,33 +806,39 @@ impl StatusView {
                     } else {
                         repo.diff_all(DiffSource::Staged)
                     };
-                    match loaded {
-                        Ok(diffs) => {
-                            let files = diffs
-                                .into_iter()
-                                .map(|d| {
-                                    let (head, tail) =
-                                        file_head_tail(&repo.workdir().join(d.display_path()));
-                                    let lang =
-                                        highlight::detect_language(d.display_path(), &head, &tail);
-                                    (Arc::new(d), lang)
-                                })
-                                .collect::<Vec<_>>();
-                            diff_rows(&files, &style)
-                        }
-                        Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
-                    }
+                    loaded.map(|diffs| {
+                        let files = diffs
+                            .into_iter()
+                            .map(|d| {
+                                let (head, tail) =
+                                    file_head_tail(&repo.workdir().join(d.display_path()));
+                                let lang =
+                                    highlight::detect_language(d.display_path(), &head, &tail);
+                                (Arc::new(d), lang)
+                            })
+                            .collect::<Vec<_>>();
+                        diff_rows(&files, &style)
+                    })
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if !this.screen_gen.is_current(gen) || this.editor().is_none() {
+                if !this.editor_diff_gen.is_current(gen) || this.editor().is_none() {
                     return; // this editor closed (or was replaced) before the diff loaded
                 }
+                let rows = match rows {
+                    Ok(rows) => rows,
+                    Err(_) if silent => return,
+                    Err(e) => vec![CommitDiffRow::Note(format!("diff unavailable: {e}"))],
+                };
                 if let Some(ed) = this.editor_mut() {
                     ed.diff_loading = false;
+                    ed.diff_collapsed = restore_diff_folds(&rows, &fold_anchors);
                     ed.diff = rows;
                 }
                 cx.notify();
+                if this.pending_visible_refresh {
+                    this.reconcile_visible_screen(cx);
+                }
             })
             .ok();
         })
@@ -1071,6 +1089,7 @@ impl StatusView {
             }
         }
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         // Git state may have moved while the editor was open — a reword (`r w`)
         // pauses a real rebase *before* the editor appears, so canceling must

@@ -46,10 +46,12 @@ mod log_view;
 mod menus;
 mod navigation;
 mod palette;
+mod path_identity;
 mod picker_render;
 mod rebase_flow;
 mod refs_view;
 mod render;
+mod repo_monitor;
 mod resolve_view;
 mod row_build;
 mod settings;
@@ -350,6 +352,42 @@ enum PickOp {
     RevertNoCommit,
 }
 
+/// Why a repository snapshot was requested. Automatic origins are visually
+/// silent away from Status and defer around interaction overlays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefreshOrigin {
+    Initial,
+    Manual,
+    PostJob,
+    Focus,
+    AutoFetch,
+    Monitor,
+    Polling,
+    Config,
+}
+
+impl RefreshOrigin {
+    pub(crate) fn automatic(self) -> bool {
+        matches!(
+            self,
+            Self::Focus | Self::AutoFetch | Self::Monitor | Self::Polling
+        )
+    }
+
+    fn owns_monitor_probe(self, has_batch: bool) -> bool {
+        self.automatic() || (self == Self::Initial && has_batch)
+    }
+}
+
+#[derive(Clone)]
+struct StatusRefreshContext {
+    origin: RefreshOrigin,
+    scope: repo_monitor::ChangeScope,
+    batch: Option<repo_monitor::RepoChangeBatch>,
+    covered_sequence: u64,
+    previous_status: Option<Status>,
+}
+
 /// The active full-window screen. `Status` is the home base; the rest take over
 /// the window when open. Exactly one is active, so invalid combinations (two
 /// screens at once) can't be represented, and the active screen is chosen by a
@@ -539,11 +577,14 @@ struct StatusView {
     /// header) dismisses the active selection. Reset each click in the capture
     /// phase, so it reflects only the current press.
     click_hit_selectable: bool,
-    generation: Generation,
-    /// Cancels the in-flight read jobs (status/diff/prefetch) of the current
-    /// generation. `refresh` flips this and installs a fresh flag, so the
-    /// processes superseded by a newer refresh are killed, not just dropped.
-    read_cancel: Arc<AtomicBool>,
+    status_generation: Generation,
+    auxiliary_generation: Generation,
+    /// Status/diff/prefetch and auxiliary listings have independent cancel
+    /// ownership. A status-only event cannot kill a slow stash/tag read; a full
+    /// refresh supersedes both scopes.
+    status_cancel: Arc<AtomicBool>,
+    auxiliary_cancel: Arc<AtomicBool>,
+    current_status_refresh: Option<StatusRefreshContext>,
     /// Cancel flag for the active mutating job (push/pull/merge/…), set while it
     /// runs so `C-g`/Esc can kill the subprocess. `None` when nothing is running.
     job_cancel: Option<Arc<AtomicBool>>,
@@ -552,6 +593,9 @@ struct StatusView {
     /// before populating the screen, so a superseded load can't land in the
     /// screen a newer request opened.
     screen_gen: Generation,
+    /// Scopes commit-editor preview reloads independently from screen loads so
+    /// repeated automatic refreshes cannot land out of order while typing.
+    editor_diff_gen: Generation,
     /// Scopes the background auto-fetch loop. Bumped whenever the `[fetch]`
     /// config changes (and at startup): the running loop exits once its captured
     /// value is stale, so toggling auto-fetch or its interval restarts cleanly.
@@ -640,6 +684,20 @@ struct StatusView {
     /// Kept alive so the native config-file watcher keeps delivering events
     /// (dropping it stops watching). `None` if there's no config dir to watch.
     _config_watcher: Option<notify::RecommendedWatcher>,
+    /// Kept alive while native repository events are available. Dropping it
+    /// immediately stops its callback.
+    repository_monitor: Option<repo_monitor::RepositoryMonitor>,
+    monitor_schedule: repo_monitor::MonitorSchedule,
+    monitor_listener_gen: Generation,
+    monitor_timer_gen: Generation,
+    monitor_poll_gen: Generation,
+    monitor_sequence: u64,
+    pending_refresh_origin: Option<RefreshOrigin>,
+    monitor_retrying_native: bool,
+    monitor_fallback_notified: bool,
+    /// A protected screen or an overlaid back-screen missed an automatic
+    /// visible reload; reconcile it the next time it becomes active.
+    pending_visible_refresh: bool,
     /// Kept alive so the system light/dark appearance observer stays active.
     _appearance_sub: Option<Subscription>,
     /// Kept alive so the window-activation observer (focus refresh) stays active.
@@ -830,10 +888,14 @@ impl StatusView {
             pending_copy: None,
             ctx_menu_open: false,
             click_hit_selectable: false,
-            generation: Generation::default(),
-            read_cancel: Arc::new(AtomicBool::new(false)),
+            status_generation: Generation::default(),
+            auxiliary_generation: Generation::default(),
+            status_cancel: Arc::new(AtomicBool::new(false)),
+            auxiliary_cancel: Arc::new(AtomicBool::new(false)),
+            current_status_refresh: None,
             job_cancel: None,
             screen_gen: Generation::default(),
+            editor_diff_gen: Generation::default(),
             auto_fetch_gen: Generation::default(),
             update_check_gen: Generation::default(),
             notified_update_version: None,
@@ -861,6 +923,16 @@ impl StatusView {
             config_global,
             keymap,
             _config_watcher: None,
+            repository_monitor: None,
+            monitor_schedule: repo_monitor::MonitorSchedule::default(),
+            monitor_listener_gen: Generation::default(),
+            monitor_timer_gen: Generation::default(),
+            monitor_poll_gen: Generation::default(),
+            monitor_sequence: 0,
+            pending_refresh_origin: None,
+            monitor_retrying_native: false,
+            monitor_fallback_notified: false,
+            pending_visible_refresh: false,
             _appearance_sub: None,
             _activation_sub: None,
             _window_bounds_sub: None,
@@ -883,7 +955,10 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             palette: Palette::default(),
         };
-        view.refresh(cx);
+        // Install monitoring before the initial snapshot so every callback has
+        // a sequence that the landing can cover (or follow up).
+        view.configure_repository_monitor(cx);
+        view.refresh_initial_repository(cx);
         // Warm the settings screen's font/editor lists off-thread so the first
         // open doesn't stall on system font enumeration.
         view.prewarm_settings_caches(cx);
@@ -1066,12 +1141,19 @@ impl StatusView {
         )
     }
 
-    /// The repo cloned for a background *read* (status/diff/prefetch), tagged
-    /// with the current generation's cancel flag so a later `refresh` kills it.
+    /// The repo cloned for a status/diff/prefetch read, tagged with that scope's
+    /// cancel flag so a later status refresh kills it.
     fn read_repo(&self) -> Option<magritte_core::Repo> {
         self.repo
             .clone()
-            .map(|r| r.with_cancel(self.read_cancel.clone()))
+            .map(|r| r.with_cancel(self.status_cancel.clone()))
+    }
+
+    /// The repo clone used by recent/stash/tag/divergence reads.
+    fn auxiliary_repo(&self) -> Option<magritte_core::Repo> {
+        self.repo
+            .clone()
+            .map(|r| r.with_cancel(self.auxiliary_cancel.clone()))
     }
 
     /// Advance and return the screen-load generation. A screen-changing async

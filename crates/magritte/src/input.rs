@@ -92,11 +92,13 @@ impl StatusView {
             match chorded.as_str() {
                 "escape" | "?" | "/" => {
                     self.popup = None;
+                    self.refresh_blocker_closed(cx);
                     cx.notify();
                 }
                 "q" if dispatch_has_key(def, "q") => self.run_info_key("q", window, cx),
                 "q" => {
                     self.popup = None;
+                    self.refresh_blocker_closed(cx);
                     cx.notify();
                 }
                 k if self.is_prefix(k) => self.enter_prefix(k.to_string(), window, cx),
@@ -105,6 +107,7 @@ impl StatusView {
                 // it on the underlying screen would.
                 k => {
                     self.popup = None;
+                    self.refresh_blocker_closed(cx);
                     if !cmd && !alt && !ctrl {
                         self.report_unbound(k, cx);
                     }
@@ -350,6 +353,7 @@ impl StatusView {
         };
         if let Some((k, desc, comp)) = opt {
             if let Some(Popup::Transient(ts)) = self.popup.take() {
+                self.refresh_blocker_closed(cx);
                 self.open_option_prompt(k, desc, comp, ts, window, cx);
             }
         }
@@ -459,6 +463,7 @@ impl StatusView {
 
     pub(crate) fn run_dispatch(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
+        self.refresh_blocker_closed(cx);
         // A keymap-bound command (default or user-remapped), the `:` palette, or
         // a motion. Resolving through the effective keymap is what makes
         // remap/unbind take effect — and binding *any* command id (even a leaf
@@ -760,6 +765,7 @@ impl StatusView {
         match self.classify_seq(&seq) {
             KeyMatch::Command(id) => {
                 self.popup = None;
+                self.refresh_blocker_closed(cx);
                 self.invoke_command(&id, window, cx);
             }
             KeyMatch::Prefix => self.enter_prefix(seq, window, cx),
@@ -894,6 +900,7 @@ impl StatusView {
                 self.popup = Some(Popup::Transient(*ts));
             }
         }
+        self.refresh_blocker_closed(cx);
         cx.notify();
     }
 
@@ -901,6 +908,7 @@ impl StatusView {
     pub(crate) fn click_row(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.popup.is_some() {
             self.popup = None;
+            self.refresh_blocker_closed(cx);
             cx.notify();
             return;
         }
@@ -927,6 +935,7 @@ impl StatusView {
 
     pub(crate) fn run_info_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.popup = None;
+        self.refresh_blocker_closed(cx);
         // On a secondary screen the `?` popup re-dispatches the chosen key
         // through the same per-context table that drives live input, so the menu
         // and the keyboard always agree.

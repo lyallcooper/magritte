@@ -98,6 +98,13 @@ fn build_rows(data: RefsData) -> Vec<RefsRow> {
     rows
 }
 
+fn restore_ref_selection(rows: &[RefsRow], anchor: Option<&str>) -> usize {
+    anchor
+        .and_then(|anchor| rows.iter().position(|row| row.ref_name() == Some(anchor)))
+        .or_else(|| rows.iter().position(RefsRow::is_selectable))
+        .unwrap_or(0)
+}
+
 impl StatusView {
     pub(crate) fn refs_view(&self) -> Option<&RefsView> {
         match &self.screen {
@@ -125,24 +132,31 @@ impl StatusView {
             load: RefsLoad::Loading,
         });
         cx.notify();
-        self.load_refs(cx);
+        self.load_refs(false, cx);
     }
 
     /// (Re)gather the ref lists into the open browser off the UI thread — used
     /// on open and after a rename. The screen-load generation drops a superseded
     /// load.
-    fn load_refs(&mut self, cx: &mut Context<Self>) {
+    fn load_refs(&mut self, silent: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let anchor = self
+            .refs_view()
+            .and_then(|refs| refs.selected_row())
+            .and_then(RefsRow::ref_name)
+            .map(str::to_string);
         let gen = self.next_screen_gen();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { gather_refs(&repo) })
                 .await;
-            this.update(cx, |this, cx| this.fill_refs(gen, result, cx))
-                .ok();
+            this.update(cx, |this, cx| {
+                this.fill_refs(gen, result, anchor, silent, cx)
+            })
+            .ok();
         })
         .detach();
     }
@@ -151,6 +165,8 @@ impl StatusView {
         &mut self,
         gen: u64,
         result: magritte_core::Result<RefsData>,
+        anchor: Option<String>,
+        silent: bool,
         cx: &mut Context<Self>,
     ) {
         if !self.screen_gen.is_current(gen) {
@@ -160,23 +176,33 @@ impl StatusView {
             match result {
                 Ok(data) => {
                     refs.rows = build_rows(data);
-                    // Land the cursor on the first selectable row (past the
-                    // leading header).
-                    refs.selected = refs
-                        .rows
-                        .iter()
-                        .position(RefsRow::is_selectable)
-                        .unwrap_or(0);
+                    refs.selected = restore_ref_selection(&refs.rows, anchor.as_deref());
                     refs.load = RefsLoad::Loaded;
                 }
-                Err(e) => refs.load = RefsLoad::Failed(e.to_string()),
+                Err(e) if !silent => refs.load = RefsLoad::Failed(e.to_string()),
+                Err(_) => {}
             }
         }
         cx.notify();
+        if self.pending_visible_refresh {
+            self.reconcile_visible_screen(cx);
+        }
+    }
+
+    pub(crate) fn reload_refs_silent(&mut self, cx: &mut Context<Self>) {
+        if self
+            .refs_view()
+            .is_some_and(|refs| matches!(refs.load, RefsLoad::Loading))
+        {
+            self.pending_visible_refresh = true;
+            return;
+        }
+        self.load_refs(true, cx);
     }
 
     pub(crate) fn close_refs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -334,7 +360,7 @@ impl StatusView {
             this.update(cx, |this, cx| match result {
                 Ok(msg) => {
                     this.set_status(msg, true, cx);
-                    this.load_refs(cx);
+                    this.load_refs(false, cx);
                 }
                 Err(e) => this.report_error(e, cx),
             })
@@ -410,5 +436,17 @@ mod tests {
             tags: Vec::new(),
         });
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn selection_restores_by_ref_name_across_reordering() {
+        let rows = build_rows(RefsData {
+            current: Some("main".into()),
+            locals: vec![local("main", 0, 0), local("topic", 0, 0)],
+            remotes: Vec::new(),
+            tags: Vec::new(),
+        });
+        assert_eq!(restore_ref_selection(&rows, Some("topic")), 2);
+        assert_eq!(restore_ref_selection(&rows, Some("deleted")), 1);
     }
 }

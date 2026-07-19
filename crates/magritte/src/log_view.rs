@@ -40,6 +40,12 @@ pub(crate) enum LogPurpose {
     SelectSquash { op: SquashOp, args: Vec<String> },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum LogQuery {
+    Log(Vec<String>),
+    Reflog(usize),
+}
+
 /// The four fixup/squash flavors from the commit transient. Fixup keeps the
 /// target's message; squash lets it be edited (we take the combined message).
 /// The "instant" variants immediately autosquash the new commit into its
@@ -85,6 +91,9 @@ pub(crate) struct LogState {
     pub(crate) scroll: UniformListScrollHandle,
     pub(crate) load: LogLoad,
     pub(crate) purpose: LogPurpose,
+    /// Replayable descriptor for ordinary browse listings. Selection-purpose
+    /// logs leave this `None` and are never automatically replaced.
+    pub(crate) query: Option<LogQuery>,
     /// The args the browse listing was fetched with, and its commit limit, so
     /// `+`/`-` can re-fetch with a doubled/halved limit (magit's log limit
     /// keys). Left empty for the select modes, which don't re-limit.
@@ -117,6 +126,12 @@ impl LogState {
             selected: &mut self.selected,
         }
     }
+}
+
+fn restore_log_selection(entries: &[LogEntry], anchor: Option<&str>) -> usize {
+    anchor
+        .and_then(|hash| entries.iter().position(|entry| entry.hash == hash))
+        .unwrap_or(0)
 }
 
 /// The commit limit encoded in a log arg list (`--max-count=N` or `-nN`), if
@@ -175,6 +190,7 @@ impl StatusView {
 
     pub(crate) fn close_git_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -221,6 +237,7 @@ impl StatusView {
         if let Some(log) = self.log_mut() {
             log.args = stored;
             log.limit = limit;
+            log.query = Some(LogQuery::Log(log.args.clone()));
         }
     }
 
@@ -558,6 +575,10 @@ impl StatusView {
     /// Open the reflog view (`l r`).
     pub(crate) fn start_reflog(&mut self, limit: usize, cx: &mut Context<Self>) {
         self.spawn_log(LogPurpose::Browse, move |repo| repo.reflog(limit), cx);
+        if let Some(log) = self.log_mut() {
+            log.limit = limit;
+            log.query = Some(LogQuery::Reflog(limit));
+        }
     }
 
     /// Show the (empty) log view immediately while commits load, returning the
@@ -571,6 +592,7 @@ impl StatusView {
             scroll: UniformListScrollHandle::new(),
             load: LogLoad::Loading,
             purpose,
+            query: None,
             args: Vec::new(),
             limit: Self::LOG_LIMIT,
             char_sel: None,
@@ -581,6 +603,66 @@ impl StatusView {
         });
         cx.notify();
         gen
+    }
+
+    pub(crate) fn reload_browse_log_silent(&mut self, cx: &mut Context<Self>) {
+        let Some(log) = self.log() else { return };
+        if !matches!(log.purpose, LogPurpose::Browse) {
+            return;
+        }
+        if matches!(log.load, LogLoad::Loading) {
+            self.pending_visible_refresh = true;
+            return;
+        }
+        let Some(query) = log.query.clone() else {
+            return;
+        };
+        let anchor = log
+            .entries
+            .get(log.selected)
+            .map(|entry| entry.hash.clone());
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let gen = self.next_screen_gen();
+        cx.spawn(async move |this, cx| {
+            let load_query = query.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match load_query {
+                        LogQuery::Log(args) => repo.log_with(&args),
+                        LogQuery::Reflog(limit) => repo.reflog(limit),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if !this.screen_gen.is_current(gen) {
+                    return;
+                }
+                let upstream = this.status.as_ref().and_then(|s| s.head.upstream.clone());
+                let Some(log) = this.log_mut() else { return };
+                if log.query.as_ref() != Some(&query) {
+                    return;
+                }
+                let Ok(entries) = result else { return };
+                log.selected = restore_log_selection(&entries, anchor.as_deref());
+                log.parsed_refs = entries
+                    .iter()
+                    .map(|entry| parse_refs(&entry.refs, upstream.as_deref()))
+                    .collect();
+                log.entries = entries;
+                log.char_sel = None;
+                log.visual = None;
+                log.load = LogLoad::Loaded;
+                cx.notify();
+                if this.pending_visible_refresh {
+                    this.reconcile_visible_screen(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Fill the open log view with the load result: entries on success, the
@@ -610,10 +692,14 @@ impl StatusView {
             }
         }
         cx.notify();
+        if self.pending_visible_refresh {
+            self.reconcile_visible_screen(cx);
+        }
     }
 
     pub(crate) fn close_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -779,7 +865,8 @@ impl StatusView {
 
 #[cfg(test)]
 mod tests {
-    use super::log_arg_limit;
+    use super::{log_arg_limit, restore_log_selection};
+    use magritte_core::LogEntry;
 
     #[test]
     fn log_arg_limit_reads_max_count_and_n() {
@@ -787,5 +874,23 @@ mod tests {
         assert_eq!(log_arg_limit(&[a("--max-count=256"), a("HEAD")]), Some(256));
         assert_eq!(log_arg_limit(&[a("-n3"), a("dev")]), Some(3));
         assert_eq!(log_arg_limit(&[a("--reverse"), a("HEAD")]), None);
+    }
+
+    fn entry(hash: &str) -> LogEntry {
+        LogEntry {
+            hash: hash.into(),
+            short_hash: hash.into(),
+            subject: String::new(),
+            refs: String::new(),
+            author: String::new(),
+            date: String::new(),
+        }
+    }
+
+    #[test]
+    fn selection_restores_by_commit_hash() {
+        let entries = vec![entry("new"), entry("kept"), entry("old")];
+        assert_eq!(restore_log_selection(&entries, Some("kept")), 1);
+        assert_eq!(restore_log_selection(&entries, Some("gone")), 0);
     }
 }

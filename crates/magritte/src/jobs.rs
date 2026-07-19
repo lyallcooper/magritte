@@ -145,7 +145,12 @@ impl StatusView {
             op,
             move |this, result, cx| {
                 finish(this, result, cx);
-                this.refresh(cx);
+                this.refresh_with_origin(
+                    RefreshOrigin::PostJob,
+                    repo_monitor::ChangeScope::RepositoryWide,
+                    None,
+                    cx,
+                );
             },
             cx,
         );
@@ -232,7 +237,12 @@ impl StatusView {
                     Err(e) => this.report_error(e, cx),
                 }
                 if refresh {
-                    this.refresh(cx);
+                    this.refresh_with_origin(
+                        RefreshOrigin::PostJob,
+                        repo_monitor::ChangeScope::RepositoryWide,
+                        None,
+                        cx,
+                    );
                 }
             },
             cx,
@@ -475,7 +485,10 @@ impl StatusView {
         let repo = repo.with_timeout(std::time::Duration::from_secs(
             Self::AUTO_FETCH_TIMEOUT_SECS,
         ));
-        self.begin_activity(cx);
+        let count_activity = matches!(self.screen, Screen::Status);
+        if count_activity {
+            self.begin_activity(cx);
+        }
         cx.spawn(async move |this, cx| {
             let ok = cx
                 .background_executor()
@@ -483,9 +496,16 @@ impl StatusView {
                 .await;
             this.update(cx, |this, cx| {
                 if ok {
-                    this.refresh(cx);
+                    this.request_automatic_refresh(
+                        RefreshOrigin::AutoFetch,
+                        repo_monitor::ChangeScope::RepositoryWide,
+                        None,
+                        cx,
+                    );
                 }
-                this.end_activity(cx);
+                if count_activity {
+                    this.end_activity(cx);
+                }
             })
             .ok();
         })

@@ -25,6 +25,7 @@
 # General behavior
 # keymap_preset = "evil" # evil or vanilla
 # which_key_delay_ms = 1000
+# auto_refresh = true
 # refresh_on_focus = true
 # show_tags_in_title_bar = false
 # check_for_updates = true

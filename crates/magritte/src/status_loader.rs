@@ -9,13 +9,131 @@ use magritte_core::DiffSource;
 
 use crate::*;
 
+fn begin_read_scopes(
+    scope: repo_monitor::ChangeScope,
+    status_generation: &mut Generation,
+    auxiliary_generation: &mut Generation,
+    status_cancel: &mut Arc<AtomicBool>,
+    auxiliary_cancel: &mut Arc<AtomicBool>,
+) -> (u64, u64) {
+    status_cancel.store(true, Ordering::Relaxed);
+    *status_cancel = Arc::new(AtomicBool::new(false));
+    let status_stamp = status_generation.bump();
+    let auxiliary_stamp = if scope == repo_monitor::ChangeScope::RepositoryWide {
+        auxiliary_cancel.store(true, Ordering::Relaxed);
+        *auxiliary_cancel = Arc::new(AtomicBool::new(false));
+        auxiliary_generation.bump()
+    } else {
+        auxiliary_generation.current()
+    };
+    (status_stamp, auxiliary_stamp)
+}
+
+fn divergence_stamp(auxiliary_generation: &Generation) -> u64 {
+    auxiliary_generation.current()
+}
+
 impl StatusView {
+    fn refresh_visible_secondary_screen(
+        &mut self,
+        context: &StatusRefreshContext,
+        changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !context.origin.automatic() {
+            return;
+        }
+        let repository_wide = context.scope == repo_monitor::ChangeScope::RepositoryWide;
+        let content_changed = changed
+            || context
+                .batch
+                .as_ref()
+                .is_some_and(|batch| batch.unknown || !batch.paths.is_empty());
+        match &self.screen {
+            Screen::Refs(_) if repository_wide => self.reload_refs_silent(cx),
+            Screen::Worktree(_) if repository_wide => self.reload_worktrees_silent(cx),
+            Screen::Log(log) if repository_wide && matches!(log.purpose, LogPurpose::Browse) => {
+                self.reload_browse_log_silent(cx)
+            }
+            Screen::Diff { .. } if content_changed || repository_wide => {
+                self.reload_diff_silent(cx)
+            }
+            Screen::Commit { .. } if repository_wide => {
+                // The commit body is immutable; only movable ref decorations
+                // are re-read. Its back-screen reconciles on return.
+                self.pending_visible_refresh = true;
+                self.refresh_open_commit_metadata_silent(cx);
+            }
+            Screen::Blame { path, .. } if self.batch_affects_path(context, path) => {
+                self.reload_blame_silent(cx)
+            }
+            Screen::Editor(_) if content_changed || repository_wide => {
+                self.reload_commit_diff_silent(cx)
+            }
+            Screen::Settings(_)
+            | Screen::RebaseTodo(_)
+            | Screen::Resolve(_)
+            | Screen::Editor(_) => self.pending_visible_refresh = true,
+            Screen::Status | Screen::GitLog { .. } => self.pending_visible_refresh = false,
+            _ => {}
+        }
+    }
+
+    fn batch_affects_path(&self, context: &StatusRefreshContext, path: &str) -> bool {
+        context.scope == repo_monitor::ChangeScope::RepositoryWide
+            || context.batch.as_ref().is_none_or(|batch| {
+                batch.unknown
+                    || batch
+                        .paths
+                        .iter()
+                        .any(|candidate| crate::path_identity::matches(candidate, path))
+            })
+    }
+
+    pub(crate) fn reconcile_visible_screen(&mut self, cx: &mut Context<Self>) {
+        if !self.pending_visible_refresh {
+            return;
+        }
+        self.pending_visible_refresh = false;
+        match &self.screen {
+            Screen::Refs(_) => self.reload_refs_silent(cx),
+            Screen::Worktree(_) => self.reload_worktrees_silent(cx),
+            Screen::Log(log) if matches!(log.purpose, LogPurpose::Browse) => {
+                self.reload_browse_log_silent(cx)
+            }
+            Screen::Diff { .. } => self.reload_diff_silent(cx),
+            Screen::Commit { .. } => self.refresh_open_commit_metadata_silent(cx),
+            Screen::Blame { .. } => self.reload_blame_silent(cx),
+            Screen::Editor(_) => self.reload_commit_diff_silent(cx),
+            _ => {}
+        }
+    }
+
     /// Land a stamped background read: unwind the activity counter first (a
     /// stale landing must never strand the spinner), then say whether the
     /// result may apply — i.e. no newer generation superseded this read.
-    fn land_read(&mut self, stamp: u64, cx: &mut Context<Self>) -> bool {
-        self.end_activity(cx);
-        self.generation.is_current(stamp)
+    fn land_status_read(
+        &mut self,
+        stamp: u64,
+        counted_activity: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if counted_activity {
+            self.end_activity(cx);
+        }
+        self.status_generation.is_current(stamp)
+    }
+
+    fn land_auxiliary_read(
+        &mut self,
+        stamp: u64,
+        counted_activity: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if counted_activity {
+            self.end_activity(cx);
+        }
+        self.auxiliary_generation.is_current(stamp)
     }
 
     /// The logical anchor of row `ix`, via the cursor-anchor machinery.
@@ -83,6 +201,21 @@ impl StatusView {
 
     /// Reload status from scratch, invalidating any in-flight work.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.refresh_with_origin(
+            RefreshOrigin::Manual,
+            repo_monitor::ChangeScope::RepositoryWide,
+            None,
+            cx,
+        );
+    }
+
+    pub(crate) fn refresh_with_origin(
+        &mut self,
+        origin: RefreshOrigin,
+        scope: repo_monitor::ChangeScope,
+        batch: Option<repo_monitor::RepoChangeBatch>,
+        cx: &mut Context<Self>,
+    ) {
         // Re-resolve the default branch lazily after each refresh (a fetch or
         // remote change can move it).
         *self.default_branch_cache.borrow_mut() = None;
@@ -91,9 +224,33 @@ impl StatusView {
         self.last_refresh = Some(std::time::Instant::now());
         // Cancel the previous generation's in-flight reads (kill the processes,
         // not just drop their results) and start a fresh cancel scope.
-        self.read_cancel.store(true, Ordering::Relaxed);
-        self.read_cancel = Arc::new(AtomicBool::new(false));
-        let stamp = self.generation.bump();
+        let full = scope == repo_monitor::ChangeScope::RepositoryWide;
+        let (status_stamp, auxiliary_stamp) = begin_read_scopes(
+            scope,
+            &mut self.status_generation,
+            &mut self.auxiliary_generation,
+            &mut self.status_cancel,
+            &mut self.auxiliary_cancel,
+        );
+        // Cover only native events whose path payload is part of this request.
+        // The watcher may already have allocated later sequences that are still
+        // waiting behind ignored-path classification; covering those here
+        // would drop their targeted cache invalidation when they arrive.
+        let covered_sequence = batch
+            .as_ref()
+            .map(repo_monitor::RepoChangeBatch::covered_native_sequence)
+            .unwrap_or(0);
+        self.current_status_refresh = Some(StatusRefreshContext {
+            origin,
+            scope,
+            batch: batch.clone(),
+            covered_sequence,
+            previous_status: self.status.clone(),
+        });
+        if !origin.owns_monitor_probe(batch.is_some()) {
+            self.monitor_schedule.abandon_probe();
+        }
+        self.diff_cache.drop_loading();
         let expanded_diff_keys: HashSet<(DiffSource, String)> = self
             .expanded
             .iter()
@@ -102,20 +259,33 @@ impl StatusView {
                 FoldKey::Section(_) | FoldKey::Hunk(..) => None,
             })
             .collect();
-        self.diff_cache.retain(&expanded_diff_keys);
-        self.transient_config_defaults.clear();
-        self.transient_config_values.clear();
+        if full || batch.as_ref().is_none_or(|batch| batch.unknown) {
+            self.diff_cache.retain(&expanded_diff_keys);
+        } else if let Some(batch) = &batch {
+            self.diff_cache
+                .invalidate_paths(&batch.paths, &expanded_diff_keys);
+        }
+        if full {
+            self.transient_config_defaults.clear();
+            self.transient_config_values.clear();
+        }
         // Hunk indices shift when the diff changes, so don't carry collapse
         // state across a refresh.
-        self.collapsed_hunks.clear();
-        self.collapse_new_hunks = false;
+        if !origin.automatic() {
+            self.collapsed_hunks.clear();
+            self.collapse_new_hunks = false;
+        }
         // Row indices shift too: a visual/char selection made against the old
         // rows would silently cover different content once the reload lands
         // (auto-fetch and focus-refresh run mid-interaction), so drop it —
         // like magit, which deactivates the region on refresh.
-        self.selection.visual = None;
-        self.char_sel = None;
-        self.error = None;
+        if !origin.automatic() {
+            self.selection.visual = None;
+            self.char_sel = None;
+        }
+        if !origin.automatic() {
+            self.error = None;
+        }
 
         if self.read_repo().is_none() {
             // A recorded open failure (git missing) wins over the generic
@@ -127,6 +297,9 @@ impl StatusView {
             );
             self.loading_sections.clear();
             self.rebuild_rows();
+            if let Some(context) = self.current_status_refresh.clone() {
+                self.finish_repository_refresh(&context, false, Duration::ZERO, false, cx);
+            }
             return;
         }
 
@@ -143,16 +316,24 @@ impl StatusView {
         // header until its fetch lands; a first-load section has no data yet, so
         // it just pops in. The file sections clear when `git status` lands; each
         // auxiliary listing clears when its own fetch does.
-        self.loading_sections = configured
-            .iter()
-            .copied()
-            .filter(|s| {
-                !matches!(
-                    s,
-                    SectionId::UnpushedPushremote | SectionId::UnpulledPushremote
-                )
-            })
-            .collect();
+        if full {
+            self.loading_sections = configured
+                .iter()
+                .copied()
+                .filter(|s| {
+                    !matches!(
+                        s,
+                        SectionId::UnpushedPushremote | SectionId::UnpulledPushremote
+                    )
+                })
+                .collect();
+        } else {
+            self.loading_sections.extend([
+                SectionId::Untracked,
+                SectionId::Unstaged,
+                SectionId::Staged,
+            ]);
+        }
 
         let recent_count = self.config.status.recent_count;
         let want_tags = self.config.show_tags_in_title_bar;
@@ -165,50 +346,61 @@ impl StatusView {
         // file sections (and the header) the moment it lands, before the
         // auxiliary listings — and kicks off upstream/pushremote divergence
         // afterward, since status tells us whether those targets exist.
-        self.spawn_status_fetch(stamp, upstream_configured, pushremote_configured, cx);
+        let count_activity = !origin.automatic() || matches!(self.screen, Screen::Status);
+        self.spawn_status_fetch(
+            status_stamp,
+            upstream_configured,
+            pushremote_configured,
+            count_activity,
+            cx,
+        );
 
         // Auxiliary listings, each its own fetch running concurrently with
         // status when it doesn't need status metadata, so a slow listing can't
         // hold up the main sections or the others. Each pops into place as it
         // lands; the title-bar spinner signals the work.
-        if configured.contains(&SectionId::Recent) {
-            self.spawn_fetch(
-                stamp,
+        if full && configured.contains(&SectionId::Recent) {
+            self.spawn_auxiliary_fetch(
+                auxiliary_stamp,
                 &[SectionId::Recent],
+                count_activity,
                 cx,
                 move |repo| repo.log("HEAD", recent_count).unwrap_or_default(),
                 |this, recent| this.status_sections.recent = recent,
             );
         }
-        if configured.contains(&SectionId::Stashes) {
-            self.spawn_fetch(
-                stamp,
+        if full && configured.contains(&SectionId::Stashes) {
+            self.spawn_auxiliary_fetch(
+                auxiliary_stamp,
                 &[SectionId::Stashes],
+                count_activity,
                 cx,
                 |repo| repo.stash_list().unwrap_or_default(),
                 |this, stashes| this.status_sections.stashes = stashes,
             );
         }
-        if configured.contains(&SectionId::Ignored) {
-            self.spawn_fetch(
-                stamp,
+        if full && configured.contains(&SectionId::Ignored) {
+            self.spawn_auxiliary_fetch(
+                auxiliary_stamp,
                 &[SectionId::Ignored],
+                count_activity,
                 cx,
                 |repo| repo.ignored_files().unwrap_or_default(),
                 |this, ignored| this.status_sections.ignored = ignored,
             );
         }
-        if want_tags {
+        if full && want_tags {
             // Not a section (it's the title-bar tag segment), so it tracks no
             // section id — it just updates the header when it lands.
-            self.spawn_fetch(
-                stamp,
+            self.spawn_auxiliary_fetch(
+                auxiliary_stamp,
                 &[],
+                count_activity,
                 cx,
                 |repo| repo.nearest_tag(),
                 |this, tags| this.tag_info = tags,
             );
-        } else {
+        } else if full {
             self.tag_info = None;
         }
     }
@@ -222,6 +414,7 @@ impl StatusView {
         stamp: u64,
         upstream_configured: bool,
         pushremote_configured: bool,
+        count_activity: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(repo) = self.read_repo() else {
@@ -231,7 +424,9 @@ impl StatusView {
         let needs = RefreshNeeds {
             push_target: pushremote_configured,
         };
-        self.begin_activity(cx);
+        if count_activity {
+            self.begin_activity(cx);
+        }
         cx.spawn(async move |this, cx| {
             let (result, sequence, bisect, elapsed) = cx
                 .background_executor()
@@ -254,14 +449,27 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if !this.land_read(stamp, cx) {
+                if !this.land_status_read(stamp, count_activity, cx) {
                     return;
                 }
-                this.sequence = sequence;
-                this.bisect = bisect;
+                let Some(mut context) = this.current_status_refresh.clone() else {
+                    return;
+                };
+                let old_sequence = this.sequence.clone();
+                let old_bisect = this.bisect.clone();
+                let mut changed = old_sequence != sequence || old_bisect != bisect;
+                let mut head_changed = false;
+                let success = result.is_ok();
                 match result {
                     Ok(status) => {
+                        head_changed = context
+                            .previous_status
+                            .as_ref()
+                            .is_some_and(|old| old.head != status.head);
+                        changed |= context.previous_status.as_ref() != Some(&status);
                         this.status = Some(status);
+                        this.sequence = sequence;
+                        this.bisect = bisect;
                         this.error = None;
                         this.maybe_hint_fsmonitor(elapsed, cx);
                     }
@@ -269,6 +477,45 @@ impl StatusView {
                         this.error = Some(GIT_MISSING_MESSAGE.to_string())
                     }
                     Err(e) => this.error = Some(e.to_string()),
+                }
+                let escalated = success
+                    && head_changed
+                    && context.scope == repo_monitor::ChangeScope::StatusOnly;
+                if escalated {
+                    context.scope = repo_monitor::ChangeScope::RepositoryWide;
+                    if let Some(batch) = context.batch.as_mut() {
+                        batch.scope = repo_monitor::ChangeScope::RepositoryWide;
+                        batch.unknown = true;
+                    }
+                    this.transient_config_defaults.clear();
+                    this.transient_config_values.clear();
+                }
+                let content_changed = changed
+                    || context
+                        .batch
+                        .as_ref()
+                        .is_some_and(|batch| batch.unknown || !batch.paths.is_empty());
+                if success && context.origin.automatic() && content_changed {
+                    this.selection.visual = None;
+                    this.char_sel = None;
+                    if let Some(batch) = context.batch.as_ref().filter(|batch| {
+                        batch.scope == repo_monitor::ChangeScope::StatusOnly && !batch.unknown
+                    }) {
+                        let affected: HashSet<String> = batch
+                            .paths
+                            .iter()
+                            .map(|path| crate::path_identity::key(path))
+                            .collect();
+                        this.collapsed_hunks.retain(|key| match key {
+                            FoldKey::Hunk(_, path, _) => {
+                                !affected.contains(&crate::path_identity::text_key(path))
+                            }
+                            _ => true,
+                        });
+                    } else {
+                        this.collapsed_hunks.clear();
+                    }
+                    this.collapse_new_hunks = false;
                 }
                 // The file sections are now fresh — drop their refreshing spinner.
                 for s in [SectionId::Untracked, SectionId::Unstaged, SectionId::Staged] {
@@ -301,16 +548,23 @@ impl StatusView {
                 this.rebuild_after_landing();
                 // Re-load diffs for any files that were expanded before the
                 // refresh cleared them, so they don't get stuck on "Loading…".
-                this.reload_expanded_diffs(cx);
+                this.reload_affected_diffs(context.batch.as_ref(), cx);
                 // Warm a bounded set of small diffs so first expand feels instant.
                 this.start_prefetch(cx);
+                if escalated {
+                    this.restart_auxiliary_after_head_change(&context, cx);
+                }
                 // Now that status resolved the upstream/push targets, fetch the
                 // divergence listings; they pop into place (or drop their
                 // spinners) on land.
                 if upstream_configured && has_upstream {
-                    this.spawn_fetch(
-                        stamp,
+                    let auxiliary_stamp = divergence_stamp(&this.auxiliary_generation);
+                    let count_aux_activity =
+                        !context.origin.automatic() || matches!(this.screen, Screen::Status);
+                    this.spawn_auxiliary_fetch(
+                        auxiliary_stamp,
                         &[SectionId::Unpushed, SectionId::Unpulled],
+                        count_aux_activity,
                         cx,
                         |repo| repo.upstream_divergence().unwrap_or_default(),
                         |this, (up, down)| {
@@ -320,9 +574,13 @@ impl StatusView {
                     );
                 }
                 if pushremote_configured && triangular {
-                    this.spawn_fetch(
-                        stamp,
+                    let auxiliary_stamp = divergence_stamp(&this.auxiliary_generation);
+                    let count_aux_activity =
+                        !context.origin.automatic() || matches!(this.screen, Screen::Status);
+                    this.spawn_auxiliary_fetch(
+                        auxiliary_stamp,
                         &[SectionId::UnpushedPushremote, SectionId::UnpulledPushremote],
+                        count_aux_activity,
                         cx,
                         |repo| repo.push_divergence().unwrap_or_default(),
                         |this, (up, down)| {
@@ -330,6 +588,10 @@ impl StatusView {
                             this.status_sections.unpulled_pushremote = down;
                         },
                     );
+                }
+                this.finish_repository_refresh(&context, changed, elapsed, success, cx);
+                if success {
+                    this.refresh_visible_secondary_screen(&context, changed, cx);
                 }
                 cx.notify();
             })
@@ -343,26 +605,29 @@ impl StatusView {
     /// result to `apply`, clear `sections` from the refreshing set, and rebuild
     /// — so the section pops in (or drops its spinner). Pairs
     /// `begin_activity`/`end_activity` so the busy spinner accounts for it.
-    pub(crate) fn spawn_fetch<T: Send + 'static>(
+    pub(crate) fn spawn_auxiliary_fetch<T: Send + 'static>(
         &mut self,
         stamp: u64,
         sections: &[SectionId],
+        count_activity: bool,
         cx: &mut Context<Self>,
         fetch: impl FnOnce(Repo) -> T + Send + 'static,
         apply: impl FnOnce(&mut Self, T) + 'static,
     ) {
-        let Some(repo) = self.read_repo() else {
+        let Some(repo) = self.auxiliary_repo() else {
             return;
         };
         let sections = sections.to_vec();
-        self.begin_activity(cx);
+        if count_activity {
+            self.begin_activity(cx);
+        }
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { fetch(repo) })
                 .await;
             this.update(cx, |this, cx| {
-                if !this.land_read(stamp, cx) {
+                if !this.land_auxiliary_read(stamp, count_activity, cx) {
                     return;
                 }
                 apply(this, result);
@@ -379,18 +644,101 @@ impl StatusView {
         .detach();
     }
 
-    /// Re-trigger diff loads for every currently-expanded file.
-    pub(crate) fn reload_expanded_diffs(&mut self, cx: &mut Context<Self>) {
+    fn reload_affected_diffs(
+        &mut self,
+        batch: Option<&repo_monitor::RepoChangeBatch>,
+        cx: &mut Context<Self>,
+    ) {
+        let affected: Option<HashSet<String>> = batch
+            .filter(|batch| batch.scope == repo_monitor::ChangeScope::StatusOnly && !batch.unknown)
+            .map(|batch| {
+                batch
+                    .paths
+                    .iter()
+                    .map(|path| crate::path_identity::key(path))
+                    .collect()
+            });
         let files: Vec<(DiffSource, String)> = self
             .expanded
             .iter()
-            .filter_map(|k| match k {
-                FoldKey::File(source, path) => Some((*source, path.clone())),
-                FoldKey::Section(_) | FoldKey::Hunk(..) => None,
+            .filter_map(|key| match key {
+                FoldKey::File(source, path) => {
+                    let cache_key = (*source, path.clone());
+                    let missing_or_cancelled = self.diff_cache.state(&cache_key).is_none()
+                        || matches!(self.diff_cache.state(&cache_key), Some(DiffState::Loading));
+                    (missing_or_cancelled
+                        || affected.as_ref().is_none_or(|paths| {
+                            paths.contains(&crate::path_identity::text_key(path))
+                        }))
+                    .then_some(cache_key)
+                }
+                _ => None,
             })
             .collect();
         for (source, path) in files {
             self.load_diff(source, path, true, cx);
+        }
+    }
+
+    fn restart_auxiliary_after_head_change(
+        &mut self,
+        context: &StatusRefreshContext,
+        cx: &mut Context<Self>,
+    ) {
+        self.auxiliary_cancel.store(true, Ordering::Relaxed);
+        self.auxiliary_cancel = Arc::new(AtomicBool::new(false));
+        let stamp = self.auxiliary_generation.bump();
+        let count_activity = !context.origin.automatic() || matches!(self.screen, Screen::Status);
+        let configured: HashSet<SectionId> = self
+            .config
+            .status
+            .section_ids()
+            .iter()
+            .filter_map(|id| SectionId::from_config_id(id))
+            .collect();
+        if configured.contains(&SectionId::Recent) {
+            self.loading_sections.insert(SectionId::Recent);
+            let recent_count = self.config.status.recent_count;
+            self.spawn_auxiliary_fetch(
+                stamp,
+                &[SectionId::Recent],
+                count_activity,
+                cx,
+                move |repo| repo.log("HEAD", recent_count).unwrap_or_default(),
+                |this, recent| this.status_sections.recent = recent,
+            );
+        }
+        if configured.contains(&SectionId::Stashes) {
+            self.loading_sections.insert(SectionId::Stashes);
+            self.spawn_auxiliary_fetch(
+                stamp,
+                &[SectionId::Stashes],
+                count_activity,
+                cx,
+                |repo| repo.stash_list().unwrap_or_default(),
+                |this, stashes| this.status_sections.stashes = stashes,
+            );
+        }
+        if configured.contains(&SectionId::Ignored) {
+            self.loading_sections.insert(SectionId::Ignored);
+            self.spawn_auxiliary_fetch(
+                stamp,
+                &[SectionId::Ignored],
+                count_activity,
+                cx,
+                |repo| repo.ignored_files().unwrap_or_default(),
+                |this, ignored| this.status_sections.ignored = ignored,
+            );
+        }
+        if self.config.show_tags_in_title_bar {
+            self.spawn_auxiliary_fetch(
+                stamp,
+                &[],
+                count_activity,
+                cx,
+                |repo| repo.nearest_tag(),
+                |this, tags| this.tag_info = tags,
+            );
         }
     }
 
@@ -402,7 +750,7 @@ impl StatusView {
         let Some(repo) = self.read_repo() else {
             return;
         };
-        let generation = self.generation.current();
+        let generation = self.status_generation.current();
 
         cx.spawn(async move |this, cx| {
             let counts = cx
@@ -421,7 +769,7 @@ impl StatusView {
                 .await;
 
             this.update(cx, |this, cx| {
-                if !this.generation.is_current(generation) {
+                if !this.status_generation.is_current(generation) {
                     return;
                 }
                 let mut warmed = 0;
@@ -481,8 +829,13 @@ impl StatusView {
                 .find(|e| e.path == path)
                 .and_then(|e| e.orig_path.clone())
         });
-        let generation = self.generation.current();
-        self.begin_activity(cx);
+        let generation = self.status_generation.current();
+        let count_activity = !self.current_status_refresh.as_ref().is_some_and(|context| {
+            context.origin.automatic() && !matches!(self.screen, Screen::Status)
+        });
+        if count_activity {
+            self.begin_activity(cx);
+        }
 
         cx.spawn(async move |this, cx| {
             // Off the UI thread: load the diff and resolve the language
@@ -497,7 +850,7 @@ impl StatusView {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if !this.land_read(generation, cx) {
+                if !this.land_status_read(generation, count_activity, cx) {
                     return;
                 }
                 let state = match loaded {
@@ -564,5 +917,60 @@ impl StatusView {
             self.load_diff(source, path, true, cx);
         }
         self.set_status(format!("Diff context: {new}"), true, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{begin_read_scopes, divergence_stamp};
+    use crate::repo_monitor::ChangeScope;
+    use magritte_ui::generation::Generation;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn status_only_generation_does_not_cancel_auxiliary_work() {
+        let mut status_generation = Generation::default();
+        let mut auxiliary_generation = Generation::default();
+        let mut status_cancel = Arc::new(AtomicBool::new(false));
+        let mut auxiliary_cancel = Arc::new(AtomicBool::new(false));
+        let old_status_cancel = status_cancel.clone();
+        let old_auxiliary_cancel = auxiliary_cancel.clone();
+
+        let (status_stamp, auxiliary_stamp) = begin_read_scopes(
+            ChangeScope::StatusOnly,
+            &mut status_generation,
+            &mut auxiliary_generation,
+            &mut status_cancel,
+            &mut auxiliary_cancel,
+        );
+        assert_eq!(status_stamp, 1);
+        assert_eq!(auxiliary_stamp, 0);
+        assert!(old_status_cancel.load(Ordering::Relaxed));
+        assert!(!old_auxiliary_cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn full_generation_cancels_both_and_divergence_reads_latest_stamp() {
+        let mut status_generation = Generation::default();
+        let mut auxiliary_generation = Generation::default();
+        let mut status_cancel = Arc::new(AtomicBool::new(false));
+        let mut auxiliary_cancel = Arc::new(AtomicBool::new(false));
+        let old_status_cancel = status_cancel.clone();
+        let old_auxiliary_cancel = auxiliary_cancel.clone();
+
+        let (_, auxiliary_stamp) = begin_read_scopes(
+            ChangeScope::RepositoryWide,
+            &mut status_generation,
+            &mut auxiliary_generation,
+            &mut status_cancel,
+            &mut auxiliary_cancel,
+        );
+        assert_eq!(auxiliary_stamp, 1);
+        assert!(old_status_cancel.load(Ordering::Relaxed));
+        assert!(old_auxiliary_cancel.load(Ordering::Relaxed));
+
+        auxiliary_generation.bump();
+        assert_eq!(divergence_stamp(&auxiliary_generation), 2);
     }
 }

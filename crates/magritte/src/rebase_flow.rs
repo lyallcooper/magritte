@@ -217,6 +217,7 @@ impl StatusView {
     /// Close the editor, discarding any edits to the plan.
     pub(crate) fn discard_rebase_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }

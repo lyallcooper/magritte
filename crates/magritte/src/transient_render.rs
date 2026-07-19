@@ -310,6 +310,7 @@ impl StatusView {
                                 }
                                 _ => {
                                     this.popup = None;
+                                    this.refresh_blocker_closed(cx);
                                     cx.notify();
                                 }
                             });

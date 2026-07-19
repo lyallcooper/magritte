@@ -372,6 +372,7 @@ impl StatusView {
             return;
         }
         self.screen = Screen::Status;
+        self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
         cx.notify();
     }

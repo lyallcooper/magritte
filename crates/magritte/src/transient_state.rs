@@ -1179,6 +1179,7 @@ impl StatusView {
             }
             transient::VariableKind::Value { completion } => {
                 if let Some(Popup::Transient(ts)) = self.popup.take() {
+                    self.refresh_blocker_closed(cx);
                     self.open_variable_prompt(
                         variable,
                         description,
@@ -1263,6 +1264,7 @@ impl StatusView {
                 }
                 _ => {
                     self.popup = None;
+                    self.refresh_blocker_closed(cx);
                     cx.notify();
                 }
             }
@@ -1302,6 +1304,7 @@ impl StatusView {
                 .map(|o| (o.key.to_string(), o.description.to_string(), o.completion));
             if let Some((key, description, completion)) = opt {
                 if let Some(Popup::Transient(ts)) = self.popup.take() {
+                    self.refresh_blocker_closed(cx);
                     self.open_option_prompt(key, description, completion, ts, window, cx);
                 }
                 return;
@@ -1368,6 +1371,7 @@ impl StatusView {
             self.fire_action(action.command, fired, window, cx);
         } else if let Some(custom) = custom {
             self.popup = None;
+            self.refresh_blocker_closed(cx);
             self.invoke_command(&custom.id, window, cx);
         } else {
             self.report_unbound_suffix(&candidate, cx);
