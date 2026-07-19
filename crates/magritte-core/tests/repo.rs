@@ -14,6 +14,10 @@ fn config_get_and_bool_read_repo_config() {
     let t = TestRepo::new();
     let repo = open(&t);
     assert_eq!(repo.config_get("magritte.missing").unwrap(), None);
+    let missing = repo.command_log().pop().unwrap();
+    assert_eq!(missing.code, Some(1));
+    assert!(!missing.ok);
+    assert!(missing.expected);
     t.git(["config", "test.value", "hello"]);
     assert_eq!(
         repo.config_get("test.value").unwrap().as_deref(),

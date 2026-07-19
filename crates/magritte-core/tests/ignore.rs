@@ -99,10 +99,15 @@ fn check_ignored_omits_tracked_files_that_match_a_pattern() {
     t.commit_all("track before ignore");
     t.write(".gitignore", "*.log\n");
 
-    assert!(open(&t)
+    let repo = open(&t);
+    assert!(repo
         .check_ignored(&["tracked.log".into()])
         .unwrap()
         .is_empty());
+    let command = repo.command_log().pop().unwrap();
+    assert_eq!(command.code, Some(1));
+    assert!(!command.ok);
+    assert!(command.expected);
 }
 
 #[test]

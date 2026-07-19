@@ -274,6 +274,7 @@ impl StatusView {
                 prog: c.program.clone().unwrap_or_else(|| "git".to_string()),
                 args: c.args.join(" "),
                 ok: c.ok,
+                expected: c.expected,
             });
             // Output, stdout then stderr. stdout is only stored for user `!`
             // commands (internal git calls leave it empty). Progress on stderr
@@ -290,10 +291,11 @@ impl StatusView {
         rows
     }
 
-    /// One row of the git command log: either a command (success/failure sigil,
-    /// dim `git` prefix, arguments reddened on failure) or a dim, indented line
-    /// of that command's stderr output. The text past the sigil gutter is one
-    /// selectable string (see [`git_log_row_text`]) so it drag-selects/copies.
+    /// One row of the git command log: either a command (success/neutral/failure
+    /// sigil, dim `git` prefix, arguments reddened on failure) or a dim,
+    /// indented line of that command's stderr output. The text past the sigil
+    /// gutter is one selectable string (see [`git_log_row_text`]) so it
+    /// drag-selects/copies.
     pub(crate) fn render_git_log_row(
         &self,
         ix: usize,
@@ -309,14 +311,17 @@ impl StatusView {
                 prog,
                 args,
                 ok,
+                expected,
                 ..
             } => {
                 let (sigil, sigil_color) = if *ok {
                     ("✓", self.palette.added)
+                } else if *expected {
+                    ("·", self.palette.dim)
                 } else {
                     ("✗", self.palette.removed)
                 };
-                let args_color = if *ok {
+                let args_color = if *ok || *expected {
                     self.palette.fg
                 } else {
                     self.palette.removed

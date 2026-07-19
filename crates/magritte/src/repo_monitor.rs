@@ -92,6 +92,25 @@ impl RepoChangeBatch {
     pub(crate) fn covered_native_sequence(&self) -> u64 {
         self.native_sequence.unwrap_or(0)
     }
+
+    fn needs_ignore_check(&self) -> bool {
+        self.native_sequence.is_some()
+            && self.scope == ChangeScope::StatusOnly
+            && !self.unknown
+            && !self.paths.is_empty()
+    }
+
+    /// Remove paths Git classifies as ignored. `false` means the entire native
+    /// batch was ignored and its sequence can be covered without a status read.
+    fn retain_non_ignored(&mut self, ignored: Vec<String>) -> bool {
+        let ignored: HashSet<String> = ignored
+            .into_iter()
+            .map(|path| crate::path_identity::text_key(&path))
+            .collect();
+        self.paths
+            .retain(|path| !ignored.contains(&crate::path_identity::key(path)));
+        !self.paths.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -618,15 +637,6 @@ impl MonitorSchedule {
         }
     }
 
-    fn cover_ignored_batch(&mut self, sequence: u64) {
-        if let Some(pending) = &mut self.pending {
-            pending.native_sequence = pending.native_sequence.max(Some(sequence));
-            pending.sequence = pending.sequence.max(sequence);
-        } else {
-            self.cover_without_probe(sequence);
-        }
-    }
-
     pub(crate) fn next_poll_delay(&self) -> Duration {
         let duration_floor =
             (self.last_status_duration * 10).clamp(Duration::from_secs(2), Duration::from_secs(60));
@@ -751,49 +761,13 @@ impl crate::StatusView {
                 self.repository_monitor = Some(installed.monitor);
                 cx.spawn(async move |this, cx| {
                     while wake.recv().await.is_ok() {
-                        let alive = this
-                            .update(cx, |this, _| {
-                                this.monitor_listener_gen.is_current(listener_gen)
-                            })
-                            .unwrap_or(false);
-                        if !alive {
-                            break;
-                        }
                         let Some(batch) = shared.take() else { continue };
-                        let paths: Vec<String> = batch
-                            .paths
-                            .iter()
-                            .map(|path| crate::path_identity::key(path))
-                            .collect();
-                        let should_check_ignored = batch.scope == ChangeScope::StatusOnly
-                            && !batch.unknown
-                            && !paths.is_empty();
-                        let ignored = if should_check_ignored {
-                            let repo = this
-                                .update(cx, |this, _| {
-                                    this.repo
-                                        .clone()
-                                        .map(|repo| repo.with_timeout(IGNORE_CHECK_TIMEOUT))
-                                })
-                                .ok()
-                                .flatten();
-                            match repo {
-                                Some(repo) => Some(
-                                    cx.background_executor()
-                                        .spawn(async move { repo.check_ignored(&paths) })
-                                        .await,
-                                ),
-                                None => None,
-                            }
-                        } else {
-                            None
-                        };
                         if this
                             .update(cx, |this, cx| {
                                 if !this.monitor_listener_gen.is_current(listener_gen) {
                                     return;
                                 }
-                                this.receive_repository_batch(batch, ignored, cx);
+                                this.receive_repository_batch(batch, cx);
                             })
                             .is_err()
                         {
@@ -878,38 +852,8 @@ impl crate::StatusView {
         .detach();
     }
 
-    fn receive_repository_batch(
-        &mut self,
-        mut batch: RepoChangeBatch,
-        ignored: Option<magritte_core::Result<Vec<String>>>,
-        cx: &mut gpui::Context<Self>,
-    ) {
+    fn receive_repository_batch(&mut self, batch: RepoChangeBatch, cx: &mut gpui::Context<Self>) {
         self.monitor_sequence = self.monitor_sequence.max(batch.sequence);
-        if let Some(ignored) = ignored {
-            match ignored {
-                Ok(ignored) => {
-                    let ignored: HashSet<String> = ignored
-                        .into_iter()
-                        .map(|path| crate::path_identity::text_key(&path))
-                        .collect();
-                    batch
-                        .paths
-                        .retain(|path| !ignored.contains(&crate::path_identity::key(path)));
-                    if batch.paths.is_empty() {
-                        // Do not let a later ignored-only event's sequence
-                        // erase an older relevant batch still in the debounce
-                        // queue. That pending probe will cover both sequences.
-                        self.monitor_schedule
-                            .cover_ignored_batch(batch.covered_native_sequence());
-                        return;
-                    }
-                }
-                Err(_) => {
-                    batch.scope = ChangeScope::RepositoryWide;
-                    batch.unknown = true;
-                }
-            }
-        }
         self.monitor_schedule.ingest(batch, Instant::now());
         if self.monitor_schedule.has_pending() {
             self.pending_refresh_origin
@@ -1012,7 +956,86 @@ impl crate::StatusView {
             crate::RefreshOrigin::Monitor
         };
         let origin = self.pending_refresh_origin.take().unwrap_or(default_origin);
-        self.refresh_with_origin(origin, batch.scope, Some(batch), cx);
+        self.classify_ignored_and_refresh(batch, origin, cx);
+    }
+
+    /// Classify one already-debounced native path batch. Doing this after
+    /// `begin_probe` means an FSEvents burst pays for one Git process per
+    /// refresh window, rather than one per capacity-one wake-channel drain.
+    fn classify_ignored_and_refresh(
+        &mut self,
+        batch: RepoChangeBatch,
+        origin: crate::RefreshOrigin,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if !batch.needs_ignore_check() {
+            self.refresh_with_origin(origin, batch.scope, Some(batch), cx);
+            return;
+        }
+        let Some(repo) = self
+            .repo
+            .clone()
+            .map(|repo| repo.with_timeout(IGNORE_CHECK_TIMEOUT))
+        else {
+            self.refresh_with_origin(origin, batch.scope, Some(batch), cx);
+            return;
+        };
+        let paths: Vec<String> = batch
+            .paths
+            .iter()
+            .map(|path| crate::path_identity::key(path))
+            .collect();
+        let listener_gen = self.monitor_listener_gen.current();
+        let status_gen = self.status_generation.current();
+        cx.spawn(async move |this, cx| {
+            let ignored = cx
+                .background_executor()
+                .spawn(async move { repo.check_ignored(&paths) })
+                .await;
+            this.update(cx, |this, cx| {
+                // A monitor reconfiguration or any intervening status refresh
+                // has already abandoned this probe; do not let its classifier
+                // cancel the newer read by starting stale work.
+                if !this.monitor_listener_gen.is_current(listener_gen)
+                    || !this.status_generation.is_current(status_gen)
+                {
+                    return;
+                }
+                this.finish_ignore_classification(batch, origin, ignored, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_ignore_classification(
+        &mut self,
+        mut batch: RepoChangeBatch,
+        origin: crate::RefreshOrigin,
+        ignored: magritte_core::Result<Vec<String>>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        match ignored {
+            Ok(ignored) => {
+                if batch.retain_non_ignored(ignored) {
+                    self.refresh_with_origin(origin, batch.scope, Some(batch), cx);
+                } else {
+                    self.monitor_schedule
+                        .cover_without_probe(batch.covered_native_sequence());
+                    self.monitor_schedule.abandon_probe();
+                    if self.monitor_schedule.has_pending() {
+                        self.schedule_repository_refresh(cx);
+                    } else {
+                        self.pending_refresh_origin = None;
+                    }
+                }
+            }
+            Err(_) => {
+                batch.scope = ChangeScope::RepositoryWide;
+                batch.unknown = true;
+                self.refresh_with_origin(origin, batch.scope, Some(batch), cx);
+            }
+        }
     }
 
     fn schedule_repository_retry(&mut self, delay: Duration, cx: &mut gpui::Context<Self>) {
@@ -1372,16 +1395,54 @@ mod tests {
     }
 
     #[test]
-    fn ignored_batch_extends_pending_native_coverage_without_erasing_it() {
+    fn ignored_probe_coverage_does_not_erase_a_later_native_event() {
         let start = Instant::now();
         let mut schedule = MonitorSchedule::default();
         schedule.enable_native();
-        schedule.ingest(batch(1, "tracked"), start);
-        schedule.cover_ignored_batch(2);
+        schedule.ingest(batch(1, "ignored"), start);
+        let ignored = schedule.begin_probe(start + QUIET_DELAY).unwrap();
+        schedule.ingest(batch(2, "later"), start + Duration::from_millis(350));
 
-        let pending = schedule.begin_probe(start + QUIET_DELAY).unwrap();
-        assert_eq!(pending.paths, vec![PathBuf::from("tracked")]);
+        schedule.cover_without_probe(ignored.covered_native_sequence());
+        schedule.abandon_probe();
+
+        assert!(schedule.has_pending());
+        let pending = schedule
+            .begin_probe(start + Duration::from_millis(650))
+            .unwrap();
+        assert_eq!(pending.paths, vec![PathBuf::from("later")]);
         assert_eq!(pending.covered_native_sequence(), 2);
+    }
+
+    #[test]
+    fn ignore_filter_applies_once_to_the_debounced_merged_probe() {
+        let start = Instant::now();
+        let mut schedule = MonitorSchedule::default();
+        schedule.enable_native();
+        schedule.ingest(batch(1, "ignored"), start);
+        schedule.ingest(batch(2, "kept"), start + Duration::from_millis(100));
+
+        let mut merged = schedule
+            .begin_probe(start + Duration::from_millis(400))
+            .unwrap();
+        assert!(merged.needs_ignore_check());
+        assert!(merged.retain_non_ignored(vec!["ignored".into()]));
+        assert_eq!(merged.paths, vec![PathBuf::from("kept")]);
+        assert_eq!(merged.covered_native_sequence(), 2);
+    }
+
+    #[test]
+    fn unknown_path_overflow_skips_ignore_classification() {
+        let start = Instant::now();
+        let mut schedule = MonitorSchedule::default();
+        schedule.enable_native();
+        for sequence in 1..=PATH_CAP as u64 + 1 {
+            schedule.ingest(batch(sequence, &format!("p{sequence}")), start);
+        }
+
+        let merged = schedule.begin_probe(start + QUIET_DELAY).unwrap();
+        assert!(merged.unknown);
+        assert!(!merged.needs_ignore_check());
     }
 
     #[test]

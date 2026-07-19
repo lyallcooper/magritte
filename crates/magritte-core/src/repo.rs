@@ -76,6 +76,9 @@ pub struct GitCommand {
     pub code: Option<i32>,
     /// Whether the command exited successfully (status 0).
     pub ok: bool,
+    /// Whether the exit status was part of the caller's expected protocol.
+    /// Expected non-zero predicate/query results render neutrally in the log.
+    pub expected: bool,
     /// Wall-clock time spent waiting for the child process. This is deliberately
     /// measured around the full spawn/output path, so slow hooks/remotes show up
     /// in the command log alongside slow git reads.
@@ -152,6 +155,23 @@ pub struct CommandRun {
     pub ok: bool,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Clone, Copy)]
+enum ExitExpectation {
+    Success,
+    SuccessOrOne,
+    Any,
+}
+
+impl ExitExpectation {
+    fn accepts(self, code: Option<i32>) -> bool {
+        match self {
+            Self::Success => code == Some(0),
+            Self::SuccessOrOne => matches!(code, Some(0 | 1)),
+            Self::Any => code.is_some(),
+        }
+    }
 }
 
 /// Assemble a git argv from fixed leading words, a transient's toggled switch
@@ -410,12 +430,20 @@ impl Repo {
 
     /// Record an internal git call (the UI's own invocations): a `git` command,
     /// not user-invoked, with stdout consumed by the caller rather than stored.
-    fn record_git(&self, args: &[String], code: Option<i32>, stderr: &str, elapsed: Duration) {
+    fn record_git(
+        &self,
+        args: &[String],
+        code: Option<i32>,
+        expected: bool,
+        stderr: &str,
+        elapsed: Duration,
+    ) {
         self.record(GitCommand {
             program: None,
             args: args.to_vec(),
             code,
             ok: code == Some(0),
+            expected,
             elapsed,
             user: false,
             stdout: String::new(),
@@ -438,6 +466,7 @@ impl Repo {
         args: I,
         env: Option<(&str, &str)>,
         input: Option<&[u8]>,
+        expectation: ExitExpectation,
     ) -> Result<(Vec<String>, GitOutput, ExitStatus)>
     where
         I: IntoIterator<Item = S>,
@@ -454,7 +483,13 @@ impl Repo {
         cmd.args(&arg_vec);
         let start = Instant::now();
         let (stdout, stderr, status) = self.collect_output_with(cmd, input)?;
-        self.record_git(&arg_vec, status.code(), &stderr, start.elapsed());
+        self.record_git(
+            &arg_vec,
+            status.code(),
+            expectation.accepts(status.code()),
+            &stderr,
+            start.elapsed(),
+        );
         Ok((arg_vec, GitOutput { stdout, stderr }, status))
     }
 
@@ -479,7 +514,7 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (args, out, status) = self.execute(args, None, None)?;
+        let (args, out, status) = self.execute(args, None, None, ExitExpectation::Success)?;
         Self::checked(args, out, status)
     }
 
@@ -526,6 +561,7 @@ impl Repo {
             args: args.to_vec(),
             code: status.code(),
             ok: status.success(),
+            expected: status.success(),
             elapsed,
             user: true,
             stdout: stdout.clone(),
@@ -565,6 +601,7 @@ impl Repo {
             args: words.collect(),
             code: status.code(),
             ok: status.success(),
+            expected: status.success(),
             elapsed,
             user: true,
             stdout: stdout.clone(),
@@ -709,7 +746,8 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (args, out, status) = self.execute(args, Some((key, value)), None)?;
+        let (args, out, status) =
+            self.execute(args, Some((key, value)), None, ExitExpectation::Success)?;
         Self::checked(args, out, status)
     }
 
@@ -722,7 +760,8 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (args, out, status) = self.execute(args, None, Some(input))?;
+        let (args, out, status) =
+            self.execute(args, None, Some(input), ExitExpectation::Success)?;
         Self::checked(args, out, status)
     }
 
@@ -741,7 +780,7 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        self.execute(args, None, Some(input))
+        self.execute(args, None, Some(input), ExitExpectation::SuccessOrOne)
     }
 
     /// Run `git <args>` where git would normally open the **sequence editor**
@@ -778,7 +817,7 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (_args, _out, status) = self.execute(args, None, None)?;
+        let (_args, _out, status) = self.execute(args, None, None, ExitExpectation::Any)?;
         Ok(status.success())
     }
 
@@ -790,7 +829,7 @@ impl Repo {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (_args, out, status) = self.execute(args, None, None)?;
+        let (_args, out, status) = self.execute(args, None, None, ExitExpectation::Any)?;
         Ok(status.success().then_some(out))
     }
 
@@ -920,6 +959,7 @@ mod tests {
             args: args.iter().map(|s| s.to_string()).collect(),
             code: Some(0),
             ok: true,
+            expected: true,
             elapsed: Duration::from_millis(1),
             user,
             stdout: String::new(),

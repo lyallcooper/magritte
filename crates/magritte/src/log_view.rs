@@ -20,6 +20,7 @@ pub(crate) enum GitLogRow {
         prog: String,
         args: String,
         ok: bool,
+        expected: bool,
     },
     Output(String),
 }
