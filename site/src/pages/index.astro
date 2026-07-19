@@ -5,7 +5,7 @@ import Shot from "../components/Shot.astro";
 
 <Base
     title="Magritte — Ceci n'est pas Magit."
-    description="Magritte is a fast, keyboard-first Git client inspired by Magit: the status-centered workflow as a standalone macOS app, no Emacs required."
+    description="Magritte is a fast, keyboard-first Git client in the spirit of Magit."
     tocDepth={2}
 >
     <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
@@ -28,6 +28,49 @@ import Shot from "../components/Shot.astro";
         height={702}
         alt="Magritte's status view on its own repository: untracked, unstaged, and staged sections, an expanded file diff with a syntax-highlighted hunk, and recent commits"
     />
+
+    <h2>Why Magit?</h2>
+    <p>
+        Magit is beloved by its users for its fast, intuitive interface.
+        Keybindings are natural and easily discoverable. It makes using git
+        both faster and simpler than the <code>git</code> CLI.
+    </p>
+    <p>
+        Interactive rebasing is a breeze with Magit, as is staging exactly the
+        lines you want from a diff without having to use the tedious <code>git
+        add -p</code> flow. Magit is also extensible and lets you assign
+        arbitrary commands and keybindings, allowing you to mold it to your
+        workflow.
+    </p>
+    <p>
+        But Magit is inextricable from Emacs. It's hard to use Magit if you
+        aren't already familiar with the beast that is Emacs. And while learning
+        Emacs is a worthwhile investment, it's not something that everyone has
+        the time or inclination for.
+    </p>
+
+    <h2>Why Magritte?</h2>
+    <p>
+        If you already use Magit and Emacs and are happy with it, then Magritte
+        is probably not for you! But if you don't want to use Emacs, then
+        Magritte can fill the Magit-shaped hole in your heart that you probably
+        didn't even know was there.
+    </p>
+
+    <p>
+        Magritte has the same intuitive interface as Magit, but is even faster
+        thanks to its fully asynchronous design. The UI is always responsive, no
+        matter how long a background operation takes. Magritte's customization
+        is simpler while still having a lot of depth. It also adds quality of
+        life features such as auto-fetch, auto-refresh, integration with
+        external editors, and a standalone Git mergetool.
+    </p>
+    <p>
+        And of course Magritte is a standalone app. It's not weighed down by 50
+        years of Emacs development history, and the various limitations and
+        foibles that come with that. Magritte's UI uses modern patterns while
+        remaining keyboard-first and mouse-accessible.
+    </p>
 
     <h2>Installation</h2>
     <p>Via homebrew:</p>
@@ -205,9 +248,7 @@ import Shot from "../components/Shot.astro";
             characters.
         </li>
         <li>
-            Requires <code>git</code> on your <code>PATH</code>; it refreshes on
-            focus and after its own commands rather than watching the
-            filesystem.
+            Requires <code>git</code> on your <code>PATH</code>.
         </li>
     </ul>
 </Base>
