@@ -319,3 +319,15 @@ hr {
     background: var(--border);
 }
 
+.callout a code, a code {
+    background: unset;
+    padding: 0;
+}
+
+li {
+    text-align: left;
+}
+
+article ul > li::marker {
+    content: "⁃ ";
+}

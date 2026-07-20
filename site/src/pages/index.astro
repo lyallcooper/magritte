@@ -10,16 +10,9 @@ import Shot from "../components/Shot.astro";
 >
     <p class="tagline"><em>Ceci n'est pas Magit.</em></p>
 
-    <p class="lede">
-        A fast, keyboard-first git client in the spirit of <a
-        href="https://magit.vc/">Magit</a>—no Emacs required.
-    </p>
-
     <p>
-        Magritte is written in Rust using <a href="https://gpui.rs/">gpui</a>,
-        the framework that powers <a href="https://zed.dev/">Zed</a>. Magritte's
-        asynchronous core ensures that it gracefully handles large repos and
-        stays responsive even during slow git operations.
+        Magritte is a fast, keyboard-first git client imbued with the spirit of <a
+        href="https://magit.vc/">Magit</a>, no Emacs required.
     </p>
 
     <Shot
@@ -29,7 +22,7 @@ import Shot from "../components/Shot.astro";
         alt="Magritte's status view on its own repository: untracked, unstaged, and staged sections, an expanded file diff with a syntax-highlighted hunk, and recent commits"
     />
 
-    <h2>Why Magit?</h2>
+    <h2>The spirit of Magit?</h2>
     <p>
         Magit is beloved by its users for its fast, intuitive interface.
         Keybindings are natural and easily discoverable. It makes using git
@@ -59,11 +52,13 @@ import Shot from "../components/Shot.astro";
 
     <p>
         Magritte has the same intuitive interface as Magit, but is even faster
-        thanks to its fully asynchronous design. The UI is always responsive, no
-        matter how long a background operation takes. Magritte's customization
-        is simpler while still having a lot of depth. It also adds quality of
-        life features such as auto-fetch, auto-refresh, integration with
-        external editors, and a standalone Git mergetool.
+        thanks to its fully asynchronous design, Rust core and UI built with <a
+        href="https://gpui.rs/">gpui</a>, the framework that powers <a
+        href="https://zed.dev/">Zed</a>. Magritte's UI is always responsive, no
+        matter how long a background operation takes. Its customization is
+        simpler while still having a lot of depth. It also adds quality of life
+        features such as auto-fetch, auto-refresh, integration with external
+        editors, and a standalone Git mergetool.
     </p>
     <p>
         And of course Magritte is a standalone app. It's not weighed down by 50
@@ -169,17 +164,17 @@ import Shot from "../components/Shot.astro";
             <span class="k"><kbd>p</kbd> / <kbd>F</kbd></span> Push / pull menu
         </div>
         <div>
-            <span class="k"><kbd>x</kbd></span> Discard (prompts for confirmation)
+            <span class="k"><kbd>x</kbd></span> Discard
         </div>
         <div><span class="k"><kbd>l</kbd></span> Log menu</div>
-        <div><span class="k"><kbd>:</kbd></span> Search all commands</div>
+        <div><span class="k"><kbd>:</kbd></span> Command palette</div>
         <div><span class="k"><kbd>?</kbd></span> Help menu</div>
     </div>
 
     <h3>Basic keybindings, vanilla emacs-style</h3>
     <div class="keys vanilla">
         <div>
-            <span class="k"><kbd>ctrl-n</kbd> / <kbd>ctrl-p</kbd></span> Move down
+            <span class="k"><kbd>Ctrl-n</kbd> / <kbd>-p</kbd></span> Move down
             / up
         </div>
         <div><span class="k"><kbd>c</kbd></span> Commit menu</div>
@@ -192,10 +187,10 @@ import Shot from "../components/Shot.astro";
             <span class="k"><kbd>P</kbd> / <kbd>F</kbd></span> Push / pull menu
         </div>
         <div>
-            <span class="k"><kbd>k</kbd></span> Discard (prompts for confirmation)
+            <span class="k"><kbd>k</kbd></span> Discard
         </div>
         <div><span class="k"><kbd>l</kbd></span> Log menu</div>
-        <div><span class="k"><kbd>alt-x</kbd></span> Search all commands</div>
+        <div><span class="k"><kbd>Alt-x</kbd></span> Command palette</div>
         <div><span class="k"><kbd>?</kbd> / <kbd>h</kbd></span> Help menu</div>
     </div>
 
@@ -239,16 +234,16 @@ import Shot from "../components/Shot.astro";
     <p>Magritte is under active development. Current limitations:</p>
     <ul>
         <li>
-            macOS on Apple silicon is the supported release target; Linux x86_64
-            builds are best effort.
-        </li>
-        <li>Release builds are ad hoc signed, not notarized.</li>
-        <li>
-            Paths that are not valid UTF-8 may display with replacement
-            characters.
+            macOS on Apple silicon is the supported release target
         </li>
         <li>
-            Requires <code>git</code> on your <code>PATH</code>.
+            Linux <code>x86_64</code> builds exist but are best effort
+        </li>
+        <li>
+            Requires <code>git</code> executable on your <code>$PATH</code>
+        </li>
+        <li>
+            Release builds are ad hoc signed, not Apple notarized
         </li>
     </ul>
 </Base>
@@ -258,21 +253,18 @@ import Shot from "../components/Shot.astro";
         margin: 0 0 1.25rem;
         color: var(--muted);
         font-size: 1.25em;
-    }
-
-    .lede {
-        font-size: 1.05em;
-        max-width: 40rem;
+        text-align: left;
     }
 
     /* Key reference: two columns where they fit, one on narrow screens */
     .keys {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
         column-gap: 3rem;
         max-width: 42rem;
         margin: 1rem 0;
         font-size: 1rem;
+        text-align: left;
     }
 
     .keys > div {
@@ -284,13 +276,8 @@ import Shot from "../components/Shot.astro";
     }
 
     .keys .k {
-        flex: 0 0 4.5rem;
+        flex: 0 0 7rem;
         white-space: nowrap;
-    }
-
-    /* Vanilla's chords (ctrl-n / ctrl-p) need a wider key column. */
-    .keys.vanilla .k {
-        flex-basis: 8.5rem;
     }
 
     .shot {

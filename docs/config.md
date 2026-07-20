@@ -27,12 +27,7 @@ valid configuration.
 
 Press <kbd>,</kbd> or choose **Magritte > Settings** to access the settings
 screen. Here you can change common options such as themes, fonts, editors, and
-the keymap preset. Auto refresh, refresh on focus, and title-bar tags show a
-global switch and, when a repository is open, a repository override with
-**Inherit**, **On**, and **Off** choices. **Inherit** follows the global switch
-and removes that key from the repo config; the other choices write only that one
-repo override. Update checks and other Settings controls edit the global
-configuration.
+the keymap preset.
 
 ## Per-repo configuration
 
@@ -62,7 +57,7 @@ All scalar settings are top-level TOML keys. Every setting is optional.
 | `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Font for code, diffs, and aligned rows. |
 | `ui_font` | font family / `"system-ui"` | value of `font` | Font for menus, headings, and labels. Use `"system-ui"` for the platform UI font. Unset falls back to monospace `font` value. |
-| `font_size` | pixels | system default | Base UI size, clamped to 9--24. |
+| `font_size` | pixels | system default | Base UI size, clamped to 9–24. |
 | `app_icon` | `son-of-man` / `pipe` / `golconda` / `magic` | `son-of-man` | Dock and app-switcher icon on macOS. This does not change the icon in Finder. |
 | `editor` | command or app name | OS default | Editor used by Open File (<kbd>Return</kbd>). See [External file editor](#external-file-editor). |
 | `commit_in_editor` | `true` / `false` | `false` | Write commit messages in `commit_editor` instead of the in-app editor. |
