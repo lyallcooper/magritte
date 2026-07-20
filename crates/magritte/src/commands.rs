@@ -540,7 +540,7 @@ pub(crate) fn commands() -> &'static [Command] {
             id: "close",
             contexts: ScreenSet::of(&[
                 ScreenKind::Log,
-                ScreenKind::GitLog,
+                ScreenKind::ProcessLog,
                 ScreenKind::Commit,
                 ScreenKind::Diff,
                 ScreenKind::RebaseTodo,
@@ -810,14 +810,14 @@ pub(crate) fn commands() -> &'static [Command] {
             "d",
             |t, _w, cx| t.rebase_todo_set_action(RebaseAction::Drop, cx)
         ),
-        // The git command-log pager: toggle showing the UI's own read-only
+        // The process-log pager: toggle showing the UI's own read-only
         // queries. Scrolling stays bespoke (no cursor); close is the shared verb.
         verb!(
             "git-log-toggle-queries",
             "Toggle queries",
-            ScreenSet::of(&[ScreenKind::GitLog]),
+            ScreenSet::of(&[ScreenKind::ProcessLog]),
             "a",
-            |t, w, cx| t.toggle_git_log_all(w, cx)
+            |t, w, cx| t.toggle_process_log_all(w, cx)
         ),
         // Conflict-resolution view verbs (smerge's keep-upper/lower/all/base and
         // next/prev): applied to the conflict at the cursor; each keep rewrites
@@ -1129,7 +1129,7 @@ pub(crate) fn commands() -> &'static [Command] {
             Category::Application,
             "$",
             &["process", "git output", "console"],
-            |t, _w, cx| { t.open_git_log(cx) }
+            |t, _w, cx| { t.open_process_log(cx) }
         ),
         Command {
             id: "check-updates",
@@ -2520,7 +2520,7 @@ pub(crate) fn dispatch_menu_for(view: &StatusView) -> Transient {
 /// The screens whose `?` menu is derived from their scoped registry verbs.
 const SECONDARY_MENU_SCREENS: &[ScreenKind] = &[
     ScreenKind::Log,
-    ScreenKind::GitLog,
+    ScreenKind::ProcessLog,
     ScreenKind::Commit,
     ScreenKind::Diff,
     ScreenKind::RebaseTodo,
@@ -2566,7 +2566,7 @@ fn derived_screen_menu(view: &StatusView, kind: ScreenKind, copy_key: &str) -> T
     // view have nothing).
     if !matches!(
         kind,
-        ScreenKind::GitLog | ScreenKind::RebaseTodo | ScreenKind::Resolve
+        ScreenKind::ProcessLog | ScreenKind::RebaseTodo | ScreenKind::Resolve
     ) {
         commands_group.push(Suffix::Info(transient::Info {
             clickable: true,

@@ -142,8 +142,8 @@ use magritte_core::{
     SequenceKind, SnapshotKind, StashKind, StashUntracked, Status, TagDistance,
 };
 
-/// See [`StatusView::git_log_rows`]: (command-log sequence, show-all, rows).
-type GitLogCache = RefCell<Option<(u64, bool, Rc<Vec<GitLogRow>>)>>;
+/// See [`StatusView::process_log_rows`]: (command-log sequence, show-all, rows).
+type ProcessLogCache = RefCell<Option<(u64, bool, Rc<Vec<ProcessLogRow>>)>>;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_LATEST_RELEASE_API: &str =
@@ -400,9 +400,10 @@ enum Screen {
     Editor(CommitEditor),
     /// The live settings screen.
     Settings(settings::SettingsState),
-    /// The git command-log view (magit's `$` process buffer); holds the scroll
+    /// The process-log view (magit's `$` process buffer, every Magritte-issued
+    /// command regardless of program); holds the scroll
     /// state, with entries read live from the repo.
-    GitLog { view: ScrollView, show_all: bool },
+    ProcessLog { view: ScrollView, show_all: bool },
     /// The commit-log view (`l`).
     Log(LogState),
     /// A commit's diff detail, opened with Enter from the log or a status
@@ -441,7 +442,7 @@ pub(crate) enum ScreenKind {
     Status,
     Editor,
     Settings,
-    GitLog,
+    ProcessLog,
     Log,
     Commit,
     Diff,
@@ -458,7 +459,7 @@ impl ScreenKind {
         ScreenKind::Status,
         ScreenKind::Editor,
         ScreenKind::Settings,
-        ScreenKind::GitLog,
+        ScreenKind::ProcessLog,
         ScreenKind::Log,
         ScreenKind::Commit,
         ScreenKind::Diff,
@@ -751,8 +752,8 @@ struct StatusView {
     /// A pending confirmation: (prompt, what to do on `y`).
     confirm: Option<(String, Confirm)>,
     /// Memoized `$`-log rows, keyed on (command-log sequence, show-all) — see
-    /// [`Self::git_log_rows`]. RefCell because render derives it with `&self`.
-    git_log_cache: GitLogCache,
+    /// [`Self::process_log_rows`]. RefCell because render derives it with `&self`.
+    process_log_cache: ProcessLogCache,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     /// Colors for the current theme, refreshed at the top of each render.
@@ -950,7 +951,7 @@ impl StatusView {
             picker_gen: Generation::default(),
             transient_open_gen: Generation::default(),
             confirm: None,
-            git_log_cache: GitLogCache::default(),
+            process_log_cache: ProcessLogCache::default(),
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             palette: Palette::default(),
@@ -989,7 +990,7 @@ impl StatusView {
             Screen::Status => ScreenKind::Status,
             Screen::Editor(_) => ScreenKind::Editor,
             Screen::Settings(_) => ScreenKind::Settings,
-            Screen::GitLog { .. } => ScreenKind::GitLog,
+            Screen::ProcessLog { .. } => ScreenKind::ProcessLog,
             Screen::Log(_) => ScreenKind::Log,
             Screen::Commit { .. } => ScreenKind::Commit,
             Screen::Diff { .. } => ScreenKind::Diff,
@@ -1007,7 +1008,7 @@ impl StatusView {
         match self.screen_kind() {
             ScreenKind::Status | ScreenKind::Editor => None,
             ScreenKind::Settings => Some("settings"),
-            ScreenKind::GitLog => Some("command log"),
+            ScreenKind::ProcessLog => Some("command log"),
             ScreenKind::Log => Some("log"),
             ScreenKind::Commit => Some("commit"),
             ScreenKind::Diff => Some("diff"),
@@ -1039,17 +1040,17 @@ impl StatusView {
             _ => None,
         }
     }
-    fn git_log(&self) -> Option<&ScrollView> {
+    fn process_log(&self) -> Option<&ScrollView> {
         match &self.screen {
-            Screen::GitLog { view, .. } => Some(view),
+            Screen::ProcessLog { view, .. } => Some(view),
             _ => None,
         }
     }
 
     /// Whether the `$` command-log view also shows the UI's own read-only
     /// queries (hidden by default). Lives on the screen so it resets naturally.
-    pub(crate) fn git_log_show_all(&self) -> bool {
-        matches!(self.screen, Screen::GitLog { show_all: true, .. })
+    pub(crate) fn process_log_show_all(&self) -> bool {
+        matches!(self.screen, Screen::ProcessLog { show_all: true, .. })
     }
     fn log(&self) -> Option<&LogState> {
         match &self.screen {

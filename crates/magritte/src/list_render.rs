@@ -11,7 +11,7 @@ use crate::render::{
 };
 use crate::*;
 
-fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
+fn process_log_elapsed_label(elapsed: std::time::Duration) -> String {
     let millis = elapsed.as_millis();
     if millis < 1000 {
         format!("{millis}ms")
@@ -23,15 +23,15 @@ fn git_log_elapsed_label(elapsed: std::time::Duration) -> String {
 /// The canonical selectable text of a `$`-log row (what render lays out and
 /// copy yields): the command line past the sigil gutter, its elapsed column
 /// space-padded for the monospace grid; an output line verbatim.
-pub(crate) fn git_log_row_text(row: &GitLogRow) -> String {
+pub(crate) fn process_log_row_text(row: &ProcessLogRow) -> String {
     match row {
-        GitLogRow::Command {
+        ProcessLogRow::Command {
             elapsed,
             prog,
             args,
             ..
         } => format!("{elapsed:<5} {prog} {args}"),
-        GitLogRow::Output(line) => line.clone(),
+        ProcessLogRow::Output(line) => line.clone(),
     }
 }
 
@@ -50,11 +50,11 @@ pub(crate) fn blame_row_text(row: &blame_view::BlameRow) -> String {
 }
 
 impl StatusView {
-    /// Render the git command-log view (magit's `$` process buffer): a header
+    /// Render the process-log view (magit's `$` process buffer): a header
     /// and a scrollable list of the recent git invocations, newest at the
     /// bottom, each flagged with success/failure.
-    pub(crate) fn render_git_log(&self, sv: &ScrollView, view: &Entity<Self>) -> gpui::Div {
-        let count = self.git_log_rows().len();
+    pub(crate) fn render_process_log(&self, sv: &ScrollView, view: &Entity<Self>) -> gpui::Div {
+        let count = self.process_log_rows().len();
 
         let body = if count == 0 {
             self.load_note("No commands have run yet.")
@@ -63,10 +63,11 @@ impl StatusView {
                 let view = view.clone();
                 move |range, _window, cx| {
                     let this = view.read(cx);
-                    let rows = this.git_log_rows();
+                    let rows = this.process_log_rows();
                     range
                         .filter_map(|ix| {
-                            rows.get(ix).map(|r| this.render_git_log_row(ix, r, &view))
+                            rows.get(ix)
+                                .map(|r| this.render_process_log_row(ix, r, &view))
                         })
                         .collect::<Vec<_>>()
                 }
@@ -78,7 +79,7 @@ impl StatusView {
 
         // The header carries the query-visibility toggle beside close, so the
         // pager's one command is discoverable without the `?` menu.
-        let queries_label = if self.git_log_show_all() {
+        let queries_label = if self.process_log_show_all() {
             "hide queries"
         } else {
             "show queries"
@@ -244,34 +245,36 @@ impl StatusView {
     /// command and splits all its output lines, so doing it per frame (twice —
     /// count + visible range) scales with session length. The cache is keyed on
     /// the log's monotonic sequence and the show-all toggle.
-    pub(crate) fn git_log_rows(&self) -> Rc<Vec<GitLogRow>> {
+    pub(crate) fn process_log_rows(&self) -> Rc<Vec<ProcessLogRow>> {
         let seq = self.repo.as_ref().map(|r| r.command_log_seq()).unwrap_or(0);
-        let show_all = self.git_log_show_all();
-        if let Some((cached_seq, cached_show, rows)) = self.git_log_cache.borrow().as_ref() {
+        let show_all = self.process_log_show_all();
+        if let Some((cached_seq, cached_show, rows)) = self.process_log_cache.borrow().as_ref() {
             if *cached_seq == seq && *cached_show == show_all {
                 return rows.clone();
             }
         }
-        let rows = Rc::new(self.build_git_log_rows());
-        *self.git_log_cache.borrow_mut() = Some((seq, show_all, rows.clone()));
+        let rows = Rc::new(self.build_process_log_rows());
+        *self.process_log_cache.borrow_mut() = Some((seq, show_all, rows.clone()));
         rows
     }
 
-    fn build_git_log_rows(&self) -> Vec<GitLogRow> {
+    fn build_process_log_rows(&self) -> Vec<ProcessLogRow> {
         let Some(repo) = self.repo.as_ref() else {
             return Vec::new();
         };
         let mut rows = Vec::new();
         for c in repo.command_log() {
             // Hide the UI's own read-only queries unless asked to show all.
-            if !self.git_log_show_all() && c.is_query() {
+            if !self.process_log_show_all() && c.is_query() {
                 continue;
             }
-            rows.push(GitLogRow::Command {
-                elapsed: git_log_elapsed_label(c.elapsed),
+            rows.push(ProcessLogRow::Command {
+                elapsed: process_log_elapsed_label(c.elapsed),
                 slow: c.elapsed >= std::time::Duration::from_millis(500),
                 very_slow: c.elapsed >= std::time::Duration::from_secs(2),
-                prog: c.program.clone().unwrap_or_else(|| "git".to_string()),
+                // The log resolves the program at record time; None is
+                // unreachable for recorded entries.
+                prog: c.program.clone().unwrap_or_default(),
                 args: c.args.join(" "),
                 ok: c.ok,
                 expected: c.expected,
@@ -283,7 +286,7 @@ impl StatusView {
             for stream in [&c.stdout, &c.stderr] {
                 for line in stream.split(['\n', '\r']) {
                     if !line.trim().is_empty() {
-                        rows.push(GitLogRow::Output(line.trim_end().to_string()));
+                        rows.push(ProcessLogRow::Output(line.trim_end().to_string()));
                     }
                 }
             }
@@ -291,21 +294,21 @@ impl StatusView {
         rows
     }
 
-    /// One row of the git command log: either a command (success/neutral/failure
+    /// One row of the process log: either a command (success/neutral/failure
     /// sigil, dim `git` prefix, arguments reddened on failure) or a dim,
     /// indented line of that command's stderr output. The text past the sigil
-    /// gutter is one selectable string (see [`git_log_row_text`]) so it
+    /// gutter is one selectable string (see [`process_log_row_text`]) so it
     /// drag-selects/copies.
-    pub(crate) fn render_git_log_row(
+    pub(crate) fn render_process_log_row(
         &self,
         ix: usize,
-        row: &GitLogRow,
+        row: &ProcessLogRow,
         view: &Entity<Self>,
     ) -> AnyElement {
         let sel = self.pager_sel.char_sel.and_then(|c| c.range_on(ix));
-        let text = git_log_row_text(row);
+        let text = process_log_row_text(row);
         match row {
-            GitLogRow::Command {
+            ProcessLogRow::Command {
                 slow,
                 very_slow,
                 prog,
@@ -365,7 +368,7 @@ impl StatusView {
                 )
                 .into_any_element()
             }
-            GitLogRow::Output(_) => {
+            ProcessLogRow::Output(_) => {
                 let (styled, layout) = self.selectable_text(text, Vec::new(), sel);
                 self.pager_selectable(
                     div()

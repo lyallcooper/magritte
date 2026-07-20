@@ -1588,8 +1588,8 @@ impl Render for StatusView {
         let screen_el: Option<AnyElement> = match &self.screen {
             Screen::Settings(s) => Some(self.render_settings(s, &view, window).into_any_element()),
             Screen::Editor(ed) => Some(self.render_editor(ed, &view).into_any_element()),
-            Screen::GitLog { view: scroll, .. } => {
-                Some(self.render_git_log(scroll, &view).into_any_element())
+            Screen::ProcessLog { view: scroll, .. } => {
+                Some(self.render_process_log(scroll, &view).into_any_element())
             }
             Screen::RebaseTodo(rt) => Some(self.render_rebase_todo(rt, &view).into_any_element()),
             Screen::Commit { view: cv, .. } => {

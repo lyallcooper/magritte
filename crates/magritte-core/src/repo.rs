@@ -1,13 +1,18 @@
-use std::collections::VecDeque;
 use std::ffi::OsStr;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, ExitStatus};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use magritte_vcs::{CommandLog, ProcessControl};
+
 use crate::error::{Error, Result};
+
+/// One recorded invocation and the raw/user output shapes — the foundation's
+/// types under their git-era names, so the rest of the workspace reads
+/// naturally in a git context.
+pub use magritte_vcs::{CommandEntry as GitCommand, CommandRun, Output as GitOutput};
 
 /// How many recent git invocations the command log keeps (a ring buffer).
 const LOG_CAPACITY: usize = 500;
@@ -38,16 +43,13 @@ pub(crate) fn unique_temp_suffix() -> String {
 #[derive(Debug, Clone)]
 pub struct Repo {
     workdir: PathBuf,
-    log: Arc<Mutex<VecDeque<GitCommand>>>,
-    /// Total commands ever recorded (monotonic, unlike the capped log's
-    /// length), so a UI can cheaply tell whether the log changed since it last
-    /// flattened it.
-    log_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// When set, every invocation polls this flag and kills the child (returning
-    /// [`Error::Cancelled`]) once it flips true — so a superseded or user
-    /// -cancelled job stops *running*, not just gets its result dropped. Shared
-    /// via the `Arc` so the caller can trigger it after handing the `Repo` to a
-    /// background job. `None` means uncancellable (the fast `.output()` path).
+    log: Arc<CommandLog>,
+    /// When set, every invocation polls this flag and kills the child's
+    /// process tree (returning [`Error::Cancelled`]) once it flips true — so a
+    /// superseded or user-cancelled job stops *running*, not just gets its
+    /// result dropped. Shared via the `Arc` so the caller can trigger it after
+    /// handing the `Repo` to a background job. `None` means uncancellable (the
+    /// fast `.output()` path).
     cancel: Option<Arc<AtomicBool>>,
     /// When set, an invocation exceeding this kills the child and returns
     /// [`Error::TimedOut`] — a backstop against a wedged remote/hook.
@@ -61,100 +63,40 @@ pub struct Repo {
 /// [`Repo::nearest_tag`].
 pub type TagDistance = (String, usize);
 
-/// One recorded command invocation, for the command log (magit's process
-/// buffer). Usually git, but a user `!` shell escape records its program too.
-#[derive(Debug, Clone)]
-pub struct GitCommand {
-    /// The program, if not git (a user shell command). `None` is the common
-    /// case — a git subcommand, displayed with a `git` prefix.
-    pub program: Option<String>,
-    /// The arguments, without the `git -C <dir>` boilerplate or the internal
-    /// `-c core.quotepath=false` flags.
-    pub args: Vec<String>,
-    /// The process exit code, or `None` if it was killed by a signal or failed
-    /// to spawn.
-    pub code: Option<i32>,
-    /// Whether the command exited successfully (status 0).
-    pub ok: bool,
-    /// Whether the exit status was part of the caller's expected protocol.
-    /// Expected non-zero predicate/query results render neutrally in the log.
-    pub expected: bool,
-    /// Wall-clock time spent waiting for the child process. This is deliberately
-    /// measured around the full spawn/output path, so slow hooks/remotes show up
-    /// in the command log alongside slow git reads.
-    pub elapsed: Duration,
-    /// Whether the user invoked this directly (the `!` prompt), as opposed to
-    /// the UI issuing it. User commands always show in the log (never hidden as
-    /// a query) and keep their full output.
-    pub user: bool,
-    /// Captured stdout. Empty for the internal git calls (whose stdout the UI
-    /// consumes directly); populated for user `!` commands so the log shows
-    /// their full output.
-    pub stdout: String,
-    /// stderr — git's progress/error narrative (`Switched to branch …`, fetch
-    /// progress, error messages), or a user command's. Empty for the predicate
-    /// `succeeds` calls, which discard output.
-    pub stderr: String,
-}
-
-impl GitCommand {
-    /// The command as a user would type it, e.g. `git fetch origin` or `ls -la`.
-    pub fn display(&self) -> String {
-        let prog = self.program.as_deref().unwrap_or("git");
-        format!("{prog} {}", self.args.join(" "))
+/// Whether an entry is a read-only query the UI issues on its own — the status
+/// refresh, diffs, and ref lookups — rather than something the user invoked.
+/// These are noise in the command log, so it hides them by default. Injected
+/// into the shared [`CommandLog`] as its classifier.
+fn git_is_query(cmd: &GitCommand) -> bool {
+    if cmd.user {
+        return false;
     }
-
-    /// Whether this is a read-only query the UI issues on its own — the status
-    /// refresh, diffs, and ref lookups — rather than something the user invoked.
-    /// These are noise in the command log, so it hides them by default.
-    pub fn is_query(&self) -> bool {
-        if self.user {
-            return false;
-        }
-        match self.args.first().map(String::as_str) {
-            Some(
-                "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref"
-                | "ls-files" | "symbolic-ref" | "describe" | "log" | "merge-base" | "blame"
-                | "check-ignore",
-            ) => true,
-            // Config *reads* (e.g. resolving the push-remote) are queries; a
-            // config write (setting one) is a user action, so keep it visible.
-            Some("config") => self.args.iter().any(|a| a == "--get" || a == "--get-all"),
-            // `git stash list` is the Stashes section's listing — a query; the
-            // mutating stash verbs (push/pop/apply/drop/show) are user actions,
-            // so they stay visible.
-            Some("stash") => self.args.get(1).map(String::as_str) == Some("list"),
-            // A bare `git remote` is the remote-name listing the pickers issue;
-            // the mutating verbs (add/rename/remove/prune) stay visible.
-            Some("remote") => self.args.len() == 1,
-            // `git worktree list` is the worktree browser's listing; the
-            // mutating verbs (add/remove/move/prune) stay visible.
-            Some("worktree") => self.args.get(1).map(String::as_str) == Some("list"),
-            // `git tag -n`/`--list` is the release listing; creating or
-            // deleting a tag stays visible.
-            Some("tag") => self
-                .args
-                .iter()
-                .any(|a| a == "-n" || a.starts_with("-n") || a == "--list" || a == "-l"),
-            _ => false,
-        }
+    match cmd.args.first().map(String::as_str) {
+        Some(
+            "status" | "diff" | "rev-parse" | "rev-list" | "for-each-ref" | "show-ref" | "ls-files"
+            | "symbolic-ref" | "describe" | "log" | "merge-base" | "blame" | "check-ignore",
+        ) => true,
+        // Config *reads* (e.g. resolving the push-remote) are queries; a
+        // config write (setting one) is a user action, so keep it visible.
+        Some("config") => cmd.args.iter().any(|a| a == "--get" || a == "--get-all"),
+        // `git stash list` is the Stashes section's listing — a query; the
+        // mutating stash verbs (push/pop/apply/drop/show) are user actions,
+        // so they stay visible.
+        Some("stash") => cmd.args.get(1).map(String::as_str) == Some("list"),
+        // A bare `git remote` is the remote-name listing the pickers issue;
+        // the mutating verbs (add/rename/remove/prune) stay visible.
+        Some("remote") => cmd.args.len() == 1,
+        // `git worktree list` is the worktree browser's listing; the
+        // mutating verbs (add/remove/move/prune) stay visible.
+        Some("worktree") => cmd.args.get(1).map(String::as_str) == Some("list"),
+        // `git tag -n`/`--list` is the release listing; creating or
+        // deleting a tag stays visible.
+        Some("tag") => cmd
+            .args
+            .iter()
+            .any(|a| a == "-n" || a.starts_with("-n") || a == "--list" || a == "-l"),
+        _ => false,
     }
-}
-
-/// The raw result of a git invocation.
-#[derive(Debug)]
-pub struct GitOutput {
-    pub stdout: Vec<u8>,
-    pub stderr: String,
-}
-
-/// The result of a user `!` command: its text output and whether it succeeded.
-/// Unlike [`GitOutput`], a non-zero exit isn't an error here.
-#[derive(Debug)]
-pub struct CommandRun {
-    pub ok: bool,
-    pub stdout: String,
-    pub stderr: String,
 }
 
 #[derive(Clone, Copy)]
@@ -185,31 +127,16 @@ pub(crate) fn git_args(lead: &[&str], switches: &[String], trail: &[&str]) -> Ve
         .collect()
 }
 
-/// Configure a child process for spawning from our GPUI worker threads — shared
-/// by the `git` wrapper, the `!` prompt's arbitrary commands, and user
-/// `[[command]]` shell commands so they all behave the same (it matters once any
-/// of them invokes a networked git, directly or through `sh`):
-///
-/// - **Reset the signal mask.** Our worker threads block signals; children
-///   inherit that, so when git's transport child (e.g. `upload-pack`) fails
-///   mid-pull, git can't signal it during cleanup and hangs forever instead of
-///   erroring. Clearing the mask in the child fixes it. The mask is inherited
-///   across an intermediate `sh`, so resetting `sh`'s reaches git.
-/// - **`GIT_TERMINAL_PROMPT=0`.** No terminal here, so git must not block on a
-///   credential prompt; inherited by `sh` and its git child.
+/// Configure a child for spawning from our worker threads: the foundation's
+/// spawn preparation (signal-mask reset, own process group — see
+/// [`magritte_vcs::prepare_spawn`]) plus **`GIT_TERMINAL_PROMPT=0`** — no
+/// terminal here, so git must not block on a credential prompt; inherited by
+/// an intermediate `sh` and its git children, so the `!` prompt's and
+/// `[[command]]` shell commands get it too (it matters once any of them
+/// invokes a networked git).
 fn prepare_spawn(cmd: &mut Command) {
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    #[cfg(unix)]
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| {
-            // Only async-signal-safe calls here (post-fork, pre-exec).
-            let mut empty: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut empty);
-            libc::pthread_sigmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut());
-            Ok(())
-        });
-    }
+    magritte_vcs::prepare_spawn(cmd);
 }
 
 /// A `git` command rooted at `cwd`, with the config pins and spawn environment
@@ -230,100 +157,6 @@ fn git_at(cwd: &Path) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0");
     prepare_spawn(&mut cmd);
     cmd
-}
-
-/// How long, after SIGTERM, to let a cancelled child clean up before we SIGKILL
-/// it. Runs on a background worker thread, so it never blocks the UI.
-const TERMINATE_GRACE_MS: u64 = 300;
-
-/// Stop a child we're cancelling. SIGTERM first, so a git process runs its
-/// cleanup — git's lockfile handler unlinks any `*.lock` it holds, notably
-/// `.git/index.lock` from an interrupted `commit`/`add`/`stash`. A plain
-/// SIGKILL can't be caught, so it would orphan that lock and wedge the next
-/// command with "Unable to create '.git/index.lock': File exists". SIGKILL is
-/// the fallback if the child ignores SIGTERM (e.g. wedged on the network).
-#[cfg(unix)]
-fn terminate(child: &mut std::process::Child) {
-    // SAFETY: `child` is alive and owned by us until we reap it below, so its
-    // pid is valid and can't have been recycled.
-    unsafe {
-        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-    }
-    let deadline = Instant::now() + Duration::from_millis(TERMINATE_GRACE_MS);
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return; // exited (and reaped) after cleaning up
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(not(unix))]
-fn terminate(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-impl GitOutput {
-    /// Trimmed stdout as text (lossy UTF-8) — the shape of every single-value
-    /// query (a ref name, a config value, a count).
-    pub(crate) fn stdout_text(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).trim().to_string()
-    }
-
-    /// Trimmed stdout, or `None` when empty — the shape of every optional
-    /// single-value query (an unset config key, a branch with no upstream).
-    pub(crate) fn text_opt(&self) -> Option<String> {
-        let s = self.stdout_text();
-        (!s.is_empty()).then_some(s)
-    }
-
-    /// stdout as trimmed, non-empty lines — the shape of every name-listing
-    /// query (branches, tags, remotes).
-    pub fn lines(&self) -> Vec<String> {
-        String::from_utf8_lossy(&self.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// The one-line summary for commands whose result is the first line of
-    /// stdout (e.g. `commit` → `[main abc123] subject`), falling back to stderr.
-    pub fn first_line(&self) -> String {
-        let stdout = self.stdout_text();
-        if stdout.is_empty() {
-            self.stderr.trim().to_string()
-        } else {
-            stdout.lines().next().unwrap_or("").to_string()
-        }
-    }
-
-    /// The one-line summary for commands that print their status to stderr
-    /// (rebase/cherry-pick/sequence progress): its last non-empty line, falling
-    /// back to stdout.
-    pub fn status_line(&self) -> String {
-        let stderr = self.stderr.trim();
-        if stderr.is_empty() {
-            self.stdout_text()
-        } else {
-            stderr.lines().next_back().unwrap_or("").to_string()
-        }
-    }
-
-    /// The full stderr report (e.g. a push/pull/fetch summary, which can span
-    /// lines), falling back to stdout.
-    pub fn report(&self) -> String {
-        let stderr = self.stderr.trim();
-        if stderr.is_empty() {
-            self.stdout_text()
-        } else {
-            stderr.to_string()
-        }
-    }
 }
 
 impl Repo {
@@ -354,8 +187,7 @@ impl Repo {
 
         Ok(Repo {
             workdir: PathBuf::from(top),
-            log: Arc::new(Mutex::new(VecDeque::new())),
-            log_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            log: Arc::new(CommandLog::new("git", LOG_CAPACITY, git_is_query)),
             cancel: None,
             timeout: None,
             diff_context: None,
@@ -405,27 +237,13 @@ impl Repo {
     /// A snapshot of the recent git invocations, oldest first (for the command
     /// log view — magit's `$` process buffer).
     pub fn command_log(&self) -> Vec<GitCommand> {
-        self.log
-            .lock()
-            .map(|q| q.iter().cloned().collect())
-            .unwrap_or_default()
-    }
-
-    /// Record one invocation in the ring-buffered command log.
-    fn record(&self, cmd: GitCommand) {
-        if let Ok(mut q) = self.log.lock() {
-            if q.len() >= LOG_CAPACITY {
-                q.pop_front();
-            }
-            q.push_back(cmd);
-            self.log_seq.fetch_add(1, Ordering::Relaxed);
-        }
+        self.log.snapshot()
     }
 
     /// How many commands have ever been recorded — a cheap change stamp for
     /// [`command_log`](Self::command_log) consumers that cache a derived view.
     pub fn command_log_seq(&self) -> u64 {
-        self.log_seq.load(Ordering::Relaxed)
+        self.log.seq()
     }
 
     /// Record an internal git call (the UI's own invocations): a `git` command,
@@ -438,16 +256,15 @@ impl Repo {
         stderr: &str,
         elapsed: Duration,
     ) {
-        self.record(GitCommand {
+        self.log.record(GitCommand {
             program: None,
             args: args.to_vec(),
             code,
             ok: code == Some(0),
             expected,
             elapsed,
-            user: false,
-            stdout: String::new(),
             stderr: stderr.to_string(),
+            ..Default::default()
         });
     }
 
@@ -556,7 +373,7 @@ impl Repo {
         let (stdout, stderr, status) = self.collect_output(cmd)?;
         let elapsed = start.elapsed();
         let stdout = String::from_utf8_lossy(&stdout).into_owned();
-        self.record(GitCommand {
+        self.log.record(GitCommand {
             program: program.map(String::from),
             args: args.to_vec(),
             code: status.code(),
@@ -566,6 +383,7 @@ impl Repo {
             user: true,
             stdout: stdout.clone(),
             stderr: stderr.clone(),
+            ..Default::default()
         });
         Ok(CommandRun {
             ok: status.success(),
@@ -596,7 +414,7 @@ impl Repo {
         // For the log: show the command as written. The first word reads as the
         // "program" (dim) and the rest as its arguments, like a git line.
         let mut words = command.split_whitespace().map(String::from);
-        self.record(GitCommand {
+        self.log.record(GitCommand {
             program: words.next(),
             args: words.collect(),
             code: status.code(),
@@ -606,6 +424,7 @@ impl Repo {
             user: true,
             stdout: stdout.clone(),
             stderr: stderr.clone(),
+            ..Default::default()
         });
         Ok(CommandRun {
             ok: status.success(),
@@ -614,122 +433,21 @@ impl Repo {
         })
     }
 
-    /// Run `cmd` to completion, returning `(stdout, stderr, status)`. `input`,
-    /// when given, is written to the child's stdin.
-    ///
-    /// Without a cancel flag or timeout this is plain [`Command::output`] (or a
-    /// spawn + stdin write). With either set, it spawns the child and polls for
-    /// exit while *draining both pipes on helper threads* — a full pipe would
-    /// otherwise deadlock the wait — and writing any stdin on its own thread for
-    /// the same reason; it kills the child on cancel ([`Error::Cancelled`]) or
-    /// deadline ([`Error::TimedOut`]), reaping it so no zombie is left behind.
-    ///
+    /// Run `cmd` to completion via the foundation runner, under this repo's
+    /// cancel flag and timeout — see [`ProcessControl::collect_output_with`].
     /// Routing every variant (incl. `run_with_env`, `run_with_input`) through
     /// here is what makes them all honor the cancel flag and timeout.
     fn collect_output_with(
         &self,
-        mut cmd: Command,
+        cmd: Command,
         input: Option<&[u8]>,
     ) -> Result<(Vec<u8>, String, ExitStatus)> {
-        if self.cancel.is_none() && self.timeout.is_none() {
-            // Fast path: no cancellation/timeout to honor.
-            let out = match input {
-                None => cmd.output().map_err(|source| Error::Spawn { source })?,
-                Some(input) => {
-                    let mut child = cmd
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|source| Error::Spawn { source })?;
-                    // Write stdin on its own thread, like the guarded path: a
-                    // large patch could otherwise deadlock against git filling
-                    // the stdout pipe before it has consumed stdin.
-                    let mut stdin = child.stdin.take().expect("stdin piped");
-                    let buf = input.to_vec();
-                    let writer = std::thread::spawn(move || {
-                        let _ = stdin.write_all(&buf);
-                    });
-                    let out = child
-                        .wait_with_output()
-                        .map_err(|source| Error::Spawn { source })?;
-                    let _ = writer.join();
-                    out
-                }
-            };
-            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            return Ok((out.stdout, stderr, out.status));
+        ProcessControl {
+            cancel: self.cancel.clone(),
+            timeout: self.timeout,
         }
-
-        let mut child = cmd
-            .stdin(if input.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| Error::Spawn { source })?;
-        // Write stdin on its own thread so a large patch can't deadlock against
-        // git's output filling the stdout pipe before it has consumed stdin.
-        if let Some(input) = input {
-            let mut stdin = child.stdin.take().expect("stdin piped");
-            let buf = input.to_vec();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(&buf);
-            });
-        }
-        let mut out_pipe = child.stdout.take().expect("stdout piped");
-        let mut err_pipe = child.stderr.take().expect("stderr piped");
-        let out_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = out_pipe.read_to_end(&mut buf);
-            buf
-        });
-        let err_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err_pipe.read_to_end(&mut buf);
-            buf
-        });
-
-        let start = Instant::now();
-        // Poll with backoff: most git calls finish in a few ms, so a fixed
-        // 15ms sleep would tax every cancellable invocation ~7ms on average —
-        // several sequential calls per refresh. Start at 1ms and grow toward
-        // 15ms so short calls return promptly and long ones stay cheap to poll.
-        let mut poll = Duration::from_millis(1);
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|source| Error::Spawn { source })? {
-                break status;
-            }
-            let cancelled = self
-                .cancel
-                .as_ref()
-                .is_some_and(|c| c.load(Ordering::Relaxed));
-            let timed_out = self.timeout.is_some_and(|t| start.elapsed() >= t);
-            if cancelled || timed_out {
-                // SIGTERM (then SIGKILL) so git can unlink any lock it holds —
-                // e.g. `.git/index.lock` from a cancelled commit — rather than
-                // orphaning it.
-                terminate(&mut child);
-                // Don't join the reader threads: we discard the output, and a
-                // killed git can leave a grandchild (e.g. a hook) holding the
-                // pipe's write end open, which would block the read until *it*
-                // exits — defeating the prompt cancel. Let the readers detach;
-                // they finish when the pipe finally closes.
-                return Err(if cancelled {
-                    Error::Cancelled
-                } else {
-                    Error::TimedOut
-                });
-            }
-            std::thread::sleep(poll);
-            poll = (poll * 2).min(Duration::from_millis(15));
-        };
-        let stdout = out_reader.join().unwrap_or_default();
-        let stderr = String::from_utf8_lossy(&err_reader.join().unwrap_or_default()).into_owned();
-        Ok((stdout, stderr, status))
+        .collect_output_with(cmd, input)
+        .map_err(Error::from)
     }
 
     /// Run `cmd` with no stdin — the common case.
@@ -962,8 +680,7 @@ mod tests {
             expected: true,
             elapsed: Duration::from_millis(1),
             user,
-            stdout: String::new(),
-            stderr: String::new(),
+            ..Default::default()
         }
     }
 
@@ -979,20 +696,23 @@ mod tests {
             &["describe", "--tags"][..],
             &["config", "--get", "remote.pushDefault"][..],
         ] {
-            assert!(cmd(args, false).is_query(), "expected query: {args:?}");
+            assert!(git_is_query(&cmd(args, false)), "expected query: {args:?}");
         }
     }
 
     #[test]
     fn is_query_keeps_user_and_mutations_visible() {
         // A user-typed command always shows, even a read-only one.
-        assert!(!cmd(&["log"], true).is_query());
-        assert!(!cmd(&["stash", "list"], true).is_query());
+        assert!(!git_is_query(&cmd(&["log"], true)));
+        assert!(!git_is_query(&cmd(&["stash", "list"], true)));
         // Mutating stash verbs and config writes are user actions, not queries.
-        assert!(!cmd(&["stash", "push", "-m", "wip"], false).is_query());
-        assert!(!cmd(&["stash", "pop"], false).is_query());
-        assert!(!cmd(&["config", "remote.pushDefault", "origin"], false).is_query());
-        assert!(!cmd(&["commit", "-m", "x"], false).is_query());
-        assert!(!cmd(&["push"], false).is_query());
+        assert!(!git_is_query(&cmd(&["stash", "push", "-m", "wip"], false)));
+        assert!(!git_is_query(&cmd(&["stash", "pop"], false)));
+        assert!(!git_is_query(&cmd(
+            &["config", "remote.pushDefault", "origin"],
+            false
+        )));
+        assert!(!git_is_query(&cmd(&["commit", "-m", "x"], false)));
+        assert!(!git_is_query(&cmd(&["push"], false)));
     }
 }

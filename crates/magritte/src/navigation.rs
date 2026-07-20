@@ -674,11 +674,11 @@ impl StatusView {
             return self.resolve_cursor_key(skey, sshift, ctrl, page, cx);
         }
         let len = match &self.screen {
-            Screen::GitLog { .. } => self.git_log_rows().len(),
+            Screen::ProcessLog { .. } => self.process_log_rows().len(),
             Screen::Blame { rows, .. } => rows.len(),
             _ => return,
         };
-        if let Screen::GitLog { view, .. } | Screen::Blame { view, .. } = &mut self.screen {
+        if let Screen::ProcessLog { view, .. } | Screen::Blame { view, .. } = &mut self.screen {
             apply_scroll_key(&view.scroll, &mut view.top, len, skey, sshift, ctrl, page);
         }
         cx.notify();

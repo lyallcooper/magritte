@@ -74,7 +74,7 @@ impl StatusView {
             | Screen::RebaseTodo(_)
             | Screen::Resolve(_)
             | Screen::Editor(_) => self.pending_visible_refresh = true,
-            Screen::Status | Screen::GitLog { .. } => self.pending_visible_refresh = false,
+            Screen::Status | Screen::ProcessLog { .. } => self.pending_visible_refresh = false,
             _ => {}
         }
     }

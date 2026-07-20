@@ -193,9 +193,9 @@ impl StatusView {
             return;
         }
 
-        // The git command-log view takes over the window; esc/q/$ close it, and
+        // The process-log view takes over the window; esc/q/$ close it, and
         // it scrolls with the usual vi/less keys (the shared `pager_key`).
-        if self.git_log().is_some() {
+        if self.process_log().is_some() {
             // `$` (also shift-4) closes, mirroring the key that opened the pager.
             if key == "$" || (key == "4" && shift) {
                 return self.close_screen(window, cx);
@@ -448,7 +448,7 @@ impl StatusView {
         }
         match self.screen_kind() {
             ScreenKind::Log => self.close_log(window, cx),
-            ScreenKind::GitLog => self.close_git_log(window, cx),
+            ScreenKind::ProcessLog => self.close_process_log(window, cx),
             ScreenKind::Commit => self.close_commit_view(window, cx),
             ScreenKind::Diff => self.close_diff_view(window, cx),
             ScreenKind::RebaseTodo => self.close_rebase_todo(window, cx),
@@ -684,7 +684,7 @@ impl StatusView {
             log.visual.is_some() || log.char_sel.is_some_and(|c| !c.is_empty())
         } else if matches!(
             self.screen,
-            Screen::GitLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
+            Screen::ProcessLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
         ) {
             self.pager_sel.char_sel.is_some_and(|c| !c.is_empty())
         } else {

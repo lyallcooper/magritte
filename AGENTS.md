@@ -38,14 +38,18 @@ The bare `down` subcommand **quits** the app — to move the cursor down, inject
 
 ## Architecture
 
-Three crates: the git engine (`magritte-core`), an app-agnostic UI toolkit (`magritte-ui`), and the app (`magritte`). The core/app split is a **synchronous/async seam**; `magritte-ui` holds the pieces with no git in them, so a sibling app could reuse them. `magritte-core` and `magritte-ui` do not depend on each other. Dependencies shared between crates (gpui and friends, pinned git revs) live in `[workspace.dependencies]`.
+Four crates: a VCS-agnostic foundation (`magritte-vcs`), the git engine (`magritte-core`), an app-agnostic UI toolkit (`magritte-ui`), and the app (`magritte`). The core/app split is a **synchronous/async seam**; `magritte-ui` holds the pieces with no git in them, so a sibling app could reuse them. `magritte-core` and `magritte-ui` do not depend on each other. Dependencies shared between crates (gpui and friends, pinned git revs) live in `[workspace.dependencies]`.
+
+### `magritte-vcs` — shared foundation, no VCS semantics
+
+The pieces of a CLI-driving engine that contain no git (or other VCS) knowledge, so a sibling backend engine (e.g. jujutsu) can reuse them: `process.rs` (child spawn preparation and `ProcessControl::collect_output_with` — cancel flag, timeout, and process-*tree* kill: children are made group leaders so cancelling also kills transports/hooks/helpers), `log.rs` (the command-log ring buffer, parameterized by default program and an injected `is_query` classifier), `output.rs` (`Output`/`CommandRun`), and `diff.rs` (the pure unified-diff model + parser, git-format incl. C-quoted paths). Command construction — argv shapes, config pins, environment — stays in the engine crates. Runner behavior is regression-tested here against plain `sh` children (`tests/process.rs`, `tests/log.rs`).
 
 ### `magritte-core` — UI-free, synchronous
 Drives the `git` CLI and returns plain data, so it's unit-testable against throwaway repos with no graphics stack. One module per git area (`status`, `diff`, `stage`, `branch`, `commit`, `merge`, `rebase`, `stash`, `remote`, …). Everything centers on `Repo` (`repo.rs`):
 
-- The `run` / `run_optional` / `run_with_env` / `run_with_input` / `run_with_sequence_editor` family shell out to git through one `collect_output` path that honors an optional cancel flag and timeout.
+- The `run` / `run_optional` / `run_with_env` / `run_with_input` / `run_with_sequence_editor` family shell out to git through one `collect_output` path (delegating to `magritte-vcs`'s runner) that honors an optional cancel flag and timeout.
 - `cancellable()` / `with_cancel(flag)` / `with_timeout(d)` return tagged clones; the UI uses these so a refresh or `Ctrl-g` can kill an in-flight subprocess.
-- Every invocation is recorded into a shared ring buffer (the `$` command log). `is_query()` classifies read-only commands so they can be hidden from that log by default.
+- Every invocation is recorded into a shared ring buffer (the `$` process log). `git_is_query` classifies read-only commands so they can be hidden from that log by default. Foundation types are re-exported under their git-era names (`GitOutput`, `GitCommand`) to keep call sites reading naturally.
 
 When implementing or fixing git behavior, **match magit's behavior** precisely rather than reaching for a simpler git command.
 

@@ -1875,7 +1875,7 @@ impl StatusView {
             self.copy_log_commit(cx);
         } else if matches!(
             self.screen,
-            Screen::GitLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
+            Screen::ProcessLog { .. } | Screen::Blame { .. } | Screen::Resolve(_)
         ) {
             self.copy_pager_selection(cx);
         } else if self.char_sel.is_some_and(|c| !c.is_empty()) {
@@ -1907,9 +1907,9 @@ impl StatusView {
             .filter(|c| !c.is_empty())
             .map(|sel| {
                 let row_text: Box<dyn Fn(usize) -> Option<String>> = match &self.screen {
-                    Screen::GitLog { .. } => {
-                        let rows = self.git_log_rows();
-                        Box::new(move |ix| rows.get(ix).map(list_render::git_log_row_text))
+                    Screen::ProcessLog { .. } => {
+                        let rows = self.process_log_rows();
+                        Box::new(move |ix| rows.get(ix).map(list_render::process_log_row_text))
                     }
                     Screen::Blame { rows, .. } => {
                         let rows = rows.clone();

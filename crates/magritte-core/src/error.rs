@@ -60,6 +60,19 @@ impl fmt::Display for Error {
     }
 }
 
+/// Lift a foundation error (process execution, diff parsing) into the git
+/// engine's error vocabulary — the variants correspond one-to-one.
+impl From<magritte_vcs::Error> for Error {
+    fn from(e: magritte_vcs::Error) -> Error {
+        match e {
+            magritte_vcs::Error::Spawn { source } => Error::Spawn { source },
+            magritte_vcs::Error::Cancelled => Error::Cancelled,
+            magritte_vcs::Error::TimedOut => Error::TimedOut,
+            magritte_vcs::Error::Parse { context, line } => Error::Parse { context, line },
+        }
+    }
+}
+
 impl Error {
     /// Whether this error means the `git` binary itself is missing (not
     /// installed or not on `PATH`) — a spawn failure with `ErrorKind::NotFound`,

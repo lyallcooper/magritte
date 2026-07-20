@@ -3694,7 +3694,7 @@ dependencies = [
 name = "magritte-core"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "magritte-vcs",
  "tempfile",
  "trash",
 ]
@@ -3714,6 +3714,14 @@ dependencies = [
  "regex",
  "serde",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "magritte-vcs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
 ]
 
 [[package]]

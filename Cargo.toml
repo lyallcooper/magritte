@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/magritte-core", "crates/magritte-ui", "crates/magritte"]
+members = [
+    "crates/magritte-vcs",
+    "crates/magritte-core",
+    "crates/magritte-ui",
+    "crates/magritte",
+]
 
 [workspace.package]
 edition = "2021"
@@ -8,6 +13,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/lyallcooper/magritte"
 
 [workspace.dependencies]
+magritte-vcs = { path = "crates/magritte-vcs" }
 magritte-core = { path = "crates/magritte-core" }
 magritte-ui = { path = "crates/magritte-ui" }
 # gpui + gpui-component must share the exact same gpui git rev so their types

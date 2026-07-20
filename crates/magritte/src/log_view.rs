@@ -1,4 +1,4 @@
-//! The log screens: the `$` git-command log, the commit log/reflog loaders,
+//! The log screens: the `$` process log, the commit log/reflog loaders,
 //! the log-as-picker flows (select a commit for rebase/reword), commit-at-point
 //! actions from the log (cherry-pick/revert transients, yank), and the log
 //! cursor. `impl StatusView` like the other view slices.
@@ -8,9 +8,10 @@ use magritte_core::{LogEntry, Repo};
 
 use crate::*;
 
-/// A flattened row of the git command-log view: a command, or one line of its
-/// output. Flattening keeps the view a single uniform-height list.
-pub(crate) enum GitLogRow {
+/// A flattened row of the process-log view (the Magritte-issued commands,
+/// whatever their program): a command, or one line of its output. Flattening
+/// keeps the view a single uniform-height list.
+pub(crate) enum ProcessLogRow {
     /// `prog` is the program (`git` for the common case), shown dimmed before
     /// the arguments.
     Command {
@@ -172,24 +173,24 @@ impl StatusView {
         )
     }
 
-    /// Open the git command-log view (magit's `$` process buffer), scrolled to
+    /// Open the process-log view (magit's `$` process buffer), scrolled to
     /// the most recent command.
-    pub(crate) fn open_git_log(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_process_log(&mut self, cx: &mut Context<Self>) {
         // Dismiss any status toast — you came here to read the full output it
         // pointed at, and it would otherwise just float over this view.
         self.clear_status(cx);
         let scroll = UniformListScrollHandle::new();
-        let last = self.git_log_rows().len().saturating_sub(1);
+        let last = self.process_log_rows().len().saturating_sub(1);
         scroll.scroll_to_item(last, gpui::ScrollStrategy::Bottom);
         self.pager_sel = PagerSelection::default();
-        self.screen = Screen::GitLog {
+        self.screen = Screen::ProcessLog {
             view: ScrollView { scroll, top: last },
             show_all: false,
         };
         cx.notify();
     }
 
-    pub(crate) fn close_git_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_process_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = Screen::Status;
         self.reconcile_visible_screen(cx);
         self.focus.focus(window, cx);
@@ -197,8 +198,8 @@ impl StatusView {
     }
 
     /// Toggle whether the command log also lists the UI's own read-only queries.
-    pub(crate) fn toggle_git_log_all(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Screen::GitLog { show_all, .. } = &mut self.screen {
+    pub(crate) fn toggle_process_log_all(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Screen::ProcessLog { show_all, .. } = &mut self.screen {
             *show_all = !*show_all;
         }
         cx.notify();
