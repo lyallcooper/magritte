@@ -1172,6 +1172,19 @@ mod tests {
     }
 
     #[test]
+    fn branch_create_keys_match_magit() {
+        let branch = branch_transient(KeymapStyle::EvilCollection, None);
+        assert_eq!(
+            branch.action_for("c").map(|action| &action.command),
+            Some(&Command::BranchCreateCheckout)
+        );
+        assert_eq!(
+            branch.action_for("n").map(|action| &action.command),
+            Some(&Command::BranchCreate)
+        );
+    }
+
+    #[test]
     fn action_dispatches_on_either_collapsed_key() {
         // The collapsed push entry is invokable by both `p` and `u`.
         let push = push_transient(&targets("main", "origin", "origin", "main"));

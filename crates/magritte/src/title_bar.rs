@@ -6,7 +6,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement, Window};
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
-use gpui_component::Sizable;
+use gpui_component::{Icon, IconName, Sizable};
 
 use crate::render::with_copy_menu;
 use crate::*;
@@ -83,19 +83,20 @@ impl StatusView {
             .child(SharedString::from(name.to_string()))
     }
 
-    /// The title-bar branch as a chip (click opens the branch transient,
-    /// right-click copies the name).
+    /// The title-bar branch as a divided chip: the name opens the branch
+    /// transient, and the icon copies the full branch name. Right-clicking
+    /// either half keeps the shared Copy menu available.
     pub(crate) fn render_branch_chip(&self, view: &Entity<Self>, branch: &str) -> impl IntoElement {
         let branch_click = view.clone();
+        let branch_copy = view.clone();
         let tip_font = self.font.clone();
+        let copy_tip_font = self.font.clone();
         let tip_name = SharedString::from(branch.to_string());
+        let copy_value = branch.to_string();
         let dim = self.palette.dim;
-        // The branch name chip: left-click opens the branch transient; right-click
-        // copies the name via the shared Copy menu. The name middle-truncates
-        // when the bar is short on width; the tooltip carries the full name.
+        // The name middle-truncates when the bar is short on width; the copy
+        // button remains visible and always copies the untruncated value.
         let chip = div()
-            .id("titlebar-branch")
-            .relative()
             .flex()
             .items_center()
             .min_w_0()
@@ -104,30 +105,69 @@ impl StatusView {
             .text_color(self.palette.fg)
             .font_family(self.font.clone())
             .font_weight(FontWeight::MEDIUM)
-            .cursor_pointer()
-            .px(px(5.0))
-            .child(track_target("titlebar-branch"))
             .child(
-                truncatable(self.name_floor(branch, self.font_px()))
-                    .child(SharedString::from(branch.to_string())),
-            )
-            .when(!self.ctx_menu_open, |d| {
-                d.tooltip(move |window, cx| {
-                    let (font, name) = (tip_font.clone(), tip_name.clone());
-                    Tooltip::element(move |_, _| {
-                        div()
-                            .max_w(px(480.0))
-                            .font_family(font.clone())
-                            .child("Current branch")
-                            .child(div().text_color(dim).child(name.clone()))
+                div()
+                    .id("titlebar-branch")
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .cursor_pointer()
+                    .px(px(5.0))
+                    .child(track_target("titlebar-branch"))
+                    .child(
+                        truncatable(self.name_floor(branch, self.font_px()))
+                            .child(SharedString::from(branch.to_string())),
+                    )
+                    .when(!self.ctx_menu_open, |d| {
+                        d.tooltip(move |window, cx| {
+                            let (font, name) = (tip_font.clone(), tip_name.clone());
+                            Tooltip::element(move |_, _| {
+                                div()
+                                    .max_w(px(480.0))
+                                    .font_family(font.clone())
+                                    .child("Current branch")
+                                    .child(div().text_color(dim).child(name.clone()))
+                            })
+                            .build(window, cx)
+                        })
+                        .tooltip_show_delay(Duration::from_millis(400))
                     })
-                    .build(window, cx)
-                })
-                .tooltip_show_delay(Duration::from_millis(400))
-            })
-            .on_click(move |_, window, cx: &mut App| {
-                branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
-            });
+                    .on_click(move |_, window, cx: &mut App| {
+                        branch_click.update(cx, |v, vcx| v.invoke_command("branch", window, vcx));
+                    }),
+            )
+            .child(div().w(px(1.0)).h(px(12.0)).bg(self.palette.dim))
+            .child(
+                div()
+                    .id("titlebar-branch-copy")
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .px(px(4.0))
+                    .child(track_target("titlebar-branch-copy"))
+                    .child(
+                        Icon::new(IconName::Copy)
+                            .xsmall()
+                            .text_color(self.palette.fg),
+                    )
+                    .when(!self.ctx_menu_open, |d| {
+                        d.tooltip(move |window, cx| {
+                            let font = copy_tip_font.clone();
+                            Tooltip::element(move |_, _| {
+                                div().font_family(font.clone()).child("Copy branch name")
+                            })
+                            .build(window, cx)
+                        })
+                        .tooltip_show_delay(Duration::ZERO)
+                    })
+                    .on_click(move |_, _window, cx: &mut App| {
+                        let value = copy_value.clone();
+                        branch_copy.update(cx, |v, vcx| v.copy_to_clipboard(value, vcx));
+                    }),
+            );
         with_copy_menu(chip, view, branch.to_string())
     }
 
