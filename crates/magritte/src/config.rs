@@ -20,7 +20,7 @@ use magritte_ui::persist::{atomic_write_text, atomic_write_toml, load_toml_or_de
 /// Default theme names for the light and dark slots (our bundled themes; see
 /// `BUNDLED_THEMES`).
 pub const DEFAULT_LIGHT_THEME: &str = "Selenized Light";
-pub const DEFAULT_DARK_THEME: &str = "Selenized Dark";
+pub const DEFAULT_DARK_THEME: &str = "Selenized Black";
 
 /// Built-in keymap family. `EvilCollection` is the default because Magritte is
 /// keyboard-first and already uses vim-style navigation; `Vanilla` keeps the

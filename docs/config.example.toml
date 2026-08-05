@@ -8,7 +8,7 @@
 # Appearance
 # appearance = "auto" # auto, light, or dark
 # light_theme = "Selenized Light"
-# dark_theme = "Selenized Dark"
+# dark_theme = "Selenized Black"
 # font = "" # System UI Monospace by default
 # ui_font = "" # Same as `font` by default
 # font_size = 13 # System default size when omitted

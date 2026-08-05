@@ -54,7 +54,7 @@ All scalar settings are top-level TOML keys. Every setting is optional.
 | --- | --- | --- | --- |
 | `appearance` | `"auto"` / `"light"` / `"dark"` | `auto` | Follow the system or force light/dark mode. |
 | `light_theme` | theme name | `Selenized Light` | Theme used in light mode. |
-| `dark_theme` | theme name | `Selenized Dark` | Theme used in dark mode. |
+| `dark_theme` | theme name | `Selenized Black` | Theme used in dark mode. |
 | `font` | font family | platform monospace | Font for code, diffs, and aligned rows. |
 | `ui_font` | font family / `"system-ui"` | value of `font` | Font for menus, headings, and labels. Use `"system-ui"` for the platform UI font. Unset falls back to monospace `font` value. |
 | `font_size` | pixels | system default | Base UI size, clamped to 9–24. |
