@@ -67,7 +67,7 @@ place_window() { # width [height]
 set_config() { # appearance [font_size]
   {
     printf 'appearance = "%s"\n' "$1"
-    printf 'light_theme = "Selenized Light"\ndark_theme = "Selenized Dark"\n'
+    printf 'light_theme = "Selenized Light"\ndark_theme = "Selenized Black"\n'
     if [ $# -gt 1 ] && [ -n "$2" ]; then printf 'font_size = %s\n' "$2"; fi
   } > .git/magritte/config.toml
 }

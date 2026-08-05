@@ -1,4 +1,4 @@
-/* Palette: Selenized Light / Selenized Dark, taken from the app's bundled
+/* Palette: Selenized Light / Selenized Black, taken from the app's bundled
    theme (crates/magritte/themes/selenized.json), so the site renders in
    Magritte's own default colors. */
 :root {
@@ -26,20 +26,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #103c48;
-    --fg: #adbcbc;
-    --muted: #72898f;
-    --border: #2d5b69;
-    --surface: #184956;
-    --sel: #2d5b69;
-    --accent: #4695f7;
-    --red: #fa5750;
-    --green: #75b938;
+    --bg: #181818;
+    --fg: #b9b9b9;
+    --muted: #777777;
+    --border: #3b3b3b;
+    --surface: #252525;
+    --sel: #3b3b3b;
+    --accent: #368aeb;
+    --red: #ed4a46;
+    --green: #70b433;
     --yellow: #dbb32d;
-    --magenta: #f275be;
-    --cyan: #41c7b9;
-    --add-bg: #75b9381f;
-    --del-bg: #fa57501f;
+    --magenta: #eb6eb7;
+    --cyan: #3fc5b7;
+    --add-bg: #70b4331f;
+    --del-bg: #ed4a461f;
   }
 }
 

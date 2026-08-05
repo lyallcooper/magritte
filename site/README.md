@@ -24,7 +24,7 @@ Connect the repository and set:
 - Build output directory: `dist`
 - Build watch paths: `site/*`, `docs/*` -- doc edits must redeploy the site
 
-The palette is Selenized Light/Dark, copied from the app's bundled theme
+The palette is Selenized Light/Black, copied from the app's bundled theme
 (`crates/magritte/themes/selenized.json`). If the app's default theme changes,
 update the variables at the top of `src/styles/global.css`.
 
