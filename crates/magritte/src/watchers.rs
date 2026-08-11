@@ -72,6 +72,15 @@ impl StatusView {
         save_window_state(self.worktree_scope_dir.as_deref(), window, cx);
 
         self.install_config_watcher(window, cx);
+
+        // Collect throwaway files a previous run was killed before it could
+        // remove. Once per window, and off the UI thread — it resolves the git
+        // dir through git and then touches the filesystem.
+        if let Some(repo) = self.repo.clone() {
+            cx.background_executor()
+                .spawn(async move { repo.sweep_stale_temp_files() })
+                .detach();
+        }
     }
 
     /// Watch the global config dir — and the repo scope dir when it exists —

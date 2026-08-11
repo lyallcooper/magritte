@@ -46,7 +46,10 @@ impl Repo {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
-        let tmp = dir.join(format!(".{name}.magritte-tmp-{}", std::process::id()));
+        let tmp = dir.join(format!(
+            ".{name}.magritte-tmp-{}",
+            crate::repo::unique_temp_suffix()
+        ));
         let write = || -> std::io::Result<()> {
             std::fs::write(&tmp, bytes)?;
             if let Ok(meta) = std::fs::metadata(&full) {

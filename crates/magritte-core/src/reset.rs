@@ -3,7 +3,7 @@
 //! that one.
 
 use crate::error::Result;
-use crate::repo::{unique_temp_suffix, Repo};
+use crate::repo::Repo;
 
 /// How far a reset reaches: which of HEAD, the index, and the working tree it
 /// rewinds to the target commit.
@@ -77,24 +77,16 @@ impl Repo {
     /// index, then check that out over the working tree. Overwrites uncommitted
     /// changes, so the frontend confirms it like a hard reset.
     pub fn reset_worktree(&self, target: &str) -> Result<String> {
-        let tmp = self.git_dir()?.join(format!(
-            "magritte-reset-worktree-index-{}",
-            unique_temp_suffix()
-        ));
-        let tmp_str = tmp.to_string_lossy().into_owned();
+        let tmp = self.temp_file("reset-worktree-index")?;
+        let tmp_str = tmp.as_env();
         // Populate the temp index from the target's tree, then write those files
         // to the working tree from it — neither touches the real index or HEAD.
-        let result = self
-            .run_with_env(["read-tree", target], "GIT_INDEX_FILE", &tmp_str)
-            .and_then(|_| {
-                self.run_with_env(
-                    ["checkout-index", "--all", "--force"],
-                    "GIT_INDEX_FILE",
-                    &tmp_str,
-                )
-            });
-        let _ = std::fs::remove_file(&tmp);
-        result?;
+        self.run_with_env(["read-tree", target], "GIT_INDEX_FILE", &tmp_str)?;
+        self.run_with_env(
+            ["checkout-index", "--all", "--force"],
+            "GIT_INDEX_FILE",
+            &tmp_str,
+        )?;
         Ok(format!("Reset worktree to {target}"))
     }
 }

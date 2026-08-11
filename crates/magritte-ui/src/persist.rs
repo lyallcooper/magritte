@@ -40,8 +40,9 @@ pub fn atomic_write_text(path: &Path, text: &str) -> std::io::Result<()> {
     }
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("toml.{}.{seq}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
+    // Clear the temp file on *either* failure: a short write (a full disk) would
+    // otherwise strand a partial file next to the real state.
+    if let Err(e) = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }

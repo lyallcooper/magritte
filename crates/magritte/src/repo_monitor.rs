@@ -22,6 +22,17 @@ pub(crate) const LOCK_FORCE_AFTER: Duration = Duration::from_secs(30);
 const LIVENESS_SETTLE: Duration = Duration::from_millis(100);
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(2);
 const IGNORE_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Filename prefix of the watcher liveness probe, which carries the writing
+/// process's pid so concurrent instances on one git dir stay independent.
+const LIVENESS_PROBE_PREFIX: &str = ".magritte-watch-probe-";
+/// How old a probe file must be to count as abandoned. A live probe is written
+/// and removed `LIVENESS_TIMEOUT` apart, so a minute of slack clears anything a
+/// run left behind by quitting or dying in between. This is a wall-clock
+/// comparison against a monotonic interval, so a suspend or a stopped process
+/// can age a *live* probe past it — harmless, because the owner's own removal
+/// tolerates the file already being gone, and because the sweep runs before this
+/// run writes its own probe and so can only ever see another run's.
+const LIVENESS_PROBE_STALE_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChangeScope {
@@ -230,7 +241,7 @@ fn ignore_git_path(path: &Path) -> bool {
         || name.ends_with(".temp")
         || name.ends_with('~')
         || name.starts_with(".#")
-        || name.starts_with(".magritte-watch-probe-")
+        || name.starts_with(LIVENESS_PROBE_PREFIX)
 }
 
 fn normalize_event(
@@ -312,7 +323,45 @@ impl RepositoryMonitor {
     pub(crate) fn liveness_probe_path(&self) -> PathBuf {
         self.roots
             .git_dir
-            .join(format!(".magritte-watch-probe-{}", std::process::id()))
+            .join(format!("{LIVENESS_PROBE_PREFIX}{}", std::process::id()))
+    }
+}
+
+/// Delete probe files left behind by runs that ended mid-verification. The
+/// probe is removed by the task that wrote it, so quitting inside its two-second
+/// window (or crashing) strands one — and nothing else ever collected them.
+fn sweep_stale_liveness_probes(git_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(git_dir) else {
+        return;
+    };
+    // Collect before unlinking: mutating a directory under a live `read_dir`
+    // can skip entries on some filesystems.
+    let probes: Vec<_> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(LIVENESS_PROBE_PREFIX)
+        })
+        .collect();
+    for probe in probes {
+        // Age, not pid liveness: a recent probe may belong to another instance
+        // watching this git dir, and pids get recycled. An mtime we can't place
+        // against now — a server clock that leads ours, a backwards NTP step —
+        // counts as abandoned rather than immortal, since a probe dated in the
+        // future is certainly not one this run just wrote.
+        let stale = probe
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|written| {
+                written
+                    .elapsed()
+                    .map_or(true, |age| age > LIVENESS_PROBE_STALE_AFTER)
+            });
+        if stale {
+            let _ = std::fs::remove_file(probe.path());
+        }
     }
 }
 
@@ -742,6 +791,15 @@ impl crate::StatusView {
             }
             return;
         };
+
+        // Off the UI thread: a `read_dir` plus a few unlinks is unbounded on a
+        // stalled network mount, and this runs on every native retry. The
+        // watcher ignores the probe prefix, so these deletions can't come back
+        // as change events even though the sweep now races the install.
+        let sweep_dir = canonical_or(&git_dir);
+        cx.background_executor()
+            .spawn(async move { sweep_stale_liveness_probes(&sweep_dir) })
+            .detach();
 
         self.monitor_sequence = self.monitor_sequence.wrapping_add(1);
         let reconciliation_sequence = self.monitor_sequence;

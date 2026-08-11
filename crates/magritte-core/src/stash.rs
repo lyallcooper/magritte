@@ -228,55 +228,50 @@ impl Repo {
         }
         let index_commit = commit_tree(&index_tree, &[&head], &format!("index on {summary}"))?;
         // The remaining trees are built in a temporary index so the real one
-        // is never touched.
-        let tmp_index = self
-            .git_dir()?
-            .join(format!("magritte-snapshot-index-{}", std::process::id()));
-        let tmp = tmp_index.to_string_lossy().to_string();
-        let result = (|| -> Result<String> {
-            let with_tmp =
-                |args: &[&str]| self.run_with_env(args.iter().copied(), "GIT_INDEX_FILE", &tmp);
-            let untracked_commit = if untracked_files.is_empty() {
-                None
-            } else {
-                with_tmp(&["read-tree", "--empty"])?;
-                let mut args = vec!["update-index", "--add", "--"];
-                args.extend(untracked_files.iter().map(String::as_str));
+        // is never touched. The handle unlinks it on the way out of this
+        // function, however we leave.
+        let tmp_index = self.temp_file("snapshot-index")?;
+        let tmp = tmp_index.as_env();
+        let with_tmp =
+            |args: &[&str]| self.run_with_env(args.iter().copied(), "GIT_INDEX_FILE", &tmp);
+        let untracked_commit = if untracked_files.is_empty() {
+            None
+        } else {
+            with_tmp(&["read-tree", "--empty"])?;
+            let mut args = vec!["update-index", "--add", "--"];
+            args.extend(untracked_files.iter().map(String::as_str));
+            with_tmp(&args)?;
+            let tree = sha(with_tmp(&["write-tree"])?);
+            Some(commit_tree(
+                &tree,
+                &[],
+                &format!("untracked files on {summary}"),
+            )?)
+        };
+        let final_tree = if want_worktree {
+            with_tmp(&["read-tree", &index_commit])?;
+            let changed = with_tmp(&["diff", "-z", "--name-only", "--no-ext-diff", &head])?;
+            let changed: Vec<String> = String::from_utf8_lossy(&changed.stdout)
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !changed.is_empty() {
+                let mut args = vec!["update-index", "--add", "--remove", "--"];
+                args.extend(changed.iter().map(String::as_str));
                 with_tmp(&args)?;
-                let tree = sha(with_tmp(&["write-tree"])?);
-                Some(commit_tree(
-                    &tree,
-                    &[],
-                    &format!("untracked files on {summary}"),
-                )?)
-            };
-            let final_tree = if want_worktree {
-                with_tmp(&["read-tree", &index_commit])?;
-                let changed = with_tmp(&["diff", "-z", "--name-only", "--no-ext-diff", &head])?;
-                let changed: Vec<String> = String::from_utf8_lossy(&changed.stdout)
-                    .split('\0')
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-                    .collect();
-                if !changed.is_empty() {
-                    let mut args = vec!["update-index", "--add", "--remove", "--"];
-                    args.extend(changed.iter().map(String::as_str));
-                    with_tmp(&args)?;
-                }
-                sha(with_tmp(&["write-tree"])?)
-            } else {
-                index_tree.clone()
-            };
-            let mut parents = vec![head.as_str(), index_commit.as_str()];
-            if let Some(u) = untracked_commit.as_deref() {
-                parents.push(u);
             }
-            let snapshot = commit_tree(&final_tree, &parents, &message)?;
-            self.run(["stash", "store", "-m", &message, &snapshot])?;
-            Ok(format!("Saved snapshot: {message}"))
-        })();
-        let _ = std::fs::remove_file(&tmp_index);
-        result
+            sha(with_tmp(&["write-tree"])?)
+        } else {
+            index_tree.clone()
+        };
+        let mut parents = vec![head.as_str(), index_commit.as_str()];
+        if let Some(u) = untracked_commit.as_deref() {
+            parents.push(u);
+        }
+        let snapshot = commit_tree(&final_tree, &parents, &message)?;
+        self.run(["stash", "store", "-m", &message, &snapshot])?;
+        Ok(format!("Saved snapshot: {message}"))
     }
 
     /// The paths an `-u`/`-a` snapshot must record (NUL-separated `ls-files`);

@@ -31,6 +31,33 @@ pub(crate) fn unique_temp_suffix() -> String {
     )
 }
 
+/// How long a file in [`Repo::temp_dir`] must have gone untouched before
+/// [`Repo::sweep_stale_temp_files`] treats it as abandoned.
+///
+/// Deliberately generous: a throwaway index is live for the whole of a
+/// `stash`/`reset`, and deleting one out from under an operation still running —
+/// possibly another instance's, since two can share a git dir — would corrupt
+/// it, which is far worse than leaving litter an hour longer.
+const TEMP_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// A throwaway file that unlinks itself when dropped, so every `?` and early
+/// return cleans up without a scope guard at the call site. A kill still strands
+/// one, which is what [`Repo::sweep_stale_temp_files`] is for.
+pub(crate) struct TempPath(PathBuf);
+
+impl TempPath {
+    /// The path as a string, for handing to git through the environment.
+    pub(crate) fn as_env(&self) -> String {
+        self.0.to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// A handle to a git working tree.
 ///
 /// `Repo` is deliberately synchronous and cheap to clone: it holds the
@@ -276,6 +303,60 @@ impl Repo {
     /// git needs under our worker threads (see [`prepare_spawn`]).
     fn git(&self) -> Command {
         git_at(&self.workdir)
+    }
+
+    /// Where this repo's throwaway files live: `<git dir>/magritte/tmp`.
+    ///
+    /// Under `magritte/` deliberately — the frontend's repository watcher
+    /// ignores that subtree wholesale, so creating and deleting temporaries
+    /// can't register as a repository change and trigger a refresh of our own
+    /// making.
+    fn temp_dir(&self) -> Result<PathBuf> {
+        let dir = self.git_dir()?.join("magritte").join("tmp");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::Message(format!("{}: {e}", dir.display())))?;
+        Ok(dir)
+    }
+
+    /// A uniquely named throwaway file under [`temp_dir`](Self::temp_dir),
+    /// removed when the returned handle drops. `label` only has to make the name
+    /// legible if one is ever left behind.
+    pub(crate) fn temp_file(&self, label: &str) -> Result<TempPath> {
+        Ok(TempPath(
+            self.temp_dir()?
+                .join(format!("{label}-{}", unique_temp_suffix())),
+        ))
+    }
+
+    /// Delete throwaway files abandoned by a run that was killed mid-operation.
+    /// Ordinary failures unlink their own on the way out ([`TempPath`]); only a
+    /// `SIGKILL` or a crash strands one, and nothing else ever collected them.
+    /// Best-effort and silent: litter isn't worth a user-visible error.
+    pub fn sweep_stale_temp_files(&self) {
+        let Ok(dir) = self.temp_dir() else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        // Collect before unlinking: mutating a directory under a live `read_dir`
+        // can skip entries on some filesystems.
+        let files: Vec<_> = entries.flatten().collect();
+        for file in files {
+            // An mtime we can't place against now — a server clock ahead of
+            // ours, a backwards NTP step — counts as abandoned rather than
+            // immortal; a temp dated in the future is certainly not one an
+            // operation running right now just created.
+            let stale = file.metadata().is_ok_and(|meta| {
+                meta.is_file()
+                    && meta.modified().is_ok_and(|written| {
+                        written.elapsed().map_or(true, |age| age > TEMP_STALE_AFTER)
+                    })
+            });
+            if stale {
+                let _ = std::fs::remove_file(file.path());
+            }
+        }
     }
 
     /// Execute one internal git invocation — the shared front half of every
