@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "VCS-agnostic foundation shared by Magritte's backend engines: child-process execution with cancellation/timeout, the command-log ring buffer, output primitives, and the unified-diff parser."
+description = "VCS-agnostic foundation shared by Magritte's backend engines and the app itself: child-process execution with cancellation/timeout, the command-log ring buffer, output primitives, and the unified-diff parser."
 
 # Restore default signal handling in spawned children and kill whole process
 # trees on cancellation (a VCS child can spawn transports, hooks, helpers).

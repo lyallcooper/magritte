@@ -23,6 +23,7 @@ gpui-component = { workspace = true }
 gpui-component-assets = { workspace = true }
 magritte-core = { workspace = true }
 magritte-ui = { workspace = true }
+magritte-vcs = { workspace = true }
 # Native config-file watching (FSEvents on macOS) + the async channel that
 # bridges its callback thread to the GPUI executor — no polling.
 notify = "7"

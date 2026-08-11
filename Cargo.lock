@@ -3674,6 +3674,7 @@ dependencies = [
  "indexmap",
  "magritte-core",
  "magritte-ui",
+ "magritte-vcs",
  "notify",
  "objc",
  "regex",

@@ -1199,35 +1199,47 @@ fn latest_release_version_from_github_json(body: &str) -> std::result::Result<St
     Ok(version)
 }
 
+/// Outer bound on the release check, backstopping curl's own `--max-time` in
+/// case it wedges before the transfer it applies to.
+const UPDATE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 fn latest_release_version() -> std::result::Result<String, String> {
-    let output = std::process::Command::new("curl")
-        .args([
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--max-time",
-            "5",
-            "--header",
-            "Accept: application/vnd.github+json",
-            "--header",
-            "X-GitHub-Api-Version: 2022-11-28",
-            "--user-agent",
-            concat!("magritte/", env!("CARGO_PKG_VERSION")),
-            GITHUB_LATEST_RELEASE_API,
-        ])
-        .output()
-        .map_err(|e| format!("failed to run curl: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args([
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "5",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "X-GitHub-Api-Version: 2022-11-28",
+        "--user-agent",
+        concat!("magritte/", env!("CARGO_PKG_VERSION")),
+        GITHUB_LATEST_RELEASE_API,
+    ]);
+    // The same spawn hygiene every other child gets: this runs on a GPUI worker
+    // whose blocked signal mask a child would otherwise inherit, and leading its
+    // own process group means the whole tree can be killed rather than just
+    // curl. Collection goes through the shared runner for the timeout.
+    magritte_vcs::prepare_spawn(&mut cmd);
+    let (stdout, stderr, status) = magritte_vcs::ProcessControl {
+        cancel: None,
+        timeout: Some(UPDATE_CHECK_TIMEOUT),
+    }
+    .collect_output_with(cmd, None)
+    .map_err(|e| format!("failed to run curl: {e}"))?;
+    if !status.success() {
+        let stderr = stderr.trim().to_string();
         return Err(if stderr.is_empty() {
-            format!("GitHub request exited with {}", output.status)
+            format!("GitHub request exited with {status}")
         } else {
             stderr
         });
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    latest_release_version_from_github_json(&stdout)
+    latest_release_version_from_github_json(&String::from_utf8_lossy(&stdout))
 }
 
 fn version_status_message(current: &str, latest: &str) -> String {
