@@ -788,11 +788,7 @@ impl StatusView {
             if let Some((program, args)) =
                 editor_launch::editor_goto(editor, &path.to_string_lossy(), line)
             {
-                if std::process::Command::new(program)
-                    .args(args)
-                    .spawn()
-                    .is_ok()
-                {
+                if editor_launch::spawn_reaped(std::process::Command::new(program).args(args)) {
                     return;
                 }
             }
@@ -801,12 +797,7 @@ impl StatusView {
         // file. This is how CLI launchers are written (`code -w`, `zed`,
         // `subl -n`, `/abs/path/to/bin`).
         let (program, args) = editor_launch::split_command(editor);
-        if std::process::Command::new(program)
-            .args(args)
-            .arg(path)
-            .spawn()
-            .is_ok()
-        {
+        if editor_launch::spawn_reaped(std::process::Command::new(program).args(args).arg(path)) {
             return;
         }
         // The command wasn't on PATH. On macOS the user likely typed an
@@ -814,13 +805,12 @@ impl StatusView {
         // command — open the file with that app via `open -a`. (`open` always
         // spawns; a bad app name just surfaces its own error.)
         #[cfg(target_os = "macos")]
-        if std::process::Command::new("open")
-            .arg("-a")
-            .arg(editor)
-            .arg(path)
-            .spawn()
-            .is_ok()
-        {
+        if editor_launch::spawn_reaped(
+            std::process::Command::new("open")
+                .arg("-a")
+                .arg(editor)
+                .arg(path),
+        ) {
             return;
         }
         // Nothing launched — fall back to the OS default handler.

@@ -126,7 +126,95 @@ fn find_app_bundle(name: &str) -> Option<PathBuf> {
 /// Open `path` with the OS default application for its type.
 pub(crate) fn open_with_os(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(path).spawn();
+    let program = "open";
     #[cfg(not(target_os = "macos"))]
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    let program = "xdg-open";
+    spawn_reaped(std::process::Command::new(program).arg(path));
+}
+
+/// Spawn a fire-and-forget child and reap it on a helper thread, reporting only
+/// whether the spawn itself got off the ground.
+///
+/// The reaping is the point: `Child` deliberately doesn't wait on drop, so
+/// abandoning the handle leaves a zombie for the lifetime of the window — and
+/// these run once per file opened in an editor. A blocking launcher (`code -w`)
+/// parks the reaper until the user closes the file, which is why this gets its
+/// own thread rather than an executor slot: on the background pool it would hold
+/// a worker hostage from status reads, diffs, and transfers. A small stack keeps
+/// a pile of parked reapers cheap.
+///
+/// Callers run on the UI thread, so a thread that can't be created falls back to
+/// dropping the handle (the old zombie) rather than panicking the app.
+///
+/// Note for future callers: `Child::wait` closes stdin first, so don't hand this
+/// a command whose stdin is piped and still needed.
+pub(crate) fn spawn_reaped(cmd: &mut std::process::Command) -> bool {
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let reaper = std::thread::Builder::new()
+                .name("editor-reaper".into())
+                .stack_size(64 * 1024)
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            let _ = reaper;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod spawn_tests {
+    use std::time::{Duration, Instant};
+
+    /// An abandoned `Child` would leave the exited process as a zombie for the
+    /// lifetime of the window — one per file opened in an editor.
+    #[test]
+    fn spawn_reaped_leaves_no_zombie() {
+        let dir = std::env::temp_dir().join(format!("magritte-reap-test-{}", std::process::id()));
+        // Clear first: a stranded `pid` file from an earlier run that died on
+        // this pid would be read as "already reaped" and pass without ever
+        // observing this run's child.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        assert!(super::spawn_reaped(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("echo $$ > {}", pidfile.display()))
+        ));
+
+        let start = Instant::now();
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "child never ran");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        // A reaped pid vanishes from the process table; an un-reaped one lingers
+        // as `Z` indefinitely, so waiting it out distinguishes the two.
+        let start = Instant::now();
+        loop {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stat.is_empty() {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "pid {pid} still in the process table as {stat:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
