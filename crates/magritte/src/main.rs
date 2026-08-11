@@ -1434,19 +1434,28 @@ fn main() {
             KeyBinding::new("cmd-w", CloseWindow, Some(STATUS_CONTEXT)),
             KeyBinding::new("cmd-,", OpenSettings, Some(STATUS_CONTEXT)),
         ]);
+        let windows: RepoWindows = Rc::new(RefCell::new(HashMap::new()));
+        // Expose the registry as a global so views can open-or-focus repo
+        // windows (worktree "visit") without threading it through constructors.
+        cx.set_global(GlobalRepoWindows(windows.clone()));
+
         // Closing the last window (red traffic light included) quits the app.
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+        let windows_on_close = windows.clone();
+        cx.on_window_closed(move |cx, _| {
+            // Retire the closed window's entry. Open-or-focus already recovers
+            // from a dead handle, but only for the one repo you reopen — every
+            // other closed window's handle would sit in the registry for the
+            // rest of the session.
+            let live = cx.windows();
+            windows_on_close
+                .borrow_mut()
+                .retain(|_, handle| live.contains(handle));
+            if live.is_empty() {
                 mergetool_exit_if_active(cx);
                 cx.quit();
             }
         })
         .detach();
-
-        let windows: RepoWindows = Rc::new(RefCell::new(HashMap::new()));
-        // Expose the registry as a global so views can open-or-focus repo
-        // windows (worktree "visit") without threading it through constructors.
-        cx.set_global(GlobalRepoWindows(windows.clone()));
         // The native menu bar / Dock menu (after the window registry global,
         // which File > Open Repository… resolves through).
         menus::install(cx);
