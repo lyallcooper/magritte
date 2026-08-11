@@ -197,6 +197,142 @@ fn cancel_kills_the_whole_process_tree() {
     assert_dies(grandchild, "grandchild");
 }
 
+/// A process that outlives the direct child while holding the stdout pipe open
+/// (an `ssh` `ControlPersist` master, a hook that backgrounded itself) must not
+/// extend the invocation: the child's own output is complete once it exits, so
+/// collection is bounded rather than blocked on the holder.
+///
+/// Run against both guard shapes — a cancel flag alone and a timeout alone —
+/// since each is a separate branch into the guarded path.
+#[test]
+fn a_lingering_pipe_holder_does_not_outlast_the_child() {
+    for (shape, ctl) in [
+        ("timeout", control(None, Some(Duration::from_secs(30)))),
+        (
+            "cancel flag",
+            control(Some(Arc::new(AtomicBool::new(false))), None),
+        ),
+    ] {
+        let start = Instant::now();
+        let (stdout, _, status) = ctl
+            .collect_output_with(sh("sleep 30 & echo done; exit 0"), None)
+            .unwrap();
+        assert!(status.success(), "{shape}");
+        // The child's output still arrives in full — the bound only cuts off
+        // the holder, which never had anything we wanted to say.
+        assert_eq!(stdout, b"done\n", "{shape}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{shape}: collection waited on the pipe holder for {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// The same holder must not defeat the timeout either — the deadline used to be
+/// checked only while the child was alive, so an invocation could return long
+/// after it expired.
+#[test]
+fn timeout_is_not_extended_by_a_lingering_pipe_holder() {
+    let start = Instant::now();
+    let res = control(None, Some(Duration::from_millis(200)))
+        .collect_output_with(sh("sleep 30 & echo done; exit 0"), None);
+    assert!(res.is_ok(), "got {res:?}");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        start.elapsed()
+    );
+}
+
+/// Output larger than any pipe buffer still arrives whole *and* still respects
+/// the bound: the readers drain concurrently, so once the child exits the grace
+/// only has the pipe's tail to mop up, not the whole stream.
+#[test]
+fn bounded_drain_still_collects_large_output() {
+    let start = Instant::now();
+    let (stdout, _, status) = control(None, Some(Duration::from_secs(30)))
+        .collect_output_with(
+            sh("i=0; while [ $i -lt 60000 ]; do echo abcdefgh; i=$((i+1)); done; sleep 10 &"),
+            None,
+        )
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(stdout.len(), 60_000 * 9, "large output was truncated");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "collection waited on the pipe holder for {:?}",
+        start.elapsed()
+    );
+}
+
+/// A child that exits leaving something behind which holds stdin's *read* end
+/// open without reading it.
+///
+/// The `<&0` is essential and easy to get wrong: POSIX gives an asynchronous
+/// list's stdin `/dev/null` in a non-interactive shell *before* explicit
+/// redirections, so a plain `sleep 30 &` inherits nothing and holds no pipe.
+/// Redirecting stdout/stderr away keeps this to stdin, so the output drain
+/// isn't what's under test.
+const STDIN_HOLDER: &str = "sleep 30 <&0 >/dev/null 2>&1 & exit 0";
+
+/// A process holding stdin's read end past the child's exit parks the feeder
+/// thread on a full pipe. The child has exited, so it read everything it meant
+/// to — collection must not wait for the rest.
+#[test]
+fn a_lingering_stdin_holder_does_not_outlast_the_child() {
+    let input = vec![b'x'; 4 * 1024 * 1024]; // far beyond any pipe buffer
+    for (shape, ctl) in [
+        ("no guards", control(None, None)),
+        ("timeout", control(None, Some(Duration::from_secs(30)))),
+    ] {
+        let start = Instant::now();
+        let (_, _, status) = ctl
+            .collect_output_with(sh(STDIN_HOLDER), Some(&input))
+            .unwrap();
+        assert!(status.success(), "{shape}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{shape}: waited on the stdin holder for {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// An abandoned feeder must actually *exit*, not merely stop being waited on —
+/// otherwise every affected invocation strands a thread, the stdin pipe's write
+/// end, and the whole input buffer for the life of the process.
+///
+/// The open descriptor is what's counted: it's the resource with a cheap, direct
+/// measure, and it can only be released by the feeder thread dropping the pipe,
+/// so it stands in for the thread too.
+#[test]
+fn abandoned_stdin_feeders_do_not_accumulate() {
+    // `/dev/fd` lists the calling process's descriptors on macOS, `/proc/self/fd`
+    // on Linux.
+    let open_fds = || {
+        let dir = if std::path::Path::new("/proc/self/fd").exists() {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        std::fs::read_dir(dir).expect("fd listing").count()
+    };
+    let input = vec![b'x'; 4 * 1024 * 1024];
+    let before = open_fds();
+    for _ in 0..24 {
+        let _ = control(None, Some(Duration::from_secs(30)))
+            .collect_output_with(sh(STDIN_HOLDER), Some(&input));
+    }
+    // A feeder notices the stop flag within one poll tick; allow several.
+    thread::sleep(Duration::from_millis(1500));
+    let after = open_fds();
+    assert!(
+        after < before + 12,
+        "open descriptors grew {before} -> {after} across 24 abandoned feeders"
+    );
+}
+
 #[test]
 fn cancel_falls_back_to_sigkill_when_sigterm_is_ignored() {
     // A child that traps SIGTERM (a wedged transport) must still die — and the

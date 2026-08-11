@@ -165,20 +165,24 @@ impl Repo {
     /// Returns [`Error::NotARepository`] if `path` is not tracked by git.
     pub fn discover(path: impl AsRef<Path>) -> Result<Repo> {
         let path = path.as_ref();
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .map_err(|source| Error::Spawn { source })?;
+        // Through the same builder and runner as every other invocation: this
+        // predates both and so used to spawn a child that kept the calling
+        // thread's blocked signal mask, led no process group, and collected its
+        // output unbounded. There is no `Repo` yet to carry a cancel flag or
+        // timeout, so this is still a blocking wait — but a bounded-drain one.
+        let mut cmd = git_at(path);
+        cmd.args(["rev-parse", "--show-toplevel"]);
+        let (stdout, _stderr, status) = ProcessControl::default()
+            .collect_output_with(cmd, None)
+            .map_err(Error::from)?;
 
-        if !output.status.success() {
+        if !status.success() {
             return Err(Error::NotARepository {
                 path: path.to_path_buf(),
             });
         }
 
-        let top = String::from_utf8(output.stdout)
+        let top = String::from_utf8(stdout)
             .map_err(|_| Error::Encoding {
                 context: "rev-parse --show-toplevel",
             })?
