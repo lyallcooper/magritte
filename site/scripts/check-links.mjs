@@ -1,6 +1,6 @@
 // Validate every internal link in the built site: page routes, asset files,
 // and #fragment anchors (same-page and cross-page), checked against the ids
-// actually present in each rendered page. Runs as part of `npm run build`, so
+// actually present in each rendered page. Runs as part of `pnpm build`, so
 // a renamed heading or moved asset fails the deploy instead of shipping a
 // dead link. External URLs are not checked.
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";

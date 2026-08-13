@@ -188,4 +188,4 @@ EOF
 )
 
 echo "Done. Eyeball the captures (composition, no hover wash, nothing clipped),"
-echo "then rebuild the site: cd site && npm run build"
+echo "then rebuild the site: cd site && pnpm build"

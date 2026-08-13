@@ -2,6 +2,10 @@
   "name": "magritte-site",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.11.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "astro dev",
     "build": "astro build && node scripts/check-links.mjs",
@@ -13,5 +17,8 @@
     "astro": "^7.1.1",
     "justif": "^0.7.2",
     "unist-util-visit": "^5.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp"]
   }
 }

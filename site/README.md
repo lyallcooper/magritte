@@ -6,21 +6,37 @@ between the markdown files are rewritten to site routes at build time
 (`src/lib/rehype-doc-links.mjs`), so the files stay browsable on GitHub.
 
 ```sh
-npm install
-npm run dev        # local dev server with live reload (also on docs/ edits)
-npm run build      # static output in dist/ + internal link check
+pnpm install
+pnpm dev           # local dev server with live reload (also on docs/ edits)
+pnpm build         # static output in dist/ + internal link check
 ```
 
-`npm run build` finishes by validating every internal link and anchor in the
+`pnpm build` finishes by validating every internal link and anchor in the
 built output (`scripts/check-links.mjs`), so a renamed heading or moved asset
 fails the build -- and the Cloudflare deploy -- instead of shipping.
+
+## Toolchain
+
+node and pnpm are pinned in the repository's `.mise.toml`, alongside rust.
+The pins are chosen to match what Cloudflare builds with, so a green local
+build means a green deploy:
+
+- node: `.node-version` here is what the Pages build reads; keep it in step
+  with the `.mise.toml` pin. Astro 7 needs >=22.12.
+- pnpm: pinned to the Pages v3 build image's built-in version. That image
+  does not read `packageManager`, so bumping pnpm past it also means setting
+  `PNPM_VERSION` in the Pages project's environment variables.
+
+`esbuild` and `sharp` are listed under `pnpm.onlyBuiltDependencies` in
+`package.json` -- pnpm blocks install scripts by default, and those two are
+the only dependencies allowed to run theirs.
 
 ## Deploying (Cloudflare Pages)
 
 Connect the repository and set:
 
 - Root directory: `site`
-- Build command: `npm run build`
+- Build command: `pnpm build`
 - Build output directory: `dist`
 - Build watch paths: `site/*`, `docs/*` -- doc edits must redeploy the site
 

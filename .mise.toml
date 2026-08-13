@@ -2,3 +2,10 @@
 # Pinned for reproducibility (the app depends on specific gpui / gpui-component
 # git revisions); bump deliberately rather than tracking "latest".
 rust = { version = "1.96.0", components = "rustfmt,clippy" }
+
+# The site/ toolchain. node matches site/.node-version (read by the Cloudflare
+# Pages build); pnpm matches the Pages v3 build image default, so local and
+# deployed builds resolve identically. Bumping pnpm past the image default
+# means setting PNPM_VERSION in the Pages project settings too.
+node = "24.19.0"
+pnpm = "10.11.1"
