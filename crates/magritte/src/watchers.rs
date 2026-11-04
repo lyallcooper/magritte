@@ -6,6 +6,35 @@ use gpui::{Context, Window};
 
 use crate::*;
 
+fn config_link_target(path: &Path) -> Option<PathBuf> {
+    let mut link = std::fs::read_link(path).ok()?;
+    if let Ok(target) = path.canonicalize() {
+        return Some(target);
+    }
+    // Follow dangling chains too so creation of the final file can be watched.
+    let mut parent = path.parent()?.to_path_buf();
+    for _ in 0..40 {
+        let target = parent.join(link);
+        match std::fs::read_link(&target) {
+            Ok(next) => {
+                parent = target.parent()?.to_path_buf();
+                link = next;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Some(
+                    target
+                        .parent()?
+                        .canonicalize()
+                        .ok()?
+                        .join(target.file_name()?),
+                );
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 impl StatusView {
     /// Re-apply config edits and system light/dark changes live, event-driven
     /// (no polling): a native watch on the config file and GPUI's appearance
@@ -89,145 +118,124 @@ impl StatusView {
     /// since a dir can't be watched before it exists; installing the new
     /// watcher into `_config_watcher` drops the old one.
     pub(crate) fn install_config_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Config file: watch its directory (so atomic save-via-rename, which
-        // swaps the inode, still fires), forward matching events over a channel,
-        // and re-apply on the UI thread. Watching the dir lets us pick up the
-        // sibling transient-arguments.toml too, while ignoring other siblings (e.g.
-        // command-usage.toml) by matching the exact paths.
         let Some(config_path) = config::path() else {
             return;
         };
-        let Some(dir) = config_path.parent().map(|p| p.to_path_buf()) else {
+        let Some(dir) = config_path.parent() else {
             return;
         };
-        // Canonicalize the dir so the watch target matches the resolved paths the
-        // OS reports (e.g. macOS reports `/private/tmp/…` for a `/tmp/…` watch).
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        let watch_target = match config_path.file_name() {
-            Some(name) => dir.join(name),
-            None => return,
-        };
-        // Which watched file changed — kept distinct so a transient-arguments edit
-        // doesn't run the config-reload path (theme rebuild, "Settings reloaded"
-        // toast). All reload live, like the config always has.
-        enum Changed {
-            Config,
-            TransientArguments,
-            RepoTransientArguments,
-        }
-        let tv_target =
-            config::transient_arguments_path().and_then(|p| p.file_name().map(|n| dir.join(n)));
-        // The repo scope's settings dir, if it exists yet (canonicalize fails
-        // otherwise) — so we can watch its config.toml / transient-arguments.toml.
-        // Created lazily on the first repo-scoped save, so a brand-new repo picks
-        // it up next launch; an in-app save updates memory directly anyway.
+        // Match the resolved parent paths reported by the OS while keeping
+        // each file's own directory entry visible to the watcher.
+        let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
         let repo_scope = self
             .repo_scope_dir
             .as_ref()
-            .and_then(|d| std::fs::canonicalize(d).ok());
-        let repo_tv_target = repo_scope
-            .as_ref()
-            .map(|d| config::repo_transient_arguments_path(d));
-        // For re-resolving the merged config: the plain repo config path (its
-        // existence is checked at load time, so it works even if created later).
-        let repo_config_load = self.repo_scope_dir.as_ref().map(|d| d.join("config.toml"));
-        let cb_repo_tv = repo_tv_target.clone();
-        let cb_repo_config = repo_scope.as_ref().map(|d| d.join("config.toml"));
-        let (tx, rx) = async_channel::unbounded::<Changed>();
+            .and_then(|dir| dir.canonicalize().ok());
+        let entries = [
+            config_path.file_name().map(|name| dir.join(name)),
+            repo_scope.as_ref().map(|dir| dir.join("config.toml")),
+            Some(dir.join(config::TRANSIENT_ARGUMENTS_FILE)),
+            repo_scope
+                .as_deref()
+                .map(config::repo_transient_arguments_path),
+        ];
+        let link_targets = entries
+            .each_ref()
+            .map(|path| path.as_deref().and_then(config_link_target));
+        let cb_entries = entries.clone();
+        let cb_link_targets = link_targets.clone();
+        let (tx, rx) = async_channel::unbounded();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
-                // Either config file (global or repo scope) re-resolves the merged
-                // config — one path for both.
-                if event.paths.contains(&watch_target)
-                    || cb_repo_config
-                        .as_ref()
-                        .is_some_and(|t| event.paths.contains(t))
-                {
-                    let _ = tx.send_blocking(Changed::Config);
-                } else if tv_target.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::TransientArguments);
-                } else if cb_repo_tv.as_ref().is_some_and(|t| event.paths.contains(t)) {
-                    let _ = tx.send_blocking(Changed::RepoTransientArguments);
+                let matches = |path: &Option<PathBuf>| {
+                    path.as_ref().is_some_and(|path| event.paths.contains(path))
+                };
+                let entry_changed = cb_entries.iter().any(matches);
+                let [global, repo, global_args, repo_args] = std::array::from_fn(|i| {
+                    matches(&cb_entries[i]) || matches(&cb_link_targets[i])
+                });
+                if global || repo || global_args || repo_args {
+                    let _ =
+                        tx.send_blocking((entry_changed, global || repo, global_args, repo_args));
                 }
             }
         });
         let Ok(mut watcher) = watcher else { return };
-        // A missing config dir (no config yet) just means nothing to watch.
-        if notify::Watcher::watch(&mut watcher, &dir, notify::RecursiveMode::NonRecursive).is_err()
+        // Watch both the link's directory and the target's directory so
+        // replacing either entry by rename still triggers a reload.
+        let mut watched_dirs = std::collections::HashSet::new();
+        for directory in std::iter::once(dir.as_path())
+            .chain(repo_scope.as_deref())
+            .chain(link_targets.iter().flatten().filter_map(|p| p.parent()))
         {
-            return;
-        }
-        // Also watch the repo's settings dir (a different directory) when present.
-        if let Some(repo_scope) = &repo_scope {
-            let _ = notify::Watcher::watch(
-                &mut watcher,
-                repo_scope,
-                notify::RecursiveMode::NonRecursive,
-            );
+            if watched_dirs.insert(directory) {
+                let _ = notify::Watcher::watch(
+                    &mut watcher,
+                    directory,
+                    notify::RecursiveMode::NonRecursive,
+                );
+            }
         }
         self._config_watcher = Some(watcher);
 
-        // spawn_in so the reload has a Window: applying a config can rebuild the
-        // open settings form, whose Select/Input entities need one.
+        let repo_config = self
+            .repo_scope_dir
+            .as_ref()
+            .map(|dir| dir.join("config.toml"));
+        let repo_args = self
+            .repo_scope_dir
+            .as_deref()
+            .map(config::repo_transient_arguments_path);
+        // Applying config can rebuild the open settings form, which needs a window.
         cx.spawn_in(window, async move |this, cx| {
-            while let Ok(changed) = rx.recv().await {
-                let updated = match changed {
-                    Changed::Config => {
-                        let (cfg, warning) = config::load_merged(repo_config_load.as_deref());
-                        this.update_in(cx, |view, window, cx| {
-                            if let Some(warning) = warning {
-                                // The file is now invalid/unreadable. Keep the
-                                // live config (don't reset to defaults on a
-                                // transient bad edit) and surface why it was
-                                // ignored.
-                                view.set_status(warning, false, cx);
-                            } else if cfg != view.config {
-                                // An effective change needs the full live-config
-                                // application path and its runtime side effects.
-                                view.apply_config(cfg, window, cx);
-                            } else {
-                                // The effective value can stay equal while a
-                                // raw scope changes (repo On → Inherit when
-                                // Global is On). Settings exposes both layers,
-                                // so keep them synchronized independently.
-                                view.sync_unchanged_config_scopes(cx);
-                            }
-                        })
+            while let Ok((entry_changed, config_changed, global_args_changed, repo_args_changed)) =
+                rx.recv().await
+            {
+                let updated = this.update_in(cx, |view, window, cx| {
+                    let rewatch = entry_changed
+                        && entries
+                            .each_ref()
+                            .map(|path| path.as_deref().and_then(config_link_target))
+                            != link_targets;
+                    if rewatch {
+                        view.install_config_watcher(window, cx);
                     }
-                    Changed::TransientArguments => {
+                    if config_changed || rewatch {
+                        let (cfg, warning) = config::load_merged(repo_config.as_deref());
+                        if let Some(warning) = warning {
+                            // Keep the live config when an edit makes the file unreadable.
+                            view.set_status(warning, false, cx);
+                        } else if cfg != view.config {
+                            view.apply_config(cfg, window, cx);
+                        } else {
+                            view.sync_unchanged_config_scopes(cx);
+                        }
+                    }
+                    let mut args_changed = false;
+                    if global_args_changed || rewatch {
                         let values = config::load_transient_arguments();
-                        this.update_in(cx, |view, _window, cx| {
-                            // Skip our own Ctrl-s save (we update in memory first,
-                            // so the reload reads back identical values).
-                            if values != view.transient_arguments {
-                                view.transient_arguments = values;
-                                view.set_status(
-                                    "Argument defaults reloaded from disk".to_string(),
-                                    true,
-                                    cx,
-                                );
-                            }
-                        })
+                        args_changed |= values != view.transient_arguments;
+                        view.transient_arguments = values;
                     }
-                    Changed::RepoTransientArguments => {
-                        let values = repo_tv_target
-                            .as_ref()
-                            .map(|p| config::load_transient_arguments_at(p))
+                    if repo_args_changed || rewatch {
+                        let values = repo_args
+                            .as_deref()
+                            .map(config::load_transient_arguments_at)
                             .unwrap_or_default();
-                        this.update_in(cx, |view, _window, cx| {
-                            if values != view.repo_transient_arguments {
-                                view.repo_transient_arguments = values;
-                                view.set_status(
-                                    "Argument defaults reloaded from disk".to_string(),
-                                    true,
-                                    cx,
-                                );
-                            }
-                        })
+                        args_changed |= values != view.repo_transient_arguments;
+                        view.repo_transient_arguments = values;
                     }
-                };
-                if updated.is_err() {
-                    break; // window closed
+                    if args_changed {
+                        view.set_status(
+                            "Argument defaults reloaded from disk".to_string(),
+                            true,
+                            cx,
+                        );
+                    }
+                    rewatch
+                });
+                if !matches!(updated, Ok(false)) {
+                    break;
                 }
             }
         })

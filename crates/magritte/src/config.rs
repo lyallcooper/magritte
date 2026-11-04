@@ -849,9 +849,12 @@ pub fn load_transient_arguments_at(path: &Path) -> TransientArguments {
 }
 
 /// Persist the saved transient argument sets to a specific file (atomic temp-file
-/// + rename), creating its directory as needed. Best-effort.
-pub fn save_transient_arguments_at(path: &Path, values: &TransientArguments) {
-    let _ = atomic_write_toml(path, values);
+/// + rename), creating its directory as needed.
+pub fn save_transient_arguments_at(
+    path: &Path,
+    values: &TransientArguments,
+) -> std::io::Result<()> {
+    atomic_write_toml(&config_save_path(path)?, values)
 }
 
 /// Load the global saved transient argument sets, or empty if missing.
@@ -916,13 +919,32 @@ pub fn save_bool_override_at(
         .map_err(|e| format!("Could not save repo config ({}): {e}", path.display()))
 }
 
+// Resolve the final symlink before reading and replacing the file so the
+// temporary file is created beside the target and the link stays in place.
+fn config_save_path(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_symlink() => path.canonicalize(),
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(err) => Err(err),
+    }
+}
+
+fn read_config_for_edit(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        result => result,
+    }
+}
+
 fn save_bool_override_at_io(
     path: &Path,
     key: &str,
     alias: Option<&str>,
     value: Option<bool>,
 ) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let path = config_save_path(path)?;
+    let text = read_config_for_edit(&path)?;
     let mut doc = if text.trim().is_empty() {
         toml_edit::DocumentMut::new()
     } else {
@@ -947,11 +969,12 @@ fn save_bool_override_at_io(
             }
         }
     }
-    atomic_write_text(path, &doc.to_string())
+    atomic_write_text(&path, &doc.to_string())
 }
 
 fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let path = config_save_path(path)?;
+    let text = read_config_for_edit(&path)?;
     let mut doc = if text.trim().is_empty() {
         toml_edit::DocumentMut::new()
     } else {
@@ -1049,7 +1072,7 @@ fn save_settings_at(path: &Path, config: &Config) -> std::io::Result<()> {
         }
     }
 
-    atomic_write_text(path, &doc.to_string())
+    atomic_write_text(&path, &doc.to_string())
 }
 
 fn set_setting(
@@ -1074,6 +1097,57 @@ fn set_setting(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_saves_preserve_config_symlinks() {
+        let dir = std::env::temp_dir().join(format!("magritte-config-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("dotfiles.toml");
+        let path = dir.join("config.toml");
+        let relative_target = Path::new("dotfiles.toml");
+        std::os::unix::fs::symlink(relative_target, &path).unwrap();
+
+        let cfg = Config {
+            appearance: "dark".into(),
+            ..Config::default()
+        };
+        assert!(save_settings_at(&path, &cfg).is_err());
+        assert_eq!(std::fs::read_link(&path).unwrap(), relative_target);
+        std::fs::write(&target, [0xff]).unwrap();
+        assert!(save_settings_at(&path, &cfg).is_err());
+        assert!(save_bool_override_at_io(&path, "refresh_on_focus", None, Some(false)).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), [0xff]);
+
+        std::fs::write(&target, "# dotfiles config\n").unwrap();
+
+        save_settings_at(&path, &cfg).unwrap();
+        assert_eq!(std::fs::read_link(&path).unwrap(), relative_target);
+        let saved = std::fs::read_to_string(&target).unwrap();
+        assert!(saved.contains("# dotfiles config"));
+        assert!(saved.contains("appearance = \"dark\""));
+
+        save_bool_override_at_io(&path, "refresh_on_focus", None, Some(false)).unwrap();
+        assert_eq!(std::fs::read_link(&path).unwrap(), relative_target);
+        assert_eq!(
+            load_bool_override_at(&target, "refresh_on_focus", None),
+            Some(false)
+        );
+
+        let args_path = dir.join(TRANSIENT_ARGUMENTS_FILE);
+        let args_target = dir.join("defaults.toml");
+        std::os::unix::fs::symlink("defaults.toml", &args_path).unwrap();
+        let args = TransientArguments::from([("commit".into(), vec!["--all".into()])]);
+        assert!(save_transient_arguments_at(&args_path, &args).is_err());
+        std::fs::write(&args_target, "").unwrap();
+        save_transient_arguments_at(&args_path, &args).unwrap();
+        assert_eq!(
+            std::fs::read_link(&args_path).unwrap(),
+            Path::new("defaults.toml")
+        );
+        assert_eq!(load_transient_arguments_at(&args_target), args);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn bool_override_round_trips_without_touching_unrelated_repo_config() {
         let path = std::env::temp_dir().join("magritte-bool-override-save-test.toml");

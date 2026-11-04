@@ -1058,7 +1058,12 @@ impl StatusView {
     /// Persist the open transient's argument overrides to a scope (magit's
     /// `transient-save`), updating the in-memory set and the scope's file, and
     /// re-baselining so the save hint hides. Repo scope is a no-op with no repo.
-    pub(crate) fn save_transient_defaults(&mut self, repo_scope: bool, cx: &mut Context<Self>) {
+    fn save_transient_defaults(
+        &mut self,
+        repo_scope: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let to_save = match &self.popup {
             Some(Popup::Transient(s)) if !s.id.is_empty() => {
                 Some((s.id.clone(), s.saved_overrides()))
@@ -1079,11 +1084,12 @@ impl StatusView {
             };
             path
         };
-        let values = if repo_scope {
+        let current = if repo_scope {
             &mut self.repo_transient_arguments
         } else {
             &mut self.transient_arguments
         };
+        let mut values = current.clone();
         // An empty set carries no overrides — drop the entry rather than writing
         // `id = []`, which used to read as "force everything off".
         if switches.is_empty() {
@@ -1091,7 +1097,22 @@ impl StatusView {
         } else {
             values.insert(id, switches);
         }
-        config::save_transient_arguments_at(&path, values);
+        let needs_watch = path.parent().is_some_and(|dir| !dir.exists());
+        if let Err(err) = config::save_transient_arguments_at(&path, &values) {
+            self.set_status(
+                format!(
+                    "Could not save argument defaults ({}): {err}",
+                    path.display()
+                ),
+                false,
+                cx,
+            );
+            return;
+        }
+        *current = values;
+        if needs_watch {
+            self.install_config_watcher(window, cx);
+        }
         // The saved set is the new baseline, so the hint hides again.
         if let Some(Popup::Transient(s)) = self.popup.as_mut() {
             s.baseline = s.active.clone();
@@ -1240,8 +1261,10 @@ impl StatusView {
                 s.pending_save = false;
             }
             match key {
-                "g" => self.save_transient_defaults(false, cx),
-                "l" if self.repo_scope_dir.is_some() => self.save_transient_defaults(true, cx),
+                "g" => self.save_transient_defaults(false, window, cx),
+                "l" if self.repo_scope_dir.is_some() => {
+                    self.save_transient_defaults(true, window, cx)
+                }
                 _ => {}
             }
             cx.notify();
