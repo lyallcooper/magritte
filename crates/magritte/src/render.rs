@@ -11,7 +11,7 @@ use gpui::{
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, StyledText,
     TextLayout, Window,
 };
-use gpui_component::menu::{ContextMenu, ContextMenuExt};
+use gpui_component::menu::{ContextMenu, ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::tooltip::Tooltip;
@@ -978,7 +978,7 @@ impl StatusView {
                     v.selection.char_click = false;
                     true
                 },
-                move |v, ev, window, cx| {
+                move |v, ev, _window, cx| {
                     // A drag already selected text; don't also click (which
                     // would move the cursor / fold).
                     if click_was_drag(ev) {
@@ -993,17 +993,7 @@ impl StatusView {
                         return;
                     }
                     v.char_sel = None;
-                    // A lone click positions the cursor / toggles a fold; only
-                    // a real double-click fires Enter (open) — so clicking a
-                    // selected foldable row still expands/collapses it.
-                    if ev.click_count() >= 2 {
-                        v.selected = ix;
-                        if let Some(id) = v.resolve_binding("enter") {
-                            v.invoke_command(&id, window, cx);
-                        }
-                    } else {
-                        v.click_row(ix, cx);
-                    }
+                    v.click_row(ix, cx);
                 },
             );
             // Right-click selects the word (sha / ref / path token) under the
@@ -1052,20 +1042,34 @@ impl StatusView {
                     });
                 },
             );
+            // Open the clicked row even when right-click kept a visual selection.
+            let view = view.downgrade();
             match &row.target {
                 Some(target) => {
                     let (can_stage, can_unstage, can_discard) = target_ops(target);
                     let conflicted = self.is_conflicted(target_path(target));
                     let (ours_label, theirs_label) = self.conflict_side_labels();
-                    el.context_menu(move |mut menu, _window, _cx| {
+                    let target = target.clone();
+                    el.context_menu(move |menu, _window, _cx| {
+                        let view = view.clone();
+                        let target = target.clone();
+                        let mut menu =
+                            menu.item(PopupMenuItem::new("Open file").on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |v, cx| v.open_file_target(&target, cx));
+                            }));
+                        if conflicted || can_stage || can_unstage || can_discard {
+                            menu = menu.separator();
+                        }
                         // A conflicted file resolves per-conflict in the
                         // resolve view, or by taking a whole side.
                         if conflicted {
                             menu = menu
                                 .menu("Resolve…", Box::new(CtxResolve))
                                 .menu(ours_label, Box::new(CtxTakeOurs))
-                                .menu(theirs_label, Box::new(CtxTakeTheirs))
-                                .separator();
+                                .menu(theirs_label, Box::new(CtxTakeTheirs));
+                            if can_stage || can_unstage || can_discard {
+                                menu = menu.separator();
+                            }
                         }
                         if can_stage {
                             menu = menu.menu("Stage", Box::new(CtxStage));
@@ -1080,10 +1084,31 @@ impl StatusView {
                     })
                     .into_any_element()
                 }
-                // Commits, stashes, plain rows: just Copy the selected word.
-                None => el
-                    .context_menu(|menu, _window, _cx| menu.menu("Copy", Box::new(CtxCopy)))
-                    .into_any_element(),
+                None => {
+                    let revision = match &row.kind {
+                        RowKind::Commit { hash, subject, .. } => {
+                            Some(("Show commit", hash.clone(), subject.clone()))
+                        }
+                        RowKind::Stash { reference, message } => {
+                            Some(("Show stash", reference.clone(), message.clone()))
+                        }
+                        _ => None,
+                    };
+                    el.context_menu(move |mut menu, _window, _cx| {
+                        if let Some((label, rev, subject)) = revision.clone() {
+                            let view = view.clone();
+                            menu = menu
+                                .item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |v, cx| {
+                                        v.open_commit(rev.clone(), subject.clone(), cx);
+                                    });
+                                }))
+                                .separator();
+                        }
+                        menu.menu("Copy", Box::new(CtxCopy))
+                    })
+                    .into_any_element()
+                }
             }
         } else {
             content.into_any_element()

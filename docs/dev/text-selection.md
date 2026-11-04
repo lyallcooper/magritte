@@ -15,8 +15,9 @@ selection or the value at the cursor.
 
 `Esc`, keyboard movement, or a plain click clears the selection. When a row is
 selected, the first click clears it and the next click performs the row action.
-A single click otherwise places the cursor or toggles a fold. A double-click
-opens the row.
+Clicking a row otherwise places the cursor or toggles its fold. To open a row
+with the mouse, right-click it and choose `Open file`, `Show commit`, or
+`Show stash`. The menu opens the clicked row even within a multi-row selection.
 
 The remaining gaps need either a selection model with several targets per row
 or support in another rendering surface:

@@ -730,12 +730,16 @@ impl StatusView {
         let Some(target) = self.rows.get(self.selected).and_then(|r| r.target.clone()) else {
             return;
         };
-        let path = target.path().to_string();
-        let line = self.diff_target_line(&target);
+        self.open_file_target(&target, cx);
+    }
+
+    pub(crate) fn open_file_target(&mut self, target: &Target, cx: &mut Context<Self>) {
+        let path = target.path();
+        let line = self.diff_target_line(target);
         let Some(repo) = self.repo.as_ref() else {
             return;
         };
-        let full = repo.workdir().join(&path);
+        let full = repo.workdir().join(path);
         self.launch_editor(&full, line);
         self.set_status(format!("Opening {path}"), true, cx);
     }

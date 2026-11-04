@@ -16,7 +16,7 @@
 #   scripts/dbg.sh shift-click <x> <y>  shift-click at window-relative point
 #   scripts/dbg.sh move <x> <y>       hover the pointer at a point (e.g. for tooltips)
 #   scripts/dbg.sh drag <x1> <y1> <x2> <y2>  left-drag from one point to another (text selection)
-#   scripts/dbg.sh dblclick <x> <y>   double-click at a point (open/enter)
+#   scripts/dbg.sh dblclick <x> <y>   double-click at a point (click_count 2)
 #   scripts/dbg.sh rclick <x> <y>     right-click at a point (context menu)
 #   scripts/dbg.sh sleep <ms>         pause (let a frame paint)
 #   scripts/dbg.sh help               show this help
