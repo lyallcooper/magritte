@@ -15,7 +15,7 @@
     "@astrojs/markdown-remark": "^7.2.1",
     "@fontsource-variable/eb-garamond": "^5.2.7",
     "astro": "^7.1.1",
-    "justif": "^0.8.0",
+    "justif": "^0.9.2",
     "unist-util-visit": "^5.0.0"
   },
   "pnpm": {
